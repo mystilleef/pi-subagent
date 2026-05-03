@@ -35,8 +35,8 @@ import {
 
 const AgentScopeSchema = StringEnum(["user", "project", "both"] as const, {
   description:
-    'Which agent directories to use. Default: "user". Use "both" to include project-local agents.',
-  default: "user",
+    'Which agent directories to use. Default: "both" (user + project-local agents).',
+  default: "both",
 });
 
 export const SubagentParams = Type.Object({
@@ -183,15 +183,14 @@ function getPiInvocation(args: string[]): { command: string; args: string[] } {
 }
 
 async function resolveAgentSkillArgs(
-  defaultCwd: string,
-  cwd: string | undefined,
+  cwd: string,
   skillNames: string[],
 ): Promise<{ args: string[] } | { error: string }> {
   const requested = Array.from(new Set(skillNames));
   if (requested.length === 0) return { args: [] };
 
   const loader = new DefaultResourceLoader({
-    cwd: cwd ?? defaultCwd,
+    cwd,
     agentDir: getAgentDir(),
     noContextFiles: true,
     noPromptTemplates: true,
@@ -262,7 +261,7 @@ async function runSingleAgent(
       : undefined;
 
   const resolvedSkills = agent.skills
-    ? await resolveAgentSkillArgs(defaultCwd, undefined, agent.skills)
+    ? await resolveAgentSkillArgs(defaultCwd, agent.skills)
     : { args: [] };
 
   if ("error" in resolvedSkills) {
@@ -476,13 +475,12 @@ export default function (pi: ExtensionAPI) {
     description: [
       "Delegate one task to one specialized subagent with isolated context.",
       "Mode: single (agent + task).",
-      'Default agent scope is "user" (from ~/.pi/agent/agents).',
-      'To enable project-local agents in .pi/agents, set agentScope: "both" (or "project").',
+      'Default agent scope is "both" (user agents from ~/.pi/agents and project-local agents from .pi/agents).',
     ].join(" "),
     parameters: SubagentParams,
 
     async execute(_toolCallId, params, signal, onUpdate, ctx) {
-      const agentScope: AgentScope = params.agentScope ?? "user";
+      const agentScope: AgentScope = params.agentScope ?? "both";
       const discovery = discoverAgents(ctx.cwd, agentScope);
       const agents = discovery.agents;
       const parentModel = ctx.model
@@ -556,7 +554,7 @@ Project agents are repo-controlled. Only continue for trusted repositories.`,
     },
 
     renderCall(args, theme, _context) {
-      const scope: AgentScope = args.agentScope ?? "user";
+      const scope: AgentScope = args.agentScope ?? "both";
       const agentName = args.agent || "...";
       const preview = args.task
         ? args.task.length > 60

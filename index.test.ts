@@ -195,10 +195,10 @@ System prompt`,
 
   const tool = getSubagentTool();
 
-  // Default scope is "user", should NOT find project agent
+  // Explicit "user" scope should NOT find project agent
   const promiseUser = tool.execute(
     "test-tool-call",
-    { agent: "project-agent", task: "test" },
+    { agent: "project-agent", task: "test", agentScope: "user" },
     undefined,
     undefined,
     { cwd, hasUI: false } as unknown as ExtensionContext,
@@ -878,7 +878,7 @@ test("renderCall formats tool execution correctly", () => {
   );
 
   expect((rendered as unknown as { text: string }).text).toContain(
-    "[toolTitle]*subagent *[/toolTitle][accent]test-agent[/accent][muted] [user][/muted]",
+    "[toolTitle]*subagent *[/toolTitle][accent]test-agent[/accent][muted] [both][/muted]",
   );
   expect((rendered as unknown as { text: string }).text).toContain(
     "long task description that should exceed 60 characters so it...",
