@@ -26,8 +26,7 @@ and project-local agent definitions.
 ## Building and running
 
 - **Install Dependencies:** `bun install`
-- **Lint and Type-check:** `bun check` (runs `biome check` and `tsc`)
-- **Run Tests:** `bun test`
+- **Verify:** `bun verify`
 - **Coverage:** `bun coverage`
 
 ## Development conventions
