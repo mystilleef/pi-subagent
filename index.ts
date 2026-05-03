@@ -45,17 +45,6 @@ export const SubagentParams = Type.Object({
   }),
   task: Type.String({ description: "Task to delegate" }),
   agentScope: Type.Optional(AgentScopeSchema),
-  confirmProjectAgents: Type.Optional(
-    Type.Boolean({
-      description: "Prompt before running project-local agents. Default: true.",
-      default: true,
-    }),
-  ),
-  cwd: Type.Optional(
-    Type.String({
-      description: "Working directory for the agent process",
-    }),
-  ),
 });
 
 interface UsageStats {
@@ -247,7 +236,6 @@ async function runSingleAgent(
   agents: AgentConfig[],
   agentName: string,
   task: string,
-  cwd: string | undefined,
   signal: AbortSignal | undefined,
   onUpdate: OnUpdateCallback | undefined,
   makeDetails: (results: SingleResult[]) => SubagentDetails,
@@ -274,7 +262,7 @@ async function runSingleAgent(
       : undefined;
 
   const resolvedSkills = agent.skills
-    ? await resolveAgentSkillArgs(defaultCwd, cwd, agent.skills)
+    ? await resolveAgentSkillArgs(defaultCwd, undefined, agent.skills)
     : { args: [] };
 
   if ("error" in resolvedSkills) {
@@ -336,7 +324,7 @@ async function runSingleAgent(
 
     const invocation = getPiInvocation(args);
     const proc = spawn(invocation.command, invocation.args, {
-      cwd: cwd ?? defaultCwd,
+      cwd: defaultCwd,
       shell: false,
       stdio: ["ignore", "pipe", "pipe"],
     });
@@ -497,7 +485,6 @@ export default function (pi: ExtensionAPI) {
       const agentScope: AgentScope = params.agentScope ?? "user";
       const discovery = discoverAgents(ctx.cwd, agentScope);
       const agents = discovery.agents;
-      const confirmProjectAgents = params.confirmProjectAgents ?? true;
       const parentModel = ctx.model
         ? { provider: ctx.model.provider, id: ctx.model.id }
         : undefined;
@@ -510,11 +497,7 @@ export default function (pi: ExtensionAPI) {
         results,
       });
 
-      if (
-        (agentScope === "project" || agentScope === "both") &&
-        confirmProjectAgents &&
-        ctx.hasUI
-      ) {
+      if ((agentScope === "project" || agentScope === "both") && ctx.hasUI) {
         const requested = agents.find((a) => a.name === params.agent);
         if (requested?.source === "project") {
           const dir = discovery.projectAgentsDir ?? "(unknown)";
@@ -543,7 +526,6 @@ Project agents are repo-controlled. Only continue for trusted repositories.`,
         agents,
         params.agent,
         params.task,
-        params.cwd,
         signal,
         onUpdate,
         makeDetails,
