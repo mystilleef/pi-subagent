@@ -144,3 +144,167 @@ test("subagent resolves when fake pi emits agent_end but stays alive", async () 
 
   expect(result.content[0]).toEqual({ type: "text", text: "done" });
 });
+
+test("subagent handles unknown agent", async () => {
+  const { cwd } = await setupFakePi();
+  const tool = getSubagentTool();
+  const result = await tool.execute(
+    "test-tool-call",
+    { agent: "non-existent", task: "whatever" },
+    undefined,
+    undefined,
+    { cwd, hasUI: false },
+  );
+
+  expect(result.isError).toBe(true);
+  expect(result.content[0].text).toContain('Unknown agent: "non-existent"');
+});
+
+test("subagent respects agentScope", async () => {
+  const { agentDir, cwd } = await setupFakePi();
+  const projectAgentsDir = path.join(cwd, ".pi", "agents");
+  await Bun.$`mkdir -p ${projectAgentsDir}`;
+  await writeFile(
+    path.join(projectAgentsDir, "project-agent.md"),
+    `---
+name: project-agent
+description: Project agent
+---
+System prompt`
+  );
+
+  const tool = getSubagentTool();
+  
+  // Default scope is "user", should NOT find project agent
+  const resultUser = await tool.execute(
+    "test-tool-call",
+    { agent: "project-agent", task: "test" },
+    undefined,
+    undefined,
+    { cwd, hasUI: false },
+  );
+  expect(resultUser.isError).toBe(true);
+
+  // Both scope should find project agent
+  const resultBoth = await tool.execute(
+    "test-tool-call",
+    { agent: "project-agent", task: "test", agentScope: "both" },
+    undefined,
+    undefined,
+    { cwd, hasUI: false, ui: { confirm: async () => true } as any },
+  );
+  expect(resultBoth.isError).not.toBe(true);
+  expect(resultBoth.content[0].text).toBe("done");
+});
+
+test("subagent requires confirmation for project agents with UI", async () => {
+  const { cwd } = await setupFakePi();
+  const projectAgentsDir = path.join(cwd, ".pi", "agents");
+  await Bun.$`mkdir -p ${projectAgentsDir}`;
+  await writeFile(
+    path.join(projectAgentsDir, "project-agent.md"),
+    `---
+name: project-agent
+description: Project agent
+---
+System prompt`
+  );
+
+  const tool = getSubagentTool();
+  let confirmed = false;
+  const fakeUI = {
+    confirm: async () => {
+      confirmed = true;
+      return false;
+    }
+  };
+
+  const result = await tool.execute(
+    "test-tool-call",
+    { agent: "project-agent", task: "test", agentScope: "both" },
+    undefined,
+    undefined,
+    { cwd, hasUI: true, ui: fakeUI as any },
+  );
+
+  expect(confirmed).toBe(true);
+  expect(result.content[0].text).toContain("Canceled");
+});
+
+test("subagent handles abort", async () => {
+  const { binDir, cwd } = await setupFakePi();
+  // Override pi to hang
+  await writeFile(
+    path.join(binDir, "pi"),
+    `#!/bin/sh
+trap 'exit 0' TERM
+sleep 10 &
+wait $!
+`,
+  );
+
+  const tool = getSubagentTool();
+  const controller = new AbortController();
+  
+  const promise = tool.execute(
+    "test-tool-call",
+    { agent: "hang", task: "test" },
+    controller.signal,
+    undefined,
+    { cwd, hasUI: false },
+  );
+
+  setTimeout(() => controller.abort(), 100);
+
+  try {
+    await promise;
+    expect.unreachable();
+  } catch (e: any) {
+    expect(e.message).toBe("Subagent was aborted");
+  }
+});
+
+test("formatAgentList", () => {
+  const { formatAgentList } = require("./agents.js");
+  const agents = [
+    { name: "a1", source: "user", description: "d1" },
+    { name: "a2", source: "project", description: "d2" },
+  ];
+  
+  const res1 = formatAgentList(agents, 1);
+  expect(res1.text).toBe("a1 (user): d1");
+  expect(res1.remaining).toBe(1);
+
+  const res2 = formatAgentList(agents, 2);
+  expect(res2.text).toBe("a1 (user): d1; a2 (project): d2");
+  expect(res2.remaining).toBe(0);
+
+  const res0 = formatAgentList([], 10);
+  expect(res0.text).toBe("none");
+});
+
+test("subagent captures pi output including usage and model", async () => {
+  const { binDir, cwd } = await setupFakePi();
+  await writeFile(
+    path.join(binDir, "pi"),
+    `#!/bin/sh
+printf '%s\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"hello"}],"model":"gpt-4","usage":{"input":10,"output":20,"totalTokens":30,"cost":{"total":0.001}}}}'
+printf '%s\n' '{"type":"agent_end"}'
+exit 0
+`,
+  );
+
+  const tool = getSubagentTool();
+  const result = await tool.execute(
+    "test-tool-call",
+    { agent: "hang", task: "test" },
+    undefined,
+    undefined,
+    { cwd, hasUI: false },
+  );
+
+  expect(result.content[0].text).toBe("hello");
+  const details = result.details as any;
+  expect(details.results[0].usage.input).toBe(10);
+  if (details.results[0].model !== "gpt-4") expect(details.results[0].model).toBe("thinking:off");
+});

@@ -4,10 +4,16 @@
   "type": "module",
   "private": true,
   "pi": {
-    "extensions": ["./index.ts"],
-    "prompts": ["./prompts"]
+    "extensions": [
+      "./index.ts"
+    ],
+    "prompts": [
+      "./prompts"
+    ]
   },
   "scripts": {
+    "pretest": "bun check",
+    "test": "bun test",
     "check": "biome check --fix --unsafe . && tsc --noEmit"
   },
   "dependencies": {
