@@ -90,6 +90,7 @@ type CapturedSubagentTool = ToolDefinition<
 function getSubagentTool(): CapturedSubagentTool {
   let registeredTool: RegisteredTool | undefined;
   const fakePi = {
+    on() {},
     registerTool(tool: RegisteredTool) {
       registeredTool = tool;
     },
@@ -323,4 +324,96 @@ exit 0
   expect(details.results[0]?.usage.input).toBe(10);
   if (details.results[0]?.model !== "gpt-4")
     expect(details.results[0]?.model).toBe("thinking:off");
+});
+
+test("autocomplete provider registers and returns agent suggestions", async () => {
+  const { cwd } = await setupFakePi();
+  let sessionStartHandler: any;
+  const fakePi = {
+    on(event: string, handler: any) {
+      if (event === "session_start") {
+        sessionStartHandler = handler;
+      }
+    },
+    registerTool() {},
+    getThinkingLevel() {
+      return "off";
+    },
+  } as unknown as ExtensionAPI;
+
+  registerSubagentExtension(fakePi);
+  expect(sessionStartHandler).toBeDefined();
+
+  let factoryFn: any;
+  const fakeCtx = {
+    cwd,
+    ui: {
+      addAutocompleteProvider: (factory: any) => {
+        factoryFn = factory;
+      },
+    },
+  };
+
+  sessionStartHandler("session_start", fakeCtx);
+  expect(factoryFn).toBeDefined();
+
+  const fakeCurrentProvider = {
+    getSuggestions: async () => ({ prefix: "fake", items: [] }),
+    applyCompletion: () => ({
+      lines: ["applied"],
+      cursorLine: 0,
+      cursorCol: 7,
+    }),
+    shouldTriggerFileCompletion: () => false,
+  };
+
+  const registeredProvider = factoryFn(fakeCurrentProvider);
+
+  // Create an agent to test
+  const projectAgentsDir = path.join(cwd, ".pi", "agents");
+  await Bun.$`mkdir -p ${projectAgentsDir}`;
+  await writeFile(
+    path.join(projectAgentsDir, "test-agent.md"),
+    `---
+name: test-agent
+description: test
+---
+Prompt`,
+  );
+
+  // Test getSuggestions matches
+  const suggestions = await registeredProvider.getSuggestions(
+    ["/run te"],
+    0,
+    7,
+    {},
+  );
+  expect(suggestions.prefix).toBe("te");
+  expect(suggestions.items).toEqual([
+    { value: "test-agent", label: "test-agent" },
+  ]);
+
+  // Test getSuggestions no match
+  const noMatch = await registeredProvider.getSuggestions(
+    ["other text "],
+    0,
+    11,
+    {},
+  );
+  expect(noMatch.prefix).toBe("fake");
+
+  // Test applyCompletion falls back
+  const applied = registeredProvider.applyCompletion([], 0, 0, {}, "");
+  expect(applied.lines).toEqual(["applied"]);
+
+  // Test shouldTriggerFileCompletion falls back
+  const trigger = registeredProvider.shouldTriggerFileCompletion([], 0, 0);
+  expect(trigger).toBe(false);
+
+  // Test shouldTriggerFileCompletion undefined fallback
+  const fallbackProvider = factoryFn({
+    getSuggestions: async () => ({ prefix: "", items: [] }),
+    applyCompletion: () => ({ lines: [], cursorLine: 0, cursorCol: 0 }),
+  });
+  expect(fallbackProvider.shouldTriggerFileCompletion([], 0, 0)).toBe(true);
 });
