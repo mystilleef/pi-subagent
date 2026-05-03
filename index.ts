@@ -13,6 +13,7 @@ import { type ChildProcess, spawn } from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import readline from "node:readline";
 import type { AgentToolResult } from "@mariozechner/pi-agent-core";
 import type { Message } from "@mariozechner/pi-ai";
 import { StringEnum } from "@mariozechner/pi-ai";
@@ -34,7 +35,7 @@ import {
 } from "./agents.js";
 
 const COLLAPSED_ITEM_COUNT = 10;
-const EXIT_STDIO_GRACE_MS = 100;
+const _EXIT_STDIO_GRACE_MS = 100;
 
 const AgentScopeSchema = StringEnum(["user", "project", "both"] as const, {
   description:
@@ -102,66 +103,18 @@ type DisplayItem =
 
 type OnUpdateCallback = (partial: AgentToolResult<SubagentDetails>) => void;
 
-function waitForSubagentProcess(proc: ChildProcess): Promise<number | null> {
-  return new Promise((resolve, reject) => {
+async function waitForSubagentProcess(
+  proc: ChildProcess,
+): Promise<number | null> {
+  return new Promise((resolve) => {
     let settled = false;
-    let exited = false;
-    let exitCode: number | null = null;
-    let postExitTimer: NodeJS.Timeout | undefined;
-    let stdoutEnded = proc.stdout === null;
-    let stderrEnded = proc.stderr === null;
-
-    const cleanup = () => {
-      if (postExitTimer) clearTimeout(postExitTimer);
-      proc.removeListener("error", onError);
-      proc.removeListener("exit", onExit);
-      proc.removeListener("close", onClose);
-      proc.stdout?.removeListener("end", onStdoutEnd);
-      proc.stderr?.removeListener("end", onStderrEnd);
-    };
-
     const finalize = (code: number | null) => {
       if (settled) return;
       settled = true;
-      cleanup();
-      proc.stdout?.destroy();
-      proc.stderr?.destroy();
       resolve(code);
     };
-
-    const maybeFinalizeAfterExit = () => {
-      if (!exited || settled) return;
-      if (stdoutEnded && stderrEnded) finalize(exitCode);
-    };
-
-    const onStdoutEnd = () => {
-      stdoutEnded = true;
-      maybeFinalizeAfterExit();
-    };
-    const onStderrEnd = () => {
-      stderrEnded = true;
-      maybeFinalizeAfterExit();
-    };
-    const onError = (error: Error) => {
-      if (settled) return;
-      settled = true;
-      cleanup();
-      reject(error);
-    };
-    const onExit = (code: number | null) => {
-      exited = true;
-      exitCode = code;
-      maybeFinalizeAfterExit();
-      if (!settled)
-        postExitTimer = setTimeout(() => finalize(code), EXIT_STDIO_GRACE_MS);
-    };
-    const onClose = (code: number | null) => finalize(code);
-
-    proc.stdout?.once("end", onStdoutEnd);
-    proc.stderr?.once("end", onStderrEnd);
-    proc.once("error", onError);
-    proc.once("exit", onExit);
-    proc.once("close", onClose);
+    proc.on("close", finalize);
+    proc.on("exit", (code) => setTimeout(() => finalize(code), 100));
   });
 }
 
@@ -172,18 +125,7 @@ function formatTokens(count: number): string {
   return `${(count / 1000000).toFixed(1)}M`;
 }
 
-function formatUsageStats(
-  usage: {
-    input: number;
-    output: number;
-    cacheRead: number;
-    cacheWrite: number;
-    cost: number;
-    contextTokens?: number;
-    turns?: number;
-  },
-  model?: string,
-): string {
+function formatUsageStats(usage: UsageStats, model?: string): string {
   const parts: string[] = [];
   if (usage.turns)
     parts.push(`${usage.turns} turn${usage.turns > 1 ? "s" : ""}`);
@@ -204,105 +146,27 @@ function formatToolCall(
   args: Record<string, unknown>,
   themeFg: (color: ThemeColor, text: string) => string,
 ): string {
-  const shortenPath = (p: string) => {
-    const home = os.homedir();
-    return p.startsWith(home) ? `~${p.slice(home.length)}` : p;
-  };
-
-  const getPathArg = () => (args.file_path || args.path || "...") as string;
-
-  switch (toolName) {
-    case "bash": {
-      const command = (args.command as string) || "...";
-      const preview =
-        command.length > 60 ? `${command.slice(0, 60)}...` : command;
-      return themeFg("muted", "$ ") + themeFg("toolOutput", preview);
-    }
-    case "read": {
-      const filePath = shortenPath(getPathArg());
-      const offset = args.offset as number | undefined;
-      const limit = args.limit as number | undefined;
-      let text = themeFg("accent", filePath);
-      if (offset !== undefined || limit !== undefined) {
-        const startLine = offset ?? 1;
-        const endLine = limit !== undefined ? startLine + limit - 1 : "";
-        text += themeFg(
-          "warning",
-          `:${startLine}${endLine ? `-${endLine}` : ""}`,
-        );
-      }
-      return themeFg("muted", "read ") + text;
-    }
-    case "write": {
-      const filePath = shortenPath(getPathArg());
-      const lines = ((args.content || "") as string).split("\n").length;
-      let text = themeFg("muted", "write ") + themeFg("accent", filePath);
-      if (lines > 1) text += themeFg("dim", ` (${lines} lines)`);
-      return text;
-    }
-    case "edit": {
-      return (
-        themeFg("muted", "edit ") + themeFg("accent", shortenPath(getPathArg()))
-      );
-    }
-    case "ls": {
-      return (
-        themeFg("muted", "ls ") + themeFg("accent", shortenPath(getPathArg()))
-      );
-    }
-    case "find": {
-      const pattern = (args.pattern || "*") as string;
-      return (
-        themeFg("muted", "find ") +
-        themeFg("accent", pattern) +
-        themeFg("dim", ` in ${shortenPath(getPathArg())}`)
-      );
-    }
-    case "grep": {
-      const pattern = (args.pattern || "") as string;
-      return (
-        themeFg("muted", "grep ") +
-        themeFg("accent", `/${pattern}/`) +
-        themeFg("dim", ` in ${shortenPath(getPathArg())}`)
-      );
-    }
-    default: {
-      const argsStr = JSON.stringify(args);
-      const preview =
-        argsStr.length > 50 ? `${argsStr.slice(0, 50)}...` : argsStr;
-      return themeFg("accent", toolName) + themeFg("dim", ` ${preview}`);
-    }
-  }
+  const argsStr = JSON.stringify(args);
+  const preview = argsStr.length > 50 ? `${argsStr.slice(0, 50)}...` : argsStr;
+  return themeFg("accent", toolName) + themeFg("dim", ` ${preview}`);
 }
 
 function getFinalOutput(messages: Message[]): string {
-  for (let i = messages.length - 1; i >= 0; i--) {
-    const msg = messages[i];
-    if (msg?.role === "assistant") {
-      for (const part of msg.content) {
-        if (part.type === "text") return part.text;
-      }
-    }
-  }
-  return "";
+  const lastAsst = messages.findLast((m) => m.role === "assistant");
+  const lastText = lastAsst?.content.findLast((p) => p.type === "text");
+  return lastText?.type === "text" ? lastText.text : "";
 }
 
 function getDisplayItems(messages: Message[]): DisplayItem[] {
-  const items: DisplayItem[] = [];
-  for (const msg of messages) {
-    if (msg.role === "assistant") {
-      for (const part of msg.content) {
-        if (part.type === "text") items.push({ type: "text", text: part.text });
-        else if (part.type === "toolCall")
-          items.push({
-            type: "toolCall",
-            name: part.name,
-            args: part.arguments,
-          });
-      }
-    }
-  }
-  return items;
+  return messages
+    .filter((m) => m.role === "assistant")
+    .flatMap((m) => m.content)
+    .flatMap((p): DisplayItem[] => {
+      if (p.type === "text") return [{ type: "text", text: p.text }];
+      if (p.type === "toolCall")
+        return [{ type: "toolCall", name: p.name, args: p.arguments }];
+      return [];
+    });
 }
 
 async function writePromptToTempFile(
@@ -491,7 +355,6 @@ async function runSingleAgent(
       stdio: ["ignore", "pipe", "pipe"],
     });
 
-    let buffer = "";
     let wasAborted = false;
 
     const processLine = (line: string) => {
@@ -532,12 +395,7 @@ async function runSingleAgent(
       }
     };
 
-    proc.stdout.on("data", (data) => {
-      buffer += data.toString();
-      const lines = buffer.split("\n");
-      buffer = lines.pop() || "";
-      for (const line of lines) processLine(line);
-    });
+    readline.createInterface({ input: proc.stdout }).on("line", processLine);
 
     proc.stderr.on("data", (data) => {
       currentResult.stderr += data.toString();
@@ -784,27 +642,40 @@ Project agents are repo-controlled. Only continue for trusted repositories.`,
         container.addChild(new Spacer(1));
         container.addChild(new Text(theme.fg("muted", "─── Output ───"), 0, 0));
 
-        if (displayItems.length === 0 && !finalOutput) {
-          container.addChild(new Text(theme.fg("muted", "(no output)"), 0, 0));
-        } else {
-          for (const item of displayItems) {
-            if (item.type === "toolCall") {
-              container.addChild(
-                new Text(
-                  theme.fg("muted", "→ ") +
-                    formatToolCall(item.name, item.args, theme.fg.bind(theme)),
-                  0,
-                  0,
-                ),
-              );
-            }
-          }
-          if (finalOutput) {
-            container.addChild(new Spacer(1));
-            container.addChild(
-              new Markdown(finalOutput.trim(), 0, 0, getMarkdownTheme()),
-            );
-          }
+        const outputChildren =
+          displayItems.length === 0 && !finalOutput
+            ? [new Text(theme.fg("muted", "(no output)"), 0, 0)]
+            : [
+                ...displayItems
+                  .filter((item) => item.type === "toolCall")
+                  .map(
+                    (item) =>
+                      new Text(
+                        theme.fg("muted", "→ ") +
+                          formatToolCall(
+                            item.name,
+                            item.args,
+                            theme.fg.bind(theme),
+                          ),
+                        0,
+                        0,
+                      ),
+                  ),
+                ...(finalOutput
+                  ? [
+                      new Spacer(1),
+                      new Markdown(
+                        finalOutput.trim(),
+                        0,
+                        0,
+                        getMarkdownTheme(),
+                      ),
+                    ]
+                  : []),
+              ];
+
+        for (const child of outputChildren) {
+          container.addChild(child);
         }
 
         const usageStr = formatUsageStats(r.usage, r.model);
