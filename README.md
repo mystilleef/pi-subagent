@@ -1,32 +1,32 @@
 # Subagent Example
 
-Delegate tasks to specialized subagents with isolated context windows.
+Delegate one task to one specialized subagent with an isolated context window.
 
 ## Features
 
 - **Isolated context**: Each subagent runs in a separate `pi` process
+- **Single-purpose delegation**: One tool call activates exactly one subagent
 - **Streaming output**: See tool calls and progress as they happen
-- **Parallel streaming**: All parallel tasks stream updates simultaneously
-- **Markdown rendering**: Final output rendered with proper formatting (expanded view)
-- **Usage tracking**: Shows turns, tokens, cost, and context usage per agent
-- **Abort support**: Ctrl+C propagates to kill subagent processes
+- **Markdown rendering**: Final output renders with proper formatting in expanded view
+- **Usage tracking**: Shows turns, tokens, cost, and context usage
+- **Abort support**: Ctrl+C kills the subagent process
 
 ## Structure
 
-```
+```text
 subagent/
 ├── README.md            # This file
-├── index.ts             # The extension (entry point)
+├── index.ts             # Extension entry point
 ├── agents.ts            # Agent discovery logic
 ├── agents/              # Sample agent definitions
 │   ├── scout.md         # Fast recon, returns compressed context
 │   ├── planner.md       # Creates implementation plans
 │   ├── reviewer.md      # Code review
-│   └── worker.md        # General-purpose (full capabilities)
-└── prompts/             # Workflow presets (prompt templates)
-    ├── implement.md     # scout -> planner -> worker
-    ├── scout-and-plan.md    # scout -> planner (no implementation)
-    └── implement-and-review.md  # worker -> reviewer -> worker
+│   └── worker.md        # General-purpose agent
+└── prompts/             # Single-agent prompt templates
+    ├── scout.md         # Run scout once
+    ├── plan.md          # Run planner once
+    └── review.md        # Run reviewer once
 ```
 
 ## Installation
@@ -34,93 +34,81 @@ subagent/
 From the repository root, symlink the files:
 
 ```bash
-# Symlink the extension (must be in a subdirectory with index.ts)
+# Symlink the extension
 mkdir -p ~/.pi/agent/extensions/subagent
-ln -sf "$(pwd)/packages/coding-agent/examples/extensions/subagent/index.ts" ~/.pi/agent/extensions/subagent/index.ts
-ln -sf "$(pwd)/packages/coding-agent/examples/extensions/subagent/agents.ts" ~/.pi/agent/extensions/subagent/agents.ts
+ln -sf "$(pwd)/index.ts" ~/.pi/agent/extensions/subagent/index.ts
+ln -sf "$(pwd)/agents.ts" ~/.pi/agent/extensions/subagent/agents.ts
 
 # Symlink agents
 mkdir -p ~/.pi/agent/agents
-for f in packages/coding-agent/examples/extensions/subagent/agents/*.md; do
+for f in agents/*.md; do
   ln -sf "$(pwd)/$f" ~/.pi/agent/agents/$(basename "$f")
 done
 
-# Symlink workflow prompts
+# Symlink prompt templates
 mkdir -p ~/.pi/agent/prompts
-for f in packages/coding-agent/examples/extensions/subagent/prompts/*.md; do
+for f in prompts/*.md; do
   ln -sf "$(pwd)/$f" ~/.pi/agent/prompts/$(basename "$f")
 done
 ```
 
-## Security Model
+## Security model
 
 This tool executes a separate `pi` subprocess with a delegated system prompt, inherited model, and optional tool/thinking configuration.
 
-**Project-local agents** (`.pi/agents/*.md`) are repo-controlled prompts that can instruct the model to read files, run bash commands, etc.
+**Project-local agents** (`.pi/agents/*.md`) live in repositories and can instruct the model to read files, run bash commands, and use other tools.
 
-**Default behavior:** Only loads **user-level agents** from `~/.pi/agent/agents`.
+**Default behavior:** The tool loads only user-level agents from `~/.pi/agent/agents`.
 
-To enable project-local agents, pass `agentScope: "both"` (or `"project"`). Only do this for repositories you trust.
+To enable project-local agents, pass `agentScope: "both"` or `agentScope: "project"`. Only do this for trusted repositories.
 
-When running interactively, the tool prompts for confirmation before running project-local agents. Set `confirmProjectAgents: false` to disable.
+When running interactively, the tool asks before running project-local agents. Set `confirmProjectAgents: false` to disable the prompt.
 
 ## Usage
 
 ### Single agent
-```
+
+```text
 Use scout to find all authentication code
 ```
 
-### Parallel execution
-```
-Run 2 scouts in parallel: one to find models, one to find providers
-```
+Equivalent tool call:
 
-### Chained workflow
-```
-Use a chain: first have scout find the read tool, then have planner suggest improvements
-```
-
-### Workflow prompts
-```
-/implement add Redis caching to the session store
-/scout-and-plan refactor auth to support OAuth
-/implement-and-review add input validation to API endpoints
+```json
+{
+  "agent": "scout",
+  "task": "Find all authentication code"
+}
 ```
 
-## Tool Modes
+For multi-step work, let the main agent orchestrate multiple separate subagent calls. Each call should delegate one clear task to one subagent.
 
-| Mode | Parameter | Description |
-|------|-----------|-------------|
-| Single | `{ agent, task }` | One agent, one task |
-| Parallel | `{ tasks: [...] }` | Multiple agents run concurrently (max 8, 4 concurrent) |
-| Chain | `{ chain: [...] }` | Sequential with `{previous}` placeholder |
+## Tool parameters
 
-## Output Display
+| Parameter | Description |
+| --- | --- |
+| `agent` | Agent name |
+| `task` | Task to delegate |
+| `cwd` | Optional working directory override |
+| `agentScope` | `user`, `project`, or `both`; defaults to `user` |
+| `confirmProjectAgents` | Ask before running project-local agents; defaults to `true` |
 
-**Collapsed view** (default):
-- Status icon (✓/✗/⏳) and agent name
-- Last 5-10 items (tool calls and text)
+## Output display
+
+**Collapsed view** shows:
+
+- Status icon and agent name
+- Recent tool calls and text output
 - Usage stats: `3 turns ↑input ↓output RcacheRead WcacheWrite $cost ctx:contextTokens model`
 
-**Expanded view** (Ctrl+O):
+**Expanded view** (Ctrl+O) shows:
+
 - Full task text
 - All tool calls with formatted arguments
 - Final output rendered as Markdown
-- Per-task usage (for chain/parallel)
+- Usage stats
 
-**Parallel mode streaming**:
-- Shows all tasks with live status (⏳ running, ✓ done, ✗ failed)
-- Updates as each task makes progress
-- Shows "2/3 done, 1 running" status
-
-**Tool call formatting** (mimics built-in tools):
-- `$ command` for bash
-- `read ~/path:1-10` for read
-- `grep /pattern/ in ~/path` for grep
-- etc.
-
-## Agent Definitions
+## Agent definitions
 
 Agents are markdown files with YAML frontmatter:
 
@@ -138,37 +126,24 @@ System prompt for the agent goes here.
 Subagents inherit the parent session model. Use optional `thinking` to override the parent thinking level for that agent.
 
 **Locations:**
-- `~/.pi/agent/agents/*.md` - User-level (always loaded)
-- `.pi/agents/*.md` - Project-level (only with `agentScope: "project"` or `"both"`)
+
+- `~/.pi/agent/agents/*.md` - User-level agents
+- `.pi/agents/*.md` - Project-level agents, only loaded with `agentScope: "project"` or `"both"`
 
 Project agents override user agents with the same name when `agentScope: "both"`.
 
-## Sample Agents
+## Sample agents
 
 | Agent | Purpose | Thinking | Tools |
-|-------|---------|----------|-------|
+| --- | --- | --- | --- |
 | `scout` | Fast codebase recon | low | read, grep, find, ls, bash |
 | `planner` | Implementation plans | high | read, grep, find, ls |
 | `reviewer` | Code review | medium | read, grep, find, ls, bash |
-| `worker` | General-purpose | medium | (all default) |
+| `worker` | General-purpose work | medium | default tools |
 
-## Workflow Prompts
+## Error handling
 
-| Prompt | Flow |
-|--------|------|
-| `/implement <query>` | scout → planner → worker |
-| `/scout-and-plan <query>` | scout → planner |
-| `/implement-and-review <query>` | worker → reviewer → worker |
-
-## Error Handling
-
-- **Exit code != 0**: Tool returns error with stderr/output
-- **stopReason "error"**: LLM error propagated with error message
-- **stopReason "aborted"**: User abort (Ctrl+C) kills subprocess, throws error
-- **Chain mode**: Stops at first failing step, reports which step failed
-
-## Limitations
-
-- Output truncated to last 10 items in collapsed view (expand to see all)
-- Agents discovered fresh on each invocation (allows editing mid-session)
-- Parallel mode limited to 8 tasks, 4 concurrent
+- Non-zero exit code returns an error with stderr/output
+- `stopReason: "error"` propagates the model error
+- `stopReason: "aborted"` reports user abort
+- Ctrl+C kills the subprocess
