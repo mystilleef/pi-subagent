@@ -19,5 +19,5 @@ Delegate task to agent.
 
 - Invoke the agent immediately.
 - Don't perform any operations before invocation.
-- Refine, `consolidate`, and optimize the task text for agent, token,
-  context efficiency:
+- If a task exists, refine, `consolidate`, and optimize the task text
+  for agent, token, context efficiency.
