@@ -12,7 +12,6 @@ import type {
   ThemeColor,
   ToolDefinition,
 } from "@mariozechner/pi-coding-agent";
-import type { Container } from "@mariozechner/pi-tui";
 import registerSubagentExtension, {
   type SubagentDetails,
   type SubagentParams,
@@ -582,19 +581,15 @@ test("renderResult output aggregation and truncation", () => {
     "[success]✓[/success] [toolTitle]*test-agent*[/toolTitle][muted] (user)[/muted]",
   );
 
-  // Checking aggregation: we had 2 bash calls, 3 read calls.
-  // With COLLAPSED_ITEM_COUNT=1, only the last aggregated tool displays.
+  // Shows the last tool call only (read file3.txt)
   expect((rendered as unknown as { text: string }).text).toContain(
-    "[muted]... 2 earlier tool calls[/muted]",
+    "[accent]read[/accent][dim] file3.txt[/dim]",
   );
   expect((rendered as unknown as { text: string }).text).not.toContain(
-    "bash[/accent][dim] ls -l[/dim][muted] (x2)[/muted]",
-  );
-  expect((rendered as unknown as { text: string }).text).toContain(
-    "read[/accent][dim] file3.txt[/dim][muted] (x3)[/muted]",
+    "[accent]bash[/accent]",
   );
 
-  // Check text truncation (first 2 lines only)
+  // Final output preview: first 2 lines only
   expect((rendered as unknown as { text: string }).text).toContain(
     "final text line 1\nfinal text line 2[/toolOutput]",
   );
@@ -675,17 +670,11 @@ test("renderResult expanded output", () => {
     fakeTheme as never,
     fakeContext as never,
   );
-  // In expanded mode, renderResult returns a Container component
-  // It should contain Text and Markdown children
-  // Let's assert on the types and texts
-  expect((rendered as Container).children).toBeDefined();
-  const children = (rendered as Container).children as unknown as {
-    text: string;
-  }[];
-  expect(children[0]?.text).toContain(
+  const text = (rendered as unknown as { text: string }).text;
+  expect(text).toContain(
     "[error]✗[/error] [toolTitle]*test-agent*[/toolTitle][muted] (user)[/muted] [error][error][/error]",
   );
-  expect(children[1]?.text).toContain("Error: some error");
+  expect(text).toContain("[error]Error: some error[/error]");
 });
 
 test("subagent updates correctly format tool calls and final text", async () => {
@@ -722,11 +711,9 @@ exit 0
 
   // Assert on updates received
   expect(updates.length).toBeGreaterThan(0);
-  // Before final message, it should say (running bash...)
+  // Before final message, it should say (running...)
   expect(
-    updates.some(
-      (u) => (u.content[0] as TextContent)?.text === "(running bash...)",
-    ),
+    updates.some((u) => (u.content[0] as TextContent)?.text === "(running...)"),
   ).toBe(true);
   // After final message, it should just be "final"
   expect((updates[updates.length - 1]?.content[0] as TextContent)?.text).toBe(
@@ -803,9 +790,7 @@ test("renderResult subagent and unknown tools", () => {
     {} as never,
   );
 
-  expect((rendered as unknown as { text: string }).text).toContain(
-    "[muted]... 2 earlier tool calls[/muted]",
-  );
+  // Shows only the last tool call (unknown_long), not earlier ones
   expect((rendered as unknown as { text: string }).text).not.toContain(
     "[accent]subagent[/accent][dim] another-agent[/dim]",
   );
@@ -815,7 +800,7 @@ test("renderResult subagent and unknown tools", () => {
   expect((rendered as unknown as { text: string }).text).toContain(
     "[accent]unknown_long[/accent]",
   );
-  // Test truncation
+  // Test arg truncation
   expect((rendered as unknown as { text: string }).text).toContain("...");
 });
 
@@ -869,14 +854,10 @@ test("renderResult expanded output truncation for > 2000 chars", () => {
     {} as never,
   );
 
-  const children = (rendered as Container).children;
-  // Markdown node should be the last output child, preceded by spacer
-  // But actually the Markdown node exposes its properties in constructor?
-  // Let's just find the markdown node in children
-  const markdownNode = children.find(
-    (c: { constructor: { name: string } }) => c.constructor.name === "Markdown",
-  );
-  expect(markdownNode).toBeDefined();
+  // Returns a Text node with the final output preview (first 2 lines)
+  const text = (rendered as unknown as { text: string }).text;
+  expect(text).toBeDefined();
+  expect(text).toContain("[toolOutput]AAAA");
 });
 
 test("renderCall formats tool execution correctly", () => {

@@ -21,11 +21,10 @@ import {
   DefaultResourceLoader,
   type ExtensionAPI,
   getAgentDir,
-  getMarkdownTheme,
   type ThemeColor,
   withFileMutationQueue,
 } from "@mariozechner/pi-coding-agent";
-import { Container, Markdown, Spacer, Text } from "@mariozechner/pi-tui";
+import { Text } from "@mariozechner/pi-tui";
 import { Type } from "typebox";
 import {
   type AgentConfig,
@@ -33,9 +32,6 @@ import {
   discoverAgents,
   type ThinkingLevel,
 } from "./agents.js";
-
-const COLLAPSED_ITEM_COUNT = 1;
-const _EXIT_STDIO_GRACE_MS = 100;
 
 const AgentScopeSchema = StringEnum(["user", "project", "both"] as const, {
   description:
@@ -91,15 +87,6 @@ export interface SubagentDetails {
   projectAgentsDir: string | null;
   results: SingleResult[];
 }
-
-interface ParentModelConfig {
-  provider: string;
-  id: string;
-}
-
-type DisplayItem =
-  | { type: "text"; text: string }
-  | { type: "toolCall"; name: string; args: Record<string, unknown> };
 
 type OnUpdateCallback = (partial: AgentToolResult<SubagentDetails>) => void;
 
@@ -173,18 +160,6 @@ function getFinalOutput(messages: Message[]): string {
   return lastText?.type === "text" ? lastText.text : "";
 }
 
-function getDisplayItems(messages: Message[]): DisplayItem[] {
-  return messages
-    .filter((m) => m.role === "assistant")
-    .flatMap((m) => m.content)
-    .flatMap((p): DisplayItem[] => {
-      if (p.type === "text") return [{ type: "text", text: p.text }];
-      if (p.type === "toolCall")
-        return [{ type: "toolCall", name: p.name, args: p.arguments }];
-      return [];
-    });
-}
-
 async function writePromptToTempFile(
   agentName: string,
   prompt: string,
@@ -205,8 +180,7 @@ async function writePromptToTempFile(
 
 function getPiInvocation(args: string[]): { command: string; args: string[] } {
   const currentScript = process.argv[1];
-  const isBunVirtualScript = currentScript?.startsWith("/$bunfs/root/");
-  if (currentScript && !isBunVirtualScript && fs.existsSync(currentScript)) {
+  if (currentScript && fs.existsSync(currentScript)) {
     return { command: process.execPath, args: [currentScript, ...args] };
   }
 
@@ -217,14 +191,6 @@ function getPiInvocation(args: string[]): { command: string; args: string[] } {
   }
 
   return { command: "pi", args };
-}
-
-function formatModelForDisplay(
-  model: ParentModelConfig | undefined,
-  thinking: ThinkingLevel | undefined,
-): string | undefined {
-  if (!model) return thinking ? `thinking:${thinking}` : undefined;
-  return `${model.provider}/${model.id}${thinking ? `:${thinking}` : ""}`;
 }
 
 async function resolveAgentSkillArgs(
@@ -285,7 +251,7 @@ async function runSingleAgent(
   signal: AbortSignal | undefined,
   onUpdate: OnUpdateCallback | undefined,
   makeDetails: (results: SingleResult[]) => SubagentDetails,
-  parentModel: ParentModelConfig | undefined,
+  parentModel: { provider: string; id: string } | undefined,
   parentThinking: ThinkingLevel,
 ): Promise<SingleResult> {
   const agent = agents.find((a) => a.name === agentName);
@@ -301,7 +267,11 @@ async function runSingleAgent(
   }
 
   const thinking = agent.thinking ?? parentThinking;
-  const modelDisplay = formatModelForDisplay(parentModel, thinking);
+  const modelDisplay = parentModel
+    ? `${parentModel.provider}/${parentModel.id}${thinking ? `:${thinking}` : ""}`
+    : thinking
+      ? `thinking:${thinking}`
+      : undefined;
 
   const resolvedSkills = agent.skills
     ? await resolveAgentSkillArgs(defaultCwd, cwd, agent.skills)
@@ -337,26 +307,11 @@ async function runSingleAgent(
   };
 
   const emitUpdate = () => {
-    let statusText = getFinalOutput(currentResult.messages);
-    if (!statusText) {
-      const lastAsstMsg = currentResult.messages.findLast(
-        (m) => m.role === "assistant",
-      );
-      const lastTool = lastAsstMsg?.content.findLast(
-        (c) => c.type === "toolCall",
-      );
-      if (lastTool && lastTool.type === "toolCall") {
-        statusText = `(running ${lastTool.name}...)`;
-      } else {
-        statusText = "(running...)";
-      }
-    }
-
     onUpdate?.({
       content: [
         {
           type: "text",
-          text: statusText,
+          text: getFinalOutput(currentResult.messages) || "(running...)",
         },
       ],
       details: makeDetails([currentResult]),
@@ -634,7 +589,7 @@ Project agents are repo-controlled. Only continue for trusted repositories.`,
       return new Text(text, 0, 0);
     },
 
-    renderResult(result, { expanded }, theme, _context) {
+    renderResult(result, _display, theme, _context) {
       const details = result.details as SubagentDetails | undefined;
       const r = details?.results?.[0];
       if (!r) {
@@ -651,135 +606,30 @@ Project agents are repo-controlled. Only continue for trusted repositories.`,
         r.stopReason === "error" ||
         r.stopReason === "aborted";
       const icon = failed ? theme.fg("error", "✗") : theme.fg("success", "✓");
-      const displayItems = getDisplayItems(r.messages);
       const finalOutput = getFinalOutput(r.messages);
 
-      if (expanded) {
-        const container = new Container();
-        let header = `${icon} ${theme.fg("toolTitle", theme.bold(r.agent))}${theme.fg("muted", ` (${r.agentSource})`)}`;
-        if (failed && r.stopReason)
-          header += ` ${theme.fg("error", `[${r.stopReason}]`)}`;
-        container.addChild(new Text(header, 0, 0));
-
-        if (failed && r.errorMessage) {
-          container.addChild(
-            new Text(theme.fg("error", `Error: ${r.errorMessage}`), 0, 0),
-          );
-        }
-
-        container.addChild(new Spacer(1));
-        container.addChild(new Text(theme.fg("muted", "─── Task ───"), 0, 0));
-        container.addChild(new Text(theme.fg("dim", r.task), 0, 0));
-        container.addChild(new Spacer(1));
-        container.addChild(new Text(theme.fg("muted", "─── Output ───"), 0, 0));
-
-        const outputChildren =
-          displayItems.length === 0 && !finalOutput
-            ? [new Text(theme.fg("muted", "(no output)"), 0, 0)]
-            : [
-                ...displayItems
-                  .filter((item) => item.type === "toolCall")
-                  .map(
-                    (item) =>
-                      new Text(
-                        theme.fg("muted", "→ ") +
-                          formatToolCall(
-                            item.name,
-                            item.args,
-                            theme.fg.bind(theme),
-                          ),
-                        0,
-                        0,
-                      ),
-                  ),
-                ...(finalOutput
-                  ? [
-                      new Spacer(1),
-                      new Markdown(
-                        finalOutput.trim().length > 2000
-                          ? `${finalOutput.trim().slice(0, 2000)}\n\n...(output truncated)`
-                          : finalOutput.trim(),
-                        0,
-                        0,
-                        getMarkdownTheme(),
-                      ),
-                    ]
-                  : []),
-              ];
-
-        for (const child of outputChildren) {
-          container.addChild(child);
-        }
-
-        const usageStr = formatUsageStats(r.usage, r.model);
-        if (usageStr) {
-          container.addChild(new Spacer(1));
-          container.addChild(new Text(theme.fg("dim", usageStr), 0, 0));
-        }
-        return container;
-      }
-
-      // Collapsed view
       let text = `${icon} ${theme.fg("toolTitle", theme.bold(r.agent))}${theme.fg("muted", ` (${r.agentSource})`)}`;
       if (failed && r.stopReason)
         text += ` ${theme.fg("error", `[${r.stopReason}]`)}`;
 
       if (failed && r.errorMessage) {
         text += `\n${theme.fg("error", `Error: ${r.errorMessage}`)}`;
-      } else if (displayItems.length === 0) {
-        text += `\n${theme.fg("muted", "(no output)")}`;
       } else {
-        // Filter out intermediate texts, only keeping tool calls and the very last text if it exists
-        const toolsOnly = displayItems.filter(
-          (item) => item.type === "toolCall",
-        );
+        const lastTool = r.messages
+          .filter((m) => m.role === "assistant")
+          .flatMap((m) => m.content)
+          .findLast((p) => p.type === "toolCall");
 
-        // Aggregate repetitive tools
-        const aggregated: Array<{
-          type: "toolCall";
-          name: string;
-          args: Record<string, unknown>;
-          count: number;
-        }> = [];
-        for (const tool of toolsOnly) {
-          if (tool.type === "toolCall") {
-            const last = aggregated[aggregated.length - 1];
-            if (last && last.name === tool.name) {
-              last.count++;
-              // update args to the latest one
-              last.args = tool.args;
-            } else {
-              aggregated.push({ ...tool, count: 1 });
-            }
-          }
+        if (lastTool?.type === "toolCall") {
+          text += `\n${theme.fg("muted", "→ ") + formatToolCall(lastTool.name, lastTool.arguments, theme.fg.bind(theme))}`;
         }
 
-        const toShow = aggregated.slice(-COLLAPSED_ITEM_COUNT);
-        const skippedTools = aggregated
-          .slice(0, -COLLAPSED_ITEM_COUNT)
-          .reduce((acc, curr) => acc + curr.count, 0);
-
-        if (skippedTools > 0)
-          text += `\n${theme.fg("muted", `... ${skippedTools} earlier tool call${skippedTools > 1 ? "s" : ""}`)}`;
-
-        for (const item of toShow) {
-          const countStr =
-            item.count > 1 ? theme.fg("muted", ` (x${item.count})`) : "";
-          text += `\n${theme.fg("muted", "→ ") + formatToolCall(item.name, item.args, theme.fg.bind(theme))}${countStr}`;
-        }
-
-        const lastItem = displayItems[displayItems.length - 1];
-        if (lastItem?.type === "text" && lastItem.text.trim()) {
-          const preview = lastItem.text
-            .trim()
-            .split("\n")
-            .slice(0, 2)
-            .join("\n");
+        if (finalOutput.trim()) {
+          const preview = finalOutput.trim().split("\n").slice(0, 2).join("\n");
           text += `\n${theme.fg("toolOutput", preview)}`;
+        } else if (!lastTool) {
+          text += `\n${theme.fg("muted", "(no output)")}`;
         }
-
-        if (aggregated.length > COLLAPSED_ITEM_COUNT)
-          text += `\n${theme.fg("muted", "(Ctrl+O to expand)")}`;
       }
 
       const usageStr = formatUsageStats(r.usage, r.model);
