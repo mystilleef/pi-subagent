@@ -1,5 +1,5 @@
 {
-  "name": "pi-agents",
+  "name": "pi-subagent",
   "module": "src/index.ts",
   "type": "module",
   "private": true,
