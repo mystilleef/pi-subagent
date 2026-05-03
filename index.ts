@@ -34,7 +34,7 @@ import {
   type ThinkingLevel,
 } from "./agents.js";
 
-const COLLAPSED_ITEM_COUNT = 10;
+const COLLAPSED_ITEM_COUNT = 3;
 const _EXIT_STDIO_GRACE_MS = 100;
 
 const AgentScopeSchema = StringEnum(["user", "project", "both"] as const, {
@@ -146,8 +146,24 @@ function formatToolCall(
   args: Record<string, unknown>,
   themeFg: (color: ThemeColor, text: string) => string,
 ): string {
-  const argsStr = JSON.stringify(args);
-  const preview = argsStr.length > 50 ? `${argsStr.slice(0, 50)}...` : argsStr;
+  let preview = "";
+  if (toolName === "bash" && typeof args.command === "string") {
+    preview = args.command;
+  } else if (
+    ["read", "write", "edit", "file_search"].includes(toolName) &&
+    typeof args.path === "string"
+  ) {
+    preview = args.path;
+  } else if (toolName === "subagent" && typeof args.agent === "string") {
+    preview = args.agent;
+  } else {
+    preview = JSON.stringify(args);
+  }
+
+  if (preview.length > 50) {
+    preview = `${preview.slice(0, 50)}...`;
+  }
+
   return themeFg("accent", toolName) + themeFg("dim", ` ${preview}`);
 }
 
@@ -321,11 +337,26 @@ async function runSingleAgent(
   };
 
   const emitUpdate = () => {
+    let statusText = getFinalOutput(currentResult.messages);
+    if (!statusText) {
+      const lastAsstMsg = currentResult.messages.findLast(
+        (m) => m.role === "assistant",
+      );
+      const lastTool = lastAsstMsg?.content.findLast(
+        (c) => c.type === "toolCall",
+      );
+      if (lastTool && lastTool.type === "toolCall") {
+        statusText = `(running ${lastTool.name}...)`;
+      } else {
+        statusText = "(running...)";
+      }
+    }
+
     onUpdate?.({
       content: [
         {
           type: "text",
-          text: getFinalOutput(currentResult.messages) || "(running...)",
+          text: statusText,
         },
       ],
       details: makeDetails([currentResult]),
@@ -665,7 +696,9 @@ Project agents are repo-controlled. Only continue for trusted repositories.`,
                   ? [
                       new Spacer(1),
                       new Markdown(
-                        finalOutput.trim(),
+                        finalOutput.trim().length > 2000
+                          ? `${finalOutput.trim().slice(0, 2000)}\n\n...(output truncated)`
+                          : finalOutput.trim(),
                         0,
                         0,
                         getMarkdownTheme(),
@@ -696,21 +729,56 @@ Project agents are repo-controlled. Only continue for trusted repositories.`,
       } else if (displayItems.length === 0) {
         text += `\n${theme.fg("muted", "(no output)")}`;
       } else {
-        const toShow = displayItems.slice(-COLLAPSED_ITEM_COUNT);
-        const skipped = displayItems.length - toShow.length;
-        if (skipped > 0)
-          text += `\n${theme.fg("muted", `... ${skipped} earlier items`)}`;
+        // Filter out intermediate texts, only keeping tool calls and the very last text if it exists
+        const toolsOnly = displayItems.filter(
+          (item) => item.type === "toolCall",
+        );
 
-        for (const item of toShow) {
-          if (item.type === "text") {
-            const preview = item.text.split("\n").slice(0, 3).join("\n");
-            text += `\n${theme.fg("toolOutput", preview)}`;
-          } else {
-            text += `\n${theme.fg("muted", "→ ") + formatToolCall(item.name, item.args, theme.fg.bind(theme))}`;
+        // Aggregate repetitive tools
+        const aggregated: Array<{
+          type: "toolCall";
+          name: string;
+          args: Record<string, unknown>;
+          count: number;
+        }> = [];
+        for (const tool of toolsOnly) {
+          if (tool.type === "toolCall") {
+            const last = aggregated[aggregated.length - 1];
+            if (last && last.name === tool.name) {
+              last.count++;
+              // update args to the latest one
+              last.args = tool.args;
+            } else {
+              aggregated.push({ ...tool, count: 1 });
+            }
           }
         }
 
-        if (displayItems.length > COLLAPSED_ITEM_COUNT)
+        const toShow = aggregated.slice(-COLLAPSED_ITEM_COUNT);
+        const skippedTools = aggregated
+          .slice(0, -COLLAPSED_ITEM_COUNT)
+          .reduce((acc, curr) => acc + curr.count, 0);
+
+        if (skippedTools > 0)
+          text += `\n${theme.fg("muted", `... ${skippedTools} earlier tool call${skippedTools > 1 ? "s" : ""}`)}`;
+
+        for (const item of toShow) {
+          const countStr =
+            item.count > 1 ? theme.fg("muted", ` (x${item.count})`) : "";
+          text += `\n${theme.fg("muted", "→ ") + formatToolCall(item.name, item.args, theme.fg.bind(theme))}${countStr}`;
+        }
+
+        const lastItem = displayItems[displayItems.length - 1];
+        if (lastItem?.type === "text" && lastItem.text.trim()) {
+          const preview = lastItem.text
+            .trim()
+            .split("\n")
+            .slice(0, 2)
+            .join("\n");
+          text += `\n${theme.fg("toolOutput", preview)}`;
+        }
+
+        if (aggregated.length > COLLAPSED_ITEM_COUNT)
           text += `\n${theme.fg("muted", "(Ctrl+O to expand)")}`;
       }
 

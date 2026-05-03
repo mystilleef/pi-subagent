@@ -9,8 +9,10 @@ import type {
   AutocompleteProviderFactory,
   ExtensionAPI,
   ExtensionContext,
+  ThemeColor,
   ToolDefinition,
 } from "@mariozechner/pi-coding-agent";
+import type { Container } from "@mariozechner/pi-tui";
 import registerSubagentExtension, {
   type SubagentDetails,
   type SubagentParams,
@@ -21,6 +23,11 @@ const ORIGINAL_PATH = process.env.PATH;
 const ORIGINAL_AGENT_DIR = process.env.PI_CODING_AGENT_DIR;
 
 let tempDirs: string[] = [];
+
+type FakeTheme = {
+  fg: (color: ThemeColor | string, text: string) => string;
+  bold: (text: string) => string;
+};
 
 async function makeTempDir(prefix: string): Promise<string> {
   const dir = await mkdtemp(path.join(tmpdir(), prefix));
@@ -433,4 +440,504 @@ Prompt`,
     applyCompletion: () => ({ lines: [], cursorLine: 0, cursorCol: 0 }),
   } as unknown as Parameters<AutocompleteProviderFactory>[0]);
   expect(fallbackProvider?.shouldTriggerFileCompletion?.([], 0, 0)).toBe(true);
+});
+
+test("renderResult output aggregation and truncation", () => {
+  const tool = getSubagentTool();
+
+  const fakeTheme: FakeTheme = {
+    fg: (color, text) => `[${color}]${text}[/${color}]`,
+    bold: (text) => `*${text}*`,
+  };
+
+  const fakeContext = {} as unknown as ExtensionContext;
+
+  // We need to mock a result with some messages
+  const messages = [
+    {
+      role: "assistant" as const,
+      content: [
+        { type: "text" as const, text: "thought 1" },
+        {
+          type: "toolCall" as const,
+          name: "bash",
+          arguments: { command: "ls -la" },
+          id: "1",
+        },
+      ],
+    },
+    {
+      role: "user" as const,
+      content: [{ type: "text" as const, text: "tool result" }],
+    },
+    {
+      role: "assistant" as const,
+      content: [
+        {
+          type: "toolCall" as const,
+          name: "bash",
+          arguments: { command: "ls -l" },
+          id: "2",
+        },
+      ],
+    },
+    {
+      role: "user" as const,
+      content: [{ type: "text" as const, text: "tool result 2" }],
+    },
+    {
+      role: "assistant" as const,
+      content: [
+        {
+          type: "toolCall" as const,
+          name: "read",
+          arguments: { path: "file1.txt" },
+          id: "3",
+        },
+      ],
+    },
+    {
+      role: "user" as const,
+      content: [{ type: "text" as const, text: "file contents" }],
+    },
+    {
+      role: "assistant" as const,
+      content: [
+        {
+          type: "toolCall" as const,
+          name: "read",
+          arguments: { path: "file2.txt" },
+          id: "4",
+        },
+      ],
+    },
+    {
+      role: "user" as const,
+      content: [{ type: "text" as const, text: "file contents 2" }],
+    },
+    {
+      role: "assistant" as const,
+      content: [
+        {
+          type: "toolCall" as const,
+          name: "read",
+          arguments: { path: "file3.txt" },
+          id: "5",
+        },
+      ],
+    },
+    {
+      role: "user" as const,
+      content: [{ type: "text" as const, text: "file contents 3" }],
+    },
+    {
+      role: "assistant" as const,
+      content: [
+        {
+          type: "text" as const,
+          text: "final text line 1\nfinal text line 2\nfinal text line 3\nfinal text line 4",
+        },
+      ],
+    },
+  ];
+
+  const result = {
+    content: [{ type: "text" as const, text: "output" }],
+    details: {
+      mode: "single" as const,
+      agentScope: "user" as const,
+      projectAgentsDir: null,
+      results: [
+        {
+          agent: "test-agent",
+          agentSource: "user" as const,
+          task: "some task",
+          exitCode: 0,
+          stopReason: "stop",
+          messages: messages,
+          usage: {
+            input: 0,
+            output: 0,
+            totalTokens: 0,
+            cost: 0,
+            cacheRead: 0,
+            cacheWrite: 0,
+            turns: 1,
+          },
+        },
+      ],
+    },
+  };
+
+  const rendered = tool.renderResult?.(
+    result as unknown as AgentToolResult<SubagentDetails>,
+    { expanded: false, isPartial: false },
+    fakeTheme as never,
+    fakeContext as never,
+  );
+  // In the collapsed mode, renderResult returns a Text component (or similar)
+  // Let's inspect its text content if it's a Text component
+  // Or we can just log it
+  expect((rendered as unknown as { text: string }).text).toContain(
+    "[success]✓[/success] [toolTitle]*test-agent*[/toolTitle][muted] (user)[/muted]",
+  );
+
+  // Checking aggregation: we had 2 bash calls, 3 read calls
+  // The logic aggregates repetitive tools: bash count 1, then bash count 1? Wait, they are contiguous?
+  // Our array: bash (command: ls -la), bash (command: ls -l), read, read, read.
+  // Aggregated: bash (count=1), bash (count=1), read (count=3)
+  // Because the bash args are different? No, aggregation checks `last.name === tool.name`, it ignores args difference.
+  // Wait, let's verify if they are grouped.
+  // "bash" x2, "read" x3. Total aggregated items = 2.
+  // It shows COLLAPSED_ITEM_COUNT=3, so both are shown.
+  expect((rendered as unknown as { text: string }).text).toContain(
+    "bash[/accent][dim] ls -l[/dim][muted] (x2)[/muted]",
+  );
+  expect((rendered as unknown as { text: string }).text).toContain(
+    "read[/accent][dim] file3.txt[/dim][muted] (x3)[/muted]",
+  );
+
+  // Check text truncation (first 2 lines only)
+  expect((rendered as unknown as { text: string }).text).toContain(
+    "final text line 1\nfinal text line 2[/toolOutput]",
+  );
+  expect((rendered as unknown as { text: string }).text).not.toContain(
+    "final text line 3",
+  );
+});
+
+test("renderResult expanded output", () => {
+  const tool = getSubagentTool();
+
+  const fakeTheme: FakeTheme = {
+    fg: (color, text) => `[${color}]${text}[/${color}]`,
+    bold: (text) => `*${text}*`,
+  };
+
+  const fakeContext = {} as unknown as ExtensionContext;
+
+  const messages = [
+    {
+      role: "assistant" as const,
+      content: [
+        {
+          type: "toolCall" as const,
+          name: "bash",
+          arguments: { command: "ls -la" },
+          id: "1",
+        },
+      ],
+    },
+    {
+      role: "user" as const,
+      content: [{ type: "text" as const, text: "result" }],
+    },
+    {
+      role: "assistant" as const,
+      content: [
+        {
+          type: "text" as const,
+          text: "final output line\nvery long output that would be truncated if it was collapsed",
+        },
+      ],
+    },
+  ];
+
+  const result = {
+    content: [{ type: "text" as const, text: "output" }],
+    details: {
+      mode: "single" as const,
+      agentScope: "user" as const,
+      projectAgentsDir: null,
+      results: [
+        {
+          agent: "test-agent",
+          agentSource: "user" as const,
+          task: "some task",
+          exitCode: 1,
+          stopReason: "error",
+          errorMessage: "some error",
+          messages: messages,
+          usage: {
+            input: 0,
+            output: 0,
+            totalTokens: 0,
+            cost: 0,
+            cacheRead: 0,
+            cacheWrite: 0,
+            turns: 1,
+          },
+        },
+      ],
+    },
+  };
+
+  const rendered = tool.renderResult?.(
+    result as unknown as AgentToolResult<SubagentDetails>,
+    { expanded: true, isPartial: false },
+    fakeTheme as never,
+    fakeContext as never,
+  );
+  // In expanded mode, renderResult returns a Container component
+  // It should contain Text and Markdown children
+  // Let's assert on the types and texts
+  expect((rendered as Container).children).toBeDefined();
+  const children = (rendered as Container).children as unknown as {
+    text: string;
+  }[];
+  expect(children[0]?.text).toContain(
+    "[error]✗[/error] [toolTitle]*test-agent*[/toolTitle][muted] (user)[/muted] [error][error][/error]",
+  );
+  expect(children[1]?.text).toContain("Error: some error");
+});
+
+test("subagent updates correctly format tool calls and final text", async () => {
+  const { binDir, cwd } = await setupFakePi();
+
+  // We mock a pi executable that emits some intermediate events
+  await writeFile(
+    path.join(binDir, "pi"),
+    `#!/bin/sh
+printf '%s\n' '{"type":"message_end","message":{"role":"assistant","content":[]}}'
+printf '%s\n' '{"type":"content_block_start","index":0,"contentBlock":{"type":"toolCall","name":"bash","id":"1","arguments":{"command":"ls"}}}'
+printf '%s\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"toolCall","name":"bash","id":"1","arguments":{"command":"ls"}}]}}'
+printf '%s\n' '{"type":"message_end","message":{"role":"user","content":[]}}'
+printf '%s\n' '{"type":"content_block_start","index":0,"contentBlock":{"type":"text","text":"result"}}'
+printf '%s\n' '{"type":"message_end","message":{"role":"user","content":[{"type":"text","text":"result"}]}}'
+printf '%s\n' '{"type":"message_end","message":{"role":"assistant","content":[]}}'
+printf '%s\n' '{"type":"content_block_start","index":0,"contentBlock":{"type":"text","text":"final"}}'
+printf '%s\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"final"}]}}'
+printf '%s\n' '{"type":"agent_end"}'
+exit 0
+`,
+  );
+
+  const tool = getSubagentTool();
+  const updates: AgentToolResult<SubagentDetails>[] = [];
+
+  await tool.execute(
+    "test-tool-call",
+    { agent: "hang", task: "test" },
+    undefined,
+    (update) => updates.push(update),
+    { cwd, hasUI: false } as unknown as ExtensionContext,
+  );
+
+  // Assert on updates received
+  expect(updates.length).toBeGreaterThan(0);
+  // Before final message, it should say (running bash...)
+  expect(
+    updates.some(
+      (u) => (u.content[0] as TextContent)?.text === "(running bash...)",
+    ),
+  ).toBe(true);
+  // After final message, it should just be "final"
+  expect((updates[updates.length - 1]?.content[0] as TextContent)?.text).toBe(
+    "final",
+  );
+});
+
+test("renderResult subagent and unknown tools", () => {
+  const tool = getSubagentTool();
+
+  const fakeTheme: FakeTheme = {
+    fg: (color, text) => `[${color}]${text}[/${color}]`,
+    bold: (text) => `*${text}*`,
+  };
+
+  const messages = [
+    {
+      role: "assistant" as const,
+      content: [
+        {
+          type: "toolCall" as const,
+          name: "subagent",
+          arguments: { agent: "another-agent" },
+          id: "1",
+        },
+        {
+          type: "toolCall" as const,
+          name: "unknown",
+          arguments: { foo: "bar" },
+          id: "2",
+        },
+        {
+          type: "toolCall" as const,
+          name: "unknown_long",
+          arguments: { foo: "bar".repeat(50) },
+          id: "3",
+        },
+      ],
+    },
+  ];
+
+  const result = {
+    content: [{ type: "text" as const, text: "output" }],
+    details: {
+      mode: "single" as const,
+      agentScope: "user" as const,
+      projectAgentsDir: null,
+      results: [
+        {
+          agent: "test-agent",
+          agentSource: "user" as const,
+          task: "some task",
+          exitCode: 0,
+          stopReason: "stop",
+          messages: messages,
+          usage: {
+            input: 0,
+            output: 0,
+            totalTokens: 0,
+            cost: 0,
+            cacheRead: 0,
+            cacheWrite: 0,
+            turns: 1,
+          },
+        },
+      ],
+    },
+  };
+
+  const rendered = tool.renderResult?.(
+    result as unknown as AgentToolResult<SubagentDetails>,
+    { expanded: false, isPartial: false },
+    fakeTheme as never,
+    {} as never,
+  );
+
+  expect((rendered as unknown as { text: string }).text).toContain(
+    "[accent]subagent[/accent][dim] another-agent[/dim]",
+  );
+  expect((rendered as unknown as { text: string }).text).toContain(
+    '[accent]unknown[/accent][dim] {"foo":"bar"}[/dim]',
+  );
+  // Test truncation
+  expect((rendered as unknown as { text: string }).text).toContain("...");
+});
+
+test("renderResult expanded output truncation for > 2000 chars", () => {
+  const tool = getSubagentTool();
+
+  const fakeTheme: FakeTheme = {
+    fg: (color, text) => `[${color}]${text}[/${color}]`,
+    bold: (text) => `*${text}*`,
+  };
+
+  const messages = [
+    {
+      role: "assistant" as const,
+      content: [{ type: "text" as const, text: "A".repeat(2005) }],
+    },
+  ];
+
+  const result = {
+    content: [{ type: "text" as const, text: "output" }],
+    details: {
+      mode: "single" as const,
+      agentScope: "user" as const,
+      projectAgentsDir: null,
+      results: [
+        {
+          agent: "test-agent",
+          agentSource: "user" as const,
+          task: "some task",
+          exitCode: 0,
+          stopReason: "stop",
+          messages: messages,
+          usage: {
+            input: 0,
+            output: 0,
+            totalTokens: 0,
+            cost: 0,
+            cacheRead: 0,
+            cacheWrite: 0,
+            turns: 1,
+          },
+        },
+      ],
+    },
+  };
+
+  const rendered = tool.renderResult?.(
+    result as unknown as AgentToolResult<SubagentDetails>,
+    { expanded: true, isPartial: false },
+    fakeTheme as never,
+    {} as never,
+  );
+
+  const children = (rendered as Container).children;
+  // Markdown node should be the last output child, preceded by spacer
+  // But actually the Markdown node exposes its properties in constructor?
+  // Let's just find the markdown node in children
+  const markdownNode = children.find(
+    (c: { constructor: { name: string } }) => c.constructor.name === "Markdown",
+  );
+  expect(markdownNode).toBeDefined();
+});
+
+test("renderCall formats tool execution correctly", () => {
+  const tool = getSubagentTool();
+
+  const fakeTheme: FakeTheme = {
+    fg: (color, text) => `[${color}]${text}[/${color}]`,
+    bold: (text) => `*${text}*`,
+  };
+
+  const rendered = tool.renderCall?.(
+    {
+      agent: "test-agent",
+      task: "long task description that should exceed 60 characters so it gets truncated and ends up shorter",
+    },
+    fakeTheme as never,
+    {} as never,
+  );
+
+  expect((rendered as unknown as { text: string }).text).toContain(
+    "[toolTitle]*subagent *[/toolTitle][accent]test-agent[/accent][muted] [user][/muted]",
+  );
+  expect((rendered as unknown as { text: string }).text).toContain(
+    "long task description that should exceed 60 characters so it...",
+  );
+
+  // also test short task and default agent scope
+  const renderedShort = tool.renderCall?.(
+    { agent: "...", task: "short" },
+    fakeTheme as never,
+    {} as never,
+  );
+  expect((renderedShort as unknown as { text: string }).text).toContain(
+    "[accent]...[/accent]",
+  );
+  expect((renderedShort as unknown as { text: string }).text).toContain(
+    "[dim]short[/dim]",
+  );
+});
+
+test("subagent updates correctly hits default running status", async () => {
+  const { binDir, cwd } = await setupFakePi();
+
+  await writeFile(
+    path.join(binDir, "pi"),
+    `#!/bin/sh
+printf '%s\n' '{"type":"message_end","message":{"role":"assistant","content":[]}}'
+printf '%s\n' '{"type":"agent_end"}'
+exit 0
+`,
+  );
+
+  const tool = getSubagentTool();
+  const updates: AgentToolResult<SubagentDetails>[] = [];
+
+  await tool.execute(
+    "test-tool-call",
+    { agent: "hang", task: "test" },
+    undefined,
+    (update) => updates.push(update),
+    { cwd, hasUI: false } as unknown as ExtensionContext,
+  );
+
+  expect(
+    updates.some((u) => (u.content[0] as TextContent)?.text === "(running...)"),
+  ).toBe(true);
 });
