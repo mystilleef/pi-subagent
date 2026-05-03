@@ -582,15 +582,12 @@ test("renderResult output aggregation and truncation", () => {
     "[success]✓[/success] [toolTitle]*test-agent*[/toolTitle][muted] (user)[/muted]",
   );
 
-  // Checking aggregation: we had 2 bash calls, 3 read calls
-  // The logic aggregates repetitive tools: bash count 1, then bash count 1? Wait, they are contiguous?
-  // Our array: bash (command: ls -la), bash (command: ls -l), read, read, read.
-  // Aggregated: bash (count=1), bash (count=1), read (count=3)
-  // Because the bash args are different? No, aggregation checks `last.name === tool.name`, it ignores args difference.
-  // Wait, let's verify if they are grouped.
-  // "bash" x2, "read" x3. Total aggregated items = 2.
-  // It shows COLLAPSED_ITEM_COUNT=3, so both are shown.
+  // Checking aggregation: we had 2 bash calls, 3 read calls.
+  // With COLLAPSED_ITEM_COUNT=1, only the last aggregated tool displays.
   expect((rendered as unknown as { text: string }).text).toContain(
+    "[muted]... 2 earlier tool calls[/muted]",
+  );
+  expect((rendered as unknown as { text: string }).text).not.toContain(
     "bash[/accent][dim] ls -l[/dim][muted] (x2)[/muted]",
   );
   expect((rendered as unknown as { text: string }).text).toContain(
@@ -807,10 +804,16 @@ test("renderResult subagent and unknown tools", () => {
   );
 
   expect((rendered as unknown as { text: string }).text).toContain(
+    "[muted]... 2 earlier tool calls[/muted]",
+  );
+  expect((rendered as unknown as { text: string }).text).not.toContain(
     "[accent]subagent[/accent][dim] another-agent[/dim]",
   );
-  expect((rendered as unknown as { text: string }).text).toContain(
+  expect((rendered as unknown as { text: string }).text).not.toContain(
     '[accent]unknown[/accent][dim] {"foo":"bar"}[/dim]',
+  );
+  expect((rendered as unknown as { text: string }).text).toContain(
+    "[accent]unknown_long[/accent]",
   );
   // Test truncation
   expect((rendered as unknown as { text: string }).text).toContain("...");

@@ -34,7 +34,7 @@ import {
   type ThinkingLevel,
 } from "./agents.js";
 
-const COLLAPSED_ITEM_COUNT = 3;
+const COLLAPSED_ITEM_COUNT = 1;
 const _EXIT_STDIO_GRACE_MS = 100;
 
 const AgentScopeSchema = StringEnum(["user", "project", "both"] as const, {
