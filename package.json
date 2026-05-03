@@ -12,8 +12,6 @@
     ]
   },
   "scripts": {
-    "pretest": "bun check",
-    "test": "bun test",
     "check": "biome check --fix --unsafe . && tsc --noEmit"
   },
   "dependencies": {
