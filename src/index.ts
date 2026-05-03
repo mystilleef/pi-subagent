@@ -90,12 +90,9 @@ export default function (pi: ExtensionAPI) {
   pi.registerTool({
     name: "subagent",
     label: "Subagent",
-    description: [
-      "Delegate one task to one specialized subagent with isolated context.",
-      "Mode: single (agent + task).",
-      'Default agent scope is "both" (user agents from ~/.pi/agents and project-local agents from .pi/agents).',
-      "Output returns with configurable truncation via PI_SUBAGENT_MAX_OUTPUT_BYTES and PI_SUBAGENT_MAX_OUTPUT_LINES.",
-    ].join(" "),
+    description: ["Delegate a task to a subagent with isolated context."].join(
+      " ",
+    ),
     parameters: SubagentParams,
 
     async execute(_toolCallId, params, signal, onUpdate, ctx) {
