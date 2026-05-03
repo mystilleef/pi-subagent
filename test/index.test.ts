@@ -1,5 +1,12 @@
 import { afterEach, beforeEach, expect, test } from "bun:test";
-import { chmod, mkdtemp, rm, writeFile } from "node:fs/promises";
+import {
+  chmod,
+  mkdir,
+  mkdtemp,
+  rm,
+  symlink,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import type { AgentToolUpdateCallback } from "@mariozechner/pi-agent-core";
@@ -924,4 +931,283 @@ exit 0
   expect(
     updates.some((u) => (u.content[0] as TextContent)?.text === "(running...)"),
   ).toBe(true);
+});
+
+test("utility helpers cover truncation, invocation, prompt files, depth, and message errors", async () => {
+  const {
+    detectMessageError,
+    getPiInvocation,
+    getSubagentDepth,
+    subagentDepthEnv,
+    truncateOutput,
+    writePromptToTempFile,
+  } = require("../src/utils.js");
+
+  const byLines = Array.from({ length: 501 }, (_v, i) => `line-${i}`).join(
+    "\n",
+  );
+  const truncatedLines = truncateOutput(byLines);
+  expect(truncatedLines).toContain("[TRUNCATED: first 500 of 501 lines]");
+  expect(truncatedLines).not.toContain("line-500");
+
+  const truncatedBytes = truncateOutput("é".repeat(60_000));
+  expect(truncatedBytes).toContain("[TRUNCATED: first 1 of 1 lines]");
+  expect(truncatedBytes).not.toContain("\uFFFD");
+
+  const scriptDir = await makeTempDir("pi-subagent-script-");
+  const scriptPath = path.join(scriptDir, "pi-entry.js");
+  await writeFile(scriptPath, "console.log('pi');\n");
+  const originalArgv1 = process.argv[1] ?? "";
+  process.argv[1] = scriptPath;
+  try {
+    expect(getPiInvocation(["--x"])).toEqual({
+      command: process.execPath,
+      args: [scriptPath, "--x"],
+    });
+  } finally {
+    process.argv[1] = originalArgv1;
+  }
+
+  const promptFile = await writePromptToTempFile("agent name!*", "secret");
+  tempDirs.push(promptFile.dir);
+  expect(path.basename(promptFile.filePath)).toBe("prompt-agent_name_.md");
+  expect(await Bun.file(promptFile.filePath).text()).toBe("secret");
+
+  const originalDepth = process.env.PI_SUBAGENT_DEPTH;
+  try {
+    process.env.PI_SUBAGENT_DEPTH = "not-a-number";
+    expect(getSubagentDepth()).toBe(0);
+    expect(subagentDepthEnv()).toEqual({ PI_SUBAGENT_DEPTH: "1" });
+    process.env.PI_SUBAGENT_DEPTH = "2";
+    expect(getSubagentDepth()).toBe(2);
+    expect(subagentDepthEnv()).toEqual({ PI_SUBAGENT_DEPTH: "3" });
+  } finally {
+    if (originalDepth === undefined) delete process.env.PI_SUBAGENT_DEPTH;
+    else process.env.PI_SUBAGENT_DEPTH = originalDepth;
+  }
+
+  expect(
+    detectMessageError([{ role: "toolResult", content: [], isError: true }]),
+  ).toBe(true);
+  expect(
+    detectMessageError([
+      { role: "toolResult", content: [], isError: true },
+      { role: "assistant", content: [{ type: "text", text: "recovered" }] },
+    ]),
+  ).toBe(false);
+});
+
+test("discoverAgents tolerates missing, invalid, and unreadable entries", async () => {
+  const { discoverAgents } = require("../src/agents.js");
+  const root = await makeTempDir("pi-subagent-discover-");
+  const cwd = path.join(root, "work");
+  await mkdir(cwd, { recursive: true });
+
+  process.env.PI_CODING_AGENT_DIR = path.join(root, "agent-without-agents");
+  expect(discoverAgents(cwd, "user").agents).toEqual([]);
+
+  const agentDirWithFile = path.join(root, "agent-with-file");
+  await mkdir(agentDirWithFile, { recursive: true });
+  await writeFile(path.join(agentDirWithFile, "agents"), "not a directory");
+  process.env.PI_CODING_AGENT_DIR = agentDirWithFile;
+  expect(discoverAgents(cwd, "user").agents).toEqual([]);
+
+  const agentDirWithBrokenLink = path.join(root, "agent-with-broken-link");
+  const agentsDir = path.join(agentDirWithBrokenLink, "agents");
+  await mkdir(agentsDir, { recursive: true });
+  await symlink(
+    path.join(agentsDir, "missing.md"),
+    path.join(agentsDir, "broken.md"),
+  );
+  await writeFile(
+    path.join(agentsDir, "invalid.md"),
+    `---
+name: invalid
+---
+Prompt`,
+  );
+  await writeFile(
+    path.join(agentsDir, "empty-options.md"),
+    `---
+name: empty-options
+description: Empty options
+tools: " , "
+skills:
+thinking: louder
+---
+Prompt`,
+  );
+  process.env.PI_CODING_AGENT_DIR = agentDirWithBrokenLink;
+
+  const agents = discoverAgents(cwd, "user").agents;
+  expect(agents).toHaveLength(1);
+  expect(agents[0]).toMatchObject({
+    name: "empty-options",
+    tools: undefined,
+    skills: [],
+    thinking: undefined,
+  });
+});
+
+test("subagent reports depth, skill resolution, and stderr failures", async () => {
+  const { agentDir, binDir, cwd } = await setupFakePi();
+  const tool = getSubagentTool();
+
+  const originalDepth = process.env.PI_SUBAGENT_DEPTH;
+  process.env.PI_SUBAGENT_DEPTH = "3";
+  try {
+    await expect(
+      tool.execute(
+        "test-tool-call",
+        { agent: "hang", task: "nested" },
+        undefined,
+        undefined,
+        { cwd, hasUI: false } as unknown as ExtensionContext,
+      ),
+    ).rejects.toThrow("Subagent nesting limit reached");
+  } finally {
+    if (originalDepth === undefined) delete process.env.PI_SUBAGENT_DEPTH;
+    else process.env.PI_SUBAGENT_DEPTH = originalDepth;
+  }
+
+  await writeFile(
+    path.join(agentDir, "agents", "needs-skill.md"),
+    `---
+name: needs-skill
+description: Needs a skill
+skills: missing-skill
+---
+Prompt`,
+  );
+  await expect(
+    tool.execute(
+      "test-tool-call",
+      { agent: "needs-skill", task: "skills" },
+      undefined,
+      undefined,
+      { cwd, hasUI: false } as unknown as ExtensionContext,
+    ),
+  ).rejects.toThrow('Unknown skill: "missing-skill"');
+
+  await writeFile(
+    path.join(binDir, "pi"),
+    `#!/bin/sh
+printf '%s\n' 'boom from stderr' >&2
+exit 7
+`,
+  );
+  await chmod(path.join(binDir, "pi"), 0o755);
+  await expect(
+    tool.execute(
+      "test-tool-call",
+      { agent: "hang", task: "stderr" },
+      undefined,
+      undefined,
+      { cwd, hasUI: false } as unknown as ExtensionContext,
+    ),
+  ).rejects.toThrow("boom from stderr");
+});
+
+test("resolveAgentSkillArgs maps duplicate skill names to file paths", async () => {
+  const { cwd } = await setupFakePi();
+  const { resolveAgentSkillArgs } = require("../src/utils.js");
+  const skillDir = path.join(cwd, ".pi", "skills", "helper");
+  await mkdir(skillDir, { recursive: true });
+  await writeFile(
+    path.join(skillDir, "SKILL.md"),
+    `---
+name: helper
+description: Helps tests
+---
+# Helper
+`,
+  );
+
+  const resolved = await resolveAgentSkillArgs(cwd, ["helper", "helper"]);
+  expect("args" in resolved).toBe(true);
+  if ("args" in resolved) {
+    expect(resolved.args).toEqual(["--skill", path.join(skillDir, "SKILL.md")]);
+  }
+});
+
+test("ui helpers format units, fallback output, and failed tool results", () => {
+  const {
+    formatTokens,
+    formatToolCall,
+    formatUsageStats,
+    renderSubagentCall,
+    renderSubagentResult,
+  } = require("../src/ui.js");
+  const fakeTheme: FakeTheme = {
+    fg: (color, text) => `[${color}]${text}[/${color}]`,
+    bold: (text) => `*${text}*`,
+  };
+
+  expect(formatTokens(999)).toBe("999");
+  expect(formatTokens(1500)).toBe("1.5k");
+  expect(formatTokens(15_000)).toBe("15k");
+  expect(formatTokens(1_500_000)).toBe("1.5M");
+  expect(
+    formatUsageStats(
+      {
+        turns: 2,
+        input: 1500,
+        output: 15_000,
+        cacheRead: 999,
+        cacheWrite: 1_500_000,
+        cost: 0.12345,
+        contextTokens: 42,
+      },
+      "provider/model:high",
+    ),
+  ).toBe("2 turns ↑1.5k ↓15k R999 W1.5M $0.1235 ctx:42 provider/model:high");
+
+  expect(formatToolCall("subagent", { agent: "child" }, fakeTheme.fg)).toBe(
+    "[accent]subagent[/accent][dim] child[/dim]",
+  );
+
+  expect(
+    (renderSubagentCall({}, fakeTheme) as unknown as { text: string }).text,
+  ).toContain("[accent]...[/accent][muted] [both][/muted]\n  [dim]...[/dim]");
+  expect(
+    (
+      renderSubagentResult({ content: [] }, fakeTheme) as unknown as {
+        text: string;
+      }
+    ).text,
+  ).toBe("(no output)");
+
+  const failed = renderSubagentResult(
+    {
+      content: [{ type: "text", text: "ignored" }],
+      details: {
+        mode: "single",
+        agentScope: "both",
+        projectAgentsDir: null,
+        results: [
+          {
+            agent: "tool-failure",
+            agentSource: "project",
+            task: "fail",
+            exitCode: 0,
+            messages: [{ role: "toolResult", content: [], isError: true }],
+            stderr: "",
+            usage: {
+              input: 0,
+              output: 0,
+              cacheRead: 0,
+              cacheWrite: 0,
+              cost: 0,
+              contextTokens: 0,
+              turns: 0,
+            },
+          },
+        ],
+      },
+    },
+    fakeTheme,
+  ) as unknown as { text: string };
+
+  expect(failed.text).toContain("[error]✗[/error]");
+  expect(failed.text).toContain("[muted](no output)[/muted]");
 });
