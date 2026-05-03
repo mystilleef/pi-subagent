@@ -81,16 +81,52 @@ type OnUpdateCallback = (partial: AgentToolResult<SubagentDetails>) => void;
 
 async function waitForSubagentProcess(
   proc: ChildProcess,
+  idleMs = 100,
+  hardMs = 5_000,
 ): Promise<number | null> {
   return new Promise((resolve) => {
-    let settled = false;
-    const finalize = (code: number | null) => {
-      if (settled) return;
-      settled = true;
-      resolve(code);
+    let exitCode: number | null = null;
+    let exited = false;
+    let idleTimer: NodeJS.Timeout | undefined;
+    let hardTimer: NodeJS.Timeout | undefined;
+
+    const done = () => {
+      if (idleTimer) clearTimeout(idleTimer);
+      if (hardTimer) clearTimeout(hardTimer);
+      resolve(exitCode);
     };
-    proc.on("close", finalize);
-    proc.on("exit", (code) => setTimeout(() => finalize(code), 100));
+
+    const destroyStreams = () => {
+      try {
+        proc.stdout?.destroy();
+      } catch {}
+      try {
+        proc.stderr?.destroy();
+      } catch {}
+    };
+
+    const armIdleTimer = () => {
+      if (!exited) return;
+      if (idleTimer) clearTimeout(idleTimer);
+      idleTimer = setTimeout(destroyStreams, idleMs);
+      idleTimer.unref?.();
+    };
+
+    // close fires after all stdio streams drain — correct event to await
+    proc.on("close", done);
+
+    proc.on("exit", (code) => {
+      exitCode = code;
+      exited = true;
+      armIdleTimer();
+      // hard fallback if grandchild holds the pipe open indefinitely
+      hardTimer = setTimeout(destroyStreams, hardMs);
+      hardTimer.unref?.();
+    });
+
+    // reset idle timer on each incoming chunk
+    proc.stdout?.on("data", armIdleTimer);
+    proc.stderr?.on("data", armIdleTimer);
   });
 }
 
@@ -147,6 +183,23 @@ function getFinalOutput(messages: Message[]): string {
   const lastAsst = messages.findLast((m) => m.role === "assistant");
   const lastText = lastAsst?.content.findLast((p) => p.type === "text");
   return lastText?.type === "text" ? lastText.text : "";
+}
+
+const MAX_OUTPUT_BYTES = 100_000;
+const MAX_OUTPUT_LINES = 500;
+
+function truncateOutput(text: string): string {
+  const lines = text.split("\n");
+  const bytes = Buffer.byteLength(text, "utf-8");
+  if (bytes <= MAX_OUTPUT_BYTES && lines.length <= MAX_OUTPUT_LINES)
+    return text;
+  let result = lines.slice(0, MAX_OUTPUT_LINES).join("\n");
+  if (Buffer.byteLength(result, "utf-8") > MAX_OUTPUT_BYTES) {
+    const buf = Buffer.from(result).subarray(0, MAX_OUTPUT_BYTES);
+    result = buf.toString("utf-8").replace(/�$/, "");
+  }
+  const kept = result.split("\n").length;
+  return `[TRUNCATED: first ${kept} of ${lines.length} lines]\n${result}`;
 }
 
 async function writePromptToTempFile(
@@ -230,6 +283,37 @@ async function resolveAgentSkillArgs(
   };
 }
 
+const MAX_SUBAGENT_DEPTH = 3;
+
+function getSubagentDepth(): number {
+  const d = Number(process.env.PI_SUBAGENT_DEPTH ?? "0");
+  return Number.isFinite(d) ? d : 0;
+}
+
+function subagentDepthEnv(): Record<string, string> {
+  return { PI_SUBAGENT_DEPTH: String(getSubagentDepth() + 1) };
+}
+
+function detectMessageError(messages: Message[]): boolean {
+  let lastAssistantIdx = -1;
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const msg = messages[i];
+    if (
+      msg?.role === "assistant" &&
+      msg.content.some((c) => c.type === "text" && c.text.trim().length > 0)
+    ) {
+      lastAssistantIdx = i;
+      break;
+    }
+  }
+  const from = lastAssistantIdx >= 0 ? lastAssistantIdx + 1 : 0;
+  for (let i = messages.length - 1; i >= from; i--) {
+    const msg = messages[i];
+    if (msg?.role === "toolResult" && msg.isError) return true;
+  }
+  return false;
+}
+
 async function runSingleAgent(
   defaultCwd: string,
   agents: AgentConfig[],
@@ -250,6 +334,16 @@ async function runSingleAgent(
       "unknown",
       task,
       `Unknown agent: "${agentName}". Available agents: ${available}.`,
+    );
+  }
+
+  const depth = getSubagentDepth();
+  if (depth >= MAX_SUBAGENT_DEPTH) {
+    return createErrorResult(
+      agentName,
+      agent.source,
+      task,
+      `Subagent nesting limit reached (depth ${depth}/${MAX_SUBAGENT_DEPTH}).`,
     );
   }
 
@@ -298,7 +392,9 @@ async function runSingleAgent(
       content: [
         {
           type: "text",
-          text: getFinalOutput(currentResult.messages) || "(running...)",
+          text:
+            truncateOutput(getFinalOutput(currentResult.messages)) ||
+            "(running...)",
         },
       ],
       details: makeDetails([currentResult]),
@@ -324,8 +420,9 @@ async function runSingleAgent(
     const invocation = getPiInvocation(args);
     const proc = spawn(invocation.command, invocation.args, {
       cwd: defaultCwd,
-      shell: false,
+      shell: invocation.command === "pi" && process.platform === "win32",
       stdio: ["ignore", "pipe", "pipe"],
+      env: { ...process.env, ...subagentDepthEnv() },
     });
 
     let wasAborted = false;
@@ -371,7 +468,8 @@ async function runSingleAgent(
     readline.createInterface({ input: proc.stdout }).on("line", processLine);
 
     proc.stderr.on("data", (data) => {
-      currentResult.stderr += data.toString();
+      if (currentResult.stderr.length < 10_000)
+        currentResult.stderr += data.toString();
     });
 
     if (signal) {
@@ -533,7 +631,8 @@ Project agents are repo-controlled. Only continue for trusted repositories.`,
       const failed =
         result.exitCode !== 0 ||
         result.stopReason === "error" ||
-        result.stopReason === "aborted";
+        result.stopReason === "aborted" ||
+        detectMessageError(result.messages);
       if (failed) {
         const errorMsg =
           result.errorMessage ||
@@ -546,7 +645,8 @@ Project agents are repo-controlled. Only continue for trusted repositories.`,
         content: [
           {
             type: "text",
-            text: getFinalOutput(result.messages) || "(no output)",
+            text:
+              truncateOutput(getFinalOutput(result.messages)) || "(no output)",
           },
         ],
         details: makeDetails([result]),
@@ -584,7 +684,8 @@ Project agents are repo-controlled. Only continue for trusted repositories.`,
       const failed =
         r.exitCode !== 0 ||
         r.stopReason === "error" ||
-        r.stopReason === "aborted";
+        r.stopReason === "aborted" ||
+        detectMessageError(r.messages);
       const icon = failed ? theme.fg("error", "✗") : theme.fg("success", "✓");
       const finalOutput = getFinalOutput(r.messages);
 
