@@ -34,7 +34,11 @@ async function waitForSubagentProcess(
     let idleTimer: NodeJS.Timeout | undefined;
     let hardTimer: NodeJS.Timeout | undefined;
 
+    let settled = false;
+
     const done = () => {
+      if (settled) return;
+      settled = true;
       if (idleTimer) clearTimeout(idleTimer);
       if (hardTimer) clearTimeout(hardTimer);
       resolve(exitCode);
@@ -53,6 +57,12 @@ async function waitForSubagentProcess(
     };
 
     proc.on("close", done);
+
+    proc.on("error", () => {
+      exitCode = 1;
+      exited = true;
+      done();
+    });
 
     proc.on("exit", (code) => {
       exitCode = code;
@@ -200,8 +210,39 @@ export async function runSingleAgent(
       stdio: ["ignore", "pipe", "pipe"],
       env: { ...process.env, ...subagentDepthEnv() },
     });
+    const processDone = waitForSubagentProcess(proc);
+    let spawnError: Error | undefined;
+    proc.once("error", (error) => {
+      spawnError = error;
+      if (currentResult.stderr.length < 10_000)
+        currentResult.stderr += error.message;
+    });
 
     let wasAborted = false;
+
+    const addMessage = (msg: Message) => {
+      currentResult.messages.push(msg);
+      currentResult.finalOutput = getFinalOutput(currentResult.messages);
+      currentResult.errorMessage = detectMessageError(currentResult.messages)
+        ? currentResult.errorMessage || "Subagent tool result failed."
+        : undefined;
+
+      if (msg.role === "assistant") {
+        currentResult.usage.turns++;
+        const usage = msg.usage;
+        if (usage) {
+          currentResult.usage.input += usage.input || 0;
+          currentResult.usage.output += usage.output || 0;
+          currentResult.usage.cacheRead += usage.cacheRead || 0;
+          currentResult.usage.cacheWrite += usage.cacheWrite || 0;
+          currentResult.usage.cost += usage.cost?.total || 0;
+          currentResult.usage.contextTokens = usage.totalTokens || 0;
+        }
+        if (!currentResult.model && msg.model) currentResult.model = msg.model;
+        if (msg.stopReason) currentResult.stopReason = msg.stopReason;
+        if (msg.errorMessage) currentResult.errorMessage = msg.errorMessage;
+      }
+    };
 
     const processLine = (line: string) => {
       if (!line.trim()) return;
@@ -211,35 +252,18 @@ export async function runSingleAgent(
           (event.type === "message_end" || event.type === "tool_result_end") &&
           event.message
         ) {
-          const msg = event.message as Message;
-          currentResult.messages.push(msg);
-          currentResult.finalOutput = getFinalOutput(currentResult.messages);
-          currentResult.errorMessage = detectMessageError(
-            currentResult.messages,
-          )
-            ? currentResult.errorMessage || "Subagent tool result failed."
-            : undefined;
-
-          if (msg.role === "assistant") {
-            currentResult.usage.turns++;
-            const usage = msg.usage;
-            if (usage) {
-              currentResult.usage.input += usage.input || 0;
-              currentResult.usage.output += usage.output || 0;
-              currentResult.usage.cacheRead += usage.cacheRead || 0;
-              currentResult.usage.cacheWrite += usage.cacheWrite || 0;
-              currentResult.usage.cost += usage.cost?.total || 0;
-              currentResult.usage.contextTokens = usage.totalTokens || 0;
-            }
-            if (!currentResult.model && msg.model)
-              currentResult.model = msg.model;
-            if (msg.stopReason) currentResult.stopReason = msg.stopReason;
-            if (msg.errorMessage) currentResult.errorMessage = msg.errorMessage;
-          }
+          addMessage(event.message as Message);
           emitUpdate();
         }
 
         if (event.type === "agent_end") {
+          if (
+            currentResult.messages.length === 0 &&
+            Array.isArray(event.messages)
+          ) {
+            for (const msg of event.messages as Message[]) addMessage(msg);
+            emitUpdate();
+          }
           proc.kill("SIGTERM");
         }
       } catch {
@@ -267,7 +291,8 @@ export async function runSingleAgent(
       else signal.addEventListener("abort", onAbort, { once: true });
     }
 
-    currentResult.exitCode = (await waitForSubagentProcess(proc)) ?? 0;
+    currentResult.exitCode = (await processDone) ?? 0;
+    if (spawnError) currentResult.exitCode = 1;
     if (wasAborted) throw new Error("Subagent was aborted");
     return currentResult;
   } finally {

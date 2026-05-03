@@ -116,13 +116,14 @@ export default function (pi: ExtensionAPI) {
         agentScope,
         projectAgentsDir: discovery.projectAgentsDir,
         results: results.map((result) => {
+          const snapshot = { ...result, usage: { ...result.usage } };
           if (includeDebugMessages || options?.includeMessages) {
             return {
-              ...result,
+              ...snapshot,
               messages: result.messages ? [...result.messages] : undefined,
             };
           }
-          const { messages: _messages, ...compact } = result;
+          const { messages: _messages, ...compact } = snapshot;
           return compact;
         }),
       });

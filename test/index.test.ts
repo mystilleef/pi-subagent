@@ -5,6 +5,7 @@ import {
   mkdtemp,
   rm,
   symlink,
+  unlink,
   writeFile,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -171,6 +172,46 @@ test("subagent resolves when fake pi emits agent_end but stays alive", async () 
   ]);
 
   expect((result.content[0] as TextContent).text).toEqual("done");
+});
+
+test("subagent falls back to agent_end messages", async () => {
+  const { binDir, cwd } = await setupFakePi();
+  await writeFile(
+    path.join(binDir, "pi"),
+    `#!/bin/sh
+printf '%s\n' '{"type":"agent_end","messages":[{"role":"assistant","content":[{"type":"text","text":"from agent_end"}],"usage":{"input":2,"output":3,"totalTokens":5,"cost":{"total":0.01}}}]}'
+exit 0
+`,
+  );
+
+  const tool = getSubagentTool();
+  const result = await tool.execute(
+    "test-tool-call",
+    { agent: "hang", task: "test" },
+    undefined,
+    undefined,
+    { cwd, hasUI: false } as unknown as ExtensionContext,
+  );
+
+  expect((result.content[0] as TextContent).text).toEqual("from agent_end");
+  expect(result.details?.results[0]?.usage.input).toBe(2);
+});
+
+test("subagent reports spawn errors", async () => {
+  const { binDir, cwd } = await setupFakePi();
+  await unlink(path.join(binDir, "pi"));
+  process.env.PATH = binDir;
+
+  const tool = getSubagentTool();
+  const promise = tool.execute(
+    "test-tool-call",
+    { agent: "hang", task: "test" },
+    undefined,
+    undefined,
+    { cwd, hasUI: false } as unknown as ExtensionContext,
+  );
+
+  await expect(promise).rejects.toThrow(/Executable not found|spawn pi ENOENT/);
 });
 
 test("subagent handles unknown agent", async () => {
@@ -755,8 +796,8 @@ test("subagent update content streams only final output deltas", async () => {
   await writeFile(
     path.join(binDir, "pi"),
     `#!/bin/sh
-printf '%s\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"hello"}]}}'
-printf '%s\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"hello world"}]}}'
+printf '%s\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"hello"}],"usage":{"input":1,"output":1,"totalTokens":2,"cost":{"total":0.001}}}}'
+printf '%s\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"hello world"}],"usage":{"input":2,"output":2,"totalTokens":4,"cost":{"total":0.002}}}}'
 printf '%s\n' '{"type":"agent_end"}'
 exit 0
 `,
@@ -779,6 +820,7 @@ exit 0
   ]);
   expect((result.content[0] as TextContent).text).toBe("hello world");
   expect(updates[0]?.details.results[0]?.finalOutput).toBe("hello");
+  expect(updates[0]?.details.results[0]?.usage.input).toBe(1);
   expect(updates[0]?.details.results[0]?.messages).toBeDefined();
   expect(result.details?.results[0]?.finalOutput).toBe("hello world");
   expect(result.details?.results[0]?.messages).toBeUndefined();
