@@ -1,11 +1,11 @@
 {
   "name": "pi-agents",
-  "module": "index.ts",
+  "module": "src/index.ts",
   "type": "module",
   "private": true,
   "pi": {
     "extensions": [
-      "./index.ts"
+      "./src/index.ts"
     ],
     "prompts": [
       "./prompts"

@@ -12,8 +12,10 @@ import type {
   ThemeColor,
   ToolDefinition,
 } from "@mariozechner/pi-coding-agent";
-import registerSubagentExtension, { type SubagentParams } from "./index.js";
-import type { SubagentDetails } from "./types.js";
+import registerSubagentExtension, {
+  type SubagentParams,
+} from "../src/index.js";
+import type { SubagentDetails } from "../src/types.js";
 
 const ORIGINAL_ARGV_1 = process.argv[1] ?? "";
 const ORIGINAL_PATH = process.env.PATH;
@@ -286,7 +288,7 @@ wait $!
 });
 
 test("formatAgentList", () => {
-  const { formatAgentList } = require("./agents.js");
+  const { formatAgentList } = require("../src/agents.js");
   const agents = [
     { name: "a1", source: "user", description: "d1" },
     { name: "a2", source: "project", description: "d2" },

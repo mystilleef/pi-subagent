@@ -17,9 +17,9 @@ and project-local agent definitions.
   - **Tooling:** Biome (linting/formatting), `Vitest` (testing via
     `bun test`)
 - **Architecture:**
-  - `index.ts`: Main entry point, registers the `subagent` tool and UI
+  - `src/index.ts`: Main entry point, registers the `subagent` tool and UI
     components.
-  - `agents.ts`: Logic for discovering and parsing agent definitions
+  - `src/agents.ts`: Logic for discovering and parsing agent definitions
     from markdown files with `frontmatter`.
   - `prompts/run.md`: A prompt template for the `/run` command.
 
@@ -45,4 +45,4 @@ and project-local agent definitions.
   - Supports `agentScope` (`user`, `project`, or `both`).
 - **Code Style:** Enforced by Biome. Use `bun run check` to fix issues
   automatically.
-- **Testing:** Find comprehensive integration tests in `index.test.ts`.
+- **Testing:** Find comprehensive integration tests in `test/index.test.ts`.
