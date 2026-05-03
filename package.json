@@ -3,6 +3,10 @@
   "module": "index.ts",
   "type": "module",
   "private": true,
+  "pi": {
+    "extensions": ["./index.ts"],
+    "prompts": ["./prompts"]
+  },
   "scripts": {
     "check": "biome check --fix --unsafe . && tsc --noEmit"
   },
