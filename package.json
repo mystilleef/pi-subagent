@@ -13,6 +13,7 @@
   },
   "scripts": {
     "check": "biome check --fix --unsafe . && tsc --noEmit",
+    "verify": "bun run check && bun test",
     "coverage": "bun test --coverage"
   },
   "dependencies": {
