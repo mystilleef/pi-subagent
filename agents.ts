@@ -29,6 +29,7 @@ export interface AgentConfig {
   name: string;
   description: string;
   tools?: string[];
+  skills?: string[];
   thinking?: ThinkingLevel;
   systemPrompt: string;
   source: "user" | "project";
@@ -89,12 +90,18 @@ function loadAgentsFromDir(
       ?.split(",")
       .map((t: string) => t.trim())
       .filter(Boolean);
+    const hasSkills = Object.hasOwn(frontmatter, "skills");
+    const skills = frontmatter.skills
+      ?.split(",")
+      .map((s: string) => s.trim())
+      .filter(Boolean);
     const thinking = parseThinkingLevel(frontmatter.thinking);
 
     agents.push({
       name: frontmatter.name,
       description: frontmatter.description,
       tools: tools && tools.length > 0 ? tools : undefined,
+      skills: hasSkills ? (skills ?? []) : undefined,
       thinking,
       systemPrompt: body,
       source,

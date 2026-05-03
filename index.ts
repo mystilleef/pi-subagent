@@ -17,7 +17,9 @@ import type { AgentToolResult } from "@mariozechner/pi-agent-core";
 import type { Message } from "@mariozechner/pi-ai";
 import { StringEnum } from "@mariozechner/pi-ai";
 import {
+  DefaultResourceLoader,
   type ExtensionAPI,
+  getAgentDir,
   getMarkdownTheme,
   type ThemeColor,
   withFileMutationQueue,
@@ -259,6 +261,55 @@ function formatModelForDisplay(
   return `${model.provider}/${model.id}${thinking ? `:${thinking}` : ""}`;
 }
 
+async function resolveAgentSkillArgs(
+  defaultCwd: string,
+  cwd: string | undefined,
+  skillNames: string[],
+): Promise<{ args: string[] } | { error: string }> {
+  const requested = Array.from(new Set(skillNames));
+  if (requested.length === 0) return { args: [] };
+
+  const loader = new DefaultResourceLoader({
+    cwd: cwd ?? defaultCwd,
+    agentDir: getAgentDir(),
+    noContextFiles: true,
+    noPromptTemplates: true,
+    noThemes: true,
+  });
+
+  try {
+    await loader.reload();
+  } catch (error) {
+    return {
+      error: `Failed to discover skills: ${error instanceof Error ? error.message : String(error)}`,
+    };
+  }
+
+  const { skills } = loader.getSkills();
+  const skillMap = new Map(skills.map((skill) => [skill.name, skill]));
+  const missing = requested.filter((name) => !skillMap.has(name));
+
+  if (missing.length > 0) {
+    const available =
+      skills
+        .map((skill) => skill.name)
+        .sort()
+        .join(", ") || "none";
+    return {
+      error: `Unknown skill${missing.length === 1 ? "" : "s"}: ${missing
+        .map((name) => `"${name}"`)
+        .join(", ")}. Available skills: ${available}.`,
+    };
+  }
+
+  return {
+    args: requested.flatMap((name) => [
+      "--skill",
+      skillMap.get(name)?.filePath ?? name,
+    ]),
+  };
+}
+
 async function runSingleAgent(
   defaultCwd: string,
   agents: AgentConfig[],
@@ -301,6 +352,34 @@ async function runSingleAgent(
   args.push("--thinking", thinking);
   if (agent.tools && agent.tools.length > 0)
     args.push("--tools", agent.tools.join(","));
+  if (agent.skills) {
+    const resolvedSkills = await resolveAgentSkillArgs(
+      defaultCwd,
+      cwd,
+      agent.skills,
+    );
+    if ("error" in resolvedSkills) {
+      return {
+        agent: agentName,
+        agentSource: agent.source,
+        task,
+        exitCode: 1,
+        messages: [],
+        stderr: resolvedSkills.error,
+        usage: {
+          input: 0,
+          output: 0,
+          cacheRead: 0,
+          cacheWrite: 0,
+          cost: 0,
+          contextTokens: 0,
+          turns: 0,
+        },
+        model: formatModelForDisplay(parentModel, thinking),
+      };
+    }
+    args.push("--no-skills", ...resolvedSkills.args);
+  }
 
   let tmpPromptDir: string | null = null;
   let tmpPromptPath: string | null = null;

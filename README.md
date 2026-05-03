@@ -117,6 +117,7 @@ Agents are markdown files with YAML frontmatter:
 name: my-agent
 description: What this agent does
 tools: read, grep, find, ls
+skills: troubleshoot, coverage
 thinking: high
 ---
 
@@ -124,6 +125,8 @@ System prompt for the agent goes here.
 ```
 
 Subagents inherit the parent session model. Use optional `thinking` to override the parent thinking level for that agent.
+
+Use optional `skills` to restrict skill invocation for an agent. When omitted, the subagent can invoke all skills discovered by Pi. When present, the subagent starts with skill discovery disabled and only receives the listed skills. An empty `skills` field disables every skill for that agent.
 
 **Locations:**
 
