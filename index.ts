@@ -542,18 +542,36 @@ async function runSingleAgent(
           currentResult.messages.push(event.message as Message);
           emitUpdate();
         }
+
+        if (event.type === "agent_end") {
+          finish(0, { stopProcess: true });
+        }
       };
 
-      const finish = (code: number) => {
+      const stopProcess = () => {
+        proc.kill("SIGTERM");
+        sigkillTimer = setTimeout(() => {
+          proc.kill("SIGKILL");
+        }, 5000);
+        sigkillTimer.unref?.();
+      };
+
+      const finish = (code: number, options?: { stopProcess?: boolean }) => {
         if (settled) return;
         settled = true;
-        if (buffer.trim()) processLine(buffer);
-        if (sigkillTimer) clearTimeout(sigkillTimer);
+        if (buffer.trim()) {
+          const pending = buffer;
+          buffer = "";
+          processLine(pending);
+        }
+        if (options?.stopProcess) stopProcess();
+        else if (sigkillTimer) clearTimeout(sigkillTimer);
         abortCleanup?.();
         resolve(code);
       };
 
       proc.stdout.on("data", (data) => {
+        if (settled) return;
         buffer += data.toString();
         const lines = buffer.split("\n");
         buffer = lines.pop() || "";
@@ -561,6 +579,7 @@ async function runSingleAgent(
       });
 
       proc.stderr.on("data", (data) => {
+        if (settled) return;
         currentResult.stderr += data.toString();
       });
 
@@ -573,7 +592,7 @@ async function runSingleAgent(
           wasAborted = true;
           proc.kill("SIGTERM");
           sigkillTimer = setTimeout(() => {
-            if (!settled) proc.kill("SIGKILL");
+            proc.kill("SIGKILL");
           }, 5000);
         };
         if (signal.aborted) killProc();
