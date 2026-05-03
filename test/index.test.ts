@@ -336,8 +336,20 @@ exit 0
   expect((result.content[0] as TextContent).text).toBe("hello");
   const details = result.details as SubagentDetails;
   expect(details.results[0]?.usage.input).toBe(10);
+  expect(details.results[0]?.finalOutput).toBe("hello");
+  expect(details.results[0]?.messages).toBeUndefined();
   if (details.results[0]?.model !== "gpt-4")
     expect(details.results[0]?.model).toBe("thinking:off");
+
+  const debugResult = await tool.execute(
+    "test-tool-call",
+    { agent: "hang", task: "test", debug: true },
+    undefined,
+    undefined,
+    { cwd, hasUI: false } as unknown as ExtensionContext,
+  );
+  const debugDetails = debugResult.details as SubagentDetails;
+  expect(debugDetails.results[0]?.messages).toHaveLength(1);
 });
 
 test("autocomplete provider registers and returns agent suggestions", async () => {
@@ -728,6 +740,41 @@ exit 0
   );
 });
 
+test("subagent update content streams only final output deltas", async () => {
+  const { binDir, cwd } = await setupFakePi();
+
+  await writeFile(
+    path.join(binDir, "pi"),
+    `#!/bin/sh
+printf '%s\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"hello"}]}}'
+printf '%s\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"hello world"}]}}'
+printf '%s\n' '{"type":"agent_end"}'
+exit 0
+`,
+  );
+
+  const tool = getSubagentTool();
+  const updates: AgentToolResult<SubagentDetails>[] = [];
+
+  const result = await tool.execute(
+    "test-tool-call",
+    { agent: "hang", task: "test" },
+    undefined,
+    (update) => updates.push(update),
+    { cwd, hasUI: false } as unknown as ExtensionContext,
+  );
+
+  expect(updates.map((u) => (u.content[0] as TextContent)?.text)).toEqual([
+    "hello",
+    " world",
+  ]);
+  expect((result.content[0] as TextContent).text).toBe("hello world");
+  expect(updates[0]?.details.results[0]?.finalOutput).toBe("hello");
+  expect(updates[0]?.details.results[0]?.messages).toBeUndefined();
+  expect(result.details?.results[0]?.finalOutput).toBe("hello world");
+  expect(result.details?.results[0]?.messages).toBeUndefined();
+});
+
 test("renderResult subagent and unknown tools", () => {
   const tool = getSubagentTool();
 
@@ -935,24 +982,46 @@ exit 0
 
 test("utility helpers cover truncation, invocation, prompt files, depth, and message errors", async () => {
   const {
+    DEFAULT_MAX_OUTPUT_BYTES,
+    DEFAULT_MAX_OUTPUT_LINES,
     detectMessageError,
     getPiInvocation,
     getSubagentDepth,
+    getSubagentOutputLimits,
     subagentDepthEnv,
     truncateOutput,
     writePromptToTempFile,
   } = require("../src/utils.js");
 
-  const byLines = Array.from({ length: 501 }, (_v, i) => `line-${i}`).join(
+  expect(DEFAULT_MAX_OUTPUT_BYTES).toBe(20_000);
+  expect(DEFAULT_MAX_OUTPUT_LINES).toBe(150);
+
+  const byLines = Array.from({ length: 151 }, (_v, i) => `line-${i}`).join(
     "\n",
   );
   const truncatedLines = truncateOutput(byLines);
-  expect(truncatedLines).toContain("[TRUNCATED: first 500 of 501 lines]");
-  expect(truncatedLines).not.toContain("line-500");
+  expect(truncatedLines).toContain("[TRUNCATED: first 150 of 151 lines]");
+  expect(truncatedLines).not.toContain("line-150");
 
-  const truncatedBytes = truncateOutput("é".repeat(60_000));
+  const truncatedBytes = truncateOutput("é".repeat(30_000));
   expect(truncatedBytes).toContain("[TRUNCATED: first 1 of 1 lines]");
   expect(truncatedBytes).not.toContain("\uFFFD");
+
+  expect(
+    getSubagentOutputLimits({
+      PI_SUBAGENT_MAX_OUTPUT_BYTES: "1234",
+      PI_SUBAGENT_MAX_OUTPUT_LINES: "12",
+    }),
+  ).toEqual({ maxBytes: 1234, maxLines: 12 });
+  expect(
+    getSubagentOutputLimits({
+      PI_SUBAGENT_MAX_OUTPUT_BYTES: "0",
+      PI_SUBAGENT_MAX_OUTPUT_LINES: "invalid",
+    }),
+  ).toEqual({ maxBytes: 20_000, maxLines: 150 });
+  const envLimited = truncateOutput("a\nb\nc", { maxBytes: 100, maxLines: 2 });
+  expect(envLimited).toContain("[TRUNCATED: first 2 of 3 lines]");
+  expect(envLimited).not.toContain("c");
 
   const scriptDir = await makeTempDir("pi-subagent-script-");
   const scriptPath = path.join(scriptDir, "pi-entry.js");

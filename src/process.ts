@@ -10,6 +10,7 @@ import type {
 } from "./types.js";
 import { getFinalOutput } from "./ui.js";
 import {
+  detectMessageError,
   getPiInvocation,
   getSubagentDepth,
   resolveAgentSkillArgs,
@@ -17,6 +18,8 @@ import {
   truncateOutput,
   writePromptToTempFile,
 } from "./utils.js";
+
+type RuntimeResult = SingleResult & { messages: Message[] };
 
 const MAX_SUBAGENT_DEPTH = 3;
 
@@ -71,7 +74,7 @@ export async function runSingleAgent(
   task: string,
   signal: AbortSignal | undefined,
   onUpdate: OnUpdateCallback | undefined,
-  makeDetails: (results: SingleResult[]) => SubagentDetails,
+  makeDetails: (results: RuntimeResult[]) => SubagentDetails,
   parentModel: { provider: string; id: string } | undefined,
   parentThinking: ThinkingLevel,
 ): Promise<SingleResult> {
@@ -118,11 +121,12 @@ export async function runSingleAgent(
     );
   }
 
-  const currentResult: SingleResult = {
+  const currentResult: RuntimeResult = {
     agent: agentName,
     agentSource: agent.source,
     task,
     exitCode: 0,
+    finalOutput: "",
     messages: [],
     stderr: "",
     usage: {
@@ -137,14 +141,33 @@ export async function runSingleAgent(
     model: modelDisplay,
   };
 
+  let lastEmittedFinalOutput = "";
+  let emittedRunningUpdate = false;
+
+  const nextUpdateText = () => {
+    const finalOutput = currentResult.finalOutput;
+    if (!finalOutput) {
+      if (emittedRunningUpdate) return "";
+      emittedRunningUpdate = true;
+      return "(running...)";
+    }
+
+    if (finalOutput.startsWith(lastEmittedFinalOutput)) {
+      const delta = finalOutput.slice(lastEmittedFinalOutput.length);
+      lastEmittedFinalOutput = finalOutput;
+      return truncateOutput(delta);
+    }
+
+    lastEmittedFinalOutput = finalOutput;
+    return truncateOutput(finalOutput);
+  };
+
   const emitUpdate = () => {
     onUpdate?.({
       content: [
         {
           type: "text",
-          text:
-            truncateOutput(getFinalOutput(currentResult.messages)) ||
-            "(running...)",
+          text: nextUpdateText(),
         },
       ],
       details: makeDetails([currentResult]),
@@ -187,6 +210,12 @@ export async function runSingleAgent(
         ) {
           const msg = event.message as Message;
           currentResult.messages.push(msg);
+          currentResult.finalOutput = getFinalOutput(currentResult.messages);
+          currentResult.errorMessage = detectMessageError(
+            currentResult.messages,
+          )
+            ? currentResult.errorMessage || "Subagent tool result failed."
+            : undefined;
 
           if (msg.role === "assistant") {
             currentResult.usage.turns++;
@@ -262,7 +291,7 @@ function createErrorResult(
     agentSource: source,
     task,
     exitCode: 1,
-    messages: [],
+    finalOutput: "",
     stderr: error,
     usage: {
       input: 0,

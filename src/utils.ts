@@ -8,18 +8,50 @@ import {
   withFileMutationQueue,
 } from "@mariozechner/pi-coding-agent";
 
-const MAX_OUTPUT_BYTES = 100_000;
-const MAX_OUTPUT_LINES = 500;
+export const DEFAULT_MAX_OUTPUT_BYTES = 50_000;
+export const DEFAULT_MAX_OUTPUT_LINES = 500;
 
-export function truncateOutput(text: string): string {
+export interface SubagentOutputLimits {
+  maxBytes: number;
+  maxLines: number;
+}
+
+type OutputLimitConfig = Partial<Record<string, string | number | undefined>>;
+
+function parsePositiveInteger(
+  value: string | number | undefined,
+): number | undefined {
+  const parsed = typeof value === "number" ? value : Number(value);
+  if (!Number.isFinite(parsed) || parsed < 1) return undefined;
+  return Math.floor(parsed);
+}
+
+export function getSubagentOutputLimits(
+  config: OutputLimitConfig = process.env,
+): SubagentOutputLimits {
+  return {
+    maxBytes:
+      parsePositiveInteger(config.PI_SUBAGENT_MAX_OUTPUT_BYTES) ??
+      DEFAULT_MAX_OUTPUT_BYTES,
+    maxLines:
+      parsePositiveInteger(config.PI_SUBAGENT_MAX_OUTPUT_LINES) ??
+      DEFAULT_MAX_OUTPUT_LINES,
+  };
+}
+
+export function truncateOutput(
+  text: string,
+  limits: SubagentOutputLimits = getSubagentOutputLimits(),
+): string {
   const lines = text.split("\n");
   const bytes = Buffer.byteLength(text, "utf-8");
-  if (bytes <= MAX_OUTPUT_BYTES && lines.length <= MAX_OUTPUT_LINES)
-    return text;
+  const maxBytes = Math.max(1, Math.floor(limits.maxBytes));
+  const maxLines = Math.max(1, Math.floor(limits.maxLines));
+  if (bytes <= maxBytes && lines.length <= maxLines) return text;
 
-  let result = lines.slice(0, MAX_OUTPUT_LINES).join("\n");
-  if (Buffer.byteLength(result, "utf-8") > MAX_OUTPUT_BYTES) {
-    const buf = Buffer.from(result).subarray(0, MAX_OUTPUT_BYTES);
+  let result = lines.slice(0, maxLines).join("\n");
+  if (Buffer.byteLength(result, "utf-8") > maxBytes) {
+    const buf = Buffer.from(result).subarray(0, maxBytes);
     result = buf.toString("utf-8").replace(/\uFFFD$/, "");
   }
   const kept = result.split("\n").length;

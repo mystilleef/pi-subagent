@@ -104,9 +104,10 @@ export function renderSubagentResult(
     r.exitCode !== 0 ||
     r.stopReason === "error" ||
     r.stopReason === "aborted" ||
-    detectMessageError(r.messages);
+    !!r.errorMessage ||
+    detectMessageError(r.messages ?? []);
   const icon = failed ? theme.fg("error", "✗") : theme.fg("success", "✓");
-  const finalOutput = getFinalOutput(r.messages);
+  const finalOutput = r.finalOutput ?? getFinalOutput(r.messages ?? []);
 
   let text = `${icon} ${theme.fg("toolTitle", theme.bold(r.agent))}${theme.fg("muted", ` (${r.agentSource})`)}`;
   if (failed && r.stopReason)
@@ -115,7 +116,7 @@ export function renderSubagentResult(
   if (failed && r.errorMessage) {
     text += `\n${theme.fg("error", `Error: ${r.errorMessage}`)}`;
   } else {
-    const lastTool = r.messages
+    const lastTool = (r.messages ?? [])
       .filter((m) => m.role === "assistant")
       .flatMap((m) => m.content)
       .findLast((p) => p.type === "toolCall");

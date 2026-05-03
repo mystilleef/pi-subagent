@@ -19,11 +19,7 @@ import {
 } from "./agents.js";
 import { runSingleAgent } from "./process.js";
 import type { SingleResult, SubagentDetails } from "./types.js";
-import {
-  getFinalOutput,
-  renderSubagentCall,
-  renderSubagentResult,
-} from "./ui.js";
+import { renderSubagentCall, renderSubagentResult } from "./ui.js";
 import { detectMessageError, truncateOutput } from "./utils.js";
 
 const AgentScopeSchema = StringEnum(["user", "project", "both"] as const, {
@@ -38,6 +34,13 @@ export const SubagentParams = Type.Object({
   }),
   task: Type.String({ description: "Task to delegate" }),
   agentScope: Type.Optional(AgentScopeSchema),
+  debug: Type.Optional(
+    Type.Boolean({
+      description:
+        "Internal debug option. Include full child messages in result details.",
+      default: false,
+    }),
+  ),
 });
 
 export default function (pi: ExtensionAPI) {
@@ -91,6 +94,7 @@ export default function (pi: ExtensionAPI) {
       "Delegate one task to one specialized subagent with isolated context.",
       "Mode: single (agent + task).",
       'Default agent scope is "both" (user agents from ~/.pi/agents and project-local agents from .pi/agents).',
+      "Output returns with configurable truncation via PI_SUBAGENT_MAX_OUTPUT_BYTES and PI_SUBAGENT_MAX_OUTPUT_LINES.",
     ].join(" "),
     parameters: SubagentParams,
 
@@ -103,11 +107,16 @@ export default function (pi: ExtensionAPI) {
         : undefined;
       const parentThinking = pi.getThinkingLevel() as ThinkingLevel;
 
+      const includeDebugMessages = params.debug === true;
       const makeDetails = (results: SingleResult[]): SubagentDetails => ({
         mode: "single",
         agentScope,
         projectAgentsDir: discovery.projectAgentsDir,
-        results,
+        results: results.map((result) => {
+          if (includeDebugMessages) return result;
+          const { messages: _messages, ...compact } = result;
+          return compact;
+        }),
       });
 
       if ((agentScope === "project" || agentScope === "both") && ctx.hasUI) {
@@ -149,12 +158,12 @@ Project agents are repo-controlled. Only continue for trusted repositories.`,
         result.exitCode !== 0 ||
         result.stopReason === "error" ||
         result.stopReason === "aborted" ||
-        detectMessageError(result.messages);
+        detectMessageError(result.messages ?? []);
       if (failed) {
         const errorMsg =
           result.errorMessage ||
           result.stderr ||
-          getFinalOutput(result.messages) ||
+          result.finalOutput ||
           "(no output)";
         throw new Error(`Agent ${result.stopReason || "failed"}: ${errorMsg}`);
       }
@@ -162,8 +171,7 @@ Project agents are repo-controlled. Only continue for trusted repositories.`,
         content: [
           {
             type: "text",
-            text:
-              truncateOutput(getFinalOutput(result.messages)) || "(no output)",
+            text: truncateOutput(result.finalOutput) || "(no output)",
           },
         ],
         details: makeDetails([result]),

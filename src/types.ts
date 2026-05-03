@@ -16,12 +16,13 @@ export interface SingleResult {
   agentSource: "user" | "project" | "unknown";
   task: string;
   exitCode: number;
-  messages: Message[];
+  finalOutput: string;
   stderr: string;
   usage: UsageStats;
   model?: string;
   stopReason?: string;
   errorMessage?: string;
+  messages?: Message[];
 }
 
 export interface SubagentDetails {
