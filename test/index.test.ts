@@ -993,15 +993,15 @@ test("utility helpers cover truncation, invocation, prompt files, depth, and mes
     writePromptToTempFile,
   } = require("../src/utils.js");
 
-  expect(DEFAULT_MAX_OUTPUT_BYTES).toBe(20_000);
-  expect(DEFAULT_MAX_OUTPUT_LINES).toBe(150);
+  expect(DEFAULT_MAX_OUTPUT_BYTES).toBe(30_000);
+  expect(DEFAULT_MAX_OUTPUT_LINES).toBe(300);
 
-  const byLines = Array.from({ length: 151 }, (_v, i) => `line-${i}`).join(
+  const byLines = Array.from({ length: 301 }, (_v, i) => `line-${i}`).join(
     "\n",
   );
   const truncatedLines = truncateOutput(byLines);
-  expect(truncatedLines).toContain("[TRUNCATED: first 150 of 151 lines]");
-  expect(truncatedLines).not.toContain("line-150");
+  expect(truncatedLines).toContain("[TRUNCATED: first 300 of 301 lines]");
+  expect(truncatedLines).not.toContain("line-300");
 
   const truncatedBytes = truncateOutput("é".repeat(30_000));
   expect(truncatedBytes).toContain("[TRUNCATED: first 1 of 1 lines]");
@@ -1018,7 +1018,7 @@ test("utility helpers cover truncation, invocation, prompt files, depth, and mes
       PI_SUBAGENT_MAX_OUTPUT_BYTES: "0",
       PI_SUBAGENT_MAX_OUTPUT_LINES: "invalid",
     }),
-  ).toEqual({ maxBytes: 20_000, maxLines: 150 });
+  ).toEqual({ maxBytes: 30_000, maxLines: 300 });
   const envLimited = truncateOutput("a\nb\nc", { maxBytes: 100, maxLines: 2 });
   expect(envLimited).toContain("[TRUNCATED: first 2 of 3 lines]");
   expect(envLimited).not.toContain("c");

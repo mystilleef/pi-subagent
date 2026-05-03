@@ -44,7 +44,7 @@ and project-local agent definitions.
   - Spawns a new `pi` process in JSON mode.
   - Captures and streams output back to the parent UI.
   - Truncates returned output to `PI_SUBAGENT_MAX_OUTPUT_BYTES`
-    (default `20000`) and `PI_SUBAGENT_MAX_OUTPUT_LINES` (default `150`).
+    (default `30000`) and `PI_SUBAGENT_MAX_OUTPUT_LINES` (default `300`).
   - Supports `agentScope` (`user`, `project`, or `both`).
 - **Code Style:** Enforced by Biome. Use `bun run check` to fix issues
   automatically.
