@@ -595,6 +595,49 @@ function createErrorResult(
 }
 
 export default function (pi: ExtensionAPI) {
+  pi.on("session_start", (_event, ctx) => {
+    ctx.ui.addAutocompleteProvider((current) => ({
+      async getSuggestions(lines, cursorLine, cursorCol, options) {
+        const line = lines[cursorLine] ?? "";
+        const beforeCursor = line.slice(0, cursorCol);
+
+        // Match `/run ` followed by an incomplete agent name (no spaces)
+        const match = beforeCursor.match(/(?:^|[ \t])\/run\s+([^\s]*)$/);
+        if (!match) {
+          return current.getSuggestions(lines, cursorLine, cursorCol, options);
+        }
+
+        const prefix = match[1] ?? "";
+        // Default to "both" scopes for completion
+        const agents = discoverAgents(ctx.cwd, "both").agents;
+
+        return {
+          prefix,
+          items: agents
+            .filter((a) => a.name.startsWith(prefix))
+            .map((a) => ({ value: a.name, label: a.name })),
+        };
+      },
+
+      applyCompletion(lines, cursorLine, cursorCol, item, prefix) {
+        return current.applyCompletion(
+          lines,
+          cursorLine,
+          cursorCol,
+          item,
+          prefix,
+        );
+      },
+
+      shouldTriggerFileCompletion(lines, cursorLine, cursorCol) {
+        return (
+          current.shouldTriggerFileCompletion?.(lines, cursorLine, cursorCol) ??
+          true
+        );
+      },
+    }));
+  });
+
   pi.registerTool({
     name: "subagent",
     label: "Subagent",

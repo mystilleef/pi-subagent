@@ -6,6 +6,7 @@ import type { AgentToolUpdateCallback } from "@mariozechner/pi-agent-core";
 import type { TextContent } from "@mariozechner/pi-ai";
 import type {
   AgentToolResult,
+  AutocompleteProviderFactory,
   ExtensionAPI,
   ExtensionContext,
   ToolDefinition,
@@ -328,11 +329,16 @@ exit 0
 
 test("autocomplete provider registers and returns agent suggestions", async () => {
   const { cwd } = await setupFakePi();
-  let sessionStartHandler: any;
+  let sessionStartHandler:
+    | ((event: string, ctx: ExtensionContext) => void)
+    | undefined;
   const fakePi = {
-    on(event: string, handler: any) {
+    on(event: string, handler: unknown) {
       if (event === "session_start") {
-        sessionStartHandler = handler;
+        sessionStartHandler = handler as (
+          event: string,
+          ctx: ExtensionContext,
+        ) => void;
       }
     },
     registerTool() {},
@@ -344,17 +350,20 @@ test("autocomplete provider registers and returns agent suggestions", async () =
   registerSubagentExtension(fakePi);
   expect(sessionStartHandler).toBeDefined();
 
-  let factoryFn: any;
+  let factoryFn: AutocompleteProviderFactory | undefined;
   const fakeCtx = {
     cwd,
     ui: {
-      addAutocompleteProvider: (factory: any) => {
+      addAutocompleteProvider: (factory: AutocompleteProviderFactory) => {
         factoryFn = factory;
       },
     },
   };
 
-  sessionStartHandler("session_start", fakeCtx);
+  sessionStartHandler?.(
+    "session_start",
+    fakeCtx as unknown as ExtensionContext,
+  );
   expect(factoryFn).toBeDefined();
 
   const fakeCurrentProvider = {
@@ -367,7 +376,9 @@ test("autocomplete provider registers and returns agent suggestions", async () =
     shouldTriggerFileCompletion: () => false,
   };
 
-  const registeredProvider = factoryFn(fakeCurrentProvider);
+  const registeredProvider = factoryFn?.(
+    fakeCurrentProvider as unknown as Parameters<AutocompleteProviderFactory>[0],
+  );
 
   // Create an agent to test
   const projectAgentsDir = path.join(cwd, ".pi", "agents");
@@ -382,38 +393,44 @@ Prompt`,
   );
 
   // Test getSuggestions matches
-  const suggestions = await registeredProvider.getSuggestions(
+  const suggestions = await registeredProvider?.getSuggestions(
     ["/run te"],
     0,
     7,
-    {},
+    { signal: new AbortController().signal },
   );
-  expect(suggestions.prefix).toBe("te");
-  expect(suggestions.items).toEqual([
+  expect(suggestions?.prefix).toBe("te");
+  expect(suggestions?.items).toEqual([
     { value: "test-agent", label: "test-agent" },
   ]);
 
   // Test getSuggestions no match
-  const noMatch = await registeredProvider.getSuggestions(
+  const noMatch = await registeredProvider?.getSuggestions(
     ["other text "],
     0,
     11,
-    {},
+    { signal: new AbortController().signal },
   );
-  expect(noMatch.prefix).toBe("fake");
+  expect(noMatch?.prefix).toBe("fake");
 
   // Test applyCompletion falls back
-  const applied = registeredProvider.applyCompletion([], 0, 0, {}, "");
-  expect(applied.lines).toEqual(["applied"]);
+  const applied = registeredProvider?.applyCompletion(
+    [],
+    0,
+    0,
+    { value: "test", label: "test" },
+    "",
+  );
+  expect(applied?.lines).toEqual(["applied"]);
 
   // Test shouldTriggerFileCompletion falls back
-  const trigger = registeredProvider.shouldTriggerFileCompletion([], 0, 0);
+  const trigger = registeredProvider?.shouldTriggerFileCompletion?.([], 0, 0);
   expect(trigger).toBe(false);
 
   // Test shouldTriggerFileCompletion undefined fallback
-  const fallbackProvider = factoryFn({
+  const fallbackProvider = factoryFn?.({
     getSuggestions: async () => ({ prefix: "", items: [] }),
     applyCompletion: () => ({ lines: [], cursorLine: 0, cursorCol: 0 }),
-  });
-  expect(fallbackProvider.shouldTriggerFileCompletion([], 0, 0)).toBe(true);
+  } as unknown as Parameters<AutocompleteProviderFactory>[0]);
+  expect(fallbackProvider?.shouldTriggerFileCompletion?.([], 0, 0)).toBe(true);
 });
