@@ -108,12 +108,20 @@ export default function (pi: ExtensionAPI) {
       const parentThinking = pi.getThinkingLevel() as ThinkingLevel;
 
       const includeDebugMessages = params.debug === true;
-      const makeDetails = (results: SingleResult[]): SubagentDetails => ({
+      const makeDetails = (
+        results: SingleResult[],
+        options?: { includeMessages?: boolean },
+      ): SubagentDetails => ({
         mode: "single",
         agentScope,
         projectAgentsDir: discovery.projectAgentsDir,
         results: results.map((result) => {
-          if (includeDebugMessages) return result;
+          if (includeDebugMessages || options?.includeMessages) {
+            return {
+              ...result,
+              messages: result.messages ? [...result.messages] : undefined,
+            };
+          }
           const { messages: _messages, ...compact } = result;
           return compact;
         }),

@@ -738,6 +738,15 @@ exit 0
   expect((updates[updates.length - 1]?.content[0] as TextContent)?.text).toBe(
     "final",
   );
+  expect(
+    updates.some((u) =>
+      u.details.results[0]?.messages?.some((m) =>
+        Array.isArray(m.content)
+          ? m.content.some((p) => p.type === "toolCall" && p.name === "bash")
+          : false,
+      ),
+    ),
+  ).toBe(true);
 });
 
 test("subagent update content streams only final output deltas", async () => {
@@ -770,7 +779,7 @@ exit 0
   ]);
   expect((result.content[0] as TextContent).text).toBe("hello world");
   expect(updates[0]?.details.results[0]?.finalOutput).toBe("hello");
-  expect(updates[0]?.details.results[0]?.messages).toBeUndefined();
+  expect(updates[0]?.details.results[0]?.messages).toBeDefined();
   expect(result.details?.results[0]?.finalOutput).toBe("hello world");
   expect(result.details?.results[0]?.messages).toBeUndefined();
 });

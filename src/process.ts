@@ -74,7 +74,10 @@ export async function runSingleAgent(
   task: string,
   signal: AbortSignal | undefined,
   onUpdate: OnUpdateCallback | undefined,
-  makeDetails: (results: RuntimeResult[]) => SubagentDetails,
+  makeDetails: (
+    results: RuntimeResult[],
+    options?: { includeMessages?: boolean },
+  ) => SubagentDetails,
   parentModel: { provider: string; id: string } | undefined,
   parentThinking: ThinkingLevel,
 ): Promise<SingleResult> {
@@ -170,7 +173,7 @@ export async function runSingleAgent(
           text: nextUpdateText(),
         },
       ],
-      details: makeDetails([currentResult]),
+      details: makeDetails([currentResult], { includeMessages: true }),
     });
   };
 
