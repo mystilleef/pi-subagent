@@ -2,8 +2,18 @@ import { afterEach, beforeEach, expect, test } from "bun:test";
 import { chmod, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
-import registerSubagentExtension from "./index.js";
+import type { AgentToolUpdateCallback } from "@mariozechner/pi-agent-core";
+import type { TextContent } from "@mariozechner/pi-ai";
+import type {
+  AgentToolResult,
+  ExtensionAPI,
+  ExtensionContext,
+  ToolDefinition,
+} from "@mariozechner/pi-coding-agent";
+import registerSubagentExtension, {
+  type SubagentDetails,
+  type SubagentParams,
+} from "./index.js";
 
 const ORIGINAL_ARGV_1 = process.argv[1] ?? "";
 const ORIGINAL_PATH = process.env.PATH;
@@ -64,14 +74,17 @@ exit 0
 
 type RegisteredTool = Parameters<ExtensionAPI["registerTool"]>[0];
 
-type CapturedSubagentTool = RegisteredTool & {
+type CapturedSubagentTool = ToolDefinition<
+  typeof SubagentParams,
+  SubagentDetails
+> & {
   execute: (
     toolCallId: string,
-    params: { agent: string; task: string },
+    params: Record<string, unknown>,
     signal: AbortSignal | undefined,
-    onUpdate: undefined,
-    ctx: { cwd: string; hasUI: false },
-  ) => Promise<{ content: Array<{ type: string; text?: string }> }>;
+    onUpdate: AgentToolUpdateCallback<SubagentDetails> | undefined,
+    ctx: ExtensionContext,
+  ) => Promise<AgentToolResult<SubagentDetails>>;
 };
 
 function getSubagentTool(): CapturedSubagentTool {
@@ -99,7 +112,7 @@ async function executeSubagent(task: string, signal?: AbortSignal) {
     { agent: "hang", task },
     signal,
     undefined,
-    { cwd, hasUI: false },
+    { cwd, hasUI: false } as unknown as ExtensionContext,
   );
 }
 
@@ -130,7 +143,7 @@ afterEach(async () => {
 test("subagent resolves when fake pi exits normally", async () => {
   const result = await executeSubagent("normal");
 
-  expect(result.content[0]).toEqual({ type: "text", text: "done" });
+  expect((result.content[0] as TextContent).text).toEqual("done");
 });
 
 test("subagent resolves when fake pi emits agent_end but stays alive", async () => {
@@ -142,26 +155,25 @@ test("subagent resolves when fake pi emits agent_end but stays alive", async () 
     timeoutAfter(500, () => controller.abort()),
   ]);
 
-  expect(result.content[0]).toEqual({ type: "text", text: "done" });
+  expect((result.content[0] as TextContent).text).toEqual("done");
 });
 
 test("subagent handles unknown agent", async () => {
   const { cwd } = await setupFakePi();
   const tool = getSubagentTool();
-  const result = await tool.execute(
+  const promise = tool.execute(
     "test-tool-call",
     { agent: "non-existent", task: "whatever" },
     undefined,
     undefined,
-    { cwd, hasUI: false },
+    { cwd, hasUI: false } as unknown as ExtensionContext,
   );
 
-  expect(result.isError).toBe(true);
-  expect(result.content[0].text).toContain('Unknown agent: "non-existent"');
+  await expect(promise).rejects.toThrow('Unknown agent: "non-existent"');
 });
 
 test("subagent respects agentScope", async () => {
-  const { agentDir, cwd } = await setupFakePi();
+  const { cwd } = await setupFakePi();
   const projectAgentsDir = path.join(cwd, ".pi", "agents");
   await Bun.$`mkdir -p ${projectAgentsDir}`;
   await writeFile(
@@ -170,20 +182,20 @@ test("subagent respects agentScope", async () => {
 name: project-agent
 description: Project agent
 ---
-System prompt`
+System prompt`,
   );
 
   const tool = getSubagentTool();
-  
+
   // Default scope is "user", should NOT find project agent
-  const resultUser = await tool.execute(
+  const promiseUser = tool.execute(
     "test-tool-call",
     { agent: "project-agent", task: "test" },
     undefined,
     undefined,
-    { cwd, hasUI: false },
+    { cwd, hasUI: false } as unknown as ExtensionContext,
   );
-  expect(resultUser.isError).toBe(true);
+  await expect(promiseUser).rejects.toThrow();
 
   // Both scope should find project agent
   const resultBoth = await tool.execute(
@@ -191,10 +203,13 @@ System prompt`
     { agent: "project-agent", task: "test", agentScope: "both" },
     undefined,
     undefined,
-    { cwd, hasUI: false, ui: { confirm: async () => true } as any },
+    {
+      cwd,
+      hasUI: false,
+      ui: { confirm: async () => true },
+    } as unknown as ExtensionContext,
   );
-  expect(resultBoth.isError).not.toBe(true);
-  expect(resultBoth.content[0].text).toBe("done");
+  expect((resultBoth.content[0] as TextContent).text).toBe("done");
 });
 
 test("subagent requires confirmation for project agents with UI", async () => {
@@ -207,7 +222,7 @@ test("subagent requires confirmation for project agents with UI", async () => {
 name: project-agent
 description: Project agent
 ---
-System prompt`
+System prompt`,
   );
 
   const tool = getSubagentTool();
@@ -216,7 +231,7 @@ System prompt`
     confirm: async () => {
       confirmed = true;
       return false;
-    }
+    },
   };
 
   const result = await tool.execute(
@@ -224,11 +239,11 @@ System prompt`
     { agent: "project-agent", task: "test", agentScope: "both" },
     undefined,
     undefined,
-    { cwd, hasUI: true, ui: fakeUI as any },
+    { cwd, hasUI: true, ui: fakeUI } as unknown as ExtensionContext,
   );
 
   expect(confirmed).toBe(true);
-  expect(result.content[0].text).toContain("Canceled");
+  expect((result.content[0] as TextContent).text).toContain("Canceled");
 });
 
 test("subagent handles abort", async () => {
@@ -245,13 +260,13 @@ wait $!
 
   const tool = getSubagentTool();
   const controller = new AbortController();
-  
+
   const promise = tool.execute(
     "test-tool-call",
     { agent: "hang", task: "test" },
     controller.signal,
     undefined,
-    { cwd, hasUI: false },
+    { cwd, hasUI: false } as unknown as ExtensionContext,
   );
 
   setTimeout(() => controller.abort(), 100);
@@ -259,8 +274,8 @@ wait $!
   try {
     await promise;
     expect.unreachable();
-  } catch (e: any) {
-    expect(e.message).toBe("Subagent was aborted");
+  } catch (e: unknown) {
+    expect((e as Error).message).toBe("Subagent was aborted");
   }
 });
 
@@ -270,7 +285,7 @@ test("formatAgentList", () => {
     { name: "a1", source: "user", description: "d1" },
     { name: "a2", source: "project", description: "d2" },
   ];
-  
+
   const res1 = formatAgentList(agents, 1);
   expect(res1.text).toBe("a1 (user): d1");
   expect(res1.remaining).toBe(1);
@@ -300,11 +315,12 @@ exit 0
     { agent: "hang", task: "test" },
     undefined,
     undefined,
-    { cwd, hasUI: false },
+    { cwd, hasUI: false } as unknown as ExtensionContext,
   );
 
-  expect(result.content[0].text).toBe("hello");
-  const details = result.details as any;
-  expect(details.results[0].usage.input).toBe(10);
-  if (details.results[0].model !== "gpt-4") expect(details.results[0].model).toBe("thinking:off");
+  expect((result.content[0] as TextContent).text).toBe("hello");
+  const details = result.details as SubagentDetails;
+  expect(details.results[0]?.usage.input).toBe(10);
+  if (details.results[0]?.model !== "gpt-4")
+    expect(details.results[0]?.model).toBe("thinking:off");
 });

@@ -36,6 +36,72 @@ import {
 const COLLAPSED_ITEM_COUNT = 10;
 const EXIT_STDIO_GRACE_MS = 100;
 
+const AgentScopeSchema = StringEnum(["user", "project", "both"] as const, {
+  description:
+    'Which agent directories to use. Default: "user". Use "both" to include project-local agents.',
+  default: "user",
+});
+
+export const SubagentParams = Type.Object({
+  agent: Type.String({
+    description: "Name of the agent to invoke",
+  }),
+  task: Type.String({ description: "Task to delegate" }),
+  agentScope: Type.Optional(AgentScopeSchema),
+  confirmProjectAgents: Type.Optional(
+    Type.Boolean({
+      description: "Prompt before running project-local agents. Default: true.",
+      default: true,
+    }),
+  ),
+  cwd: Type.Optional(
+    Type.String({
+      description: "Working directory for the agent process",
+    }),
+  ),
+});
+
+interface UsageStats {
+  input: number;
+  output: number;
+  cacheRead: number;
+  cacheWrite: number;
+  cost: number;
+  contextTokens: number;
+  turns: number;
+}
+
+interface SingleResult {
+  agent: string;
+  agentSource: "user" | "project" | "unknown";
+  task: string;
+  exitCode: number;
+  messages: Message[];
+  stderr: string;
+  usage: UsageStats;
+  model?: string;
+  stopReason?: string;
+  errorMessage?: string;
+}
+
+export interface SubagentDetails {
+  mode: "single";
+  agentScope: AgentScope;
+  projectAgentsDir: string | null;
+  results: SingleResult[];
+}
+
+interface ParentModelConfig {
+  provider: string;
+  id: string;
+}
+
+type DisplayItem =
+  | { type: "text"; text: string }
+  | { type: "toolCall"; name: string; args: Record<string, unknown> };
+
+type OnUpdateCallback = (partial: AgentToolResult<SubagentDetails>) => void;
+
 function waitForSubagentProcess(proc: ChildProcess): Promise<number | null> {
   return new Promise((resolve, reject) => {
     let settled = false;
@@ -143,6 +209,8 @@ function formatToolCall(
     return p.startsWith(home) ? `~${p.slice(home.length)}` : p;
   };
 
+  const getPathArg = () => (args.file_path || args.path || "...") as string;
+
   switch (toolName) {
     case "bash": {
       const command = (args.command as string) || "...";
@@ -151,8 +219,7 @@ function formatToolCall(
       return themeFg("muted", "$ ") + themeFg("toolOutput", preview);
     }
     case "read": {
-      const rawPath = (args.file_path || args.path || "...") as string;
-      const filePath = shortenPath(rawPath);
+      const filePath = shortenPath(getPathArg());
       const offset = args.offset as number | undefined;
       const limit = args.limit as number | undefined;
       let text = themeFg("accent", filePath);
@@ -167,40 +234,36 @@ function formatToolCall(
       return themeFg("muted", "read ") + text;
     }
     case "write": {
-      const rawPath = (args.file_path || args.path || "...") as string;
-      const filePath = shortenPath(rawPath);
-      const content = (args.content || "") as string;
-      const lines = content.split("\n").length;
+      const filePath = shortenPath(getPathArg());
+      const lines = ((args.content || "") as string).split("\n").length;
       let text = themeFg("muted", "write ") + themeFg("accent", filePath);
       if (lines > 1) text += themeFg("dim", ` (${lines} lines)`);
       return text;
     }
     case "edit": {
-      const rawPath = (args.file_path || args.path || "...") as string;
       return (
-        themeFg("muted", "edit ") + themeFg("accent", shortenPath(rawPath))
+        themeFg("muted", "edit ") + themeFg("accent", shortenPath(getPathArg()))
       );
     }
     case "ls": {
-      const rawPath = (args.path || ".") as string;
-      return themeFg("muted", "ls ") + themeFg("accent", shortenPath(rawPath));
+      return (
+        themeFg("muted", "ls ") + themeFg("accent", shortenPath(getPathArg()))
+      );
     }
     case "find": {
       const pattern = (args.pattern || "*") as string;
-      const rawPath = (args.path || ".") as string;
       return (
         themeFg("muted", "find ") +
         themeFg("accent", pattern) +
-        themeFg("dim", ` in ${shortenPath(rawPath)}`)
+        themeFg("dim", ` in ${shortenPath(getPathArg())}`)
       );
     }
     case "grep": {
       const pattern = (args.pattern || "") as string;
-      const rawPath = (args.path || ".") as string;
       return (
         themeFg("muted", "grep ") +
         themeFg("accent", `/${pattern}/`) +
-        themeFg("dim", ` in ${shortenPath(rawPath)}`)
+        themeFg("dim", ` in ${shortenPath(getPathArg())}`)
       );
     }
     default: {
@@ -210,36 +273,6 @@ function formatToolCall(
       return themeFg("accent", toolName) + themeFg("dim", ` ${preview}`);
     }
   }
-}
-
-interface UsageStats {
-  input: number;
-  output: number;
-  cacheRead: number;
-  cacheWrite: number;
-  cost: number;
-  contextTokens: number;
-  turns: number;
-}
-
-interface SingleResult {
-  agent: string;
-  agentSource: "user" | "project" | "unknown";
-  task: string;
-  exitCode: number;
-  messages: Message[];
-  stderr: string;
-  usage: UsageStats;
-  model?: string;
-  stopReason?: string;
-  errorMessage?: string;
-}
-
-interface SubagentDetails {
-  mode: "single";
-  agentScope: AgentScope;
-  projectAgentsDir: string | null;
-  results: SingleResult[];
 }
 
 function getFinalOutput(messages: Message[]): string {
@@ -253,10 +286,6 @@ function getFinalOutput(messages: Message[]): string {
   }
   return "";
 }
-
-type DisplayItem =
-  | { type: "text"; text: string }
-  | { type: "toolCall"; name: string; args: Record<string, unknown> };
 
 function getDisplayItems(messages: Message[]): DisplayItem[] {
   const items: DisplayItem[] = [];
@@ -308,13 +337,6 @@ function getPiInvocation(args: string[]): { command: string; args: string[] } {
   }
 
   return { command: "pi", args };
-}
-
-type OnUpdateCallback = (partial: AgentToolResult<SubagentDetails>) => void;
-
-interface ParentModelConfig {
-  provider: string;
-  id: string;
 }
 
 function formatModelForDisplay(
@@ -390,63 +412,30 @@ async function runSingleAgent(
 
   if (!agent) {
     const available = agents.map((a) => `"${a.name}"`).join(", ") || "none";
-    return {
-      agent: agentName,
-      agentSource: "unknown",
+    return createErrorResult(
+      agentName,
+      "unknown",
       task,
-      exitCode: 1,
-      messages: [],
-      stderr: `Unknown agent: "${agentName}". Available agents: ${available}.`,
-      usage: {
-        input: 0,
-        output: 0,
-        cacheRead: 0,
-        cacheWrite: 0,
-        cost: 0,
-        contextTokens: 0,
-        turns: 0,
-      },
-    };
-  }
-
-  const args: string[] = ["--mode", "json", "-p", "--no-session"];
-  if (parentModel)
-    args.push("--provider", parentModel.provider, "--model", parentModel.id);
-  const thinking = agent.thinking ?? parentThinking;
-  args.push("--thinking", thinking);
-  if (agent.tools && agent.tools.length > 0)
-    args.push("--tools", agent.tools.join(","));
-  if (agent.skills) {
-    const resolvedSkills = await resolveAgentSkillArgs(
-      defaultCwd,
-      cwd,
-      agent.skills,
+      `Unknown agent: "${agentName}". Available agents: ${available}.`,
     );
-    if ("error" in resolvedSkills) {
-      return {
-        agent: agentName,
-        agentSource: agent.source,
-        task,
-        exitCode: 1,
-        messages: [],
-        stderr: resolvedSkills.error,
-        usage: {
-          input: 0,
-          output: 0,
-          cacheRead: 0,
-          cacheWrite: 0,
-          cost: 0,
-          contextTokens: 0,
-          turns: 0,
-        },
-        model: formatModelForDisplay(parentModel, thinking),
-      };
-    }
-    args.push("--no-skills", ...resolvedSkills.args);
   }
 
-  let tmpPromptDir: string | null = null;
-  let tmpPromptPath: string | null = null;
+  const thinking = agent.thinking ?? parentThinking;
+  const modelDisplay = formatModelForDisplay(parentModel, thinking);
+
+  const resolvedSkills = agent.skills
+    ? await resolveAgentSkillArgs(defaultCwd, cwd, agent.skills)
+    : { args: [] };
+
+  if ("error" in resolvedSkills) {
+    return createErrorResult(
+      agentName,
+      agent.source,
+      task,
+      resolvedSkills.error,
+      modelDisplay,
+    );
+  }
 
   const currentResult: SingleResult = {
     agent: agentName,
@@ -464,58 +453,55 @@ async function runSingleAgent(
       contextTokens: 0,
       turns: 0,
     },
-    model: formatModelForDisplay(parentModel, thinking),
+    model: modelDisplay,
   };
 
   const emitUpdate = () => {
-    if (onUpdate) {
-      onUpdate({
-        content: [
-          {
-            type: "text",
-            text: getFinalOutput(currentResult.messages) || "(running...)",
-          },
-        ],
-        details: makeDetails([currentResult]),
-      });
-    }
+    onUpdate?.({
+      content: [
+        {
+          type: "text",
+          text: getFinalOutput(currentResult.messages) || "(running...)",
+        },
+      ],
+      details: makeDetails([currentResult]),
+    });
   };
 
+  let tmpPrompt: { dir: string; filePath: string } | null = null;
   try {
+    const args: string[] = ["--mode", "json", "-p", "--no-session"];
+    if (parentModel)
+      args.push("--provider", parentModel.provider, "--model", parentModel.id);
+    args.push("--thinking", thinking);
+    if (agent.tools?.length) args.push("--tools", agent.tools.join(","));
+    if (agent.skills) args.push("--no-skills", ...resolvedSkills.args);
+
     if (agent.systemPrompt.trim()) {
-      const tmp = await writePromptToTempFile(agent.name, agent.systemPrompt);
-      tmpPromptDir = tmp.dir;
-      tmpPromptPath = tmp.filePath;
-      args.push("--append-system-prompt", tmpPromptPath);
+      tmpPrompt = await writePromptToTempFile(agent.name, agent.systemPrompt);
+      args.push("--append-system-prompt", tmpPrompt.filePath);
     }
 
     args.push(`Task: ${task}`);
+
+    const invocation = getPiInvocation(args);
+    const proc = spawn(invocation.command, invocation.args, {
+      cwd: cwd ?? defaultCwd,
+      shell: false,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+
+    let buffer = "";
     let wasAborted = false;
 
-    const exitCode = await new Promise<number>((resolve) => {
-      const invocation = getPiInvocation(args);
-      const proc = spawn(invocation.command, invocation.args, {
-        cwd: cwd ?? defaultCwd,
-        shell: false,
-        stdio: ["ignore", "pipe", "pipe"],
-      });
-      let buffer = "";
-      let settled = false;
-      let sigkillTimer: NodeJS.Timeout | undefined;
-      let abortCleanup: (() => void) | undefined;
-
-      const processLine = (line: string) => {
-        if (!line.trim()) return;
-        let event: { type?: unknown; message?: unknown };
-        try {
-          const parsed = JSON.parse(line) as unknown;
-          if (typeof parsed !== "object" || parsed === null) return;
-          event = parsed;
-        } catch {
-          return;
-        }
-
-        if (event.type === "message_end" && event.message) {
+    const processLine = (line: string) => {
+      if (!line.trim()) return;
+      try {
+        const event = JSON.parse(line);
+        if (
+          (event.type === "message_end" || event.type === "tool_result_end") &&
+          event.message
+        ) {
           const msg = event.message as Message;
           currentResult.messages.push(msg);
 
@@ -538,114 +524,75 @@ async function runSingleAgent(
           emitUpdate();
         }
 
-        if (event.type === "tool_result_end" && event.message) {
-          currentResult.messages.push(event.message as Message);
-          emitUpdate();
-        }
-
         if (event.type === "agent_end") {
-          finish(0, { stopProcess: true });
-        }
-      };
-
-      const stopProcess = () => {
-        proc.kill("SIGTERM");
-        sigkillTimer = setTimeout(() => {
-          proc.kill("SIGKILL");
-        }, 5000);
-        sigkillTimer.unref?.();
-      };
-
-      const finish = (code: number, options?: { stopProcess?: boolean }) => {
-        if (settled) return;
-        settled = true;
-        if (buffer.trim()) {
-          const pending = buffer;
-          buffer = "";
-          processLine(pending);
-        }
-        if (options?.stopProcess) stopProcess();
-        else if (sigkillTimer) clearTimeout(sigkillTimer);
-        abortCleanup?.();
-        resolve(code);
-      };
-
-      proc.stdout.on("data", (data) => {
-        if (settled) return;
-        buffer += data.toString();
-        const lines = buffer.split("\n");
-        buffer = lines.pop() || "";
-        for (const line of lines) processLine(line);
-      });
-
-      proc.stderr.on("data", (data) => {
-        if (settled) return;
-        currentResult.stderr += data.toString();
-      });
-
-      waitForSubagentProcess(proc)
-        .then((code) => finish(code ?? 0))
-        .catch(() => finish(1));
-
-      if (signal) {
-        const killProc = () => {
-          wasAborted = true;
           proc.kill("SIGTERM");
-          sigkillTimer = setTimeout(() => {
-            proc.kill("SIGKILL");
-          }, 5000);
-        };
-        if (signal.aborted) killProc();
-        else {
-          signal.addEventListener("abort", killProc, { once: true });
-          abortCleanup = () => signal.removeEventListener("abort", killProc);
         }
+      } catch {
+        /* ignore invalid JSON */
       }
+    };
+
+    proc.stdout.on("data", (data) => {
+      buffer += data.toString();
+      const lines = buffer.split("\n");
+      buffer = lines.pop() || "";
+      for (const line of lines) processLine(line);
     });
 
-    currentResult.exitCode = exitCode;
+    proc.stderr.on("data", (data) => {
+      currentResult.stderr += data.toString();
+    });
+
+    if (signal) {
+      const onAbort = () => {
+        wasAborted = true;
+        proc.kill("SIGTERM");
+      };
+      if (signal.aborted) onAbort();
+      else signal.addEventListener("abort", onAbort, { once: true });
+    }
+
+    currentResult.exitCode = (await waitForSubagentProcess(proc)) ?? 0;
     if (wasAborted) throw new Error("Subagent was aborted");
     return currentResult;
   } finally {
-    if (tmpPromptPath)
+    if (tmpPrompt) {
       try {
-        fs.unlinkSync(tmpPromptPath);
+        fs.unlinkSync(tmpPrompt.filePath);
+        fs.rmdirSync(tmpPrompt.dir);
       } catch {
         /* ignore */
       }
-    if (tmpPromptDir)
-      try {
-        fs.rmdirSync(tmpPromptDir);
-      } catch {
-        /* ignore */
-      }
+    }
   }
 }
 
-const AgentScopeSchema = StringEnum(["user", "project", "both"] as const, {
-  description:
-    'Which agent directories to use. Default: "user". Use "both" to include project-local agents.',
-  default: "user",
-});
-
-const SubagentParams = Type.Object({
-  agent: Type.String({
-    description: "Name of the agent to invoke",
-  }),
-  task: Type.String({ description: "Task to delegate" }),
-  agentScope: Type.Optional(AgentScopeSchema),
-  confirmProjectAgents: Type.Optional(
-    Type.Boolean({
-      description: "Prompt before running project-local agents. Default: true.",
-      default: true,
-    }),
-  ),
-  cwd: Type.Optional(
-    Type.String({
-      description: "Working directory for the agent process",
-    }),
-  ),
-});
+function createErrorResult(
+  agent: string,
+  source: "user" | "project" | "unknown",
+  task: string,
+  error: string,
+  model?: string,
+): SingleResult {
+  return {
+    agent,
+    agentSource: source,
+    task,
+    exitCode: 1,
+    messages: [],
+    stderr: error,
+    usage: {
+      input: 0,
+      output: 0,
+      cacheRead: 0,
+      cacheWrite: 0,
+      cost: 0,
+      contextTokens: 0,
+      turns: 0,
+    },
+    model,
+  };
+}
 
 export default function (pi: ExtensionAPI) {
   pi.registerTool({
@@ -675,19 +622,6 @@ export default function (pi: ExtensionAPI) {
         projectAgentsDir: discovery.projectAgentsDir,
         results,
       });
-
-      if ("tasks" in params || "chain" in params) {
-        return {
-          content: [
-            {
-              type: "text",
-              text: "Unsupported parameters: tasks/chain. Invoke one subagent per task with { agent, task }.",
-            },
-          ],
-          details: makeDetails([]),
-          isError: true,
-        };
-      }
 
       if (
         (agentScope === "project" || agentScope === "both") &&
@@ -739,16 +673,7 @@ Project agents are repo-controlled. Only continue for trusted repositories.`,
           result.stderr ||
           getFinalOutput(result.messages) ||
           "(no output)";
-        return {
-          content: [
-            {
-              type: "text",
-              text: `Agent ${result.stopReason || "failed"}: ${errorMsg}`,
-            },
-          ],
-          details: makeDetails([result]),
-          isError: true,
-        };
+        throw new Error(`Agent ${result.stopReason || "failed"}: ${errorMsg}`);
       }
       return {
         content: [
@@ -779,38 +704,7 @@ Project agents are repo-controlled. Only continue for trusted repositories.`,
 
     renderResult(result, { expanded }, theme, _context) {
       const details = result.details as SubagentDetails | undefined;
-      if (!details || details.results.length === 0) {
-        const text = result.content[0];
-        return new Text(
-          text?.type === "text" ? text.text : "(no output)",
-          0,
-          0,
-        );
-      }
-
-      const mdTheme = getMarkdownTheme();
-
-      const renderDisplayItems = (items: DisplayItem[], limit?: number) => {
-        const toShow = limit ? items.slice(-limit) : items;
-        const skipped =
-          limit && items.length > limit ? items.length - limit : 0;
-        let text = "";
-        if (skipped > 0)
-          text += theme.fg("muted", `... ${skipped} earlier items\n`);
-        for (const item of toShow) {
-          if (item.type === "text") {
-            const preview = expanded
-              ? item.text
-              : item.text.split("\n").slice(0, 3).join("\n");
-            text += `${theme.fg("toolOutput", preview)}\n`;
-          } else {
-            text += `${theme.fg("muted", "→ ") + formatToolCall(item.name, item.args, theme.fg.bind(theme))}\n`;
-          }
-        }
-        return text.trimEnd();
-      };
-
-      const r = details.results[0];
+      const r = details?.results?.[0];
       if (!r) {
         const text = result.content[0];
         return new Text(
@@ -819,6 +713,7 @@ Project agents are repo-controlled. Only continue for trusted repositories.`,
           0,
         );
       }
+
       const failed =
         r.exitCode !== 0 ||
         r.stopReason === "error" ||
@@ -833,20 +728,24 @@ Project agents are repo-controlled. Only continue for trusted repositories.`,
         if (failed && r.stopReason)
           header += ` ${theme.fg("error", `[${r.stopReason}]`)}`;
         container.addChild(new Text(header, 0, 0));
-        if (failed && r.errorMessage)
+
+        if (failed && r.errorMessage) {
           container.addChild(
             new Text(theme.fg("error", `Error: ${r.errorMessage}`), 0, 0),
           );
+        }
+
         container.addChild(new Spacer(1));
         container.addChild(new Text(theme.fg("muted", "─── Task ───"), 0, 0));
         container.addChild(new Text(theme.fg("dim", r.task), 0, 0));
         container.addChild(new Spacer(1));
         container.addChild(new Text(theme.fg("muted", "─── Output ───"), 0, 0));
+
         if (displayItems.length === 0 && !finalOutput) {
           container.addChild(new Text(theme.fg("muted", "(no output)"), 0, 0));
         } else {
           for (const item of displayItems) {
-            if (item.type === "toolCall")
+            if (item.type === "toolCall") {
               container.addChild(
                 new Text(
                   theme.fg("muted", "→ ") +
@@ -855,12 +754,16 @@ Project agents are repo-controlled. Only continue for trusted repositories.`,
                   0,
                 ),
               );
+            }
           }
           if (finalOutput) {
             container.addChild(new Spacer(1));
-            container.addChild(new Markdown(finalOutput.trim(), 0, 0, mdTheme));
+            container.addChild(
+              new Markdown(finalOutput.trim(), 0, 0, getMarkdownTheme()),
+            );
           }
         }
+
         const usageStr = formatUsageStats(r.usage, r.model);
         if (usageStr) {
           container.addChild(new Spacer(1));
@@ -869,18 +772,34 @@ Project agents are repo-controlled. Only continue for trusted repositories.`,
         return container;
       }
 
+      // Collapsed view
       let text = `${icon} ${theme.fg("toolTitle", theme.bold(r.agent))}${theme.fg("muted", ` (${r.agentSource})`)}`;
       if (failed && r.stopReason)
         text += ` ${theme.fg("error", `[${r.stopReason}]`)}`;
-      if (failed && r.errorMessage)
+
+      if (failed && r.errorMessage) {
         text += `\n${theme.fg("error", `Error: ${r.errorMessage}`)}`;
-      else if (displayItems.length === 0)
+      } else if (displayItems.length === 0) {
         text += `\n${theme.fg("muted", "(no output)")}`;
-      else {
-        text += `\n${renderDisplayItems(displayItems, COLLAPSED_ITEM_COUNT)}`;
+      } else {
+        const toShow = displayItems.slice(-COLLAPSED_ITEM_COUNT);
+        const skipped = displayItems.length - toShow.length;
+        if (skipped > 0)
+          text += `\n${theme.fg("muted", `... ${skipped} earlier items`)}`;
+
+        for (const item of toShow) {
+          if (item.type === "text") {
+            const preview = item.text.split("\n").slice(0, 3).join("\n");
+            text += `\n${theme.fg("toolOutput", preview)}`;
+          } else {
+            text += `\n${theme.fg("muted", "→ ") + formatToolCall(item.name, item.args, theme.fg.bind(theme))}`;
+          }
+        }
+
         if (displayItems.length > COLLAPSED_ITEM_COUNT)
           text += `\n${theme.fg("muted", "(Ctrl+O to expand)")}`;
       }
+
       const usageStr = formatUsageStats(r.usage, r.model);
       if (usageStr) text += `\n${theme.fg("dim", usageStr)}`;
       return new Text(text, 0, 0);
