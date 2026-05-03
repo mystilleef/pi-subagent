@@ -9,7 +9,7 @@
  * Uses JSON mode to capture structured output from subagents.
  */
 
-import { spawn } from "node:child_process";
+import { type ChildProcess, spawn } from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -34,6 +34,70 @@ import {
 } from "./agents.js";
 
 const COLLAPSED_ITEM_COUNT = 10;
+const EXIT_STDIO_GRACE_MS = 100;
+
+function waitForSubagentProcess(proc: ChildProcess): Promise<number | null> {
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    let exited = false;
+    let exitCode: number | null = null;
+    let postExitTimer: NodeJS.Timeout | undefined;
+    let stdoutEnded = proc.stdout === null;
+    let stderrEnded = proc.stderr === null;
+
+    const cleanup = () => {
+      if (postExitTimer) clearTimeout(postExitTimer);
+      proc.removeListener("error", onError);
+      proc.removeListener("exit", onExit);
+      proc.removeListener("close", onClose);
+      proc.stdout?.removeListener("end", onStdoutEnd);
+      proc.stderr?.removeListener("end", onStderrEnd);
+    };
+
+    const finalize = (code: number | null) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      proc.stdout?.destroy();
+      proc.stderr?.destroy();
+      resolve(code);
+    };
+
+    const maybeFinalizeAfterExit = () => {
+      if (!exited || settled) return;
+      if (stdoutEnded && stderrEnded) finalize(exitCode);
+    };
+
+    const onStdoutEnd = () => {
+      stdoutEnded = true;
+      maybeFinalizeAfterExit();
+    };
+    const onStderrEnd = () => {
+      stderrEnded = true;
+      maybeFinalizeAfterExit();
+    };
+    const onError = (error: Error) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      reject(error);
+    };
+    const onExit = (code: number | null) => {
+      exited = true;
+      exitCode = code;
+      maybeFinalizeAfterExit();
+      if (!settled)
+        postExitTimer = setTimeout(() => finalize(code), EXIT_STDIO_GRACE_MS);
+    };
+    const onClose = (code: number | null) => finalize(code);
+
+    proc.stdout?.once("end", onStdoutEnd);
+    proc.stderr?.once("end", onStderrEnd);
+    proc.once("error", onError);
+    proc.once("exit", onExit);
+    proc.once("close", onClose);
+  });
+}
 
 function formatTokens(count: number): string {
   if (count < 1000) return count.toString();
@@ -436,6 +500,9 @@ async function runSingleAgent(
         stdio: ["ignore", "pipe", "pipe"],
       });
       let buffer = "";
+      let settled = false;
+      let sigkillTimer: NodeJS.Timeout | undefined;
+      let abortCleanup: (() => void) | undefined;
 
       const processLine = (line: string) => {
         if (!line.trim()) return;
@@ -477,6 +544,15 @@ async function runSingleAgent(
         }
       };
 
+      const finish = (code: number) => {
+        if (settled) return;
+        settled = true;
+        if (buffer.trim()) processLine(buffer);
+        if (sigkillTimer) clearTimeout(sigkillTimer);
+        abortCleanup?.();
+        resolve(code);
+      };
+
       proc.stdout.on("data", (data) => {
         buffer += data.toString();
         const lines = buffer.split("\n");
@@ -488,25 +564,23 @@ async function runSingleAgent(
         currentResult.stderr += data.toString();
       });
 
-      proc.on("close", (code) => {
-        if (buffer.trim()) processLine(buffer);
-        resolve(code ?? 0);
-      });
-
-      proc.on("error", () => {
-        resolve(1);
-      });
+      waitForSubagentProcess(proc)
+        .then((code) => finish(code ?? 0))
+        .catch(() => finish(1));
 
       if (signal) {
         const killProc = () => {
           wasAborted = true;
           proc.kill("SIGTERM");
-          setTimeout(() => {
-            if (!proc.killed) proc.kill("SIGKILL");
+          sigkillTimer = setTimeout(() => {
+            if (!settled) proc.kill("SIGKILL");
           }, 5000);
         };
         if (signal.aborted) killProc();
-        else signal.addEventListener("abort", killProc, { once: true });
+        else {
+          signal.addEventListener("abort", killProc, { once: true });
+          abortCleanup = () => signal.removeEventListener("abort", killProc);
+        }
       }
     });
 
