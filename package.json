@@ -14,7 +14,8 @@
   "scripts": {
     "verify": "bun check && bun test",
     "coverage": "bun check && bun test --coverage",
-    "check": "biome check --fix --unsafe . && tsc --noEmit"
+    "check": "biome check --fix --unsafe . && tsc --noEmit",
+    "migrate": "biome migrate --write"
   },
   "dependencies": {
     "@mariozechner/pi-agent-core": "^0.72.1",
