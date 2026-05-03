@@ -12,7 +12,8 @@
     ]
   },
   "scripts": {
-    "check": "biome check --fix --unsafe . && tsc --noEmit"
+    "check": "biome check --fix --unsafe . && tsc --noEmit",
+    "coverage": "bun test --coverage"
   },
   "dependencies": {
     "@mariozechner/pi-agent-core": "^0.72.1",
