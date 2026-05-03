@@ -12,10 +12,8 @@ import type {
   ThemeColor,
   ToolDefinition,
 } from "@mariozechner/pi-coding-agent";
-import registerSubagentExtension, {
-  type SubagentDetails,
-  type SubagentParams,
-} from "./index.js";
+import registerSubagentExtension, { type SubagentParams } from "./index.js";
+import type { SubagentDetails } from "./types.js";
 
 const ORIGINAL_ARGV_1 = process.argv[1] ?? "";
 const ORIGINAL_PATH = process.env.PATH;
