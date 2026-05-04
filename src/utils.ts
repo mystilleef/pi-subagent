@@ -48,7 +48,6 @@ export function truncateOutput(
   const maxBytes = Math.max(1, Math.floor(limits.maxBytes));
   const maxLines = Math.max(1, Math.floor(limits.maxLines));
   if (bytes <= maxBytes && lines.length <= maxLines) return text;
-
   let result = lines.slice(0, maxLines).join("\n");
   if (Buffer.byteLength(result, "utf-8") > maxBytes) {
     const buf = Buffer.from(result).subarray(0, maxBytes);
@@ -84,13 +83,11 @@ export function getPiInvocation(args: string[]): {
   if (currentScript && fs.existsSync(currentScript)) {
     return { command: process.execPath, args: [currentScript, ...args] };
   }
-
   const execName = path.basename(process.execPath).toLowerCase();
   const isGenericRuntime = /^(node|bun)(\.exe)?$/.test(execName);
   if (!isGenericRuntime) {
     return { command: process.execPath, args };
   }
-
   return { command: "pi", args };
 }
 
@@ -100,7 +97,6 @@ export async function resolveAgentSkillArgs(
 ): Promise<{ args: string[] } | { error: string }> {
   const requested = Array.from(new Set(skillNames));
   if (requested.length === 0) return { args: [] };
-
   const loader = new DefaultResourceLoader({
     cwd,
     agentDir: getAgentDir(),
@@ -108,7 +104,6 @@ export async function resolveAgentSkillArgs(
     noPromptTemplates: true,
     noThemes: true,
   });
-
   try {
     await loader.reload();
   } catch (error) {
@@ -116,11 +111,9 @@ export async function resolveAgentSkillArgs(
       error: `Failed to discover skills: ${error instanceof Error ? error.message : String(error)}`,
     };
   }
-
   const { skills } = loader.getSkills();
   const skillMap = new Map(skills.map((skill) => [skill.name, skill]));
   const missing = requested.filter((name) => !skillMap.has(name));
-
   if (missing.length > 0) {
     const available =
       skills
@@ -133,7 +126,6 @@ export async function resolveAgentSkillArgs(
         .join(", ")}. Available skills: ${available}.`,
     };
   }
-
   return {
     args: requested.flatMap((name) => [
       "--skill",

@@ -52,7 +52,6 @@ async function setupFakePi(): Promise<{
   const agentsDir = path.join(agentDir, "agents");
   const binDir = path.join(root, "bin");
   const cwd = path.join(root, "work");
-
   await Bun.$`mkdir -p ${agentsDir} ${binDir} ${cwd}`;
   await writeFile(
     path.join(agentsDir, "hang.md"),
@@ -65,7 +64,6 @@ thinking: off
 Test agent prompt.
 `,
   );
-
   const fakePi = path.join(binDir, "pi");
   await writeFile(
     fakePi,
@@ -79,11 +77,9 @@ exit 0
 `,
   );
   await chmod(fakePi, 0o755);
-
   process.argv[1] = path.join(root, "not-pi");
   process.env.PATH = `${binDir}:${ORIGINAL_PATH ?? ""}`;
   process.env.PI_CODING_AGENT_DIR = agentDir;
-
   return { agentDir, cwd, binDir };
 }
 
@@ -113,9 +109,7 @@ function getSubagentTool(): CapturedSubagentTool {
       return "off";
     },
   } as unknown as ExtensionAPI;
-
   registerSubagentExtension(fakePi);
-
   if (!registeredTool) throw new Error("subagent tool was not registered");
   return registeredTool as CapturedSubagentTool;
 }
@@ -158,19 +152,16 @@ afterEach(async () => {
 
 test("subagent resolves when fake pi exits normally", async () => {
   const result = await executeSubagent("normal");
-
   expect((result.content[0] as TextContent).text).toEqual("done");
 });
 
 test("subagent resolves when fake pi emits agent_end but stays alive", async () => {
   const controller = new AbortController();
   const run = executeSubagent("agent-end-no-exit", controller.signal);
-
   const result = await Promise.race([
     run,
     timeoutAfter(500, () => controller.abort()),
   ]);
-
   expect((result.content[0] as TextContent).text).toEqual("done");
 });
 
@@ -183,7 +174,6 @@ printf '%s\n' '{"type":"agent_end","messages":[{"role":"assistant","content":[{"
 exit 0
 `,
   );
-
   const tool = getSubagentTool();
   const result = await tool.execute(
     "test-tool-call",
@@ -192,7 +182,6 @@ exit 0
     undefined,
     { cwd, hasUI: false } as unknown as ExtensionContext,
   );
-
   expect((result.content[0] as TextContent).text).toEqual("from agent_end");
   expect(result.details?.results[0]?.usage.input).toBe(2);
 });
@@ -201,7 +190,6 @@ test("subagent reports spawn errors", async () => {
   const { binDir, cwd } = await setupFakePi();
   await unlink(path.join(binDir, "pi"));
   process.env.PATH = binDir;
-
   const tool = getSubagentTool();
   const promise = tool.execute(
     "test-tool-call",
@@ -210,7 +198,6 @@ test("subagent reports spawn errors", async () => {
     undefined,
     { cwd, hasUI: false } as unknown as ExtensionContext,
   );
-
   await expect(promise).rejects.toThrow(/Executable not found|spawn pi ENOENT/);
 });
 
@@ -224,7 +211,6 @@ test("subagent handles unknown agent", async () => {
     undefined,
     { cwd, hasUI: false } as unknown as ExtensionContext,
   );
-
   await expect(promise).rejects.toThrow('Unknown agent: "non-existent"');
 });
 
@@ -240,9 +226,7 @@ description: Project agent
 ---
 System prompt`,
   );
-
   const tool = getSubagentTool();
-
   // Explicit "user" scope should NOT find project agent
   const promiseUser = tool.execute(
     "test-tool-call",
@@ -252,7 +236,6 @@ System prompt`,
     { cwd, hasUI: false } as unknown as ExtensionContext,
   );
   await expect(promiseUser).rejects.toThrow();
-
   // Both scope should find project agent
   const resultBoth = await tool.execute(
     "test-tool-call",
@@ -280,7 +263,6 @@ description: Project agent
 ---
 System prompt`,
   );
-
   const tool = getSubagentTool();
   let confirmed = false;
   const fakeUI = {
@@ -289,7 +271,6 @@ System prompt`,
       return false;
     },
   };
-
   const result = await tool.execute(
     "test-tool-call",
     { agent: "project-agent", task: "test", agentScope: "both" },
@@ -297,7 +278,6 @@ System prompt`,
     undefined,
     { cwd, hasUI: true, ui: fakeUI } as unknown as ExtensionContext,
   );
-
   expect(confirmed).toBe(true);
   expect((result.content[0] as TextContent).text).toContain("Canceled");
 });
@@ -313,10 +293,8 @@ sleep 10 &
 wait $!
 `,
   );
-
   const tool = getSubagentTool();
   const controller = new AbortController();
-
   const promise = tool.execute(
     "test-tool-call",
     { agent: "hang", task: "test" },
@@ -324,9 +302,7 @@ wait $!
     undefined,
     { cwd, hasUI: false } as unknown as ExtensionContext,
   );
-
   setTimeout(() => controller.abort(), 100);
-
   try {
     await promise;
     expect.unreachable();
@@ -341,15 +317,12 @@ test("formatAgentList", () => {
     { name: "a1", source: "user", description: "d1" },
     { name: "a2", source: "project", description: "d2" },
   ];
-
   const res1 = formatAgentList(agents, 1);
   expect(res1.text).toBe("a1 (user): d1");
   expect(res1.remaining).toBe(1);
-
   const res2 = formatAgentList(agents, 2);
   expect(res2.text).toBe("a1 (user): d1; a2 (project): d2");
   expect(res2.remaining).toBe(0);
-
   const res0 = formatAgentList([], 10);
   expect(res0.text).toBe("none");
 });
@@ -364,7 +337,6 @@ printf '%s\n' '{"type":"agent_end"}'
 exit 0
 `,
   );
-
   const tool = getSubagentTool();
   const result = await tool.execute(
     "test-tool-call",
@@ -373,7 +345,6 @@ exit 0
     undefined,
     { cwd, hasUI: false } as unknown as ExtensionContext,
   );
-
   expect((result.content[0] as TextContent).text).toBe("hello");
   const details = result.details as SubagentDetails;
   expect(details.results[0]?.usage.input).toBe(10);
@@ -381,7 +352,6 @@ exit 0
   expect(details.results[0]?.messages).toBeUndefined();
   if (details.results[0]?.model !== "gpt-4")
     expect(details.results[0]?.model).toBe("thinking:off");
-
   const debugResult = await tool.execute(
     "test-tool-call",
     { agent: "hang", task: "test", debug: true },
@@ -412,10 +382,8 @@ test("autocomplete provider registers and returns agent suggestions", async () =
       return "off";
     },
   } as unknown as ExtensionAPI;
-
   registerSubagentExtension(fakePi);
   expect(sessionStartHandler).toBeDefined();
-
   let factoryFn: AutocompleteProviderFactory | undefined;
   const fakeCtx = {
     cwd,
@@ -425,13 +393,11 @@ test("autocomplete provider registers and returns agent suggestions", async () =
       },
     },
   };
-
   sessionStartHandler?.(
     "session_start",
     fakeCtx as unknown as ExtensionContext,
   );
   expect(factoryFn).toBeDefined();
-
   const fakeCurrentProvider = {
     getSuggestions: async () => ({ prefix: "fake", items: [] }),
     applyCompletion: () => ({
@@ -441,11 +407,9 @@ test("autocomplete provider registers and returns agent suggestions", async () =
     }),
     shouldTriggerFileCompletion: () => false,
   };
-
   const registeredProvider = factoryFn?.(
     fakeCurrentProvider as unknown as Parameters<AutocompleteProviderFactory>[0],
   );
-
   // Create an agent to test
   const projectAgentsDir = path.join(cwd, ".pi", "agents");
   await Bun.$`mkdir -p ${projectAgentsDir}`;
@@ -457,7 +421,6 @@ description: test
 ---
 Prompt`,
   );
-
   // Test getSuggestions matches
   const suggestions = await registeredProvider?.getSuggestions(
     ["/run te"],
@@ -469,7 +432,6 @@ Prompt`,
   expect(suggestions?.items).toEqual([
     { value: "test-agent", label: "test-agent" },
   ]);
-
   // Test getSuggestions no match
   const noMatch = await registeredProvider?.getSuggestions(
     ["other text "],
@@ -478,7 +440,6 @@ Prompt`,
     { signal: new AbortController().signal },
   );
   expect(noMatch?.prefix).toBe("fake");
-
   // Test applyCompletion falls back
   const applied = registeredProvider?.applyCompletion(
     [],
@@ -488,11 +449,9 @@ Prompt`,
     "",
   );
   expect(applied?.lines).toEqual(["applied"]);
-
   // Test shouldTriggerFileCompletion falls back
   const trigger = registeredProvider?.shouldTriggerFileCompletion?.([], 0, 0);
   expect(trigger).toBe(false);
-
   // Test shouldTriggerFileCompletion undefined fallback
   const fallbackProvider = factoryFn?.({
     getSuggestions: async () => ({ prefix: "", items: [] }),
@@ -503,14 +462,11 @@ Prompt`,
 
 test("renderResult output aggregation and truncation", () => {
   const tool = getSubagentTool();
-
   const fakeTheme: FakeTheme = {
     fg: (color, text) => `[${color}]${text}[/${color}]`,
     bold: (text) => `*${text}*`,
   };
-
   const fakeContext = {} as unknown as ExtensionContext;
-
   // We need to mock a result with some messages
   const messages = [
     {
@@ -599,7 +555,6 @@ test("renderResult output aggregation and truncation", () => {
       ],
     },
   ];
-
   const result = {
     content: [{ type: "text" as const, text: "output" }],
     details: {
@@ -627,7 +582,6 @@ test("renderResult output aggregation and truncation", () => {
       ],
     },
   };
-
   const rendered = tool.renderResult?.(
     result as unknown as AgentToolResult<SubagentDetails>,
     { expanded: false, isPartial: false },
@@ -640,7 +594,6 @@ test("renderResult output aggregation and truncation", () => {
   expect((rendered as unknown as { text: string }).text).toContain(
     "[success]✓[/success] [toolTitle]*test-agent*[/toolTitle][muted] (user)[/muted]",
   );
-
   // Shows the last tool call only (read file3.txt)
   expect((rendered as unknown as { text: string }).text).toContain(
     "[accent]read[/accent][dim] file3.txt[/dim]",
@@ -648,7 +601,6 @@ test("renderResult output aggregation and truncation", () => {
   expect((rendered as unknown as { text: string }).text).not.toContain(
     "[accent]bash[/accent]",
   );
-
   // Final output preview: first 2 lines only
   expect((rendered as unknown as { text: string }).text).toContain(
     "final text line 1\nfinal text line 2[/toolOutput]",
@@ -660,14 +612,11 @@ test("renderResult output aggregation and truncation", () => {
 
 test("renderResult expanded output", () => {
   const tool = getSubagentTool();
-
   const fakeTheme: FakeTheme = {
     fg: (color, text) => `[${color}]${text}[/${color}]`,
     bold: (text) => `*${text}*`,
   };
-
   const fakeContext = {} as unknown as ExtensionContext;
-
   const messages = [
     {
       role: "assistant" as const,
@@ -694,7 +643,6 @@ test("renderResult expanded output", () => {
       ],
     },
   ];
-
   const result = {
     content: [{ type: "text" as const, text: "output" }],
     details: {
@@ -723,7 +671,6 @@ test("renderResult expanded output", () => {
       ],
     },
   };
-
   const rendered = tool.renderResult?.(
     result as unknown as AgentToolResult<SubagentDetails>,
     { expanded: true, isPartial: false },
@@ -860,7 +807,6 @@ exit 0
 
 test("subagent update content streams only final output deltas", async () => {
   const { binDir, cwd } = await setupFakePi();
-
   await writeFile(
     path.join(binDir, "pi"),
     `#!/bin/sh
@@ -870,10 +816,8 @@ printf '%s\n' '{"type":"agent_end"}'
 exit 0
 `,
   );
-
   const tool = getSubagentTool();
   const updates: AgentToolResult<SubagentDetails>[] = [];
-
   const result = await tool.execute(
     "test-tool-call",
     { agent: "hang", task: "test" },
@@ -881,7 +825,6 @@ exit 0
     (update) => updates.push(update),
     { cwd, hasUI: false } as unknown as ExtensionContext,
   );
-
   expect(updates.map((u) => (u.content[0] as TextContent)?.text)).toEqual([
     "hello",
     " world",
@@ -896,12 +839,10 @@ exit 0
 
 test("renderResult subagent and unknown tools", () => {
   const tool = getSubagentTool();
-
   const fakeTheme: FakeTheme = {
     fg: (color, text) => `[${color}]${text}[/${color}]`,
     bold: (text) => `*${text}*`,
   };
-
   const messages = [
     {
       role: "assistant" as const,
@@ -927,7 +868,6 @@ test("renderResult subagent and unknown tools", () => {
       ],
     },
   ];
-
   const result = {
     content: [{ type: "text" as const, text: "output" }],
     details: {
@@ -955,14 +895,12 @@ test("renderResult subagent and unknown tools", () => {
       ],
     },
   };
-
   const rendered = tool.renderResult?.(
     result as unknown as AgentToolResult<SubagentDetails>,
     { expanded: false, isPartial: false },
     fakeTheme as never,
     {} as never,
   );
-
   // Shows only the last tool call (unknown_long), not earlier ones
   expect((rendered as unknown as { text: string }).text).not.toContain(
     "[accent]subagent[/accent][dim] another-agent[/dim]",
@@ -979,19 +917,16 @@ test("renderResult subagent and unknown tools", () => {
 
 test("renderResult expanded output truncation for > 2000 chars", () => {
   const tool = getSubagentTool();
-
   const fakeTheme: FakeTheme = {
     fg: (color, text) => `[${color}]${text}[/${color}]`,
     bold: (text) => `*${text}*`,
   };
-
   const messages = [
     {
       role: "assistant" as const,
       content: [{ type: "text" as const, text: "A".repeat(2005) }],
     },
   ];
-
   const result = {
     content: [{ type: "text" as const, text: "output" }],
     details: {
@@ -1019,14 +954,12 @@ test("renderResult expanded output truncation for > 2000 chars", () => {
       ],
     },
   };
-
   const rendered = tool.renderResult?.(
     result as unknown as AgentToolResult<SubagentDetails>,
     { expanded: true, isPartial: false },
     fakeTheme as never,
     {} as never,
   );
-
   // Returns a Text node with the final output preview (first 2 lines)
   const text = (rendered as unknown as { text: string }).text;
   expect(text).toBeDefined();
@@ -1035,12 +968,10 @@ test("renderResult expanded output truncation for > 2000 chars", () => {
 
 test("renderCall formats tool execution correctly", () => {
   const tool = getSubagentTool();
-
   const fakeTheme: FakeTheme = {
     fg: (color, text) => `[${color}]${text}[/${color}]`,
     bold: (text) => `*${text}*`,
   };
-
   const rendered = tool.renderCall?.(
     {
       agent: "test-agent",
@@ -1049,14 +980,12 @@ test("renderCall formats tool execution correctly", () => {
     fakeTheme as never,
     {} as never,
   );
-
   expect((rendered as unknown as { text: string }).text).toContain(
     "[toolTitle]*subagent *[/toolTitle][accent]test-agent[/accent][muted] [both][/muted]",
   );
   expect((rendered as unknown as { text: string }).text).toContain(
     "long task description that should exceed 60 characters so it...",
   );
-
   // also test short task and default agent scope
   const renderedShort = tool.renderCall?.(
     { agent: "...", task: "short" },
@@ -1073,7 +1002,6 @@ test("renderCall formats tool execution correctly", () => {
 
 test("subagent updates correctly hits default running status", async () => {
   const { binDir, cwd } = await setupFakePi();
-
   await writeFile(
     path.join(binDir, "pi"),
     `#!/bin/sh
@@ -1082,10 +1010,8 @@ printf '%s\n' '{"type":"agent_end"}'
 exit 0
 `,
   );
-
   const tool = getSubagentTool();
   const updates: AgentToolResult<SubagentDetails>[] = [];
-
   await tool.execute(
     "test-tool-call",
     { agent: "hang", task: "test" },
@@ -1093,7 +1019,6 @@ exit 0
     (update) => updates.push(update),
     { cwd, hasUI: false } as unknown as ExtensionContext,
   );
-
   expect(
     updates.some((u) => (u.content[0] as TextContent)?.text === "(running...)"),
   ).toBe(true);
@@ -1111,21 +1036,17 @@ test("utility helpers cover truncation, invocation, prompt files, depth, and mes
     truncateOutput,
     writePromptToTempFile,
   } = require("../src/utils.js");
-
   expect(DEFAULT_MAX_OUTPUT_BYTES).toBe(30_000);
   expect(DEFAULT_MAX_OUTPUT_LINES).toBe(300);
-
   const byLines = Array.from({ length: 301 }, (_v, i) => `line-${i}`).join(
     "\n",
   );
   const truncatedLines = truncateOutput(byLines);
   expect(truncatedLines).toContain("[TRUNCATED: first 300 of 301 lines]");
   expect(truncatedLines).not.toContain("line-300");
-
   const truncatedBytes = truncateOutput("é".repeat(30_000));
   expect(truncatedBytes).toContain("[TRUNCATED: first 1 of 1 lines]");
   expect(truncatedBytes).not.toContain("\uFFFD");
-
   expect(
     getSubagentOutputLimits({
       PI_SUBAGENT_MAX_OUTPUT_BYTES: "1234",
@@ -1141,7 +1062,6 @@ test("utility helpers cover truncation, invocation, prompt files, depth, and mes
   const envLimited = truncateOutput("a\nb\nc", { maxBytes: 100, maxLines: 2 });
   expect(envLimited).toContain("[TRUNCATED: first 2 of 3 lines]");
   expect(envLimited).not.toContain("c");
-
   const scriptDir = await makeTempDir("pi-subagent-script-");
   const scriptPath = path.join(scriptDir, "pi-entry.js");
   await writeFile(scriptPath, "console.log('pi');\n");
@@ -1155,12 +1075,10 @@ test("utility helpers cover truncation, invocation, prompt files, depth, and mes
   } finally {
     process.argv[1] = originalArgv1;
   }
-
   const promptFile = await writePromptToTempFile("agent name!*", "secret");
   tempDirs.push(promptFile.dir);
   expect(path.basename(promptFile.filePath)).toBe("prompt-agent_name_.md");
   expect(await Bun.file(promptFile.filePath).text()).toBe("secret");
-
   const originalDepth = process.env.PI_SUBAGENT_DEPTH;
   try {
     process.env.PI_SUBAGENT_DEPTH = "not-a-number";
@@ -1173,7 +1091,6 @@ test("utility helpers cover truncation, invocation, prompt files, depth, and mes
     if (originalDepth === undefined) delete process.env.PI_SUBAGENT_DEPTH;
     else process.env.PI_SUBAGENT_DEPTH = originalDepth;
   }
-
   expect(
     detectMessageError([{ role: "toolResult", content: [], isError: true }]),
   ).toBe(true);
@@ -1190,16 +1107,13 @@ test("discoverAgents tolerates missing, invalid, and unreadable entries", async 
   const root = await makeTempDir("pi-subagent-discover-");
   const cwd = path.join(root, "work");
   await mkdir(cwd, { recursive: true });
-
   process.env.PI_CODING_AGENT_DIR = path.join(root, "agent-without-agents");
   expect(discoverAgents(cwd, "user").agents).toEqual([]);
-
   const agentDirWithFile = path.join(root, "agent-with-file");
   await mkdir(agentDirWithFile, { recursive: true });
   await writeFile(path.join(agentDirWithFile, "agents"), "not a directory");
   process.env.PI_CODING_AGENT_DIR = agentDirWithFile;
   expect(discoverAgents(cwd, "user").agents).toEqual([]);
-
   const agentDirWithBrokenLink = path.join(root, "agent-with-broken-link");
   const agentsDir = path.join(agentDirWithBrokenLink, "agents");
   await mkdir(agentsDir, { recursive: true });
@@ -1226,7 +1140,6 @@ thinking: louder
 Prompt`,
   );
   process.env.PI_CODING_AGENT_DIR = agentDirWithBrokenLink;
-
   const agents = discoverAgents(cwd, "user").agents;
   expect(agents).toHaveLength(1);
   expect(agents[0]).toMatchObject({
@@ -1240,7 +1153,6 @@ Prompt`,
 test("subagent reports depth, skill resolution, and stderr failures", async () => {
   const { agentDir, binDir, cwd } = await setupFakePi();
   const tool = getSubagentTool();
-
   const originalDepth = process.env.PI_SUBAGENT_DEPTH;
   process.env.PI_SUBAGENT_DEPTH = "3";
   try {
@@ -1257,7 +1169,6 @@ test("subagent reports depth, skill resolution, and stderr failures", async () =
     if (originalDepth === undefined) delete process.env.PI_SUBAGENT_DEPTH;
     else process.env.PI_SUBAGENT_DEPTH = originalDepth;
   }
-
   await writeFile(
     path.join(agentDir, "agents", "needs-skill.md"),
     `---
@@ -1276,7 +1187,6 @@ Prompt`,
       { cwd, hasUI: false } as unknown as ExtensionContext,
     ),
   ).rejects.toThrow('Unknown skill: "missing-skill"');
-
   await writeFile(
     path.join(binDir, "pi"),
     `#!/bin/sh
@@ -1310,7 +1220,6 @@ description: Helps tests
 # Helper
 `,
   );
-
   const resolved = await resolveAgentSkillArgs(cwd, ["helper", "helper"]);
   expect("args" in resolved).toBe(true);
   if ("args" in resolved) {
@@ -1330,7 +1239,6 @@ test("ui helpers format units, fallback output, and failed tool results", () => 
     fg: (color, text) => `[${color}]${text}[/${color}]`,
     bold: (text) => `*${text}*`,
   };
-
   expect(formatTokens(999)).toBe("999");
   expect(formatTokens(1500)).toBe("1.5k");
   expect(formatTokens(15_000)).toBe("15k");
@@ -1349,11 +1257,9 @@ test("ui helpers format units, fallback output, and failed tool results", () => 
       "provider/model:high",
     ),
   ).toBe("2 turns ↑1.5k ↓15k R999 W1.5M $0.1235 ctx:42 provider/model:high");
-
   expect(formatToolCall("subagent", { agent: "child" }, fakeTheme.fg)).toBe(
     "[accent]subagent[/accent][dim] child[/dim]",
   );
-
   expect(
     (renderSubagentCall({}, fakeTheme) as unknown as { text: string }).text,
   ).toContain("[accent]...[/accent][muted] [both][/muted]\n  [dim]...[/dim]");
@@ -1364,7 +1270,6 @@ test("ui helpers format units, fallback output, and failed tool results", () => 
       }
     ).text,
   ).toBe("(no output)");
-
   const failed = renderSubagentResult(
     {
       content: [{ type: "text", text: "ignored" }],
@@ -1395,7 +1300,6 @@ test("ui helpers format units, fallback output, and failed tool results", () => 
     },
     fakeTheme,
   ) as unknown as { text: string };
-
   expect(failed.text).toContain("[error]✗[/error]");
   expect(failed.text).toContain("[muted](no output)[/muted]");
 });

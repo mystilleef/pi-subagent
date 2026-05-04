@@ -34,9 +34,7 @@ async function waitForSubagentProcess(
     let exited = false;
     let idleTimer: NodeJS.Timeout | undefined;
     let hardTimer: NodeJS.Timeout | undefined;
-
     let settled = false;
-
     const done = () => {
       if (settled) return;
       settled = true;
@@ -44,27 +42,22 @@ async function waitForSubagentProcess(
       if (hardTimer) clearTimeout(hardTimer);
       resolve(exitCode);
     };
-
     const destroyStreams = () => {
       proc.stdout?.destroy();
       proc.stderr?.destroy();
     };
-
     const armIdleTimer = () => {
       if (!exited) return;
       if (idleTimer) clearTimeout(idleTimer);
       idleTimer = setTimeout(destroyStreams, idleMs);
       idleTimer.unref?.();
     };
-
     proc.on("close", done);
-
     proc.on("error", () => {
       exitCode = 1;
       exited = true;
       done();
     });
-
     proc.on("exit", (code) => {
       exitCode = code;
       exited = true;
@@ -72,7 +65,6 @@ async function waitForSubagentProcess(
       hardTimer = setTimeout(destroyStreams, hardMs);
       hardTimer.unref?.();
     });
-
     proc.stdout?.on("data", armIdleTimer);
     proc.stderr?.on("data", armIdleTimer);
   });
@@ -93,7 +85,6 @@ export async function runSingleAgent(
   parentThinking: ThinkingLevel,
 ): Promise<SingleResult> {
   const agent = agents.find((a) => a.name === agentName);
-
   if (!agent) {
     const available = agents.map((a) => `"${a.name}"`).join(", ") || "none";
     return createErrorResult(
@@ -103,7 +94,6 @@ export async function runSingleAgent(
       `Unknown agent: "${agentName}". Available agents: ${available}.`,
     );
   }
-
   const depth = getSubagentDepth();
   if (depth >= MAX_SUBAGENT_DEPTH) {
     return createErrorResult(
@@ -113,18 +103,15 @@ export async function runSingleAgent(
       `Subagent nesting limit reached (depth ${depth}/${MAX_SUBAGENT_DEPTH}).`,
     );
   }
-
   const thinking = agent.thinking ?? parentThinking;
   const modelDisplay = parentModel
     ? `${parentModel.provider}/${parentModel.id}${thinking ? `:${thinking}` : ""}`
     : thinking
       ? `thinking:${thinking}`
       : undefined;
-
   const resolvedSkills = agent.skills
     ? await resolveAgentSkillArgs(defaultCwd, agent.skills)
     : { args: [] };
-
   if ("error" in resolvedSkills) {
     return createErrorResult(
       agentName,
@@ -134,7 +121,6 @@ export async function runSingleAgent(
       modelDisplay,
     );
   }
-
   const currentResult: RuntimeResult = {
     agent: agentName,
     agentSource: agent.source,
@@ -154,10 +140,8 @@ export async function runSingleAgent(
     },
     model: modelDisplay,
   };
-
   let lastEmittedFinalOutput = "";
   let emittedRunningUpdate = false;
-
   const nextUpdateText = () => {
     const finalOutput = currentResult.finalOutput;
     if (!finalOutput) {
@@ -165,17 +149,14 @@ export async function runSingleAgent(
       emittedRunningUpdate = true;
       return "(running...)";
     }
-
     if (finalOutput.startsWith(lastEmittedFinalOutput)) {
       const delta = finalOutput.slice(lastEmittedFinalOutput.length);
       lastEmittedFinalOutput = finalOutput;
       return truncateOutput(delta);
     }
-
     lastEmittedFinalOutput = finalOutput;
     return truncateOutput(finalOutput);
   };
-
   const emitUpdate = () => {
     onUpdate?.({
       content: [
@@ -187,7 +168,6 @@ export async function runSingleAgent(
       details: makeDetails([currentResult], { includeMessages: true }),
     });
   };
-
   let tmpPrompt: { dir: string; filePath: string } | null = null;
   try {
     const args: string[] = ["--mode", "json", "-p", "--no-session"];
@@ -196,14 +176,11 @@ export async function runSingleAgent(
     args.push("--thinking", thinking);
     if (agent.tools?.length) args.push("--tools", agent.tools.join(","));
     if (agent.skills) args.push("--no-skills", ...resolvedSkills.args);
-
     if (agent.systemPrompt.trim()) {
       tmpPrompt = await writePromptToTempFile(agent.name, agent.systemPrompt);
       args.push("--append-system-prompt", tmpPrompt.filePath);
     }
-
     args.push(`Task: ${task}`);
-
     const invocation = getPiInvocation(args);
     const proc = spawn(invocation.command, invocation.args, {
       cwd: defaultCwd,
@@ -218,9 +195,7 @@ export async function runSingleAgent(
       if (currentResult.stderr.length < 10_000)
         currentResult.stderr += error.message;
     });
-
     let wasAborted = false;
-
     const addMessage = (msg: Message) => {
       currentResult.messages.push(msg);
       currentResult.finalOutput = getFinalOutput(currentResult.messages);
@@ -229,7 +204,6 @@ export async function runSingleAgent(
       } else if (currentResult.errorMessage === TOOL_RESULT_FAILED_MESSAGE) {
         currentResult.errorMessage = undefined;
       }
-
       if (msg.role === "assistant") {
         currentResult.usage.turns++;
         const usage = msg.usage;
@@ -246,7 +220,6 @@ export async function runSingleAgent(
         if (msg.errorMessage) currentResult.errorMessage = msg.errorMessage;
       }
     };
-
     const processLine = (line: string) => {
       if (!line.trim()) return;
       try {
@@ -258,7 +231,6 @@ export async function runSingleAgent(
           addMessage(event.message as Message);
           emitUpdate();
         }
-
         if (event.type === "agent_end") {
           if (
             currentResult.messages.length === 0 &&
@@ -273,18 +245,15 @@ export async function runSingleAgent(
         /* ignore invalid JSON */
       }
     };
-
     if (proc.stdout) {
       readline.createInterface({ input: proc.stdout }).on("line", processLine);
     }
-
     if (proc.stderr) {
       proc.stderr.on("data", (data) => {
         if (currentResult.stderr.length < 10_000)
           currentResult.stderr += data.toString();
       });
     }
-
     if (signal) {
       const onAbort = () => {
         wasAborted = true;
@@ -293,7 +262,6 @@ export async function runSingleAgent(
       if (signal.aborted) onAbort();
       else signal.addEventListener("abort", onAbort, { once: true });
     }
-
     currentResult.exitCode = (await processDone) ?? 0;
     if (spawnError) currentResult.exitCode = 1;
     if (detectMessageError(currentResult.messages)) {

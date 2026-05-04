@@ -49,17 +49,14 @@ export default function (pi: ExtensionAPI) {
       async getSuggestions(lines, cursorLine, cursorCol, options) {
         const line = lines[cursorLine] ?? "";
         const beforeCursor = line.slice(0, cursorCol);
-
         // Match `/run ` followed by an incomplete agent name (no spaces)
         const match = beforeCursor.match(/(?:^|[ \t])\/run\s+([^\s]*)$/);
         if (!match) {
           return current.getSuggestions(lines, cursorLine, cursorCol, options);
         }
-
         const prefix = match[1] ?? "";
         // Default to "both" scopes for completion
         const agents = discoverAgents(ctx.cwd, "both").agents;
-
         return {
           prefix,
           items: agents
@@ -67,7 +64,6 @@ export default function (pi: ExtensionAPI) {
             .map((a) => ({ value: a.name, label: a.name })),
         };
       },
-
       applyCompletion(lines, cursorLine, cursorCol, item, prefix) {
         return current.applyCompletion(
           lines,
@@ -77,7 +73,6 @@ export default function (pi: ExtensionAPI) {
           prefix,
         );
       },
-
       shouldTriggerFileCompletion(lines, cursorLine, cursorCol) {
         return (
           current.shouldTriggerFileCompletion?.(lines, cursorLine, cursorCol) ??
@@ -86,7 +81,6 @@ export default function (pi: ExtensionAPI) {
       },
     }));
   });
-
   pi.registerTool({
     name: "subagent",
     label: "Subagent",
@@ -94,7 +88,6 @@ export default function (pi: ExtensionAPI) {
       " ",
     ),
     parameters: SubagentParams,
-
     async execute(_toolCallId, params, signal, onUpdate, ctx) {
       const agentScope: AgentScope = params.agentScope ?? "both";
       const discovery = discoverAgents(ctx.cwd, agentScope);
@@ -103,7 +96,6 @@ export default function (pi: ExtensionAPI) {
         ? { provider: ctx.model.provider, id: ctx.model.id }
         : undefined;
       const parentThinking = pi.getThinkingLevel() as ThinkingLevel;
-
       const includeDebugMessages = params.debug === true;
       const makeDetails = (
         results: SingleResult[],
@@ -124,7 +116,6 @@ export default function (pi: ExtensionAPI) {
           return compact;
         }),
       });
-
       if ((agentScope === "project" || agentScope === "both") && ctx.hasUI) {
         const requested = agents.find((a) => a.name === params.agent);
         if (requested?.source === "project") {
@@ -148,7 +139,6 @@ Project agents are repo-controlled. Only continue for trusted repositories.`,
             };
         }
       }
-
       const result = await runSingleAgent(
         ctx.cwd,
         agents,
@@ -183,11 +173,9 @@ Project agents are repo-controlled. Only continue for trusted repositories.`,
         details: makeDetails([result]),
       };
     },
-
     renderCall(args, theme, _context) {
       return renderSubagentCall(args, theme);
     },
-
     renderResult(result, display, theme, _context) {
       return renderSubagentResult(result, theme, display);
     },

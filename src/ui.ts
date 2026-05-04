@@ -49,11 +49,9 @@ export function formatToolCall(
   } else {
     preview = JSON.stringify(args);
   }
-
   if (preview.length > 50) {
     preview = `${preview.slice(0, 50)}...`;
   }
-
   return themeFg("accent", toolName) + themeFg("dim", ` ${preview}`);
 }
 
@@ -103,7 +101,6 @@ export function renderSubagentResult(
       0,
     );
   }
-
   const failed =
     r.exitCode !== 0 ||
     r.stopReason === "error" ||
@@ -112,11 +109,9 @@ export function renderSubagentResult(
     detectMessageError(r.messages ?? []);
   const icon = failed ? theme.fg("error", "✗") : theme.fg("success", "✓");
   const finalOutput = r.finalOutput ?? getFinalOutput(r.messages ?? []);
-
   let text = `${icon} ${theme.fg("toolTitle", theme.bold(r.agent))}${theme.fg("muted", ` (${r.agentSource})`)}`;
   if (failed && r.stopReason)
     text += ` ${theme.fg("error", `[${r.stopReason}]`)}`;
-
   if (failed && r.errorMessage) {
     text += `\n${theme.fg("error", `Error: ${r.errorMessage}`)}`;
   } else {
@@ -124,12 +119,10 @@ export function renderSubagentResult(
       .filter((m) => m.role === "assistant")
       .flatMap((m) => m.content)
       .findLast((p) => p.type === "toolCall");
-
     if (lastTool?.type === "toolCall") {
       const showRawArgs = display?.isPartial === true && failed;
       text += `\n${theme.fg("muted", "→ ") + formatToolCall(lastTool.name, lastTool.arguments as Record<string, unknown>, theme.fg.bind(theme), showRawArgs)}`;
     }
-
     if (finalOutput.trim()) {
       const preview = finalOutput.trim().split("\n").slice(0, 2).join("\n");
       text += `\n${theme.fg("toolOutput", preview)}`;
@@ -137,7 +130,6 @@ export function renderSubagentResult(
       text += `\n${theme.fg("muted", "(no output)")}`;
     }
   }
-
   const usageStr = formatUsageStats(r.usage, r.model);
   if (usageStr) text += `\n${theme.fg("dim", usageStr)}`;
   return new Text(text, 0, 0);

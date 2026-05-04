@@ -53,4 +53,7 @@ and project-local agent definitions.
 
 ## Rules
 
-- Remove all empty lines inside functions.
+- Remove all empty lines inside all functions in `TypeScript` and
+  `JavaScript` source code.
+- Don't add empty lines inside functions in `TypeScript` and
+  `JavaScript` source code.

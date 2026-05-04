@@ -55,22 +55,18 @@ function loadAgentsFromDir(
   source: "user" | "project",
 ): AgentConfig[] {
   const agents: AgentConfig[] = [];
-
   if (!fs.existsSync(dir)) {
     return agents;
   }
-
   let entries: fs.Dirent[];
   try {
     entries = fs.readdirSync(dir, { withFileTypes: true });
   } catch {
     return agents;
   }
-
   for (const entry of entries) {
     if (!entry.name.endsWith(".md")) continue;
     if (!entry.isFile() && !entry.isSymbolicLink()) continue;
-
     const filePath = path.join(dir, entry.name);
     let content: string;
     try {
@@ -78,14 +74,11 @@ function loadAgentsFromDir(
     } catch {
       continue;
     }
-
     const { frontmatter, body } =
       parseFrontmatter<Record<string, string>>(content);
-
     if (!frontmatter.name || !frontmatter.description) {
       continue;
     }
-
     const tools = frontmatter.tools
       ?.split(",")
       .map((t: string) => t.trim())
@@ -96,7 +89,6 @@ function loadAgentsFromDir(
       .map((s: string) => s.trim())
       .filter(Boolean);
     const thinking = parseThinkingLevel(frontmatter.thinking);
-
     agents.push({
       name: frontmatter.name,
       description: frontmatter.description,
@@ -108,7 +100,6 @@ function loadAgentsFromDir(
       filePath,
     });
   }
-
   return agents;
 }
 
@@ -125,7 +116,6 @@ function findNearestProjectAgentsDir(cwd: string): string | null {
   while (true) {
     const candidate = path.join(currentDir, ".pi", "agents");
     if (isDirectory(candidate)) return candidate;
-
     const parentDir = path.dirname(currentDir);
     if (parentDir === currentDir) return null;
     currentDir = parentDir;
@@ -138,16 +128,13 @@ export function discoverAgents(
 ): AgentDiscoveryResult {
   const userDir = path.join(getAgentDir(), "agents");
   const projectAgentsDir = findNearestProjectAgentsDir(cwd);
-
   const userAgents =
     scope === "project" ? [] : loadAgentsFromDir(userDir, "user");
   const projectAgents =
     scope === "user" || !projectAgentsDir
       ? []
       : loadAgentsFromDir(projectAgentsDir, "project");
-
   const agentMap = new Map<string, AgentConfig>();
-
   if (scope === "both") {
     for (const agent of userAgents) agentMap.set(agent.name, agent);
     for (const agent of projectAgents) agentMap.set(agent.name, agent);
@@ -156,7 +143,6 @@ export function discoverAgents(
   } else {
     for (const agent of projectAgents) agentMap.set(agent.name, agent);
   }
-
   return { agents: Array.from(agentMap.values()), projectAgentsDir };
 }
 
