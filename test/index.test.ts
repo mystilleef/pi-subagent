@@ -14,8 +14,8 @@ import type { AgentToolUpdateCallback } from "@mariozechner/pi-agent-core";
 import type { TextContent } from "@mariozechner/pi-ai";
 import type {
   AgentToolResult,
-  AutocompleteProviderFactory,
   ExtensionAPI,
+  ExtensionCommandContext,
   ExtensionContext,
   ThemeColor,
   ToolDefinition,
@@ -100,21 +100,54 @@ type CapturedSubagentTool = ToolDefinition<
   ) => Promise<AgentToolResult<SubagentDetails>>;
 };
 
-function getSubagentTool(): CapturedSubagentTool {
+type RegisteredCommandOptions = Parameters<ExtensionAPI["registerCommand"]>[1];
+type SendMessageArg = Parameters<ExtensionAPI["sendMessage"]>[0];
+
+function getSubagentTool(overrides?: {
+  sendMessage?: (msg: SendMessageArg) => void;
+}): CapturedSubagentTool & {
+  registeredCommands: Map<string, RegisteredCommandOptions>;
+} {
   let registeredTool: RegisteredTool | undefined;
+  const registeredCommands = new Map<string, RegisteredCommandOptions>();
   const fakePi = {
     on() {},
     registerTool(tool: RegisteredTool) {
       registeredTool = tool;
     },
+    registerCommand(name: string, command: RegisteredCommandOptions) {
+      registeredCommands.set(name, command);
+    },
     getThinkingLevel() {
       return "off";
     },
+    sendMessage: overrides?.sendMessage ?? (() => {}),
   } as unknown as ExtensionAPI;
   registerSubagentExtension(fakePi);
   if (!registeredTool) throw new Error("subagent tool was not registered");
-  return registeredTool as CapturedSubagentTool;
+  return Object.assign(registeredTool as CapturedSubagentTool, {
+    registeredCommands,
+  });
 }
+
+test("run slash command executes subagent and sends message", async () => {
+  const { cwd } = await setupFakePi();
+  let sentMessage: SendMessageArg | undefined;
+  const { registeredCommands } = getSubagentTool({
+    sendMessage: (msg) => {
+      sentMessage = msg;
+    },
+  });
+  const runCommand = registeredCommands.get("run");
+  expect(runCommand).toBeDefined();
+  await runCommand?.handler("hang test task", {
+    cwd,
+    ui: { notify: () => {} },
+  } as unknown as ExtensionCommandContext);
+  expect(sentMessage).toBeDefined();
+  expect(sentMessage?.customType).toBe("text");
+  expect(sentMessage?.content).toBe("done");
+});
 
 async function executeSubagent(task: string, signal?: AbortSignal) {
   const { cwd } = await setupFakePi();
@@ -388,172 +421,27 @@ exit 0
   expect(debugDetails.results[0]?.messages).toHaveLength(1);
 });
 
-test("autocomplete provider registers and returns agent suggestions", async () => {
+test("getArgumentCompletions returns matching agent suggestions", async () => {
   const { cwd } = await setupFakePi();
-  let sessionStartHandler:
-    | ((event: string, ctx: ExtensionContext) => void)
-    | undefined;
-  const fakePi = {
-    on(event: string, handler: unknown) {
-      if (event === "session_start") {
-        sessionStartHandler = handler as (
-          event: string,
-          ctx: ExtensionContext,
-        ) => void;
-      }
-    },
-    registerTool() {},
-    getThinkingLevel() {
-      return "off";
-    },
-  } as unknown as ExtensionAPI;
-  registerSubagentExtension(fakePi);
-  expect(sessionStartHandler).toBeDefined();
-  let factoryFn: AutocompleteProviderFactory | undefined;
-  const fakeCtx = {
-    cwd,
-    ui: {
-      addAutocompleteProvider: (factory: AutocompleteProviderFactory) => {
-        factoryFn = factory;
-      },
-    },
-  };
-  sessionStartHandler?.(
-    "session_start",
-    fakeCtx as unknown as ExtensionContext,
-  );
-  expect(factoryFn).toBeDefined();
-  const fakeCurrentProvider = {
-    getSuggestions: async () => ({ prefix: "fake", items: [] }),
-    applyCompletion: () => ({
-      lines: ["applied"],
-      cursorLine: 0,
-      cursorCol: 7,
-    }),
-    shouldTriggerFileCompletion: () => false,
-  };
-  const registeredProvider = factoryFn?.(
-    fakeCurrentProvider as unknown as Parameters<AutocompleteProviderFactory>[0],
-  );
-  // Create an agent to test
+  const { registeredCommands } = getSubagentTool();
+  const runCommand = registeredCommands.get("run");
+  expect(runCommand?.getArgumentCompletions).toBeDefined();
   const projectAgentsDir = path.join(cwd, ".pi", "agents");
   await Bun.$`mkdir -p ${projectAgentsDir}`;
   await writeFile(
     path.join(projectAgentsDir, "test-agent.md"),
-    `---
-name: test-agent
-description: test
----
-Prompt`,
+    `---\nname: test-agent\ndescription: test\n---\nPrompt`,
   );
-  // Test getSuggestions matches
-  const suggestions = await registeredProvider?.getSuggestions(
-    ["/run te"],
-    0,
-    7,
-    { signal: new AbortController().signal },
-  );
-  expect(suggestions?.prefix).toBe("te");
-  expect(suggestions?.items).toEqual([
-    { value: "test-agent", label: "test-agent" },
-  ]);
-  // Test getSuggestions no match
-  const noMatch = await registeredProvider?.getSuggestions(
-    ["other text "],
-    0,
-    11,
-    { signal: new AbortController().signal },
-  );
-  expect(noMatch?.prefix).toBe("fake");
-  // Test applyCompletion falls back
-  const applied = registeredProvider?.applyCompletion(
-    [],
-    0,
-    0,
-    { value: "test", label: "test" },
-    "",
-  );
-  expect(applied?.lines).toEqual(["applied"]);
-  // Test shouldTriggerFileCompletion falls back
-  const trigger = registeredProvider?.shouldTriggerFileCompletion?.([], 0, 0);
-  expect(trigger).toBe(false);
-  // Test shouldTriggerFileCompletion undefined fallback
-  const fallbackProvider = factoryFn?.({
-    getSuggestions: async () => ({ prefix: "", items: [] }),
-    applyCompletion: () => ({ lines: [], cursorLine: 0, cursorCol: 0 }),
-  } as unknown as Parameters<AutocompleteProviderFactory>[0]);
-  expect(fallbackProvider?.shouldTriggerFileCompletion?.([], 0, 0)).toBe(true);
-});
-
-test("getSuggestions caches discoverAgents within TTL", async () => {
-  const { cwd } = await setupFakePi();
-  let sessionStartHandler:
-    | ((event: string, ctx: ExtensionContext) => void)
-    | undefined;
-  const fakePi = {
-    on(event: string, handler: unknown) {
-      if (event === "session_start") {
-        sessionStartHandler = handler as (
-          event: string,
-          ctx: ExtensionContext,
-        ) => void;
-      }
-    },
-    registerTool() {},
-    getThinkingLevel() {
-      return "off";
-    },
-  } as unknown as ExtensionAPI;
-  registerSubagentExtension(fakePi);
-  const fakeCurrentProvider = {
-    getSuggestions: async () => ({ prefix: "fake", items: [] }),
-    applyCompletion: () => ({ lines: [], cursorLine: 0, cursorCol: 0 }),
-  };
-  let factoryFn: AutocompleteProviderFactory | undefined;
-  const fakeCtx = {
-    cwd,
-    ui: {
-      addAutocompleteProvider: (factory: AutocompleteProviderFactory) => {
-        factoryFn = factory;
-      },
-    },
-  };
-  sessionStartHandler?.(
-    "session_start",
-    fakeCtx as unknown as ExtensionContext,
-  );
-  const registeredProvider = factoryFn?.(
-    fakeCurrentProvider as unknown as Parameters<AutocompleteProviderFactory>[0],
-  );
-  const projectAgentsDir = path.join(cwd, ".pi", "agents");
-  await Bun.$`mkdir -p ${projectAgentsDir}`;
-  const agentFile = path.join(projectAgentsDir, "cache-agent.md");
-  await writeFile(
-    agentFile,
-    `---\nname: cache-agent\ndescription: test\n---\nPrompt`,
-  );
-  // First call populates the cache
-  const first = await registeredProvider?.getSuggestions(
-    ["/run cache"],
-    0,
-    10,
-    { signal: new AbortController().signal },
-  );
-  expect(first?.items).toEqual([
-    { value: "cache-agent", label: "cache-agent" },
-  ]);
-  // Delete the agent file — a non-cached call would now find nothing
-  await unlink(agentFile);
-  // Second call within TTL must return cached result
-  const second = await registeredProvider?.getSuggestions(
-    ["/run cache"],
-    0,
-    10,
-    { signal: new AbortController().signal },
-  );
-  expect(second?.items).toEqual([
-    { value: "cache-agent", label: "cache-agent" },
-  ]);
+  const originalCwd = process.cwd;
+  process.cwd = () => cwd;
+  try {
+    expect(await runCommand?.getArgumentCompletions?.("te")).toEqual([
+      { value: "test-agent", label: "test-agent" },
+    ]);
+    expect(await runCommand?.getArgumentCompletions?.("x")).toEqual([]);
+  } finally {
+    process.cwd = originalCwd;
+  }
 });
 
 test("renderResult output aggregation and truncation", () => {
