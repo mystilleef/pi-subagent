@@ -21,6 +21,7 @@ import type {
   ToolDefinition,
 } from "@mariozechner/pi-coding-agent";
 import registerSubagentExtension, {
+  resetAgentCache,
   type SubagentParams,
 } from "../src/index.js";
 import type { SubagentDetails } from "../src/types.js";
@@ -80,6 +81,7 @@ exit 0
   process.argv[1] = path.join(root, "not-pi");
   process.env.PATH = `${binDir}:${ORIGINAL_PATH ?? ""}`;
   process.env.PI_CODING_AGENT_DIR = agentDir;
+  resetAgentCache();
   return { agentDir, cwd, binDir };
 }
 
@@ -184,6 +186,29 @@ exit 0
   );
   expect((result.content[0] as TextContent).text).toEqual("from agent_end");
   expect(result.details?.results[0]?.usage.input).toBe(2);
+});
+
+test("subagent trims large finalOutput to 2000 chars in content[0].text", async () => {
+  const { binDir, cwd } = await setupFakePi();
+  await writeFile(
+    path.join(binDir, "pi"),
+    `#!/bin/sh
+node -e "const t='x'.repeat(2001);const e={type:'message_end',message:{role:'assistant',content:[{type:'text',text:t}],usage:{input:1,output:1,totalTokens:2,cost:{total:0.001}}}};console.log(JSON.stringify(e));console.log(JSON.stringify({type:'agent_end'}));"
+exit 0
+`,
+  );
+  const tool = getSubagentTool();
+  const result = await tool.execute(
+    "test-tool-call",
+    { agent: "hang", task: "test" },
+    undefined,
+    undefined,
+    { cwd, hasUI: false } as unknown as ExtensionContext,
+  );
+  const text = (result.content[0] as TextContent).text;
+  expect(text.length).toBeLessThanOrEqual(2_000 + 50);
+  expect(text).toContain("[truncated: full output available in details]");
+  expect(result.details?.results[0]?.finalOutput).toBe("x".repeat(2_001));
 });
 
 test("subagent reports spawn errors", async () => {
@@ -460,6 +485,77 @@ Prompt`,
   expect(fallbackProvider?.shouldTriggerFileCompletion?.([], 0, 0)).toBe(true);
 });
 
+test("getSuggestions caches discoverAgents within TTL", async () => {
+  const { cwd } = await setupFakePi();
+  let sessionStartHandler:
+    | ((event: string, ctx: ExtensionContext) => void)
+    | undefined;
+  const fakePi = {
+    on(event: string, handler: unknown) {
+      if (event === "session_start") {
+        sessionStartHandler = handler as (
+          event: string,
+          ctx: ExtensionContext,
+        ) => void;
+      }
+    },
+    registerTool() {},
+    getThinkingLevel() {
+      return "off";
+    },
+  } as unknown as ExtensionAPI;
+  registerSubagentExtension(fakePi);
+  const fakeCurrentProvider = {
+    getSuggestions: async () => ({ prefix: "fake", items: [] }),
+    applyCompletion: () => ({ lines: [], cursorLine: 0, cursorCol: 0 }),
+  };
+  let factoryFn: AutocompleteProviderFactory | undefined;
+  const fakeCtx = {
+    cwd,
+    ui: {
+      addAutocompleteProvider: (factory: AutocompleteProviderFactory) => {
+        factoryFn = factory;
+      },
+    },
+  };
+  sessionStartHandler?.(
+    "session_start",
+    fakeCtx as unknown as ExtensionContext,
+  );
+  const registeredProvider = factoryFn?.(
+    fakeCurrentProvider as unknown as Parameters<AutocompleteProviderFactory>[0],
+  );
+  const projectAgentsDir = path.join(cwd, ".pi", "agents");
+  await Bun.$`mkdir -p ${projectAgentsDir}`;
+  const agentFile = path.join(projectAgentsDir, "cache-agent.md");
+  await writeFile(
+    agentFile,
+    `---\nname: cache-agent\ndescription: test\n---\nPrompt`,
+  );
+  // First call populates the cache
+  const first = await registeredProvider?.getSuggestions(
+    ["/run cache"],
+    0,
+    10,
+    { signal: new AbortController().signal },
+  );
+  expect(first?.items).toEqual([
+    { value: "cache-agent", label: "cache-agent" },
+  ]);
+  // Delete the agent file — a non-cached call would now find nothing
+  await unlink(agentFile);
+  // Second call within TTL must return cached result
+  const second = await registeredProvider?.getSuggestions(
+    ["/run cache"],
+    0,
+    10,
+    { signal: new AbortController().signal },
+  );
+  expect(second?.items).toEqual([
+    { value: "cache-agent", label: "cache-agent" },
+  ]);
+});
+
 test("renderResult output aggregation and truncation", () => {
   const tool = getSubagentTool();
   const fakeTheme: FakeTheme = {
@@ -716,25 +812,80 @@ exit 0
     { cwd, hasUI: false } as unknown as ExtensionContext,
   );
 
-  // Assert on updates received
+  const texts = updates.map((u) => (u.content[0] as TextContent)?.text);
   expect(updates.length).toBeGreaterThan(0);
-  // Before final message, it should say (running...)
-  expect(
-    updates.some((u) => (u.content[0] as TextContent)?.text === "(running...)"),
-  ).toBe(true);
-  // After final message, it should just be "final"
-  expect((updates[updates.length - 1]?.content[0] as TextContent)?.text).toBe(
-    "final",
+  expect(texts.some((t) => t === "(running...)")).toBe(true);
+  expect(texts.some((t) => t === "bash: ls")).toBe(true);
+  expect(texts.indexOf("(running...)")).toBeLessThan(texts.indexOf("bash: ls"));
+});
+
+test("streaming updates emit tool-call format instead of output text", async () => {
+  const { binDir, cwd } = await setupFakePi();
+  await writeFile(
+    path.join(binDir, "pi"),
+    `#!/bin/sh
+printf '%s\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"toolCall","name":"bash","id":"1","arguments":{"command":"ls"}}]}}'
+printf '%s\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"final"}]}}'
+printf '%s\n' '{"type":"agent_end"}'
+exit 0
+`,
+  );
+  const tool = getSubagentTool();
+  const updates: AgentToolResult<SubagentDetails>[] = [];
+  await tool.execute(
+    "test-tool-call",
+    { agent: "hang", task: "test" },
+    undefined,
+    (update) => updates.push(update),
+    { cwd, hasUI: false } as unknown as ExtensionContext,
+  );
+  const texts = updates.map((u) => (u.content[0] as TextContent)?.text);
+  expect(texts.some((t) => t === "bash: ls")).toBe(true);
+  expect(texts.some((t) => t === "final")).toBe(false);
+});
+
+test("streaming update details keep recent messages after final text anchor", async () => {
+  const { binDir, cwd } = await setupFakePi();
+  const longCommand = "0123456789".repeat(7);
+  await writeFile(
+    path.join(binDir, "pi"),
+    `#!/bin/sh
+printf '%s\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"old"}]}}'
+printf '%s\n' '{"type":"message_end","message":{"role":"toolResult","content":[{"type":"text","text":"old result"}],"toolCallId":"old"}}'
+printf '%s\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"checkpoint"}]}}'
+printf '%s\n' '{"type":"message_end","message":{"role":"toolResult","content":[{"type":"text","text":"fresh result"}],"toolCallId":"1"}}'
+printf '%s\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"toolCall","name":"bash","id":"2","arguments":{"command":"${longCommand}"}}]}}'
+printf '%s\n' '{"type":"agent_end"}'
+exit 0
+`,
+  );
+  const tool = getSubagentTool();
+  const updates: AgentToolResult<SubagentDetails>[] = [];
+  await tool.execute(
+    "test-tool-call",
+    { agent: "hang", task: "test" },
+    undefined,
+    (update) => updates.push(update),
+    { cwd, hasUI: false } as unknown as ExtensionContext,
+  );
+  const latest = updates.at(-1);
+  const messages = latest?.details?.results[0]?.messages ?? [];
+  expect((latest?.content[0] as TextContent | undefined)?.text).toBe(
+    `bash: ${longCommand.slice(0, 60)}`,
+  );
+  expect(messages.map((m) => m.role)).toEqual([
+    "assistant",
+    "toolResult",
+    "assistant",
+  ]);
+  expect((messages[0]?.content[0] as TextContent | undefined)?.text).toBe(
+    "checkpoint",
   );
   expect(
-    updates.some((u) =>
-      u.details.results[0]?.messages?.some((m) =>
-        Array.isArray(m.content)
-          ? m.content.some((p) => p.type === "toolCall" && p.name === "bash")
-          : false,
-      ),
+    messages.some(
+      (m) => (m.content[0] as TextContent | undefined)?.text === "old",
     ),
-  ).toBe(true);
+  ).toBe(false);
 });
 
 test("subagent keeps realtime feedback updating after a child tool error", async () => {
@@ -802,7 +953,9 @@ exit 0
   expect(renderedLaterToolCall.text).not.toContain(
     "Subagent tool result failed.",
   );
-  expect((updates.at(-1)?.content[0] as TextContent)?.text).toBe("recovered");
+  expect((updates.at(-1)?.content[0] as TextContent)?.text).toBe(
+    "(running...)",
+  );
 });
 
 test("subagent update content streams only final output deltas", async () => {
@@ -826,8 +979,8 @@ exit 0
     { cwd, hasUI: false } as unknown as ExtensionContext,
   );
   expect(updates.map((u) => (u.content[0] as TextContent)?.text)).toEqual([
-    "hello",
-    " world",
+    "(running...)",
+    "(running...)",
   ]);
   expect((result.content[0] as TextContent).text).toBe("hello world");
   expect(updates[0]?.details.results[0]?.finalOutput).toBe("hello");
@@ -1100,6 +1253,118 @@ test("utility helpers cover truncation, invocation, prompt files, depth, and mes
       { role: "assistant", content: [{ type: "text", text: "recovered" }] },
     ]),
   ).toBe(false);
+});
+
+test("getPiInvocation keeps custom non-generic runtimes", () => {
+  const { getPiInvocation } = require("../src/utils.js");
+  const originalArgv1 = process.argv[1] ?? "";
+  const originalExecPath = Object.getOwnPropertyDescriptor(process, "execPath");
+  process.argv[1] = path.join(tmpdir(), "missing-pi-entry.js");
+  Object.defineProperty(process, "execPath", {
+    value: "/opt/custom/pi-runtime",
+    configurable: true,
+  });
+  try {
+    expect(getPiInvocation(["--json"])).toEqual({
+      command: "/opt/custom/pi-runtime",
+      args: ["--json"],
+    });
+  } finally {
+    process.argv[1] = originalArgv1;
+    if (originalExecPath)
+      Object.defineProperty(process, "execPath", originalExecPath);
+  }
+});
+
+test("resolveAgentSkillArgs reports skill discovery errors", async () => {
+  const { DefaultResourceLoader } = await import(
+    "@mariozechner/pi-coding-agent"
+  );
+  const { resolveAgentSkillArgs } = require("../src/utils.js");
+  const originalReload = DefaultResourceLoader.prototype.reload;
+  DefaultResourceLoader.prototype.reload = async () => {
+    throw new Error("scan failed");
+  };
+  try {
+    await expect(
+      resolveAgentSkillArgs(process.cwd(), ["helper"]),
+    ).resolves.toEqual({
+      error: "Failed to discover skills: scan failed",
+    });
+  } finally {
+    DefaultResourceLoader.prototype.reload = originalReload;
+  }
+});
+
+test("trimForLLM returns text unchanged when within cap", () => {
+  const { trimForLLM } = require("../src/utils.js");
+  const short = "a".repeat(2_000);
+  expect(trimForLLM(short)).toBe(short);
+});
+
+test("trimForLLM truncates and appends notice when over cap", () => {
+  const { trimForLLM } = require("../src/utils.js");
+  const long = "b".repeat(2_001);
+  const result = trimForLLM(long);
+  expect(result).toBe(
+    `${"b".repeat(2_000)}\n[truncated: full output available in details]`,
+  );
+});
+
+test("discoverAgents preserves scope filtering and project override precedence", async () => {
+  const { discoverAgents }: typeof import("../src/agents.js") =
+    require("../src/agents.js");
+  const root = await makeTempDir("pi-subagent-scope-");
+  const agentDir = path.join(root, "agent");
+  const cwd = path.join(root, "work", "nested");
+  const userDir = path.join(agentDir, "agents");
+  const projectDir = path.join(root, "work", ".pi", "agents");
+  await mkdir(userDir, { recursive: true });
+  await mkdir(projectDir, { recursive: true });
+  await mkdir(cwd, { recursive: true });
+  await writeFile(
+    path.join(userDir, "same.md"),
+    `---
+name: same
+description: User same
+---
+User prompt`,
+  );
+  await writeFile(
+    path.join(userDir, "user-only.md"),
+    `---
+name: user-only
+description: User only
+---
+User prompt`,
+  );
+  await writeFile(
+    path.join(projectDir, "same.md"),
+    `---
+name: same
+description: Project same
+---
+Project prompt`,
+  );
+  await writeFile(
+    path.join(projectDir, "project-only.md"),
+    `---
+name: project-only
+description: Project only
+---
+Project prompt`,
+  );
+  process.env.PI_CODING_AGENT_DIR = agentDir;
+  const userAgents = discoverAgents(cwd, "user").agents;
+  const projectAgents = discoverAgents(cwd, "project").agents;
+  const bothAgents = discoverAgents(cwd, "both").agents;
+  expect(userAgents.find((a) => a.name === "same")?.source).toBe("user");
+  expect(userAgents.some((a) => a.name === "project-only")).toBe(false);
+  expect(projectAgents.find((a) => a.name === "same")?.source).toBe("project");
+  expect(projectAgents.some((a) => a.name === "user-only")).toBe(false);
+  expect(bothAgents.find((a) => a.name === "same")?.source).toBe("project");
+  expect(bothAgents.some((a) => a.name === "user-only")).toBe(true);
+  expect(bothAgents.some((a) => a.name === "project-only")).toBe(true);
 });
 
 test("discoverAgents tolerates missing, invalid, and unreadable entries", async () => {

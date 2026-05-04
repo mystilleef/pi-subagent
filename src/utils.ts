@@ -44,10 +44,10 @@ export function truncateOutput(
   limits: SubagentOutputLimits = getSubagentOutputLimits(),
 ): string {
   const lines = text.split("\n");
-  const bytes = Buffer.byteLength(text, "utf-8");
   const maxBytes = Math.max(1, Math.floor(limits.maxBytes));
   const maxLines = Math.max(1, Math.floor(limits.maxLines));
-  if (bytes <= maxBytes && lines.length <= maxLines) return text;
+  if (lines.length <= maxLines && Buffer.byteLength(text, "utf-8") <= maxBytes)
+    return text;
   let result = lines.slice(0, maxLines).join("\n");
   if (Buffer.byteLength(result, "utf-8") > maxBytes) {
     const buf = Buffer.from(result).subarray(0, maxBytes);
@@ -55,6 +55,11 @@ export function truncateOutput(
   }
   const kept = result.split("\n").length;
   return `[TRUNCATED: first ${kept} of ${lines.length} lines]\n${result}`;
+}
+
+export function trimForLLM(text: string, maxChars = 2_000): string {
+  if (text.length <= maxChars) return text;
+  return `${text.slice(0, maxChars)}\n[truncated: full output available in details]`;
 }
 
 export async function writePromptToTempFile(

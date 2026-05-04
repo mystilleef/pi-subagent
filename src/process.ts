@@ -19,6 +19,8 @@ import {
   writePromptToTempFile,
 } from "./utils.js";
 
+const MAX_STDERR_BYTES = 10_000;
+
 type RuntimeResult = SingleResult & { messages: Message[] };
 
 const MAX_SUBAGENT_DEPTH = 3;
@@ -140,32 +142,41 @@ export async function runSingleAgent(
     },
     model: modelDisplay,
   };
-  let lastEmittedFinalOutput = "";
-  let emittedRunningUpdate = false;
   const nextUpdateText = () => {
-    const finalOutput = currentResult.finalOutput;
-    if (!finalOutput) {
-      if (emittedRunningUpdate) return "";
-      emittedRunningUpdate = true;
-      return "(running...)";
-    }
-    if (finalOutput.startsWith(lastEmittedFinalOutput)) {
-      const delta = finalOutput.slice(lastEmittedFinalOutput.length);
-      lastEmittedFinalOutput = finalOutput;
-      return truncateOutput(delta);
-    }
-    lastEmittedFinalOutput = finalOutput;
-    return truncateOutput(finalOutput);
+    const msgs = currentResult.messages;
+    const last = msgs.findLast((m) => m.role === "assistant");
+    const toolCall = Array.isArray(last?.content)
+      ? last.content.findLast((p) => p.type === "toolCall")
+      : undefined;
+    if (!toolCall) return "(running...)";
+    const args = toolCall.arguments ?? {};
+    const firstArg = Object.values(args).find(
+      (v) => typeof v === "string" && v.length > 0,
+    ) as string | undefined;
+    const preview = firstArg ? firstArg.slice(0, 60) : "";
+    return `${toolCall.name}: ${preview}`;
   };
   const emitUpdate = () => {
+    const msgs = currentResult.messages;
+    let anchorIdx = -1;
+    for (let i = msgs.length - 1; i >= 0; i--) {
+      const m = msgs[i];
+      if (
+        m?.role === "assistant" &&
+        m.content.some(
+          (c) => c.type === "text" && (c as { text?: string }).text?.trim(),
+        )
+      ) {
+        anchorIdx = i;
+        break;
+      }
+    }
+    const recentMessages =
+      anchorIdx >= 0 ? msgs.slice(anchorIdx) : msgs.slice(-5);
+    const snapshot = { ...currentResult, messages: recentMessages };
     onUpdate?.({
-      content: [
-        {
-          type: "text",
-          text: nextUpdateText(),
-        },
-      ],
-      details: makeDetails([currentResult], { includeMessages: true }),
+      content: [{ type: "text", text: nextUpdateText() }],
+      details: makeDetails([snapshot], { includeMessages: true }),
     });
   };
   let tmpPrompt: { dir: string; filePath: string } | null = null;
@@ -192,13 +203,15 @@ export async function runSingleAgent(
     let spawnError: Error | undefined;
     proc.once("error", (error) => {
       spawnError = error;
-      if (currentResult.stderr.length < 10_000)
+      if (currentResult.stderr.length < MAX_STDERR_BYTES)
         currentResult.stderr += error.message;
     });
     let wasAborted = false;
     const addMessage = (msg: Message) => {
       currentResult.messages.push(msg);
-      currentResult.finalOutput = getFinalOutput(currentResult.messages);
+      currentResult.finalOutput = truncateOutput(
+        getFinalOutput(currentResult.messages),
+      );
       if (msg.role === "toolResult" && msg.isError) {
         currentResult.errorMessage ||= TOOL_RESULT_FAILED_MESSAGE;
       } else if (currentResult.errorMessage === TOOL_RESULT_FAILED_MESSAGE) {
@@ -250,7 +263,7 @@ export async function runSingleAgent(
     }
     if (proc.stderr) {
       proc.stderr.on("data", (data) => {
-        if (currentResult.stderr.length < 10_000)
+        if (currentResult.stderr.length < MAX_STDERR_BYTES)
           currentResult.stderr += data.toString();
       });
     }

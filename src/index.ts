@@ -13,6 +13,7 @@ import { StringEnum } from "@mariozechner/pi-ai";
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import { Type } from "typebox";
 import {
+  type AgentConfig,
   type AgentScope,
   discoverAgents,
   type ThinkingLevel,
@@ -20,7 +21,12 @@ import {
 import { runSingleAgent } from "./process.js";
 import type { SingleResult, SubagentDetails } from "./types.js";
 import { renderSubagentCall, renderSubagentResult } from "./ui.js";
-import { detectMessageError, truncateOutput } from "./utils.js";
+import { detectMessageError, trimForLLM } from "./utils.js";
+
+const agentCache = new Map<string, { agents: AgentConfig[]; ts: number }>();
+export function resetAgentCache() {
+  agentCache.clear();
+}
 
 const AgentScopeSchema = StringEnum(["user", "project", "both"] as const, {
   description:
@@ -55,8 +61,13 @@ export default function (pi: ExtensionAPI) {
           return current.getSuggestions(lines, cursorLine, cursorCol, options);
         }
         const prefix = match[1] ?? "";
-        // Default to "both" scopes for completion
-        const agents = discoverAgents(ctx.cwd, "both").agents;
+        const now = Date.now();
+        let entry = agentCache.get(ctx.cwd);
+        if (!entry || now - entry.ts > 1_000) {
+          entry = { agents: discoverAgents(ctx.cwd, "both").agents, ts: now };
+          agentCache.set(ctx.cwd, entry);
+        }
+        const agents = entry.agents;
         return {
           prefix,
           items: agents
@@ -167,7 +178,7 @@ Project agents are repo-controlled. Only continue for trusted repositories.`,
         content: [
           {
             type: "text",
-            text: truncateOutput(result.finalOutput) || "(no output)",
+            text: trimForLLM(result.finalOutput) || "(no output)",
           },
         ],
         details: makeDetails([result]),
