@@ -11,9 +11,8 @@ Delegate task to agent.
 ## Instructions
 
 1. Use the `subagent` tool to delegate the task to the agent.
-1. Return an optimized summary of the subagent result using elegant,
-   idiomatic markdown.
-1. Stop. Perform no further operations.
+2. Return a summary of the agent's result.
+3. Stop. Perform no further operations.
 
 ## Rules
 
@@ -21,3 +20,5 @@ Delegate task to agent.
 - Don't perform any operations before invocation.
 - If a task exists, refine, `consolidate`, and optimize the task text
   for agent, token, context efficiency.
+- Optimize agent summary for token and context efficiency using elegant,
+  idiomatic markdown.
