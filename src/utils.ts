@@ -8,8 +8,8 @@ import {
   withFileMutationQueue,
 } from "@mariozechner/pi-coding-agent";
 
-export const DEFAULT_MAX_OUTPUT_BYTES = 30_000;
-export const DEFAULT_MAX_OUTPUT_LINES = 300;
+export const DEFAULT_MAX_OUTPUT_BYTES = 50_000;
+export const DEFAULT_MAX_OUTPUT_LINES = 500;
 
 export interface SubagentOutputLimits {
   maxBytes: number;
