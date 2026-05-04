@@ -11,7 +11,7 @@ Delegate task to agent.
 ## Instructions
 
 1. Use the `subagent` tool to delegate the task to the agent.
-2. Return a summary of the agent's result.
+2. Return an optimized summary of the agent's result.
 3. Stop. Perform no further operations.
 
 ## Rules
