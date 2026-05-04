@@ -32,9 +32,12 @@ export function formatToolCall(
   toolName: string,
   args: Record<string, unknown>,
   themeFg: (color: ThemeColor, text: string) => string,
+  forceJson = false,
 ): string {
   let preview = "";
-  if (toolName === "bash" && typeof args.command === "string") {
+  if (forceJson) {
+    preview = JSON.stringify(args);
+  } else if (toolName === "bash" && typeof args.command === "string") {
     preview = args.command;
   } else if (
     ["read", "write", "edit", "file_search"].includes(toolName) &&
@@ -88,6 +91,7 @@ export function renderSubagentResult(
     fg: (color: ThemeColor, text: string) => string;
     bold: (text: string) => string;
   },
+  display?: { isPartial?: boolean },
 ): Text {
   const details = result.details as SubagentDetails | undefined;
   const r = details?.results?.[0];
@@ -122,7 +126,8 @@ export function renderSubagentResult(
       .findLast((p) => p.type === "toolCall");
 
     if (lastTool?.type === "toolCall") {
-      text += `\n${theme.fg("muted", "→ ") + formatToolCall(lastTool.name, lastTool.arguments as Record<string, unknown>, theme.fg.bind(theme))}`;
+      const showRawArgs = display?.isPartial === true && failed;
+      text += `\n${theme.fg("muted", "→ ") + formatToolCall(lastTool.name, lastTool.arguments as Record<string, unknown>, theme.fg.bind(theme), showRawArgs)}`;
     }
 
     if (finalOutput.trim()) {

@@ -50,3 +50,7 @@ and project-local agent definitions.
   automatically.
 - **Testing:** Find comprehensive integration tests in
   `test/index.test.ts`.
+
+## Rules
+
+- Remove all empty lines inside functions.

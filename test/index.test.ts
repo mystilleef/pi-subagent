@@ -790,6 +790,74 @@ exit 0
   ).toBe(true);
 });
 
+test("subagent keeps realtime feedback updating after a child tool error", async () => {
+  const { binDir, cwd } = await setupFakePi();
+  await writeFile(
+    path.join(binDir, "pi"),
+    `#!/bin/sh
+printf '%s\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"toolCall","name":"bash","id":"1","arguments":{"command":"false"}}]}}'
+printf '%s\n' '{"type":"tool_result_end","message":{"role":"toolResult","content":[{"type":"text","text":"failed"}],"toolCallId":"1","isError":true}}'
+printf '%s\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"toolCall","name":"read","id":"2","arguments":{"path":"later.txt"}}]}}'
+printf '%s\n' '{"type":"tool_result_end","message":{"role":"toolResult","content":[{"type":"text","text":"later result"}],"toolCallId":"2"}}'
+printf '%s\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"recovered"}]}}'
+printf '%s\n' '{"type":"agent_end"}'
+exit 0
+`,
+  );
+  const tool = getSubagentTool();
+  const fakeTheme: FakeTheme = {
+    fg: (color, text) => `[${color}]${text}[/${color}]`,
+    bold: (text) => `*${text}*`,
+  };
+  const updates: AgentToolResult<SubagentDetails>[] = [];
+  await tool.execute(
+    "test-tool-call",
+    { agent: "hang", task: "test" },
+    undefined,
+    (update) => updates.push(update),
+    { cwd, hasUI: false } as unknown as ExtensionContext,
+  );
+  const afterFailedTool = updates.find((update) =>
+    update.details.results[0]?.messages?.some(
+      (message) => message.role === "toolResult" && message.isError,
+    ),
+  );
+  expect(afterFailedTool).toBeDefined();
+  expect(
+    (
+      tool.renderResult?.(
+        afterFailedTool as AgentToolResult<SubagentDetails>,
+        { expanded: false, isPartial: true },
+        fakeTheme as never,
+        {} as never,
+      ) as unknown as { text: string }
+    ).text,
+  ).toContain("Subagent tool result failed.");
+  const afterLaterToolCall = updates.find((update) =>
+    update.details.results[0]?.messages?.some((message) =>
+      Array.isArray(message.content)
+        ? message.content.some(
+            (part) => part.type === "toolCall" && part.name === "read",
+          )
+        : false,
+    ),
+  );
+  expect(afterLaterToolCall).toBeDefined();
+  const renderedLaterToolCall = tool.renderResult?.(
+    afterLaterToolCall as AgentToolResult<SubagentDetails>,
+    { expanded: false, isPartial: true },
+    fakeTheme as never,
+    {} as never,
+  ) as unknown as { text: string };
+  expect(renderedLaterToolCall.text).toContain(
+    '[accent]read[/accent][dim] {"path":"later.txt"}[/dim]',
+  );
+  expect(renderedLaterToolCall.text).not.toContain(
+    "Subagent tool result failed.",
+  );
+  expect((updates.at(-1)?.content[0] as TextContent)?.text).toBe("recovered");
+});
+
 test("subagent update content streams only final output deltas", async () => {
   const { binDir, cwd } = await setupFakePi();
 

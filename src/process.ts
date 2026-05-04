@@ -22,6 +22,7 @@ import {
 type RuntimeResult = SingleResult & { messages: Message[] };
 
 const MAX_SUBAGENT_DEPTH = 3;
+const TOOL_RESULT_FAILED_MESSAGE = "Subagent tool result failed.";
 
 async function waitForSubagentProcess(
   proc: ChildProcess,
@@ -223,9 +224,11 @@ export async function runSingleAgent(
     const addMessage = (msg: Message) => {
       currentResult.messages.push(msg);
       currentResult.finalOutput = getFinalOutput(currentResult.messages);
-      currentResult.errorMessage = detectMessageError(currentResult.messages)
-        ? currentResult.errorMessage || "Subagent tool result failed."
-        : undefined;
+      if (msg.role === "toolResult" && msg.isError) {
+        currentResult.errorMessage ||= TOOL_RESULT_FAILED_MESSAGE;
+      } else if (currentResult.errorMessage === TOOL_RESULT_FAILED_MESSAGE) {
+        currentResult.errorMessage = undefined;
+      }
 
       if (msg.role === "assistant") {
         currentResult.usage.turns++;
@@ -293,6 +296,9 @@ export async function runSingleAgent(
 
     currentResult.exitCode = (await processDone) ?? 0;
     if (spawnError) currentResult.exitCode = 1;
+    if (detectMessageError(currentResult.messages)) {
+      currentResult.errorMessage ||= TOOL_RESULT_FAILED_MESSAGE;
+    }
     if (wasAborted) throw new Error("Subagent was aborted");
     return currentResult;
   } finally {

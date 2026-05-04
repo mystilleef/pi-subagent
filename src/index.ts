@@ -188,8 +188,8 @@ Project agents are repo-controlled. Only continue for trusted repositories.`,
       return renderSubagentCall(args, theme);
     },
 
-    renderResult(result, _display, theme, _context) {
-      return renderSubagentResult(result, theme);
+    renderResult(result, display, theme, _context) {
+      return renderSubagentResult(result, theme, display);
     },
   });
 }
