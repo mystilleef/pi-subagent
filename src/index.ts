@@ -11,9 +11,36 @@ import {
   type ThinkingLevel,
 } from "./agents.js";
 import { runSingleAgent } from "./process.js";
-import type { SingleResult, SubagentDetails } from "./types.js";
-import { renderSubagentCall, renderSubagentResult } from "./ui.js";
+import {
+  cancelProgressState,
+  createProgressState,
+  extractProgressFromDetails,
+  failProgressState,
+  finalizeProgressState,
+  getProgressState,
+  patchProgressState,
+  renderSubagentProgress,
+} from "./progress.js";
+import type {
+  OnUpdateCallback,
+  SingleResult,
+  SubagentDetails,
+} from "./types.js";
+import {
+  renderSubagentCall,
+  renderSubagentResult,
+  type SubagentTheme,
+} from "./ui.js";
 import { detectMessageError, trimForLLM } from "./utils.js";
+
+const AGENT_COMPLETION_CACHE_TTL_MS = 1_000;
+
+type SubagentToolResult = {
+  content: { type: "text"; text: string }[];
+  details: SubagentDetails;
+};
+
+type DetailsOptions = { includeMessages?: boolean };
 
 const agentCache = new Map<string, { agents: AgentConfig[]; ts: number }>();
 export function resetAgentCache() {
@@ -30,7 +57,11 @@ export const SubagentParams = Type.Object({
   agent: Type.String({
     description: "Name of the agent to invoke",
   }),
-  task: Type.String({ description: "Task to delegate" }),
+  task: Type.Optional(
+    Type.String({
+      description: "Task to delegate. Optional for agents with defaults.",
+    }),
+  ),
   agentScope: Type.Optional(AgentScopeSchema),
   debug: Type.Optional(
     Type.Boolean({
@@ -41,19 +72,68 @@ export const SubagentParams = Type.Object({
   ),
 });
 
+function createDetailsBuilder(
+  agentScope: AgentScope,
+  projectAgentsDir: string | null,
+  includeDebugMessages: boolean,
+): (results: SingleResult[], options?: DetailsOptions) => SubagentDetails {
+  return (results, options) => ({
+    mode: "single",
+    agentScope,
+    projectAgentsDir,
+    results: results.map((result) =>
+      sanitizeResultDetails(result, includeDebugMessages, options),
+    ),
+  });
+}
+
+function sanitizeResultDetails(
+  result: SingleResult,
+  includeDebugMessages: boolean,
+  options: DetailsOptions | undefined,
+): SingleResult {
+  const { messages, ...rest } = result;
+  const base = { ...rest, usage: { ...result.usage } };
+  if (includeDebugMessages || options?.includeMessages) {
+    return { ...base, messages: messages ? [...messages] : undefined };
+  }
+  return base;
+}
+
+function createCanceledResult(details: SubagentDetails): SubagentToolResult {
+  return {
+    content: [
+      {
+        type: "text" as const,
+        text: "Canceled: project-local agent not approved.",
+      },
+    ],
+    details,
+  };
+}
+
+function hasSubagentFailed(result: SingleResult): boolean {
+  return (
+    result.exitCode !== 0 ||
+    result.stopReason === "error" ||
+    result.stopReason === "aborted" ||
+    detectMessageError(result.messages ?? [])
+  );
+}
+
+function createSubagentError(result: SingleResult): Error {
+  const errorMsg =
+    result.errorMessage || result.stderr || result.finalOutput || "(no output)";
+  return new Error(`Agent ${result.stopReason || "failed"}: ${errorMsg}`);
+}
+
 async function executeSubagent(
   pi: ExtensionAPI,
   ctx: ExtensionContext,
   params: Static<typeof SubagentParams>,
   signal: AbortSignal,
-  onUpdate?: (result: {
-    content: { type: "text"; text: string }[];
-    details: SubagentDetails;
-  }) => void,
-): Promise<{
-  content: { type: "text"; text: string }[];
-  details: SubagentDetails;
-}> {
+  onUpdate?: OnUpdateCallback,
+): Promise<SubagentToolResult> {
   const agentScope: AgentScope = params.agentScope ?? "both";
   const discovery = discoverAgents(ctx.cwd, agentScope);
   const agents = discovery.agents;
@@ -61,23 +141,11 @@ async function executeSubagent(
     ? { provider: ctx.model.provider, id: ctx.model.id }
     : undefined;
   const parentThinking = pi.getThinkingLevel() as ThinkingLevel;
-  const includeDebugMessages = params.debug === true;
-  const makeDetails = (
-    results: SingleResult[],
-    options?: { includeMessages?: boolean },
-  ): SubagentDetails => ({
-    mode: "single",
+  const makeDetails = createDetailsBuilder(
     agentScope,
-    projectAgentsDir: discovery.projectAgentsDir,
-    results: results.map((result) => {
-      const { messages, ...rest } = result;
-      const base = { ...rest, usage: { ...result.usage } };
-      if (includeDebugMessages || options?.includeMessages) {
-        return { ...base, messages: messages ? [...messages] : undefined };
-      }
-      return base;
-    }),
-  });
+    discovery.projectAgentsDir,
+    params.debug === true,
+  );
   if ((agentScope === "project" || agentScope === "both") && ctx.hasUI) {
     const requested = agents.find((a) => a.name === params.agent);
     if (requested?.source === "project") {
@@ -89,42 +157,22 @@ Source: ${dir}
 
 Project agents are repo-controlled. Only continue for trusted repositories.`,
       );
-      if (!ok)
-        return {
-          content: [
-            {
-              type: "text" as const,
-              text: "Canceled: project-local agent not approved.",
-            },
-          ],
-          details: makeDetails([]),
-        };
+      if (!ok) return createCanceledResult(makeDetails([]));
     }
   }
+  const task = params.task?.trim() ?? "";
   const result = await runSingleAgent(
     ctx.cwd,
     agents,
     params.agent,
-    params.task,
+    task,
     signal,
     onUpdate,
     makeDetails,
     parentModel,
     parentThinking,
   );
-  const failed =
-    result.exitCode !== 0 ||
-    result.stopReason === "error" ||
-    result.stopReason === "aborted" ||
-    detectMessageError(result.messages ?? []);
-  if (failed) {
-    const errorMsg =
-      result.errorMessage ||
-      result.stderr ||
-      result.finalOutput ||
-      "(no output)";
-    throw new Error(`Agent ${result.stopReason || "failed"}: ${errorMsg}`);
-  }
+  if (hasSubagentFailed(result)) throw createSubagentError(result);
   return {
     content: [
       {
@@ -136,52 +184,165 @@ Project agents are repo-controlled. Only continue for trusted repositories.`,
   };
 }
 
+function renderSubagentResultMessage(
+  message: { content?: unknown; details?: unknown },
+  theme: SubagentTheme,
+) {
+  const content =
+    typeof message.content === "string"
+      ? [{ type: "text", text: message.content }]
+      : Array.isArray(message.content)
+        ? (message.content as { type: string; text?: string }[])
+        : [];
+  return renderSubagentResult({ content, details: message.details }, theme);
+}
+
+function sanitizeDetailsForDisplay(details: SubagentDetails): SubagentDetails {
+  return {
+    ...details,
+    results: details.results.map(({ messages: _messages, ...result }) => ({
+      ...result,
+      stderr: "",
+    })),
+  };
+}
+
+function getCachedAgentCompletions(
+  prefix: string,
+): { value: string; label: string }[] {
+  const cwd = process.cwd();
+  const now = Date.now();
+  let entry = agentCache.get(cwd);
+  if (!entry || now - entry.ts > AGENT_COMPLETION_CACHE_TTL_MS) {
+    entry = { agents: discoverAgents(cwd, "both").agents, ts: now };
+    agentCache.set(cwd, entry);
+  }
+  return entry.agents
+    .filter((agent) => agent.name.startsWith(prefix))
+    .map((agent) => ({ value: agent.name, label: agent.name }));
+}
+
+function parseRunArgs(
+  args: string,
+): { agentName: string; task: string } | undefined {
+  const input = args.trim();
+  if (!input) return undefined;
+  const firstSpace = input.indexOf(" ");
+  if (firstSpace === -1) return { agentName: input, task: "" };
+  return {
+    agentName: input.slice(0, firstSpace),
+    task: input.slice(firstSpace + 1).trim(),
+  };
+}
+
+function patchProgressFromDetails(
+  requestId: string,
+  details: SubagentDetails,
+  seenToolCallIds: Set<string>,
+): void {
+  const latestResult = details.results[0];
+  const { newToolCallIds, lastToolName, lastToolPreview } =
+    extractProgressFromDetails(details, seenToolCallIds);
+  const current = getProgressState(requestId);
+  if (!current) return;
+  patchProgressState(requestId, {
+    toolCount: current.toolCount + newToolCallIds.length,
+    ...(lastToolName ? { lastToolName, lastToolPreview } : {}),
+    ...(latestResult?.usage
+      ? {
+          turns: latestResult.usage.turns,
+          inputTokens: latestResult.usage.input,
+          outputTokens: latestResult.usage.output,
+          cacheReadTokens: latestResult.usage.cacheRead,
+          cacheWriteTokens: latestResult.usage.cacheWrite,
+          contextTokens: latestResult.usage.contextTokens,
+          cost: latestResult.usage.cost,
+        }
+      : {}),
+  });
+}
+
+function getSubagentText(result: SubagentToolResult): string {
+  return (result.content[0] as { text?: string })?.text ?? "";
+}
+
 export default function (pi: ExtensionAPI) {
+  pi.registerMessageRenderer("subagent-progress", (message, options, theme) =>
+    renderSubagentProgress(message, options, theme),
+  );
+  pi.registerMessageRenderer("subagent-result", (message, _options, theme) =>
+    renderSubagentResultMessage(message, theme),
+  );
   pi.registerCommand("run", {
     description: "Run a subagent directly: /run <agent> [task]",
-    getArgumentCompletions: async (prefix: string) => {
-      const cwd = process.cwd();
-      const now = Date.now();
-      let entry = agentCache.get(cwd);
-      if (!entry || now - entry.ts > 1_000) {
-        entry = { agents: discoverAgents(cwd, "both").agents, ts: now };
-        agentCache.set(cwd, entry);
-      }
-      return entry.agents
-        .filter((a) => a.name.startsWith(prefix))
-        .map((a) => ({ value: a.name, label: a.name }));
-    },
+    getArgumentCompletions: async (prefix: string) =>
+      getCachedAgentCompletions(prefix),
     handler: async (args, ctx) => {
-      const input = args.trim();
-      if (!input) {
+      const parsed = parseRunArgs(args);
+      if (!parsed) {
         ctx.ui.notify("Usage: /run <agent> [task]", "error");
         return;
       }
-      const firstSpace = input.indexOf(" ");
-      const agentName = firstSpace === -1 ? input : input.slice(0, firstSpace);
-      const task = firstSpace === -1 ? "" : input.slice(firstSpace + 1).trim();
+      const { agentName, task } = parsed;
       const discovery = discoverAgents(ctx.cwd, "both");
       if (!discovery.agents.find((a) => a.name === agentName)) {
         ctx.ui.notify(`Unknown agent: ${agentName}`, "error");
         return;
       }
+      const requestId = crypto.randomUUID();
+      createProgressState(requestId, agentName, task);
+      // Commands lack a public mutable tool-result lifecycle. Emit one
+      // progress entry only; later session renders read final state by
+      // requestId without appending duplicate progress messages.
+      pi.sendMessage({
+        customType: "subagent-progress",
+        content: "",
+        display: true,
+        details: { requestId },
+      });
+      const seenToolCallIds = new Set<string>();
+      const progressRenderKey = `subagent-progress:${requestId}`;
+      const requestProgressRender = () => {
+        ctx.ui.setStatus?.(progressRenderKey, `${Date.now()}`);
+        ctx.ui.setStatus?.(progressRenderKey, undefined);
+      };
+      const onUpdate: OnUpdateCallback = (result) => {
+        patchProgressFromDetails(requestId, result.details, seenToolCallIds);
+        requestProgressRender();
+      };
+      const signal = ctx.signal ?? new AbortController().signal;
       try {
         const result = await executeSubagent(
           pi,
           ctx,
           { agent: agentName, task },
-          new AbortController().signal,
+          signal,
+          onUpdate,
         );
-        pi.sendMessage({
-          customType: "text",
-          content: result.content[0]?.text || "(no output)",
-          display: true,
-        });
+        const text = getSubagentText(result);
+        const finalText = trimForLLM(text.trim()) || "(no output)";
+        if (text.startsWith("Canceled")) {
+          cancelProgressState(requestId, text);
+          requestProgressRender();
+        } else {
+          finalizeProgressState(requestId, finalText);
+          requestProgressRender();
+          pi.sendMessage({
+            customType: "subagent-result",
+            content: finalText,
+            display: true,
+            details: sanitizeDetailsForDisplay(result.details),
+          });
+        }
       } catch (error) {
-        ctx.ui.notify(
-          error instanceof Error ? error.message : String(error),
-          "error",
-        );
+        const errorMsg = error instanceof Error ? error.message : String(error);
+        if (signal.aborted) {
+          cancelProgressState(requestId, errorMsg);
+        } else {
+          failProgressState(requestId, errorMsg);
+        }
+        requestProgressRender();
+        ctx.ui.notify(errorMsg, "error");
       }
     },
   });

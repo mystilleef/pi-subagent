@@ -22,6 +22,7 @@ export interface SingleResult {
   model?: string;
   stopReason?: string;
   errorMessage?: string;
+  durationMs?: number;
   messages?: Message[];
 }
 

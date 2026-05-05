@@ -25,6 +25,20 @@ type RuntimeResult = SingleResult & { messages: Message[] };
 
 const MAX_SUBAGENT_DEPTH = 3;
 const TOOL_RESULT_FAILED_MESSAGE = "Subagent tool result failed.";
+const RESULT_FORMAT_INSTRUCTIONS = `Return your final answer in this concise markdown format:
+Outcome: <one short sentence>
+Changed: <paths or none>
+Evidence: <test/check result>
+Next: <single next action or none>
+
+If the task failed, use this format:
+Outcome: failed at <step>
+Cause: <short cause>
+Evidence: <error/check>
+Next: <fix/retry action>
+
+Use plain values; avoid backticks unless needed.
+Use none for empty fields.`;
 
 async function waitForSubagentProcess(
   proc: ChildProcess,
@@ -123,6 +137,7 @@ export async function runSingleAgent(
       modelDisplay,
     );
   }
+  const startedAt = Date.now();
   const currentResult: RuntimeResult = {
     agent: agentName,
     agentSource: agent.source,
@@ -191,7 +206,10 @@ export async function runSingleAgent(
       tmpPrompt = await writePromptToTempFile(agent.name, agent.systemPrompt);
       args.push("--append-system-prompt", tmpPrompt.filePath);
     }
-    args.push(`Task: ${task}`);
+    const taskPrompt = task
+      ? `Task: ${task}`
+      : "Run according to your system prompt. If no explicit task was provided, use the default context described there.";
+    args.push(`${taskPrompt}\n\n${RESULT_FORMAT_INSTRUCTIONS}`);
     const invocation = getPiInvocation(args);
     const proc = spawn(invocation.command, invocation.args, {
       cwd: defaultCwd,
@@ -276,6 +294,7 @@ export async function runSingleAgent(
       else signal.addEventListener("abort", onAbort, { once: true });
     }
     currentResult.exitCode = (await processDone) ?? 0;
+    currentResult.durationMs = Date.now() - startedAt;
     if (spawnError) currentResult.exitCode = 1;
     if (detectMessageError(currentResult.messages)) {
       currentResult.errorMessage ||= TOOL_RESULT_FAILED_MESSAGE;

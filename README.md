@@ -9,10 +9,8 @@ task to a named agent with its own context window.
 - Use Bun with the Node-compatible TypeScript sources in this
   repository.
 - Install dependencies: `bun install`.
-- Pi discovers:
-  - the extension through `package.json` `pi.extensions`
-    (`./src/index.ts`)
-  - prompt templates through `package.json` `pi.prompts` (`./prompts`)
+- Pi discovers the extension through `package.json` `pi.extensions`
+  (`./src/index.ts`). The extension registers `/run` directly.
 
 ## Commands
 
@@ -69,15 +67,13 @@ supplies the appended system prompt for that agent.
 - `src/process.ts`: launches child Pi processes, applies model,
   thinking, tool, and skill settings, tracks usage, and enforces nesting
   depth.
-- `src/ui.ts`: formats tool calls, result previews, usage summaries, and
-  final output extraction.
+- `src/ui.ts`: formats tool calls, compact result cards, usage
+  summaries, and final output extraction.
 - `src/utils.ts`: handles Pi invocation, output truncation, temporary
   prompts, skill resolution, depth environment values, and error
   detection.
 - `src/types.ts`: defines result, usage, details, and update callback
   types.
-- `prompts/run.md`: implements `/run <agent> [task]` delegation
-  instructions.
 - `test/index.test.ts`: covers process execution, discovery, truncation,
   rendering, prompts, safeguards, and error handling.
 
