@@ -96,29 +96,69 @@ test("finalizeProgressState sets success status and final output", () => {
   expect(state?.errorText).toBeUndefined();
 });
 
-test("terminal helpers clear transient tool fields and bound terminal text", () => {
+test("terminal helpers clear transient tool fields and keep semantic text", () => {
   createProgressState("req-1", "agent-a", "task a");
   patchProgressState("req-1", {
     lastToolName: "bash",
     lastToolPreview: "bash: noisy command",
   });
-  finalizeProgressState("req-1", `${"x".repeat(600)}\n${"y".repeat(600)}`);
+  const longOutcome = "x".repeat(600);
+  finalizeProgressState(
+    "req-1",
+    `Outcome: ${longOutcome}\nChanged: src/progress.ts`,
+  );
   const successState = getProgressState("req-1");
   expect(successState?.lastToolName).toBeUndefined();
   expect(successState?.lastToolPreview).toBeUndefined();
-  expect(successState?.finalOutput?.length).toBeLessThan(1201);
-  expect(successState?.finalOutput?.endsWith("...")).toBe(true);
+  expect(successState?.finalOutput).toContain(longOutcome);
+  expect(successState?.finalOutput).not.toContain("...");
   createProgressState("req-2", "agent-b", "task b");
   patchProgressState("req-2", {
     lastToolName: "read",
     lastToolPreview: "read: /tmp/file",
   });
-  failProgressState("req-2", "e".repeat(600));
+  const longCause = "e".repeat(600);
+  failProgressState("req-2", `Cause: ${longCause}`);
   const errorState = getProgressState("req-2");
   expect(errorState?.lastToolName).toBeUndefined();
   expect(errorState?.lastToolPreview).toBeUndefined();
-  expect(errorState?.errorText?.length).toBeLessThan(600);
-  expect(errorState?.errorText?.endsWith("...")).toBe(true);
+  expect(errorState?.errorText).toBe(longCause);
+  expect(errorState?.errorText).not.toContain("...");
+});
+
+test("progress error keeps long labeled semantic cause and outcome", () => {
+  createProgressState("req-1", "agent-a", "task a");
+  const longCause = `database migration failed ${"x".repeat(600)}`;
+  failProgressState("req-1", `Outcome: failed\nCause: ${longCause}`);
+  expect(getProgressState("req-1")?.errorText).toBe(longCause);
+  createProgressState("req-2", "agent-b", "task b");
+  const longOutcome = `dependency install blocked ${"y".repeat(600)}`;
+  failProgressState("req-2", `Outcome: ${longOutcome}`);
+  expect(getProgressState("req-2")?.errorText).toBe(longOutcome);
+});
+
+test("progress error omits long unstructured blobs", () => {
+  createProgressState("req-1", "agent-a", "task a");
+  const blob = Array.from(
+    { length: 60 },
+    (_, index) => `at Object.fn (/tmp/noisy-${index}.js:1:1)`,
+  ).join("\n");
+  failProgressState("req-1", blob);
+  const state = getProgressState("req-1");
+  expect(state?.errorText).toBe("Large unstructured error output omitted.");
+  expect(state?.errorText).not.toContain("noisy-1");
+});
+
+test("progress error chooses status error check then semantic line", () => {
+  createProgressState("req-1", "agent-a", "task a");
+  failProgressState(
+    "req-1",
+    "debug: noisy\nCheck: bun test failed\nmeaningful fallback line",
+  );
+  expect(getProgressState("req-1")?.errorText).toBe("Check: bun test failed");
+  createProgressState("req-2", "agent-b", "task b");
+  failProgressState("req-2", "debug: noisy\nmeaningful fallback line");
+  expect(getProgressState("req-2")?.errorText).toBe("meaningful fallback line");
 });
 
 test("failProgressState sets error status and error text", () => {
@@ -164,17 +204,11 @@ test("makeTaskPreview labels empty task as agent default", () => {
   expect(makeTaskPreview("")).toBe("(agent default)");
 });
 
-test("makeTaskPreview truncates to 80 chars with ellipsis", () => {
+test("makeTaskPreview keeps long semantic task text", () => {
   const long = "a".repeat(100);
   const preview = makeTaskPreview(long);
-  expect(preview.length).toBeLessThanOrEqual(83);
-  expect(preview.endsWith("...")).toBe(true);
-  expect(preview.startsWith("aaaa")).toBe(true);
-});
-
-test("makeTaskPreview respects custom maxLen", () => {
-  const preview = makeTaskPreview("hello world", 5);
-  expect(preview).toBe("hello...");
+  expect(preview).toBe(long);
+  expect(preview).not.toContain("...");
 });
 
 test("makeTaskPreview collapses whitespace", () => {
@@ -186,11 +220,11 @@ test("makeToolPreview formats tool name and first arg value", () => {
   expect(preview).toBe("bash: ls -la");
 });
 
-test("makeToolPreview truncates long arg value", () => {
-  const preview = makeToolPreview("read", { path: "a".repeat(100) });
-  expect(preview.length).toBeLessThanOrEqual(80);
-  expect(preview.startsWith("read:")).toBe(true);
-  expect(preview.endsWith("...")).toBe(true);
+test("makeToolPreview keeps semantic target without ellipsis", () => {
+  const path = "a".repeat(100);
+  const preview = makeToolPreview("read", { path });
+  expect(preview).toBe(`read: ${path}`);
+  expect(preview).not.toContain("...");
 });
 
 test("makeToolPreview handles empty args", () => {
@@ -318,7 +352,7 @@ test("extractProgressFromDetails handles malformed and nested message data safel
   const result = extractProgressFromDetails(details, seen);
   expect(result.newToolCallIds).toEqual(["tc-nested"]);
   expect(result.lastToolName).toBe("outer");
-  expect(result.lastToolPreview).toBe('outer: {"path":"/tmp/x"}');
+  expect(result.lastToolPreview).toBe('outer: {"nested":{"path":"/tmp/x"}}');
 });
 
 test("extractProgressFromDetails returns last tool name and preview", () => {

@@ -309,6 +309,60 @@ Prompt`,
   expect(state?.status).toBe("cancelled");
 });
 
+test("/run final result uses semantic content without truncating details", async () => {
+  const sentMessages: SendMessageArg[] = [];
+  const longOutcome = `shipped ${"x".repeat(2600)}`;
+  const finalOutput = `noisy transcript SECRET_RAW\nOutcome: ${longOutcome}\nChanged: src/index.ts\nEvidence: bun test passed\nNext: none`;
+  const { tool, cwd } = await setupTest({
+    sendMessage: (msg) => sentMessages.push(msg),
+    piScript: `#!/bin/sh
+printf '%s\n' '${JSON.stringify({ type: "message_end", message: { role: "assistant", content: [{ type: "toolCall", name: "bash", id: "tc-1", arguments: { command: "SECRET_COMMAND" } }] } })}'
+printf '%s\n' '${JSON.stringify({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: finalOutput }], usage: { input: 1, output: 1, totalTokens: 2, cost: { total: 0 } } } })}'
+printf '%s\n' '{"type":"agent_end"}'
+exit 0
+`,
+  });
+  const runCommand = tool.registeredCommands.get("run");
+  await runCommand?.handler("hang test task", {
+    cwd,
+    ui: { notify: () => {} },
+  } as unknown as ExtensionCommandContext);
+  const resultMessage = sentMessages.at(-1);
+  expect(resultMessage?.content).toContain(`Outcome: ${longOutcome}`);
+  expect(resultMessage?.content).not.toContain("SECRET_RAW");
+  expect(resultMessage?.content).not.toContain("SECRET_COMMAND");
+  expect(resultMessage?.content).not.toContain("[truncated:");
+  const details = resultMessage?.details as {
+    results?: { finalOutput?: string }[];
+  };
+  expect(details.results?.[0]?.finalOutput).toBe(finalOutput);
+});
+
+test("/run debug includes child messages in final details", async () => {
+  const sentMessages: SendMessageArg[] = [];
+  const { tool, cwd } = await setupTest({
+    sendMessage: (msg) => sentMessages.push(msg),
+    piScript: `#!/bin/sh
+printf '%s\n' '${JSON.stringify({ type: "message_end", message: { role: "assistant", content: [{ type: "toolCall", name: "bash", id: "tc-1", arguments: { command: "DEBUG_COMMAND" } }] } })}'
+printf '%s\n' '${JSON.stringify({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "Outcome: done" }], usage: { input: 1, output: 1, totalTokens: 2, cost: { total: 0 } } } })}'
+printf '%s\n' '{"type":"agent_end"}'
+exit 0
+`,
+  });
+  const runCommand = tool.registeredCommands.get("run");
+  await runCommand?.handler("--debug hang test task", {
+    cwd,
+    ui: { notify: () => {} },
+  } as unknown as ExtensionCommandContext);
+  const details = sentMessages.at(-1)?.details as {
+    results?: { messages?: unknown[] }[];
+  };
+  expect(details.results?.[0]?.messages).toHaveLength(2);
+  expect(JSON.stringify(details.results?.[0]?.messages)).toContain(
+    "DEBUG_COMMAND",
+  );
+});
+
 test("/run context hygiene: sent message content excludes child internals", async () => {
   const sentMessages: SendMessageArg[] = [];
   const { tool, cwd } = await setupTest({

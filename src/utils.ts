@@ -57,11 +57,6 @@ export function truncateOutput(
   return `[TRUNCATED: first ${kept} of ${lines.length} lines]\n${result}`;
 }
 
-export function trimForLLM(text: string, maxChars = 2_000): string {
-  if (text.length <= maxChars) return text;
-  return `${text.slice(0, maxChars)}\n[truncated: full output available in details]`;
-}
-
 export async function writePromptToTempFile(
   agentName: string,
   prompt: string,

@@ -15,7 +15,6 @@ import {
   getSubagentOutputLimits,
   resolveAgentSkillArgs,
   subagentDepthEnv,
-  trimForLLM,
   truncateOutput,
   writePromptToTempFile,
 } from "../src/utils.js";
@@ -153,19 +152,6 @@ test("resolveAgentSkillArgs reports skill discovery errors", async () => {
   } finally {
     DefaultResourceLoader.prototype.reload = originalReload;
   }
-});
-
-test("trimForLLM returns text unchanged when within cap", () => {
-  const short = "a".repeat(2_000);
-  expect(trimForLLM(short)).toBe(short);
-});
-
-test("trimForLLM truncates and appends notice when over cap", () => {
-  const long = "b".repeat(2_001);
-  const result = trimForLLM(long);
-  expect(result).toBe(
-    `${"b".repeat(2_000)}\n[truncated: full output available in details]`,
-  );
 });
 
 test("discoverAgents preserves scope filtering and project override precedence", async () => {

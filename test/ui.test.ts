@@ -164,10 +164,10 @@ test("renderResult output aggregation and truncation", () => {
     "[accent]bash[/accent]",
   );
   expect((rendered as unknown as { text: string }).text).toContain(
-    "[toolOutput]final text line 1[/toolOutput]\n[toolOutput]final text line 2[/toolOutput]",
+    "[toolOutput]final text line 1[/toolOutput]",
   );
   expect((rendered as unknown as { text: string }).text).not.toContain(
-    "final text line 3",
+    "final text line 2",
   );
 });
 
@@ -332,7 +332,7 @@ exit 0
   const latest = updates.at(-1);
   const messages = latest?.details?.results[0]?.messages ?? [];
   expect((latest?.content[0] as TextContent | undefined)?.text).toBe(
-    `bash: ${longCommand.slice(0, 60)}`,
+    `bash: ${longCommand}`,
   );
   expect(messages.map((m) => m.role)).toEqual([
     "assistant",
@@ -494,7 +494,7 @@ test("renderResult subagent and unknown tools", () => {
   expect((rendered as unknown as { text: string }).text).toContain(
     "[accent]unknown_long[/accent]",
   );
-  expect((rendered as unknown as { text: string }).text).toContain("...");
+  expect((rendered as unknown as { text: string }).text).not.toContain("...");
 });
 
 test("renderResult expanded output truncation for > 2000 chars", () => {
@@ -567,7 +567,7 @@ test("renderCall formats tool execution correctly", () => {
     "[toolTitle]*subagent *[/toolTitle][accent]test-agent[/accent][muted] [both][/muted]",
   );
   expect((rendered as unknown as { text: string }).text).toContain(
-    "long task description that should exceed 60 characters so it...",
+    "test-agent long task description that should exceed 60 characters so it gets truncated and ends up shorter",
   );
   const renderedShort = tool.renderCall?.(
     { agent: "...", task: "short" },
@@ -578,7 +578,7 @@ test("renderCall formats tool execution correctly", () => {
     "[accent]...[/accent]",
   );
   expect((renderedShort as unknown as { text: string }).text).toContain(
-    "[dim]short[/dim]",
+    "[dim]... short[/dim]",
   );
 });
 
@@ -617,7 +617,7 @@ test("ui helpers format units, fallback output, and failed tool results", () => 
   };
   const callText = call.text;
   expect(callText).toContain(
-    "[accent]...[/accent][muted] [both][/muted]\n  [dim]...[/dim]",
+    "[accent]...[/accent][muted] [both][/muted]\n  [dim]{}[/dim]",
   );
   expect(
     call
@@ -941,9 +941,7 @@ test("subagent result suppresses success no-op fields and keeps fallback", () =>
     "Outcome: none\nChanged: no changes\nEvidence: not applicable\nNext: unchanged",
   );
   expect(fallback.text).toContain("[toolOutput]Outcome: none[/toolOutput]");
-  expect(fallback.text).toContain(
-    "[toolOutput]Changed: no changes[/toolOutput]",
-  );
+  expect(fallback.text).not.toContain("Changed: no changes");
 });
 
 test("subagent result parses labels and normalizes display without mutating raw output", () => {
@@ -998,7 +996,7 @@ test("subagent result parses labels and normalizes display without mutating raw 
     "[muted]Evidence:[/muted] [toolOutput]bun test[/toolOutput]",
   );
   expect(rendered.text).toContain(
-    `[muted]Next:[/muted] [toolOutput]${"x".repeat(160)}…[/toolOutput]`,
+    `[muted]Next:[/muted] [toolOutput]${"x".repeat(200)}[/toolOutput]`,
   );
   expect(result.content[0]?.text).toBe("raw `content`");
   expect(result.details.results[0]?.finalOutput).toBe(rawOutput);
@@ -1206,14 +1204,12 @@ test("subagent result suppresses failure no-op fields and keeps fallback", () =>
     fakeTheme,
   ) as unknown as { text: string };
   expect(rendered.text).toContain("[toolOutput]Cause: none[/toolOutput]");
-  expect(rendered.text).toContain(
-    "[toolOutput]Evidence: not applicable[/toolOutput]",
-  );
+  expect(rendered.text).not.toContain("Evidence: not applicable");
   expect(rendered.text).not.toContain("[muted]Cause:[/muted]");
   expect(rendered.text).not.toContain("[muted]Next:[/muted]");
 });
 
-test("subagent result falls back to first two output lines", () => {
+test("subagent result falls back to first semantic output line", () => {
   const fakeTheme: FakeTheme = {
     fg: (color, text) => `[${color}]${text}[/${color}]`,
     bg: (color, text) => `[${color}]${text}[/${color}]`,
@@ -1251,7 +1247,7 @@ test("subagent result falls back to first two output lines", () => {
     fakeTheme,
   ) as unknown as { text: string };
   expect(rendered.text).toContain("[toolOutput]first[/toolOutput]");
-  expect(rendered.text).toContain("[toolOutput]second[/toolOutput]");
+  expect(rendered.text).not.toContain("second");
   expect(rendered.text).not.toContain("third");
 });
 

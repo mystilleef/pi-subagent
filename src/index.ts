@@ -21,6 +21,7 @@ import {
   patchProgressState,
   renderSubagentProgress,
 } from "./progress.js";
+import { formatSubagentResultForParent } from "./summary.js";
 import type {
   OnUpdateCallback,
   SingleResult,
@@ -31,7 +32,7 @@ import {
   renderSubagentResult,
   type SubagentTheme,
 } from "./ui.js";
-import { detectMessageError, trimForLLM } from "./utils.js";
+import { detectMessageError } from "./utils.js";
 
 const AGENT_COMPLETION_CACHE_TTL_MS = 1_000;
 
@@ -122,8 +123,13 @@ function hasSubagentFailed(result: SingleResult): boolean {
 }
 
 function createSubagentError(result: SingleResult): Error {
+  const formatted = formatSubagentResultForParent(result);
   const errorMsg =
-    result.errorMessage || result.stderr || result.finalOutput || "(no output)";
+    formatted ||
+    result.stderr ||
+    result.errorMessage ||
+    result.finalOutput ||
+    "(no output)";
   return new Error(`Agent ${result.stopReason || "failed"}: ${errorMsg}`);
 }
 
@@ -177,7 +183,7 @@ Project agents are repo-controlled. Only continue for trusted repositories.`,
     content: [
       {
         type: "text" as const,
-        text: trimForLLM(result.finalOutput) || "(no output)",
+        text: formatSubagentResultForParent(result) || "(no output)",
       },
     ],
     details: makeDetails([result]),
@@ -197,12 +203,16 @@ function renderSubagentResultMessage(
   return renderSubagentResult({ content, details: message.details }, theme);
 }
 
-function sanitizeDetailsForDisplay(details: SubagentDetails): SubagentDetails {
+function sanitizeDetailsForDisplay(
+  details: SubagentDetails,
+  includeMessages = false,
+): SubagentDetails {
   return {
     ...details,
-    results: details.results.map(({ messages: _messages, ...result }) => ({
+    results: details.results.map(({ messages, ...result }) => ({
       ...result,
       stderr: "",
+      ...(includeMessages ? { messages } : {}),
     })),
   };
 }
@@ -224,14 +234,18 @@ function getCachedAgentCompletions(
 
 function parseRunArgs(
   args: string,
-): { agentName: string; task: string } | undefined {
+): { agentName: string; task: string; debug: boolean } | undefined {
   const input = args.trim();
   if (!input) return undefined;
-  const firstSpace = input.indexOf(" ");
-  if (firstSpace === -1) return { agentName: input, task: "" };
+  const debug = input.startsWith("--debug ");
+  const command = debug ? input.slice("--debug ".length).trim() : input;
+  if (!command) return undefined;
+  const firstSpace = command.indexOf(" ");
+  if (firstSpace === -1) return { agentName: command, task: "", debug };
   return {
-    agentName: input.slice(0, firstSpace),
-    task: input.slice(firstSpace + 1).trim(),
+    agentName: command.slice(0, firstSpace),
+    task: command.slice(firstSpace + 1).trim(),
+    debug,
   };
 }
 
@@ -283,7 +297,7 @@ export default function (pi: ExtensionAPI) {
         ctx.ui.notify("Usage: /run <agent> [task]", "error");
         return;
       }
-      const { agentName, task } = parsed;
+      const { agentName, task, debug } = parsed;
       const discovery = discoverAgents(ctx.cwd, "both");
       if (!discovery.agents.find((a) => a.name === agentName)) {
         ctx.ui.notify(`Unknown agent: ${agentName}`, "error");
@@ -315,12 +329,12 @@ export default function (pi: ExtensionAPI) {
         const result = await executeSubagent(
           pi,
           ctx,
-          { agent: agentName, task },
+          { agent: agentName, task, debug },
           signal,
           onUpdate,
         );
         const text = getSubagentText(result);
-        const finalText = trimForLLM(text.trim()) || "(no output)";
+        const finalText = text.trim() || "(no output)";
         if (text.startsWith("Canceled")) {
           cancelProgressState(requestId, text);
           requestProgressRender();
@@ -331,7 +345,7 @@ export default function (pi: ExtensionAPI) {
             customType: "subagent-result",
             content: finalText,
             display: true,
-            details: sanitizeDetailsForDisplay(result.details),
+            details: sanitizeDetailsForDisplay(result.details, debug),
           });
         }
       } catch (error) {

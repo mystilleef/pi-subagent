@@ -1,6 +1,12 @@
 import type { ThemeColor } from "@mariozechner/pi-coding-agent";
 import type { Component } from "@mariozechner/pi-tui";
 import { Text } from "@mariozechner/pi-tui";
+import {
+  extractSemanticToolTarget,
+  extractSummaryLabels,
+  formatSubagentResultForParent,
+  normalizeSummaryValue,
+} from "./summary.js";
 import type { SubagentDetails } from "./types.js";
 import type { SubagentTheme, ThemeBg } from "./ui.js";
 
@@ -26,8 +32,6 @@ export interface SubagentProgressState {
   errorText?: string;
 }
 
-const TERMINAL_TEXT_MAX_LEN = 500;
-const ERROR_STATE_MAX_LEN = 280;
 const store = new Map<string, SubagentProgressState>();
 
 export function createProgressState(
@@ -66,7 +70,7 @@ export function finalizeProgressState(
 ): void {
   patchProgressState(requestId, {
     status: "success",
-    finalOutput: makeTerminalTextPreview(finalOutput),
+    finalOutput: makeProgressFinalOutput(finalOutput),
     lastToolName: undefined,
     lastToolPreview: undefined,
   });
@@ -75,7 +79,7 @@ export function finalizeProgressState(
 export function failProgressState(requestId: string, errorText: string): void {
   patchProgressState(requestId, {
     status: "error",
-    errorText: makeTerminalTextPreview(errorText, ERROR_STATE_MAX_LEN),
+    errorText: makeProgressErrorText(errorText),
     lastToolName: undefined,
     lastToolPreview: undefined,
   });
@@ -87,7 +91,7 @@ export function cancelProgressState(requestId: string, reason?: string): void {
     lastToolName: undefined,
     lastToolPreview: undefined,
     ...(reason !== undefined
-      ? { errorText: makeTerminalTextPreview(reason, ERROR_STATE_MAX_LEN) }
+      ? { errorText: makeProgressErrorText(reason) }
       : {}),
   });
 }
@@ -96,11 +100,9 @@ export function clearProgressState(requestId: string): void {
   store.delete(requestId);
 }
 
-export function makeTaskPreview(task: string, maxLen = 80): string {
-  const flat = task.replace(/\s+/g, " ").trim();
-  if (!flat) return "(agent default)";
-  if (flat.length <= maxLen) return flat;
-  return `${flat.slice(0, maxLen)}...`;
+export function makeTaskPreview(task: string): string {
+  const flat = normalizeSummaryValue(task);
+  return flat || "(agent default)";
 }
 
 export interface DetailsProgress {
@@ -156,38 +158,60 @@ function isToolCallPart(part: unknown): part is {
 export function makeToolPreview(
   toolName: string,
   args: Record<string, unknown> | undefined,
-  maxArgLen = 60,
 ): string {
-  if (!args) return toolName;
-  const values = Object.values(args);
-  if (values.length === 0) return toolName;
-  const first = formatToolArgValue(values[0]);
-  if (first.length <= maxArgLen) return `${toolName}: ${first}`;
-  return `${toolName}: ${first.slice(0, maxArgLen)}...`;
+  if (!args || Object.keys(args).length === 0) return toolName;
+  return `${toolName}: ${extractSemanticToolTarget(toolName, args)}`;
 }
 
-function formatToolArgValue(value: unknown): string {
-  if (typeof value === "string") return value;
-  if (
-    typeof value === "number" ||
-    typeof value === "boolean" ||
-    typeof value === "bigint"
-  )
-    return String(value);
-  try {
-    return JSON.stringify(value) ?? String(value);
-  } catch {
-    return String(value);
-  }
+function makeProgressFinalOutput(finalOutput: string): string {
+  return formatSubagentResultForParent({
+    agent: "",
+    agentSource: "project",
+    task: "",
+    exitCode: 0,
+    finalOutput,
+    stderr: "",
+    usage: {
+      input: 0,
+      output: 0,
+      cacheRead: 0,
+      cacheWrite: 0,
+      cost: 0,
+      contextTokens: 0,
+      turns: 0,
+    },
+  });
 }
 
-export function makeTerminalTextPreview(
-  text: string,
-  maxLen = TERMINAL_TEXT_MAX_LEN,
-): string {
-  const trimmed = text.trim();
-  if (trimmed.length <= maxLen) return trimmed;
-  return `${trimmed.slice(0, maxLen)}...`;
+function makeProgressErrorText(errorText: string): string {
+  const summary = extractSummaryLabels(errorText);
+  const semantic = summary.Cause ?? summary.Outcome;
+  if (semantic) return normalizeSummaryValue(semantic);
+  return extractProgressSemanticErrorLine(errorText);
+}
+
+function extractProgressSemanticErrorLine(errorText: string): string {
+  const lines = errorText
+    .split(/\r?\n/)
+    .map((line) => normalizeSummaryValue(line))
+    .filter(Boolean);
+  const statusLine = lines.find((line) =>
+    /^(?:status|error|check):\s+/i.test(line),
+  );
+  if (statusLine) return statusLine;
+  const semanticLine = lines.find((line) =>
+    isMeaningfulProgressErrorLine(line),
+  );
+  return semanticLine ?? "Large unstructured error output omitted.";
+}
+
+function isMeaningfulProgressErrorLine(line: string): boolean {
+  if (/^(?:at\s+|traceback\b|stack\b|\{|")/i.test(line)) return false;
+  if (/^(?:debug|info|warn|warning|stderr|stdout|raw log):\s*/i.test(line))
+    return false;
+  if (/^Agent \S+:\s*\S+$/i.test(line)) return false;
+  if (/^[\w.-]+:\d+:\d+/.test(line)) return false;
+  return /[A-Za-z]/.test(line) && /\s/.test(line);
 }
 
 export function formatElapsed(ms: number): string {

@@ -2,6 +2,14 @@ import type { Message } from "@mariozechner/pi-ai";
 import type { ThemeColor } from "@mariozechner/pi-coding-agent";
 import { Text } from "@mariozechner/pi-tui";
 import type { AgentScope } from "./agents.js";
+import {
+  extractSemanticToolTarget,
+  extractSummaryLabels,
+  formatSemanticFallbackOutput,
+  isNoOpSummaryValue,
+  normalizeSummaryValue,
+  type SummaryLabel,
+} from "./summary.js";
 import type { SubagentDetails, UsageStats } from "./types.js";
 import { detectMessageError } from "./utils.js";
 
@@ -49,25 +57,8 @@ export function formatToolCall(
   themeFg: (color: ThemeColor, text: string) => string,
   forceJson = false,
 ): string {
-  let preview = "";
-  if (forceJson) {
-    preview = JSON.stringify(args);
-  } else if (toolName === "bash" && typeof args.command === "string") {
-    preview = args.command;
-  } else if (
-    ["read", "write", "edit", "file_search"].includes(toolName) &&
-    typeof args.path === "string"
-  ) {
-    preview = args.path;
-  } else if (toolName === "subagent" && typeof args.agent === "string") {
-    preview = args.agent;
-  } else {
-    preview = JSON.stringify(args);
-  }
-  if (preview.length > 50) {
-    preview = `${preview.slice(0, 50)}...`;
-  }
-  return themeFg("accent", toolName) + themeFg("dim", ` ${preview}`);
+  const target = extractSemanticToolTarget(toolName, args, forceJson);
+  return themeFg("accent", toolName) + themeFg("dim", ` ${target}`);
 }
 
 export function getFinalOutput(messages: Message[]): string {
@@ -76,16 +67,6 @@ export function getFinalOutput(messages: Message[]): string {
   return lastText?.type === "text" ? lastText.text : "";
 }
 
-type SummaryLabel = "Outcome" | "Changed" | "Evidence" | "Next" | "Cause";
-
-const SUMMARY_LABELS: SummaryLabel[] = [
-  "Outcome",
-  "Changed",
-  "Evidence",
-  "Next",
-  "Cause",
-];
-
 function formatDuration(ms: number): string {
   if (ms < 1000) return `${ms}ms`;
   const seconds = ms / 1000;
@@ -93,76 +74,6 @@ function formatDuration(ms: number): string {
   const minutes = Math.floor(seconds / 60);
   const rest = Math.round(seconds % 60);
   return `${minutes}m ${rest}s`;
-}
-
-function normalizeLabel(raw: string): SummaryLabel | undefined {
-  return SUMMARY_LABELS.find(
-    (label) => label.toLowerCase() === raw.toLowerCase(),
-  );
-}
-
-function extractSummaryLabels(
-  output: string,
-): Partial<Record<SummaryLabel, string>> {
-  const summary: Partial<Record<SummaryLabel, string>> = {};
-  const lines = output.replace(/\r\n/g, "\n").split("\n");
-  let active: SummaryLabel | undefined;
-  for (const rawLine of lines) {
-    const line = rawLine.trim();
-    if (!line) continue;
-    const heading = line.match(
-      /^#{1,6}\s+(Outcome|Changed|Evidence|Next|Cause)(?:\s*:\s*|\s+)?(.*)$/i,
-    );
-    const inline =
-      line.match(
-        /^(?:[-*]\s*)?(?:\*\*)?(Outcome|Changed|Evidence|Next|Cause)\s*:\*\*\s*(.*)$/i,
-      ) ??
-      line.match(
-        /^(?:[-*]\s*)?(?:\*\*)?(Outcome|Changed|Evidence|Next|Cause)(?:\*\*)?\s*:\s*(.*)$/i,
-      );
-    if (heading) {
-      active = normalizeLabel(heading[1] ?? "");
-      const value = heading[2]?.trim();
-      if (active && value) summary[active] = value;
-      continue;
-    }
-    if (inline) {
-      active = normalizeLabel(inline[1] ?? "");
-      const value = inline[2]?.trim();
-      if (active && value) summary[active] = value;
-      continue;
-    }
-    if (active) {
-      summary[active] = summary[active] ? `${summary[active]} ${line}` : line;
-    }
-  }
-  return summary;
-}
-
-function looksLikePath(value: string): boolean {
-  return /^(?:\.{1,2}\/|\/|[\w.-]+\/|[\w.-]+\.[\w.-]+$)/.test(value);
-}
-
-function compactChangedPathList(value: string): string {
-  const paths = value.split(",").map((part) => part.trim());
-  if (paths.length <= 4 || paths.some((path) => !looksLikePath(path)))
-    return value;
-  return `${paths.length} files: ${paths.slice(0, 4).join(", ")}, …`;
-}
-
-function normalizeSummaryValue(value: string, label?: SummaryLabel): string {
-  let normalized = value.trim().replace(/\s+/g, " ");
-  const wrapper = normalized.match(/^(?:`([^`]+)`|\*\*([^*]+)\*\*)$/);
-  if (wrapper) normalized = (wrapper[1] ?? wrapper[2] ?? "").trim();
-  if (label === "Changed") normalized = compactChangedPathList(normalized);
-  if (normalized.length > 160) normalized = `${normalized.slice(0, 160)}…`;
-  return normalized;
-}
-
-function isNoOpSummaryValue(value: string): boolean {
-  return /^(?:none|n\/a|na|nothing|no changes|unchanged|not applicable)$/i.test(
-    value.trim(),
-  );
 }
 
 function formatSummary(
@@ -182,13 +93,8 @@ function formatSummary(
     return `${theme.fg("muted", `${label}:`)} ${theme.fg("toolOutput", value)}`;
   });
   if (lines.length) return lines;
-  const fallback = output
-    .split(/\r?\n/)
-    .map((line) => line.trim())
-    .filter(Boolean)
-    .slice(0, 2);
-  if (fallback.length)
-    return fallback.map((line) => theme.fg("toolOutput", line));
+  const fallback = formatSemanticFallbackOutput(output);
+  if (fallback) return [theme.fg("toolOutput", fallback)];
   return [theme.fg("muted", "(no output)")];
 }
 
@@ -198,16 +104,12 @@ export function renderSubagentCall(
 ): Text {
   const scope: AgentScope = args.agentScope ?? "both";
   const agentName = args.agent || "...";
-  const preview = args.task
-    ? args.task.length > 60
-      ? `${args.task.slice(0, 60)}...`
-      : args.task
-    : "...";
+  const target = extractSemanticToolTarget("subagent", args);
   let text =
     theme.fg("toolTitle", theme.bold("subagent ")) +
     theme.fg("accent", agentName) +
     theme.fg("muted", ` [${scope}]`);
-  text += `\n  ${theme.fg("dim", preview)}`;
+  text += `\n  ${theme.fg("dim", target)}`;
   return new Text(text, 0, 0, (line) => theme.bg("toolPendingBg", line));
 }
 

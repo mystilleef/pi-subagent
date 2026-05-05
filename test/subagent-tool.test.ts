@@ -13,6 +13,7 @@ import {
   setupFakePi,
   setupHooks,
   setupTest,
+  shellQuote,
   timeoutAfter,
 } from "./helpers.js";
 
@@ -57,7 +58,17 @@ exit 0
   );
   const argsText = await Bun.file(path.join(cwd, "args.txt")).text();
   expect(argsText).toContain("Task: ship it");
+  expect(argsText).toContain(
+    "Optimize your final answer for the main agent with aggressive agent, token, and context efficiency.",
+  );
+  expect(argsText).not.toContain("under 600 characters");
+  expect(argsText).toContain("Keep each field concise and specific.");
   expect(argsText).toContain("Outcome: <one short sentence>");
+  expect(argsText).toContain("Changed: <paths or none>");
+  expect(argsText).toContain("Evidence: <test/check result>");
+  expect(argsText).toContain("Next: <single next action or none>");
+  expect(argsText).toContain("If the task failed, use this format:");
+  expect(argsText).toContain("Cause: <short cause>");
 });
 
 test("subagent resolves when fake pi exits normally", async () => {
@@ -96,12 +107,23 @@ exit 0
   expect(result.details?.results[0]?.usage.input).toBe(2);
 });
 
-test("subagent trims large finalOutput to 2000 chars in content[0].text", async () => {
+test("subagent keeps long semantic parent fields without truncation", async () => {
   const { binDir, cwd } = await setupFakePi();
+  const longOutcome = `shipped ${"x".repeat(2_001)}`;
+  const finalOutput = `noisy raw transcript\nOutcome: ${longOutcome}\nEvidence: bun test`;
+  const messageEnd = JSON.stringify({
+    type: "message_end",
+    message: {
+      role: "assistant",
+      content: [{ type: "text", text: finalOutput }],
+      usage: { input: 1, output: 1, totalTokens: 2, cost: { total: 0.001 } },
+    },
+  });
   await writeFile(
     path.join(binDir, "pi"),
     `#!/bin/sh
-node -e "const t='x'.repeat(2001);const e={type:'message_end',message:{role:'assistant',content:[{type:'text',text:t}],usage:{input:1,output:1,totalTokens:2,cost:{total:0.001}}}};console.log(JSON.stringify(e));console.log(JSON.stringify({type:'agent_end'}));"
+printf '%s\n' ${shellQuote(messageEnd)}
+printf '%s\n' '{"type":"agent_end"}'
 exit 0
 `,
   );
@@ -114,9 +136,95 @@ exit 0
     { cwd, hasUI: false } as unknown as ExtensionContext,
   );
   const text = (result.content[0] as TextContent).text;
-  expect(text.length).toBeLessThanOrEqual(2_000 + 50);
-  expect(text).toContain("[truncated: full output available in details]");
-  expect(result.details?.results[0]?.finalOutput).toBe("x".repeat(2_001));
+  expect(text).toBe(`Outcome: ${longOutcome}\nEvidence: bun test`);
+  expect(text).not.toContain("[truncated: full output available in details]");
+  expect(text).not.toContain("noisy raw transcript");
+  expect(result.details?.results[0]?.finalOutput).toBe(finalOutput);
+});
+
+test("subagent returns semantic parent text while preserving full details", async () => {
+  const { binDir, cwd } = await setupFakePi();
+  const finalOutput =
+    "raw transcript that stays only in details\nOutcome: shipped\nChanged: src/a.ts, src/b.ts, src/c.ts, src/d.ts, src/e.ts\nEvidence: bun test\nNext: none";
+  const messageEnd = JSON.stringify({
+    type: "message_end",
+    message: {
+      role: "assistant",
+      content: [{ type: "text", text: finalOutput }],
+      model: "gpt-4",
+      usage: {
+        input: 3,
+        output: 4,
+        totalTokens: 7,
+        cost: { total: 0.002 },
+      },
+    },
+  });
+  await writeFile(
+    path.join(binDir, "pi"),
+    `#!/bin/sh
+printf '%s\n' ${shellQuote(messageEnd)}
+printf '%s\n' '{"type":"agent_end"}'
+exit 0
+`,
+  );
+  const tool = getSubagentTool();
+  const result = await tool.execute(
+    "test-tool-call",
+    { agent: "hang", task: "test" },
+    undefined,
+    undefined,
+    { cwd, hasUI: false } as unknown as ExtensionContext,
+  );
+  expect((result.content[0] as TextContent).text).toBe(
+    "Outcome: shipped\nChanged: 5 files: src/a.ts, src/b.ts, src/c.ts, src/d.ts, …\nEvidence: bun test",
+  );
+  const details = result.details as SubagentDetails;
+  expect(details.results[0]?.finalOutput).toBe(finalOutput);
+  expect(details.results[0]?.usage.input).toBe(3);
+  expect(details.results[0]?.usage.output).toBe(4);
+  expect(details.results[0]?.durationMs).toEqual(expect.any(Number));
+  expect(details.results[0]?.stderr).toBe("");
+  expect(details.results[0]?.errorMessage).toBeUndefined();
+  expect(details.results[0]?.messages).toBeUndefined();
+});
+
+test("subagent failure error uses semantic final output before generic error", async () => {
+  const { binDir, cwd } = await setupFakePi();
+  const finalOutput =
+    "Outcome: failed at verify\nCause: parsed cause\nEvidence: parsed evidence\nNext: parsed next";
+  const messageEnd = JSON.stringify({
+    type: "message_end",
+    message: {
+      role: "assistant",
+      content: [{ type: "text", text: finalOutput }],
+    },
+  });
+  const toolResultEnd = JSON.stringify({
+    type: "message_end",
+    message: { role: "toolResult", content: [], isError: true },
+  });
+  await writeFile(
+    path.join(binDir, "pi"),
+    `#!/bin/sh
+printf '%s\n' ${shellQuote(messageEnd)}
+printf '%s\n' ${shellQuote(toolResultEnd)}
+printf '%s\n' '{"type":"agent_end"}'
+exit 0
+`,
+  );
+  const tool = getSubagentTool();
+  await expect(
+    tool.execute(
+      "test-tool-call",
+      { agent: "hang", task: "test" },
+      undefined,
+      undefined,
+      { cwd, hasUI: false } as unknown as ExtensionContext,
+    ),
+  ).rejects.toThrow(
+    "Agent failed: Outcome: failed at verify\nCause: parsed cause\nEvidence: parsed evidence\nNext: parsed next",
+  );
 });
 
 test("subagent reports spawn errors", async () => {
@@ -249,7 +357,7 @@ test("subagent captures pi output including usage and model", async () => {
   await writeFile(
     path.join(binDir, "pi"),
     `#!/bin/sh
-printf '%s\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"hello"}],"model":"gpt-4","usage":{"input":10,"output":20,"totalTokens":30,"cost":{"total":0.001}}}}'
+printf '%s\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"Outcome: hello"}],"model":"gpt-4","usage":{"input":10,"output":20,"totalTokens":30,"cost":{"total":0.001}}}}'
 printf '%s\n' '{"type":"agent_end"}'
 exit 0
 `,
@@ -262,10 +370,10 @@ exit 0
     undefined,
     { cwd, hasUI: false } as unknown as ExtensionContext,
   );
-  expect((result.content[0] as TextContent).text).toBe("hello");
+  expect((result.content[0] as TextContent).text).toBe("Outcome: hello");
   const details = result.details as SubagentDetails;
   expect(details.results[0]?.usage.input).toBe(10);
-  expect(details.results[0]?.finalOutput).toBe("hello");
+  expect(details.results[0]?.finalOutput).toBe("Outcome: hello");
   expect(details.results[0]?.messages).toBeUndefined();
   if (details.results[0]?.model !== "gpt-4")
     expect(details.results[0]?.model).toBe("thinking:off");
@@ -367,7 +475,7 @@ exit 0
   const latest = updates.at(-1);
   const messages = latest?.details?.results[0]?.messages ?? [];
   expect((latest?.content[0] as TextContent | undefined)?.text).toBe(
-    `bash: ${longCommand.slice(0, 60)}`,
+    `bash: ${longCommand}`,
   );
   expect(messages.map((m) => m.role)).toEqual([
     "assistant",
@@ -433,8 +541,8 @@ test("subagent update content streams only final output deltas", async () => {
   await writeFile(
     path.join(binDir, "pi"),
     `#!/bin/sh
-printf '%s\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"hello"}],"usage":{"input":1,"output":1,"totalTokens":2,"cost":{"total":0.001}}}}'
-printf '%s\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"hello world"}],"usage":{"input":2,"output":2,"totalTokens":4,"cost":{"total":0.002}}}}'
+printf '%s\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"Outcome: hello"}],"usage":{"input":1,"output":1,"totalTokens":2,"cost":{"total":0.001}}}}'
+printf '%s\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"Outcome: hello world"}],"usage":{"input":2,"output":2,"totalTokens":4,"cost":{"total":0.002}}}}'
 printf '%s\n' '{"type":"agent_end"}'
 exit 0
 `,
@@ -452,11 +560,11 @@ exit 0
     "(running...)",
     "(running...)",
   ]);
-  expect((result.content[0] as TextContent).text).toBe("hello world");
-  expect(updates[0]?.details.results[0]?.finalOutput).toBe("hello");
+  expect((result.content[0] as TextContent).text).toBe("Outcome: hello world");
+  expect(updates[0]?.details.results[0]?.finalOutput).toBe("Outcome: hello");
   expect(updates[0]?.details.results[0]?.usage.input).toBe(1);
   expect(updates[0]?.details.results[0]?.messages).toBeDefined();
-  expect(result.details?.results[0]?.finalOutput).toBe("hello world");
+  expect(result.details?.results[0]?.finalOutput).toBe("Outcome: hello world");
   expect(result.details?.results[0]?.messages).toBeUndefined();
 });
 
@@ -546,7 +654,7 @@ test("subagent debug hygiene: child messages stay in details only for debug resu
     path.join(binDir, "pi"),
     `#!/bin/sh
 printf '%s\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"toolCall","name":"bash","id":"tc-1","arguments":{"command":"SECRET_DEBUG"}}]}}'
-printf '%s\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"hello"}],"model":"gpt-4","usage":{"input":1,"output":1,"totalTokens":2,"cost":{"total":0}}}}'
+printf '%s\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"Outcome: hello"}],"model":"gpt-4","usage":{"input":1,"output":1,"totalTokens":2,"cost":{"total":0}}}}'
 printf '%s\n' '{"type":"agent_end"}'
 exit 0
 `,
@@ -562,7 +670,7 @@ exit 0
   );
   const normalDetails = normalResult.details as SubagentDetails;
   expect(normalDetails.results[0]?.messages).toBeUndefined();
-  expect((normalResult.content[0] as TextContent).text).toBe("hello");
+  expect((normalResult.content[0] as TextContent).text).toBe("Outcome: hello");
   expect((normalResult.content[0] as TextContent).text).not.toContain(
     "SECRET_DEBUG",
   );

@@ -3,6 +3,7 @@ import * as fs from "node:fs";
 import readline from "node:readline";
 import type { Message } from "@mariozechner/pi-ai";
 import type { AgentConfig, ThinkingLevel } from "./agents.js";
+import { extractSemanticToolTarget } from "./summary.js";
 import type {
   OnUpdateCallback,
   SingleResult,
@@ -25,7 +26,10 @@ type RuntimeResult = SingleResult & { messages: Message[] };
 
 const MAX_SUBAGENT_DEPTH = 3;
 const TOOL_RESULT_FAILED_MESSAGE = "Subagent tool result failed.";
-const RESULT_FORMAT_INSTRUCTIONS = `Return your final answer in this concise markdown format:
+const RESULT_FORMAT_INSTRUCTIONS = `Optimize your final answer for the main agent with aggressive agent, token, and context efficiency.
+Return only decision-useful facts. Do not include reasoning, logs, raw tool output, greetings, apologies, or transcript details.
+Keep each field concise and specific.
+Use this concise markdown format:
 Outcome: <one short sentence>
 Changed: <paths or none>
 Evidence: <test/check result>
@@ -164,12 +168,11 @@ export async function runSingleAgent(
       ? last.content.findLast((p) => p.type === "toolCall")
       : undefined;
     if (!toolCall) return "(running...)";
-    const args = toolCall.arguments ?? {};
-    const firstArg = Object.values(args).find(
-      (v) => typeof v === "string" && v.length > 0,
-    ) as string | undefined;
-    const preview = firstArg ? firstArg.slice(0, 60) : "";
-    return `${toolCall.name}: ${preview}`;
+    const target = extractSemanticToolTarget(
+      toolCall.name,
+      toolCall.arguments ?? {},
+    );
+    return target ? `${toolCall.name}: ${target}` : toolCall.name;
   };
   const emitUpdate = () => {
     const msgs = currentResult.messages;
