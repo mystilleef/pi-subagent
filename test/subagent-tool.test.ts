@@ -58,8 +58,10 @@ exit 0
   );
   const argsText = await Bun.file(path.join(cwd, "args.txt")).text();
   expect(argsText).toContain("Task: ship it");
-  expect(argsText).toContain("Optimize your final answer for the main agent");
-  expect(argsText).toContain("Write a concise summary of what was done");
+  expect(argsText).toContain("Summarize your result for the main agent");
+  expect(argsText).toContain(
+    "Optimize your summary for token and context efficiency",
+  );
   expect(argsText).not.toContain("Outcome:");
   expect(argsText).not.toContain("Changed:");
   expect(argsText).not.toContain("Cause:");

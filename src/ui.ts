@@ -8,7 +8,7 @@ import {
   Text,
 } from "@mariozechner/pi-tui";
 import type { AgentScope } from "./agents.js";
-import { extractSemanticToolTarget, filterOutputLines } from "./summary.js";
+import { extractSemanticToolTarget } from "./summary.js";
 import type { SubagentDetails, UsageStats } from "./types.js";
 import { detectMessageError } from "./utils.js";
 
@@ -99,7 +99,7 @@ function makeMarkdownTheme(theme: SubagentTheme): MarkdownTheme {
 }
 
 function getResultBodyText(output: string): string {
-  return filterOutputLines(output).join("\n\n");
+  return output;
 }
 
 export function renderSubagentCall(

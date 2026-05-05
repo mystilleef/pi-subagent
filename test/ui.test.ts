@@ -1206,7 +1206,7 @@ test("subagent result suppresses failure no-op fields and keeps fallback", () =>
   expect(renderedText).not.toContain("[muted]Cause:[/muted]");
 });
 
-test("subagent result falls back to first semantic output line", () => {
+test("subagent result preserves raw output lines in UI", () => {
   const fakeTheme: FakeTheme = {
     fg: (color, text) => `[${color}]${text}[/${color}]`,
     bg: (color, text) => `[${color}]${text}[/${color}]`,
@@ -1225,7 +1225,8 @@ test("subagent result falls back to first semantic output line", () => {
             agentSource: "user",
             task: "plain",
             exitCode: 0,
-            finalOutput: "first\n\nsecond\nthird",
+            finalOutput:
+              "hello\nsorry about that\nerror: details\nfirst\n\nsecond\nthird",
             messages: [],
             stderr: "",
             usage: {
@@ -1244,6 +1245,9 @@ test("subagent result falls back to first semantic output line", () => {
     fakeTheme,
   );
   const renderedText = renderToString(rendered);
+  expect(renderedText).toContain("[toolOutput]hello[/toolOutput]");
+  expect(renderedText).toContain("[toolOutput]sorry about that[/toolOutput]");
+  expect(renderedText).toContain("[toolOutput]error: details[/toolOutput]");
   expect(renderedText).toContain("[toolOutput]first[/toolOutput]");
   expect(renderedText).toContain("[toolOutput]second[/toolOutput]");
   expect(renderedText).toContain("[toolOutput]third[/toolOutput]");
