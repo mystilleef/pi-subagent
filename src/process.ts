@@ -30,15 +30,15 @@ const RESULT_FORMAT_INSTRUCTIONS = `Optimize your final answer for the main agen
 Return only decision-useful facts. Do not include reasoning, logs, raw tool output, greetings, apologies, or transcript details.
 Compress every field aggressively.
 Use this concise markdown format:
-Outcome: <a brief, concise phrase summarizing the result>
+Outcome: <a single, brief, concise phrase summarizing the result>
 Changed: <changed paths, or none>
-Verification: <a brief, concise phrase proving the outcome>
+Verification: <a single, brief, concise phrase proving the outcome>
 Next: <single next action, or none>
 
 If the task failed, use this format:
-Outcome: <a brief, concise phrase summarizing the failure>
+Outcome: <a single, brief, concise phrase summarizing the failure>
 Cause: <short root cause or blocker>
-Verification: <a brief, concise phrase proving the failure>
+Verification: <a single, brief, concise phrase proving the failure>
 Next: <single fix or retry action>
 
 Do not paste logs or raw output. Summarize verification in one concise statement.
