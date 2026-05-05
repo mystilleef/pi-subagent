@@ -3,8 +3,7 @@ import type { Component } from "@mariozechner/pi-tui";
 import { Text } from "@mariozechner/pi-tui";
 import {
   extractSemanticToolTarget,
-  extractSummaryLabels,
-  formatSubagentResultForParent,
+  filterOutputLines,
   normalizeSummaryValue,
 } from "./summary.js";
 import type { SubagentDetails } from "./types.js";
@@ -80,7 +79,7 @@ export function finalizeProgressState(
 export function failProgressState(requestId: string, errorText: string): void {
   patchProgressState(requestId, {
     status: "error",
-    errorText: makeProgressErrorText(errorText),
+    errorText: extractProgressSemanticErrorLine(errorText),
     lastToolName: undefined,
     lastToolPreview: undefined,
   });
@@ -92,7 +91,7 @@ export function cancelProgressState(requestId: string, reason?: string): void {
     lastToolName: undefined,
     lastToolPreview: undefined,
     ...(reason !== undefined
-      ? { errorText: makeProgressErrorText(reason) }
+      ? { errorText: extractProgressSemanticErrorLine(reason) }
       : {}),
   });
 }
@@ -173,30 +172,7 @@ function truncateToolPreview(preview: string): string {
 }
 
 function makeProgressFinalOutput(finalOutput: string): string {
-  return formatSubagentResultForParent({
-    agent: "",
-    agentSource: "project",
-    task: "",
-    exitCode: 0,
-    finalOutput,
-    stderr: "",
-    usage: {
-      input: 0,
-      output: 0,
-      cacheRead: 0,
-      cacheWrite: 0,
-      cost: 0,
-      contextTokens: 0,
-      turns: 0,
-    },
-  });
-}
-
-function makeProgressErrorText(errorText: string): string {
-  const summary = extractSummaryLabels(errorText);
-  const semantic = summary.Cause ?? summary.Outcome;
-  if (semantic) return normalizeSummaryValue(semantic);
-  return extractProgressSemanticErrorLine(errorText);
+  return filterOutputLines(finalOutput).join("\n");
 }
 
 function extractProgressSemanticErrorLine(errorText: string): string {

@@ -103,10 +103,7 @@ test("terminal helpers clear transient tool fields and keep semantic text", () =
     lastToolPreview: "bash: noisy command",
   });
   const longOutcome = "x".repeat(600);
-  finalizeProgressState(
-    "req-1",
-    `Outcome: ${longOutcome}\nChanged: src/progress.ts`,
-  );
+  finalizeProgressState("req-1", longOutcome);
   const successState = getProgressState("req-1");
   expect(successState?.lastToolName).toBeUndefined();
   expect(successState?.lastToolPreview).toBeUndefined();
@@ -117,24 +114,13 @@ test("terminal helpers clear transient tool fields and keep semantic text", () =
     lastToolName: "read",
     lastToolPreview: "read: /tmp/file",
   });
-  const longCause = "e".repeat(600);
-  failProgressState("req-2", `Cause: ${longCause}`);
+  const longCause = `migration failed ${"e".repeat(600)}`;
+  failProgressState("req-2", longCause);
   const errorState = getProgressState("req-2");
   expect(errorState?.lastToolName).toBeUndefined();
   expect(errorState?.lastToolPreview).toBeUndefined();
   expect(errorState?.errorText).toBe(longCause);
   expect(errorState?.errorText).not.toContain("...");
-});
-
-test("progress error keeps long labeled semantic cause and outcome", () => {
-  createProgressState("req-1", "agent-a", "task a");
-  const longCause = `database migration failed ${"x".repeat(600)}`;
-  failProgressState("req-1", `Outcome: failed\nCause: ${longCause}`);
-  expect(getProgressState("req-1")?.errorText).toBe(longCause);
-  createProgressState("req-2", "agent-b", "task b");
-  const longOutcome = `dependency install blocked ${"y".repeat(600)}`;
-  failProgressState("req-2", `Outcome: ${longOutcome}`);
-  expect(getProgressState("req-2")?.errorText).toBe(longOutcome);
 });
 
 test("progress error omits long unstructured blobs", () => {

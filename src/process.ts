@@ -26,25 +26,16 @@ type RuntimeResult = SingleResult & { messages: Message[] };
 
 const MAX_SUBAGENT_DEPTH = 3;
 const TOOL_RESULT_FAILED_MESSAGE = "Subagent tool result failed.";
-const RESULT_FORMAT_INSTRUCTIONS = `Optimize your final answer for the main agent with aggressive agent, token, and context efficiency.
-Return only decision-useful facts. Do not include reasoning, logs, raw tool output, greetings, apologies, or transcript details.
-Compress every field aggressively.
-Use this concise markdown format:
-Outcome: <a single, brief, concise phrase summarizing the result>
-Changed: <changed paths, or none>
-Verification: <a single, brief, concise phrase proving the outcome>
-Next: <single next action, or none>
-
-If the task failed, use this format:
-Outcome: <a single, brief, concise phrase summarizing the failure>
-Cause: <short root cause or blocker>
-Verification: <a single, brief, concise phrase proving the failure>
-Next: <single fix or retry action>
-
-Do not paste logs or raw output. Summarize verification in one concise statement.
-Mention commands/checks only when they increase confidence.
-Use plain values; avoid backticks unless needed.
-Use none for empty fields.`;
+const RESULT_FORMAT_INSTRUCTIONS = `
+- Optimize your final answer for the main agent with
+  aggressive agent, token, and context efficiency.
+- Return only decision-useful facts.
+- Do not include reasoning, logs, raw tool output,
+  greetings, apologies, or transcript details.
+- Write a concise summary of what was done and whether
+  it succeeded.
+- Use elegant, idiomatic markdown.
+`;
 
 async function waitForSubagentProcess(
   proc: ChildProcess,

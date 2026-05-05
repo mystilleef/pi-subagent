@@ -312,7 +312,7 @@ Prompt`,
 test("/run final result uses semantic content without truncating details", async () => {
   const sentMessages: SendMessageArg[] = [];
   const longOutcome = `shipped ${"x".repeat(2600)}`;
-  const finalOutput = `noisy transcript SECRET_RAW\nOutcome: ${longOutcome}\nChanged: src/index.ts\nVerification: bun test passed\nNext: none`;
+  const finalOutput = `${longOutcome}\nAll tests pass.\nNo rollback needed.`;
   const { tool, cwd } = await setupTest({
     sendMessage: (msg) => sentMessages.push(msg),
     piScript: `#!/bin/sh
@@ -328,8 +328,7 @@ exit 0
     ui: { notify: () => {} },
   } as unknown as ExtensionCommandContext);
   const resultMessage = sentMessages.at(-1);
-  expect(resultMessage?.content).toContain(`Outcome: ${longOutcome}`);
-  expect(resultMessage?.content).not.toContain("SECRET_RAW");
+  expect(resultMessage?.content).toContain(longOutcome);
   expect(resultMessage?.content).not.toContain("SECRET_COMMAND");
   expect(resultMessage?.content).not.toContain("[truncated:");
   const details = resultMessage?.details as {
@@ -554,9 +553,10 @@ test("/run final result message renderer shows header and success background", a
     sentMessages.at(-1) as Parameters<RegisteredMessageRenderer>[0],
     { expanded: false },
     fakeTheme as Parameters<RegisteredMessageRenderer>[2],
-  ) as unknown as { text: string; render: (width: number) => string[] };
-  expect(rendered.text).toContain("[success]✓[/success]");
-  expect(rendered.text).toContain("[toolTitle]*hang*[/toolTitle]");
+  ) as unknown as { render: (width: number) => string[] };
+  const renderedText = rendered.render(10000).join("\n");
+  expect(renderedText).toContain("[success]✓[/success]");
+  expect(renderedText).toContain("[toolTitle]*hang*[/toolTitle]");
   expect(
     rendered
       .render(120)

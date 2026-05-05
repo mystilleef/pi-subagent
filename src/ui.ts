@@ -1,15 +1,14 @@
 import type { Message } from "@mariozechner/pi-ai";
 import type { ThemeColor } from "@mariozechner/pi-coding-agent";
-import { Text } from "@mariozechner/pi-tui";
-import type { AgentScope } from "./agents.js";
 import {
-  extractSemanticToolTarget,
-  extractSummaryLabels,
-  formatSemanticFallbackOutput,
-  isNoOpSummaryValue,
-  normalizeSummaryValue,
-  type SummaryLabel,
-} from "./summary.js";
+  Box,
+  type Component,
+  Markdown,
+  type MarkdownTheme,
+  Text,
+} from "@mariozechner/pi-tui";
+import type { AgentScope } from "./agents.js";
+import { extractSemanticToolTarget, filterOutputLines } from "./summary.js";
 import type { SubagentDetails, UsageStats } from "./types.js";
 import { detectMessageError } from "./utils.js";
 
@@ -28,7 +27,11 @@ export function formatTokens(count: number): string {
   return `${(count / 1000000).toFixed(1)}M`;
 }
 
-export function formatUsageStats(usage: UsageStats, model?: string): string {
+export function formatUsageStats(
+  usage: UsageStats,
+  model?: string,
+  compact?: boolean,
+): string {
   const parts: string[] = [];
   if (usage.turns)
     parts.push(`${usage.turns} turn${usage.turns > 1 ? "s" : ""}`);
@@ -38,13 +41,13 @@ export function formatUsageStats(usage: UsageStats, model?: string): string {
     if (usage.output) tokens.push(`↓${formatTokens(usage.output)}`);
     parts.push(tokens.join(" "));
   }
-  if (usage.cacheRead || usage.cacheWrite) {
+  if (!compact && (usage.cacheRead || usage.cacheWrite)) {
     const cache: string[] = [];
     if (usage.cacheRead) cache.push(`R${formatTokens(usage.cacheRead)}`);
     if (usage.cacheWrite) cache.push(`W${formatTokens(usage.cacheWrite)}`);
     parts.push(`cache:${cache.join("/")}`);
   }
-  if (usage.contextTokens && usage.contextTokens > 0)
+  if (!compact && usage.contextTokens && usage.contextTokens > 0)
     parts.push(`ctx:${formatTokens(usage.contextTokens)}`);
   if (usage.cost) parts.push(`$${usage.cost.toFixed(4)}`);
   if (model) parts.push(model);
@@ -76,26 +79,27 @@ function formatDuration(ms: number): string {
   return `${minutes}m ${rest}s`;
 }
 
-function formatSummary(
-  output: string,
-  failed: boolean,
-  theme: SubagentTheme,
-): string[] {
-  const summary = extractSummaryLabels(output);
-  const labels: SummaryLabel[] = failed
-    ? ["Cause", "Verification", "Next"]
-    : ["Outcome", "Changed", "Verification", "Next"];
-  const lines = labels.flatMap((label) => {
-    const value = summary[label]
-      ? normalizeSummaryValue(summary[label], label)
-      : "";
-    if (!value || isNoOpSummaryValue(value)) return [];
-    return `${theme.fg("muted", `${label}:`)} ${theme.fg("toolOutput", value)}`;
-  });
-  if (lines.length) return lines;
-  const fallback = formatSemanticFallbackOutput(output);
-  if (fallback) return [theme.fg("toolOutput", fallback)];
-  return [theme.fg("muted", "(no output)")];
+function makeMarkdownTheme(theme: SubagentTheme): MarkdownTheme {
+  return {
+    heading: (text) => theme.fg("mdHeading", text),
+    link: (text) => theme.fg("mdLink", text),
+    linkUrl: (text) => theme.fg("mdLinkUrl", text),
+    code: (text) => theme.fg("mdCode", text),
+    codeBlock: (text) => theme.fg("mdCodeBlock", text),
+    codeBlockBorder: (text) => theme.fg("mdCodeBlockBorder", text),
+    quote: (text) => theme.fg("mdQuote", text),
+    quoteBorder: (text) => theme.fg("mdQuoteBorder", text),
+    hr: (text) => theme.fg("mdHr", text),
+    listBullet: (text) => theme.fg("mdListBullet", text),
+    bold: (text) => theme.bold(text),
+    italic: (text) => `\x1b[3m${text}\x1b[23m`,
+    strikethrough: (text) => `\x1b[9m${text}\x1b[29m`,
+    underline: (text) => `\x1b[4m${text}\x1b[24m`,
+  };
+}
+
+function getResultBodyText(output: string): string {
+  return filterOutputLines(output).join("\n\n");
 }
 
 export function renderSubagentCall(
@@ -116,8 +120,8 @@ export function renderSubagentCall(
 export function renderSubagentResult(
   result: { content: { type: string; text?: string }[]; details?: unknown },
   theme: SubagentTheme,
-  display?: { isPartial?: boolean },
-): Text {
+  _display?: { isPartial?: boolean },
+): Component {
   const details = result.details as SubagentDetails | undefined;
   const r = details?.results?.[0];
   if (!r) {
@@ -136,33 +140,26 @@ export function renderSubagentResult(
     detectMessageError(r.messages ?? []);
   const icon = failed ? theme.fg("error", "✗") : theme.fg("success", "✓");
   const finalOutput = r.finalOutput ?? getFinalOutput(r.messages ?? []);
-  const headerParts = [
-    theme.fg("toolTitle", theme.bold(r.agent)),
-    theme.fg("muted", r.agentSource),
-  ];
-  if (r.durationMs !== undefined) {
+  const headerParts = [theme.fg("toolTitle", theme.bold(r.agent))];
+  if (r.durationMs !== undefined)
     headerParts.push(theme.fg("muted", formatDuration(r.durationMs)));
-  }
-  let text = `${icon} ${headerParts.join(theme.fg("muted", " · "))}`;
+  let headerText = `${icon} ${headerParts.join(theme.fg("muted", " · "))}`;
   if (failed && r.stopReason)
-    text += ` ${theme.fg("error", `[${r.stopReason}]`)}`;
-  const lastTool = (r.messages ?? [])
-    .filter((m) => m.role === "assistant")
-    .flatMap((m) => m.content)
-    .findLast((p) => p.type === "toolCall");
-  if (lastTool?.type === "toolCall") {
-    const showRawArgs = display?.isPartial === true && failed;
-    text += `\n${theme.fg("muted", "→ ") + formatToolCall(lastTool.name, lastTool.arguments as Record<string, unknown>, theme.fg.bind(theme), showRawArgs)}`;
+    headerText += ` ${theme.fg("error", `[${r.stopReason}]`)}`;
+  const bg = failed ? "toolErrorBg" : "toolSuccessBg";
+  const box = new Box(0, 0, (line) => theme.bg(bg, line));
+  box.addChild(new Text(headerText, 0, 0));
+  const bodyText = getResultBodyText(finalOutput);
+  if (bodyText) {
+    box.addChild(
+      new Markdown(bodyText, 0, 0, makeMarkdownTheme(theme), {
+        color: (text) => theme.fg("toolOutput", text),
+      }),
+    );
+  } else {
+    box.addChild(new Text(theme.fg("muted", "(no output)"), 0, 0));
   }
-  const parsedFinalSummary = extractSummaryLabels(finalOutput);
-  const bodySource =
-    failed && r.errorMessage && !parsedFinalSummary.Cause
-      ? `Cause: ${r.errorMessage}\n${finalOutput}`
-      : finalOutput;
-  text += `\n${formatSummary(bodySource, failed, theme).join("\n")}`;
-  const usageStr = formatUsageStats(r.usage, r.model);
-  if (usageStr) text += `\n${theme.fg("dim", usageStr)}`;
-  return new Text(text, 0, 0, (line) =>
-    theme.bg(failed ? "toolErrorBg" : "toolSuccessBg", line),
-  );
+  const usageStr = formatUsageStats(r.usage, r.model, true);
+  if (usageStr) box.addChild(new Text(theme.fg("dim", usageStr), 0, 0));
+  return box;
 }

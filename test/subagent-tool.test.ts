@@ -58,21 +58,11 @@ exit 0
   );
   const argsText = await Bun.file(path.join(cwd, "args.txt")).text();
   expect(argsText).toContain("Task: ship it");
-  expect(argsText).toContain(
-    "Optimize your final answer for the main agent with aggressive agent, token, and context efficiency.",
-  );
-  expect(argsText).not.toContain("under 600 characters");
-  expect(argsText).toContain("Compress every field aggressively.");
-  expect(argsText).toContain(
-    "Outcome: <a single, brief, concise phrase summarizing the result>",
-  );
-  expect(argsText).toContain("Changed: <changed paths, or none>");
-  expect(argsText).toContain(
-    "Verification: <a single, brief, concise phrase proving the outcome>",
-  );
-  expect(argsText).toContain("Next: <single next action, or none>");
-  expect(argsText).toContain("If the task failed, use this format:");
-  expect(argsText).toContain("Cause: <short root cause or blocker>");
+  expect(argsText).toContain("Optimize your final answer for the main agent");
+  expect(argsText).toContain("Write a concise summary of what was done");
+  expect(argsText).not.toContain("Outcome:");
+  expect(argsText).not.toContain("Changed:");
+  expect(argsText).not.toContain("Cause:");
 });
 
 test("subagent resolves when fake pi exits normally", async () => {
@@ -114,7 +104,7 @@ exit 0
 test("subagent keeps long semantic parent fields without truncation", async () => {
   const { binDir, cwd } = await setupFakePi();
   const longOutcome = `shipped ${"x".repeat(2_001)}`;
-  const finalOutput = `noisy raw transcript\nOutcome: ${longOutcome}\nVerification: bun test`;
+  const finalOutput = `${longOutcome}\nVerification: bun test\nNext: none`;
   const messageEnd = JSON.stringify({
     type: "message_end",
     message: {
@@ -140,16 +130,15 @@ exit 0
     { cwd, hasUI: false } as unknown as ExtensionContext,
   );
   const text = (result.content[0] as TextContent).text;
-  expect(text).toBe(`Outcome: ${longOutcome}\nVerification: bun test`);
+  expect(text).toBe(`${longOutcome}\nVerification: bun test\nNext: none`);
   expect(text).not.toContain("[truncated: full output available in details]");
-  expect(text).not.toContain("noisy raw transcript");
   expect(result.details?.results[0]?.finalOutput).toBe(finalOutput);
 });
 
 test("subagent returns semantic parent text while preserving full details", async () => {
   const { binDir, cwd } = await setupFakePi();
   const finalOutput =
-    "raw transcript that stays only in details\nOutcome: shipped\nChanged: src/a.ts, src/b.ts, src/c.ts, src/d.ts, src/e.ts\nVerification: bun test\nNext: none";
+    "Migration applied to 3 tables.\nAll tests pass.\nNo rollback needed.\nExtra line.";
   const messageEnd = JSON.stringify({
     type: "message_end",
     message: {
@@ -181,7 +170,7 @@ exit 0
     { cwd, hasUI: false } as unknown as ExtensionContext,
   );
   expect((result.content[0] as TextContent).text).toBe(
-    "Outcome: shipped\nChanged: 5 files: src/a.ts, src/b.ts, src/c.ts, src/d.ts, …\nVerification: bun test",
+    "Migration applied to 3 tables.\nAll tests pass.\nNo rollback needed.\nExtra line.",
   );
   const details = result.details as SubagentDetails;
   expect(details.results[0]?.finalOutput).toBe(finalOutput);
@@ -227,7 +216,7 @@ exit 0
       { cwd, hasUI: false } as unknown as ExtensionContext,
     ),
   ).rejects.toThrow(
-    "Agent failed: Outcome: failed at verify\nCause: parsed cause\nVerification: parsed verification\nNext: parsed next",
+    "Agent failed: Outcome: failed at verify\nCause: parsed cause\nVerification: parsed verification",
   );
 });
 

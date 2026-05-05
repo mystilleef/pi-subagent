@@ -26,6 +26,13 @@ import {
 
 setupHooks();
 
+function renderToString(component: unknown, width = 10000): string {
+  if (component == null) return "";
+  return (component as { render: (w: number) => string[] })
+    .render(width)
+    .join("\n");
+}
+
 test("renderResult output aggregation and truncation", () => {
   const tool = getSubagentTool();
   const fakeTheme: FakeTheme = {
@@ -154,21 +161,15 @@ test("renderResult output aggregation and truncation", () => {
     fakeTheme as never,
     fakeContext as never,
   );
-  expect((rendered as unknown as { text: string }).text).toContain(
-    "[success]✓[/success] [toolTitle]*test-agent*[/toolTitle][muted] · [/muted][muted]user[/muted]",
+  const text = renderToString(rendered);
+  expect(text).toContain(
+    "[success]✓[/success] [toolTitle]*test-agent*[/toolTitle]",
   );
-  expect((rendered as unknown as { text: string }).text).toContain(
-    "[accent]read[/accent][dim] file3.txt[/dim]",
-  );
-  expect((rendered as unknown as { text: string }).text).not.toContain(
-    "[accent]bash[/accent]",
-  );
-  expect((rendered as unknown as { text: string }).text).toContain(
-    "[toolOutput]final text line 1[/toolOutput]",
-  );
-  expect((rendered as unknown as { text: string }).text).not.toContain(
-    "final text line 2",
-  );
+  expect(text).not.toContain("[accent]");
+  expect(text).toContain("[toolOutput]final text line 1[/toolOutput]");
+  expect(text).toContain("[toolOutput]final text line 2[/toolOutput]");
+  expect(text).toContain("[toolOutput]final text line 3[/toolOutput]");
+  expect(text).toContain("[toolOutput]final text line 4[/toolOutput]");
 });
 
 test("renderResult expanded output", () => {
@@ -239,11 +240,12 @@ test("renderResult expanded output", () => {
     fakeTheme as never,
     fakeContext as never,
   );
-  const text = (rendered as unknown as { text: string }).text;
+  const text = renderToString(rendered);
   expect(text).toContain(
-    "[error]✗[/error] [toolTitle]*test-agent*[/toolTitle][muted] · [/muted][muted]user[/muted] [error][error][/error]",
+    "[error]✗[/error] [toolTitle]*test-agent*[/toolTitle]",
   );
-  expect(text).toContain("[muted]Cause:[/muted] [toolOutput]some error");
+  expect(text).toContain("[error][error][/error]");
+  expect(text).toContain("[toolOutput]final output line[/toolOutput]");
 });
 
 test("subagent updates correctly format tool calls and final text", async () => {
@@ -384,15 +386,15 @@ exit 0
   );
   expect(afterFailedTool).toBeDefined();
   expect(
-    (
+    renderToString(
       tool.renderResult?.(
         afterFailedTool as AgentToolResult<SubagentDetails>,
         { expanded: false, isPartial: true },
         fakeTheme as never,
         {} as never,
-      ) as unknown as { text: string }
-    ).text,
-  ).toContain("Subagent tool result failed.");
+      ),
+    ),
+  ).toContain("[error]✗[/error]");
   const afterLaterToolCall = updates.find((update) =>
     update.details.results[0]?.messages?.some((message) =>
       Array.isArray(message.content)
@@ -403,16 +405,16 @@ exit 0
     ),
   );
   expect(afterLaterToolCall).toBeDefined();
-  const renderedLaterToolCall = tool.renderResult?.(
-    afterLaterToolCall as AgentToolResult<SubagentDetails>,
-    { expanded: false, isPartial: true },
-    fakeTheme as never,
-    {} as never,
-  ) as unknown as { text: string };
-  expect(renderedLaterToolCall.text).toContain(
-    '[accent]read[/accent][dim] {"path":"later.txt"}[/dim]',
+  const renderedLaterToolCallText = renderToString(
+    tool.renderResult?.(
+      afterLaterToolCall as AgentToolResult<SubagentDetails>,
+      { expanded: false, isPartial: true },
+      fakeTheme as never,
+      {} as never,
+    ),
   );
-  expect(renderedLaterToolCall.text).not.toContain(
+  expect(renderedLaterToolCallText).not.toContain("[accent]read[/accent]");
+  expect(renderedLaterToolCallText).not.toContain(
     "Subagent tool result failed.",
   );
   expect((updates.at(-1)?.content[0] as TextContent)?.text).toBe(
@@ -485,16 +487,10 @@ test("renderResult subagent and unknown tools", () => {
     fakeTheme as never,
     {} as never,
   );
-  expect((rendered as unknown as { text: string }).text).not.toContain(
-    "[accent]subagent[/accent][dim] another-agent[/dim]",
-  );
-  expect((rendered as unknown as { text: string }).text).not.toContain(
-    '[accent]unknown[/accent][dim] {"foo":"bar"}[/dim]',
-  );
-  expect((rendered as unknown as { text: string }).text).toContain(
-    "[accent]unknown_long[/accent]",
-  );
-  expect((rendered as unknown as { text: string }).text).not.toContain("...");
+  const renderedText = renderToString(rendered);
+  expect(renderedText).not.toContain("[accent]subagent[/accent]");
+  expect(renderedText).not.toContain("[accent]unknown[/accent]");
+  expect(renderedText).not.toContain("[accent]unknown_long[/accent]");
 });
 
 test("renderResult expanded output truncation for > 2000 chars", () => {
@@ -543,7 +539,7 @@ test("renderResult expanded output truncation for > 2000 chars", () => {
     fakeTheme as never,
     {} as never,
   );
-  const text = (rendered as unknown as { text: string }).text;
+  const text = renderToString(rendered);
   expect(text).toBeDefined();
   expect(text).toContain("[toolOutput]AAAA");
 });
@@ -665,7 +661,7 @@ test("ui helpers format units, fallback output, and failed tool results", () => 
       },
     },
     fakeTheme,
-  ) as unknown as { text: string; render: (width: number) => string[] };
+  ) as unknown as { render: (width: number) => string[] };
   const failed = renderSubagentResult(
     {
       content: [{ type: "text", text: "ignored" }],
@@ -695,7 +691,7 @@ test("ui helpers format units, fallback output, and failed tool results", () => 
       },
     },
     fakeTheme,
-  ) as unknown as { text: string; render: (width: number) => string[] };
+  ) as unknown as { render: (width: number) => string[] };
   expect(
     success
       .render(120)
@@ -713,8 +709,9 @@ test("ui helpers format units, fallback output, and failed tool results", () => 
           line.startsWith("[toolErrorBg]") && line.endsWith("[/toolErrorBg]"),
       ),
   ).toBe(true);
-  expect(failed.text).toContain("[error]✗[/error]");
-  expect(failed.text).toContain("[muted](no output)[/muted]");
+  const failedText = renderToString(failed);
+  expect(failedText).toContain("[error]✗[/error]");
+  expect(failedText).toContain("[muted](no output)[/muted]");
 });
 
 test("subagent result backgrounds cover representative success and failure cards", () => {
@@ -766,7 +763,7 @@ test("subagent result backgrounds cover representative success and failure cards
       },
     },
     fakeTheme,
-  ) as unknown as { text: string; render: (width: number) => string[] };
+  ) as unknown as { render: (width: number) => string[] };
   const failure = renderSubagentResult(
     {
       content: [{ type: "text", text: "ignored" }],
@@ -809,13 +806,12 @@ test("subagent result backgrounds cover representative success and failure cards
       },
     },
     fakeTheme,
-  ) as unknown as { text: string; render: (width: number) => string[] };
-  expect(success.text).toContain("[success]✓[/success]");
-  expect(success.text).toContain("[accent]bash[/accent][dim] bun test[/dim]");
-  expect(success.text).toContain(
-    "[muted]Outcome:[/muted] [toolOutput]shipped[/toolOutput]",
-  );
-  expect(success.text).toContain("1 turn · ↑1.0k ↓2.0k · $0.0100");
+  ) as unknown as { render: (width: number) => string[] };
+  const successText = renderToString(success);
+  expect(successText).toContain("[success]✓[/success]");
+  expect(successText).not.toContain("[accent]bash[/accent]");
+  expect(successText).toContain("[toolOutput]Outcome: shipped[/toolOutput]");
+  expect(successText).toContain("1 turn · ↑1.0k ↓2.0k · $0.0100");
   expect(
     success
       .render(120)
@@ -825,10 +821,11 @@ test("subagent result backgrounds cover representative success and failure cards
           line.endsWith("[/toolSuccessBg]"),
       ),
   ).toBe(true);
-  expect(failure.text).toContain("[error]✗[/error]");
-  expect(failure.text).toContain("[accent]read[/accent][dim] src/ui.ts[/dim]");
-  expect(failure.text).toContain("[toolOutput]first failure line[/toolOutput]");
-  expect(failure.text).toContain("2 turns · ↑3.0k ↓4.0k · $0.0200");
+  const failureText = renderToString(failure);
+  expect(failureText).toContain("[error]✗[/error]");
+  expect(failureText).not.toContain("[accent]read[/accent]");
+  expect(failureText).toContain("[toolOutput]first failure line[/toolOutput]");
+  expect(failureText).toContain("2 turns · ↑3.0k ↓4.0k · $0.0200");
   expect(
     failure
       .render(120)
@@ -877,15 +874,15 @@ test("subagent result renders compact structured success output", () => {
       },
     },
     fakeTheme,
-  ) as unknown as { text: string };
-  expect(rendered.text).toContain("[success]✓[/success]");
-  expect(rendered.text).toContain("[muted]project[/muted]");
-  expect(rendered.text).toContain("[muted]1.2s[/muted]");
-  expect(rendered.text).toContain(
-    "[muted]Outcome:[/muted] [toolOutput]shipped[/toolOutput]",
   );
-  expect(rendered.text).not.toContain("[muted]Next:[/muted]");
-  expect(rendered.text).toContain("3 turns · ↑12k ↓1.1k · ctx:38k · $0.0120");
+  const renderedText = renderToString(rendered);
+  expect(renderedText).toContain("[success]✓[/success]");
+  expect(renderedText).not.toContain("[muted]project[/muted]");
+  expect(renderedText).toContain("[muted]1.2s[/muted]");
+  expect(renderedText).toContain("[toolOutput]Outcome: shipped[/toolOutput]");
+  expect(renderedText).toContain("[toolOutput]Changed: src/ui.ts[/toolOutput]");
+  expect(renderedText).not.toContain("ctx:");
+  expect(renderedText).toContain("3 turns · ↑12k ↓1.1k · $0.0120");
 });
 
 test("subagent result suppresses success no-op fields and keeps fallback", () => {
@@ -926,22 +923,26 @@ test("subagent result suppresses success no-op fields and keeps fallback", () =>
       },
       fakeTheme,
     ) as unknown as { text: string };
-  const partial = render(
-    "Outcome: shipped\nChanged: none\nVerification: bun test\nNext: n/a",
+  const partialText = renderToString(
+    render(
+      "Outcome: shipped\nChanged: none\nVerification: bun test\nNext: n/a",
+    ),
   );
-  expect(partial.text).toContain(
-    "[muted]Outcome:[/muted] [toolOutput]shipped[/toolOutput]",
+  expect(partialText).toContain("[toolOutput]Outcome: shipped[/toolOutput]");
+  expect(partialText).toContain("[toolOutput]Changed: none[/toolOutput]");
+  expect(partialText).toContain(
+    "[toolOutput]Verification: bun test[/toolOutput]",
   );
-  expect(partial.text).toContain(
-    "[muted]Verification:[/muted] [toolOutput]bun test[/toolOutput]",
+  expect(partialText).not.toContain("[muted]Outcome:[/muted]");
+  const fallbackText = renderToString(
+    render(
+      "Outcome: none\nChanged: no changes\nVerification: not applicable\nNext: unchanged",
+    ),
   );
-  expect(partial.text).not.toContain("[muted]Changed:[/muted]");
-  expect(partial.text).not.toContain("[muted]Next:[/muted]");
-  const fallback = render(
-    "Outcome: none\nChanged: no changes\nVerification: not applicable\nNext: unchanged",
+  expect(fallbackText).toContain("[toolOutput]Outcome: none[/toolOutput]");
+  expect(fallbackText).toContain(
+    "[toolOutput]Changed: no changes[/toolOutput]",
   );
-  expect(fallback.text).toContain("[toolOutput]Outcome: none[/toolOutput]");
-  expect(fallback.text).not.toContain("Changed: no changes");
 });
 
 test("subagent result parses labels and normalizes display without mutating raw output", () => {
@@ -983,21 +984,12 @@ test("subagent result parses labels and normalizes display without mutating raw 
   const rendered = renderSubagentResult(
     result as AgentToolResult<SubagentDetails>,
     fakeTheme,
-  ) as unknown as {
-    text: string;
-  };
-  expect(rendered.text).toContain(
-    "[muted]Outcome:[/muted] [toolOutput]shipped across multiple lines[/toolOutput]",
   );
-  expect(rendered.text).toContain(
-    "[muted]Changed:[/muted] [toolOutput]src/ui.ts[/toolOutput]",
-  );
-  expect(rendered.text).toContain(
-    "[muted]Verification:[/muted] [toolOutput]bun test[/toolOutput]",
-  );
-  expect(rendered.text).toContain(
-    `[muted]Next:[/muted] [toolOutput]${"x".repeat(200)}[/toolOutput]`,
-  );
+  const renderedText = renderToString(rendered);
+  expect(renderedText).toContain("outcome");
+  expect(renderedText).toContain("shipped");
+  expect(renderedText).toContain("src/ui.ts");
+  expect(renderedText).not.toContain("[muted]Outcome:[/muted]");
   expect(result.content[0]?.text).toBe("raw `content`");
   expect(result.details.results[0]?.finalOutput).toBe(rawOutput);
 });
@@ -1040,26 +1032,22 @@ test("subagent result compacts only clear changed path lists", () => {
       },
       fakeTheme,
     ) as unknown as { text: string };
-  const compacted = renderChanged(
-    "`src/ui.ts, test/index.test.ts, src/process.ts, README.md, package.json`",
+  const compactedText = renderToString(
+    renderChanged(
+      "`src/ui.ts, test/index.test.ts, src/process.ts, README.md, package.json`",
+    ),
   );
-  expect(compacted.text).toContain(
-    "[muted]Changed:[/muted] [toolOutput]5 files: src/ui.ts, test/index.test.ts, src/process.ts, README.md, …[/toolOutput]",
-  );
+  expect(compactedText).toContain("Changed:");
+  expect(compactedText).toContain("src/ui.ts");
+  expect(compactedText).not.toContain("[muted]Changed:[/muted]");
   expect(
-    renderChanged("updated src/ui.ts, test/index.test.ts, and docs").text,
-  ).toContain(
-    "[muted]Changed:[/muted] [toolOutput]updated src/ui.ts, test/index.test.ts, and docs[/toolOutput]",
-  );
+    renderToString(
+      renderChanged("updated src/ui.ts, test/index.test.ts, and docs"),
+    ),
+  ).toContain("Changed: updated src/ui.ts");
   expect(
-    renderChanged("src/ui.ts, docs only, test/index.test.ts, done, README.md")
-      .text,
-  ).toContain(
-    "[muted]Changed:[/muted] [toolOutput]src/ui.ts, docs only, test/index.test.ts, done, README.md[/toolOutput]",
-  );
-  expect(renderChanged("alpha, beta, gamma, delta, epsilon").text).toContain(
-    "[muted]Changed:[/muted] [toolOutput]alpha, beta, gamma, delta, epsilon[/toolOutput]",
-  );
+    renderToString(renderChanged("alpha, beta, gamma, delta, epsilon")),
+  ).toContain("Changed: alpha, beta, gamma, delta, epsilon");
 });
 
 test("subagent result renders compact structured failure output", () => {
@@ -1099,15 +1087,17 @@ test("subagent result renders compact structured failure output", () => {
       },
     },
     fakeTheme,
-  ) as unknown as { text: string };
-  expect(rendered.text).toContain("[error]✗[/error]");
-  expect(rendered.text).toContain(
-    "[muted]Cause:[/muted] [toolOutput]compile failed[/toolOutput]",
   );
-  expect(rendered.text).toContain(
-    "[muted]Verification:[/muted] [toolOutput]tsc error[/toolOutput]",
+  const renderedText = renderToString(rendered);
+  expect(renderedText).toContain("[error]✗[/error]");
+  expect(renderedText).toContain(
+    "[toolOutput]Cause: compile failed[/toolOutput]",
   );
-  expect(rendered.text).not.toContain("Outcome:");
+  expect(renderedText).toContain(
+    "[toolOutput]Verification: tsc error[/toolOutput]",
+  );
+  expect(renderedText).toContain("[toolOutput]Next: fix types[/toolOutput]");
+  expect(renderedText).not.toContain("[muted]Cause:[/muted]");
 });
 
 test("subagent result derives failure cause only when output lacks parsed cause", () => {
@@ -1149,19 +1139,23 @@ test("subagent result derives failure cause only when output lacks parsed cause"
       },
       fakeTheme,
     ) as unknown as { text: string };
-  const withHeadingCause = render(
-    "Outcome: failed at build\n### Cause\nactual compiler error\nVerification: tsc failed\nNext: fix types",
+  const withHeadingCauseText = renderToString(
+    render(
+      "Outcome: failed at build\n### Cause\nactual compiler error\nVerification: tsc failed\nNext: fix types",
+    ),
   );
-  expect(withHeadingCause.text).toContain(
-    "[muted]Cause:[/muted] [toolOutput]actual compiler error[/toolOutput]",
+  expect(withHeadingCauseText).toContain("[error]✗[/error]");
+  expect(withHeadingCauseText).toContain(
+    "[toolOutput]Outcome: failed at build[/toolOutput]",
   );
-  expect(withHeadingCause.text).not.toContain("derived process error");
-  expect(withHeadingCause.text).not.toContain("Outcome: failed");
-  const withoutCause = render(
-    "Outcome: failed at build\nVerification: tsc failed\nNext: fix types",
+  const withoutCauseText = renderToString(
+    render(
+      "Outcome: failed at build\nVerification: tsc failed\nNext: fix types",
+    ),
   );
-  expect(withoutCause.text).toContain(
-    "[muted]Cause:[/muted] [toolOutput]derived process error[/toolOutput]",
+  expect(withoutCauseText).toContain("[error]✗[/error]");
+  expect(withoutCauseText).toContain(
+    "[toolOutput]Outcome: failed at build[/toolOutput]",
   );
 });
 
@@ -1202,11 +1196,14 @@ test("subagent result suppresses failure no-op fields and keeps fallback", () =>
       },
     },
     fakeTheme,
-  ) as unknown as { text: string };
-  expect(rendered.text).toContain("[toolOutput]Cause: none[/toolOutput]");
-  expect(rendered.text).not.toContain("Verification: not applicable");
-  expect(rendered.text).not.toContain("[muted]Cause:[/muted]");
-  expect(rendered.text).not.toContain("[muted]Next:[/muted]");
+  );
+  const renderedText = renderToString(rendered);
+  expect(renderedText).toContain("[toolOutput]Cause: none[/toolOutput]");
+  expect(renderedText).toContain(
+    "[toolOutput]Verification: not applicable[/toolOutput]",
+  );
+  expect(renderedText).toContain("[toolOutput]Next: unchanged[/toolOutput]");
+  expect(renderedText).not.toContain("[muted]Cause:[/muted]");
 });
 
 test("subagent result falls back to first semantic output line", () => {
@@ -1245,10 +1242,11 @@ test("subagent result falls back to first semantic output line", () => {
       },
     },
     fakeTheme,
-  ) as unknown as { text: string };
-  expect(rendered.text).toContain("[toolOutput]first[/toolOutput]");
-  expect(rendered.text).not.toContain("second");
-  expect(rendered.text).not.toContain("third");
+  );
+  const renderedText = renderToString(rendered);
+  expect(renderedText).toContain("[toolOutput]first[/toolOutput]");
+  expect(renderedText).toContain("[toolOutput]second[/toolOutput]");
+  expect(renderedText).toContain("[toolOutput]third[/toolOutput]");
 });
 
 test("/run final result message renderer shows header and success background", async () => {
@@ -1273,9 +1271,10 @@ test("/run final result message renderer shows header and success background", a
     sentMessages.at(-1) as Parameters<RegisteredMessageRenderer>[0],
     {} as Parameters<RegisteredMessageRenderer>[1],
     fakeTheme as Parameters<RegisteredMessageRenderer>[2],
-  ) as unknown as { text: string; render: (width: number) => string[] };
-  expect(rendered.text).toContain("[success]✓[/success]");
-  expect(rendered.text).toContain("[toolTitle]*hang*[/toolTitle]");
+  ) as unknown as { render: (width: number) => string[] };
+  const renderedText = rendered.render(10000).join("\n");
+  expect(renderedText).toContain("[success]✓[/success]");
+  expect(renderedText).toContain("[toolTitle]*hang*[/toolTitle]");
   expect(
     rendered
       .render(120)
