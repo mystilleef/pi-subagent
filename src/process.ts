@@ -27,14 +27,9 @@ type RuntimeResult = SingleResult & { messages: Message[] };
 const MAX_SUBAGENT_DEPTH = 3;
 const TOOL_RESULT_FAILED_MESSAGE = "Subagent tool result failed.";
 const RESULT_FORMAT_INSTRUCTIONS = `
-- Optimize your final answer for the main agent with
-  aggressive agent, token, and context efficiency.
-- Return only decision-useful facts.
-- Do not include reasoning, logs, raw tool output,
-  greetings, apologies, or transcript details.
-- Write a concise summary of what was done and whether
-  it succeeded.
-- Use elegant, idiomatic markdown.
+- Summarize your result for the main agent.
+- Optimize your summary for token and context efficiency.
+- Use elegant, well-structured, idiomatic markdown.
 `;
 
 async function waitForSubagentProcess(
