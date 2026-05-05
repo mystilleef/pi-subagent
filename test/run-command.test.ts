@@ -568,3 +568,39 @@ test("/run final result message renderer hides header and keeps success backgrou
       ),
   ).toBe(true);
 });
+
+test("/run final result message renderer prefers semantic message content", async () => {
+  const sentMessages: SendMessageArg[] = [];
+  const finalOutput =
+    "Hello! I can help.\nError: noisy stack line\nSemantic summary";
+  const { tool, cwd } = await setupTest({
+    sendMessage: (msg) => sentMessages.push(msg),
+    piScript: `#!/bin/sh
+printf '%s\n' '${JSON.stringify({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: finalOutput }], usage: { input: 1, output: 1, totalTokens: 2, cost: { total: 0 } } } })}'
+printf '%s\n' '{"type":"agent_end"}'
+exit 0
+`,
+  });
+  const runCommand = tool.registeredCommands.get("run");
+  await runCommand?.handler("hang test task", {
+    cwd,
+    ui: { notify: () => {} },
+  } as unknown as ExtensionCommandContext);
+  const renderer = tool.registeredMessageRenderers.get("subagent-result");
+  if (!renderer) throw new Error("subagent-result renderer missing");
+  const fakeTheme: FakeTheme = {
+    fg: (color, text) => `[${color}]${text}[/${color}]`,
+    bg: (color, text) => `[${color}]${text}[/${color}]`,
+    bold: (text) => `*${text}*`,
+  };
+  const rendered = renderer(
+    sentMessages.at(-1) as Parameters<RegisteredMessageRenderer>[0],
+    { expanded: false },
+    fakeTheme as Parameters<RegisteredMessageRenderer>[2],
+  ) as unknown as { render: (width: number) => string[] };
+  const renderedText = rendered.render(10000).join("\n");
+  expect(sentMessages.at(-1)?.content).toBe("Semantic summary");
+  expect(renderedText).toContain("[toolOutput]Semantic summary[/toolOutput]");
+  expect(renderedText).not.toContain("Hello! I can help.");
+  expect(renderedText).not.toContain("Error: noisy stack line");
+});

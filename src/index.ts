@@ -200,7 +200,18 @@ function renderSubagentResultMessage(
       : Array.isArray(message.content)
         ? (message.content as { type: string; text?: string }[])
         : [];
-  return renderSubagentResult({ content, details: message.details }, theme);
+  const semanticText = content.find((item) => item.type === "text")?.text;
+  const details = message.details as SubagentDetails | undefined;
+  const displayDetails =
+    semanticText && details?.results?.length
+      ? {
+          ...details,
+          results: details.results.map((result, index) =>
+            index === 0 ? { ...result, finalOutput: semanticText } : result,
+          ),
+        }
+      : details;
+  return renderSubagentResult({ content, details: displayDetails }, theme);
 }
 
 function sanitizeDetailsForDisplay(
