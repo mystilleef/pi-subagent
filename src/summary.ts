@@ -3,19 +3,20 @@ import type { SingleResult } from "./types.js";
 export type SummaryLabel =
   | "Outcome"
   | "Changed"
-  | "Evidence"
+  | "Verification"
   | "Next"
   | "Cause";
 
 export const SUMMARY_LABELS: SummaryLabel[] = [
   "Outcome",
   "Changed",
-  "Evidence",
+  "Verification",
   "Next",
   "Cause",
 ];
 
 export function normalizeLabel(raw: string): SummaryLabel | undefined {
+  if (raw.toLowerCase() === "evidence") return "Verification";
   return SUMMARY_LABELS.find(
     (label) => label.toLowerCase() === raw.toLowerCase(),
   );
@@ -31,14 +32,14 @@ export function extractSummaryLabels(
     const line = rawLine.trim();
     if (!line) continue;
     const heading = line.match(
-      /^#{1,6}\s+(Outcome|Changed|Evidence|Next|Cause)(?:\s*:\s*|\s+)?(.*)$/i,
+      /^#{1,6}\s+(Outcome|Changed|Verification|Evidence|Next|Cause)(?:\s*:\s*|\s+)?(.*)$/i,
     );
     const inline =
       line.match(
-        /^(?:[-*]\s*)?(?:\*\*)?(Outcome|Changed|Evidence|Next|Cause)\s*:\*\*\s*(.*)$/i,
+        /^(?:[-*]\s*)?(?:\*\*)?(Outcome|Changed|Verification|Evidence|Next|Cause)\s*:\*\*\s*(.*)$/i,
       ) ??
       line.match(
-        /^(?:[-*]\s*)?(?:\*\*)?(Outcome|Changed|Evidence|Next|Cause)(?:\*\*)?\s*:\s*(.*)$/i,
+        /^(?:[-*]\s*)?(?:\*\*)?(Outcome|Changed|Verification|Evidence|Next|Cause)(?:\*\*)?\s*:\s*(.*)$/i,
       );
     if (heading) {
       active = normalizeLabel(heading[1] ?? "");
@@ -202,8 +203,8 @@ export function formatSubagentResultForParent(result: SingleResult): string {
   const summary = extractSummaryLabels(result.finalOutput);
   const failed = resultFailed(result);
   const labels: SummaryLabel[] = failed
-    ? ["Outcome", "Cause", "Evidence", "Next"]
-    : ["Outcome", "Changed", "Evidence", "Next"];
+    ? ["Outcome", "Cause", "Verification", "Next"]
+    : ["Outcome", "Changed", "Verification", "Next"];
   const seenValues = new Set<string>();
   const lines = labels.flatMap((label) => {
     const rawValue =

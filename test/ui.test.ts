@@ -737,7 +737,7 @@ test("subagent result backgrounds cover representative success and failure cards
             task: "pass",
             exitCode: 0,
             finalOutput:
-              "Outcome: shipped\nChanged: src/ui.ts\nEvidence: bun test\nNext: none",
+              "Outcome: shipped\nChanged: src/ui.ts\nVerification: bun test\nNext: none",
             messages: [
               {
                 role: "assistant",
@@ -859,7 +859,7 @@ test("subagent result renders compact structured success output", () => {
             task: "pass",
             exitCode: 0,
             finalOutput:
-              "Outcome: shipped\nChanged: src/ui.ts\nEvidence: bun test\nNext: none",
+              "Outcome: shipped\nChanged: src/ui.ts\nVerification: bun test\nNext: none",
             messages: [],
             stderr: "",
             durationMs: 1234,
@@ -927,18 +927,18 @@ test("subagent result suppresses success no-op fields and keeps fallback", () =>
       fakeTheme,
     ) as unknown as { text: string };
   const partial = render(
-    "Outcome: shipped\nChanged: none\nEvidence: bun test\nNext: n/a",
+    "Outcome: shipped\nChanged: none\nVerification: bun test\nNext: n/a",
   );
   expect(partial.text).toContain(
     "[muted]Outcome:[/muted] [toolOutput]shipped[/toolOutput]",
   );
   expect(partial.text).toContain(
-    "[muted]Evidence:[/muted] [toolOutput]bun test[/toolOutput]",
+    "[muted]Verification:[/muted] [toolOutput]bun test[/toolOutput]",
   );
   expect(partial.text).not.toContain("[muted]Changed:[/muted]");
   expect(partial.text).not.toContain("[muted]Next:[/muted]");
   const fallback = render(
-    "Outcome: none\nChanged: no changes\nEvidence: not applicable\nNext: unchanged",
+    "Outcome: none\nChanged: no changes\nVerification: not applicable\nNext: unchanged",
   );
   expect(fallback.text).toContain("[toolOutput]Outcome: none[/toolOutput]");
   expect(fallback.text).not.toContain("Changed: no changes");
@@ -951,7 +951,7 @@ test("subagent result parses labels and normalizes display without mutating raw 
     bold: (text) => `*${text}*`,
   };
   const longNext = "x".repeat(200);
-  const rawOutput = `- outcome: **shipped across\nmultiple lines**\n**Changed:** \`src/ui.ts\`\n### Evidence\n\`bun test\`\nNext: \`${longNext}\``;
+  const rawOutput = `- outcome: **shipped across\nmultiple lines**\n**Changed:** \`src/ui.ts\`\n### Verification\n\`bun test\`\nNext: \`${longNext}\``;
   const result = {
     content: [{ type: "text", text: "raw `content`" }],
     details: {
@@ -993,7 +993,7 @@ test("subagent result parses labels and normalizes display without mutating raw 
     "[muted]Changed:[/muted] [toolOutput]src/ui.ts[/toolOutput]",
   );
   expect(rendered.text).toContain(
-    "[muted]Evidence:[/muted] [toolOutput]bun test[/toolOutput]",
+    "[muted]Verification:[/muted] [toolOutput]bun test[/toolOutput]",
   );
   expect(rendered.text).toContain(
     `[muted]Next:[/muted] [toolOutput]${"x".repeat(200)}[/toolOutput]`,
@@ -1022,7 +1022,7 @@ test("subagent result compacts only clear changed path lists", () => {
               agentSource: "project",
               task: "pass",
               exitCode: 0,
-              finalOutput: `Outcome: shipped\nChanged: ${changed}\nEvidence: bun test\nNext: none`,
+              finalOutput: `Outcome: shipped\nChanged: ${changed}\nVerification: bun test\nNext: none`,
               messages: [],
               stderr: "",
               usage: {
@@ -1082,7 +1082,7 @@ test("subagent result renders compact structured failure output", () => {
             task: "fail",
             exitCode: 1,
             finalOutput:
-              "Cause: compile failed\nEvidence: tsc error\nNext: fix types",
+              "Cause: compile failed\nVerification: tsc error\nNext: fix types",
             messages: [],
             stderr: "",
             usage: {
@@ -1105,7 +1105,7 @@ test("subagent result renders compact structured failure output", () => {
     "[muted]Cause:[/muted] [toolOutput]compile failed[/toolOutput]",
   );
   expect(rendered.text).toContain(
-    "[muted]Evidence:[/muted] [toolOutput]tsc error[/toolOutput]",
+    "[muted]Verification:[/muted] [toolOutput]tsc error[/toolOutput]",
   );
   expect(rendered.text).not.toContain("Outcome:");
 });
@@ -1150,7 +1150,7 @@ test("subagent result derives failure cause only when output lacks parsed cause"
       fakeTheme,
     ) as unknown as { text: string };
   const withHeadingCause = render(
-    "Outcome: failed at build\n### Cause\nactual compiler error\nEvidence: tsc failed\nNext: fix types",
+    "Outcome: failed at build\n### Cause\nactual compiler error\nVerification: tsc failed\nNext: fix types",
   );
   expect(withHeadingCause.text).toContain(
     "[muted]Cause:[/muted] [toolOutput]actual compiler error[/toolOutput]",
@@ -1158,7 +1158,7 @@ test("subagent result derives failure cause only when output lacks parsed cause"
   expect(withHeadingCause.text).not.toContain("derived process error");
   expect(withHeadingCause.text).not.toContain("Outcome: failed");
   const withoutCause = render(
-    "Outcome: failed at build\nEvidence: tsc failed\nNext: fix types",
+    "Outcome: failed at build\nVerification: tsc failed\nNext: fix types",
   );
   expect(withoutCause.text).toContain(
     "[muted]Cause:[/muted] [toolOutput]derived process error[/toolOutput]",
@@ -1185,7 +1185,7 @@ test("subagent result suppresses failure no-op fields and keeps fallback", () =>
             task: "fail",
             exitCode: 1,
             finalOutput:
-              "Cause: none\nEvidence: not applicable\nNext: unchanged",
+              "Cause: none\nVerification: not applicable\nNext: unchanged",
             messages: [],
             stderr: "",
             usage: {
@@ -1204,7 +1204,7 @@ test("subagent result suppresses failure no-op fields and keeps fallback", () =>
     fakeTheme,
   ) as unknown as { text: string };
   expect(rendered.text).toContain("[toolOutput]Cause: none[/toolOutput]");
-  expect(rendered.text).not.toContain("Evidence: not applicable");
+  expect(rendered.text).not.toContain("Verification: not applicable");
   expect(rendered.text).not.toContain("[muted]Cause:[/muted]");
   expect(rendered.text).not.toContain("[muted]Next:[/muted]");
 });

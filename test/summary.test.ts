@@ -10,12 +10,12 @@ import type { SingleResult } from "../src/types.js";
 
 test("shared summary helpers parse and normalize labeled output", () => {
   const summary = extractSummaryLabels(
-    "- outcome: **shipped across\nmultiple lines**\n**Changed:** `src/ui.ts`\n### Evidence\n`bun test`\nNext: none",
+    "- outcome: **shipped across\nmultiple lines**\n**Changed:** `src/ui.ts`\n### Verification\n`bun test`\nNext: none",
   );
   expect(summary).toEqual({
     Outcome: "**shipped across multiple lines**",
     Changed: "`src/ui.ts`",
-    Evidence: "`bun test`",
+    Verification: "`bun test`",
     Next: "none",
   });
   expect(normalizeSummaryValue(summary.Outcome ?? "")).toBe(
@@ -24,8 +24,18 @@ test("shared summary helpers parse and normalize labeled output", () => {
   expect(normalizeSummaryValue(summary.Changed ?? "", "Changed")).toBe(
     "src/ui.ts",
   );
-  expect(normalizeSummaryValue(summary.Evidence ?? "")).toBe("bun test");
+  expect(normalizeSummaryValue(summary.Verification ?? "")).toBe("bun test");
   expect(isNoOpSummaryValue(summary.Next ?? "")).toBe(true);
+});
+
+test("shared summary helpers parse legacy evidence as verification", () => {
+  const summary = extractSummaryLabels(
+    "Outcome: ok\nEvidence: bun test passed",
+  );
+  expect(summary).toEqual({
+    Outcome: "ok",
+    Verification: "bun test passed",
+  });
 });
 
 test("changed path compaction only compacts clear long path lists", () => {
@@ -63,10 +73,10 @@ test("parent formatter emits useful success fields only", () => {
     formatSubagentResultForParent(
       result({
         finalOutput:
-          "Outcome: shipped\nChanged: src/a.ts\nEvidence: bun test\nNext: none",
+          "Outcome: shipped\nChanged: src/a.ts\nVerification: bun test\nNext: none",
       }),
     ),
-  ).toBe("Outcome: shipped\nChanged: src/a.ts\nEvidence: bun test");
+  ).toBe("Outcome: shipped\nChanged: src/a.ts\nVerification: bun test");
 });
 
 test("parent formatter emits useful failure fields with cause fallback", () => {
@@ -75,12 +85,12 @@ test("parent formatter emits useful failure fields with cause fallback", () => {
       result({
         exitCode: 1,
         finalOutput:
-          "Outcome: failed at verify\nEvidence: type error\nNext: fix types",
+          "Outcome: failed at verify\nVerification: type error\nNext: fix types",
         errorMessage: "Subagent tool result failed.",
       }),
     ),
   ).toBe(
-    "Outcome: failed at verify\nCause: Subagent tool result failed.\nEvidence: type error\nNext: fix types",
+    "Outcome: failed at verify\nCause: Subagent tool result failed.\nVerification: type error\nNext: fix types",
   );
 });
 
@@ -89,7 +99,7 @@ test("parent formatter compacts changed paths and omits no-op values", () => {
     formatSubagentResultForParent(
       result({
         finalOutput:
-          "Outcome: ok\nChanged: src/a.ts, src/b.ts, src/c.ts, src/d.ts, src/e.ts\nEvidence: not applicable\nNext: unchanged",
+          "Outcome: ok\nChanged: src/a.ts, src/b.ts, src/c.ts, src/d.ts, src/e.ts\nVerification: not applicable\nNext: unchanged",
       }),
     ),
   ).toBe(
@@ -102,7 +112,7 @@ test("parent formatter omits duplicate semantic values", () => {
     formatSubagentResultForParent(
       result({
         finalOutput:
-          "Outcome: shipped\nChanged: src/a.ts\nEvidence: shipped\nNext: src/a.ts",
+          "Outcome: shipped\nChanged: src/a.ts\nVerification: shipped\nNext: src/a.ts",
       }),
     ),
   ).toBe("Outcome: shipped\nChanged: src/a.ts");
@@ -117,11 +127,11 @@ test("parent formatter returns first meaningful fallback when no useful summary 
 test("parent formatter preserves long semantic values without field budgets", () => {
   const formatted = formatSubagentResultForParent(
     result({
-      finalOutput: `Outcome: ${"o".repeat(200)}\nChanged: src/a.ts\nEvidence: ${"e".repeat(220)}\nNext: ${"n".repeat(180)}`,
+      finalOutput: `Outcome: ${"o".repeat(200)}\nChanged: src/a.ts\nVerification: ${"e".repeat(220)}\nNext: ${"n".repeat(180)}`,
     }),
   );
   expect(formatted).toContain(`Outcome: ${"o".repeat(200)}`);
-  expect(formatted).toContain(`Evidence: ${"e".repeat(220)}`);
+  expect(formatted).toContain(`Verification: ${"e".repeat(220)}`);
   expect(formatted).toContain(`Next: ${"n".repeat(180)}`);
 });
 
@@ -129,12 +139,12 @@ test("parent formatter extracts actionable stderr failure cause without raw log 
   const formatted = formatSubagentResultForParent(
     result({
       exitCode: 1,
-      finalOutput: "Outcome: failed\nEvidence: bun verify",
+      finalOutput: "Outcome: failed\nVerification: bun verify",
       stderr: `debug line ${"x".repeat(300)}\nError: bad import\ncommand output ${"y".repeat(300)}`,
     }),
   );
   expect(formatted).toBe(
-    "Outcome: failed\nCause: bad import\nEvidence: bun verify",
+    "Outcome: failed\nCause: bad import\nVerification: bun verify",
   );
   expect(formatted).not.toContain("debug line");
   expect(formatted).not.toContain("command output");
@@ -151,10 +161,10 @@ test("parent formatter strips transcript noise and no-op fields from semantic ou
   const formatted = formatSubagentResultForParent(
     result({
       finalOutput:
-        "Hello! I can help.\nReasoning: checked the repo\nOutcome: shipped\nChanged: none\nEvidence: bun test\nNext: none\nRaw log: stack trace\nApologies for the issue",
+        "Hello! I can help.\nReasoning: checked the repo\nOutcome: shipped\nChanged: none\nVerification: bun test\nNext: none\nRaw log: stack trace\nApologies for the issue",
     }),
   );
-  expect(formatted).toBe("Outcome: shipped\nEvidence: bun test");
+  expect(formatted).toBe("Outcome: shipped\nVerification: bun test");
   expect(formatted).not.toContain("Hello");
   expect(formatted).not.toContain("Reasoning");
   expect(formatted).not.toContain("Apologies");
@@ -166,7 +176,7 @@ test("parent formatter chooses first actionable failure cause by precedence", ()
       result({
         exitCode: 1,
         finalOutput:
-          "Outcome: failed\nCause: assertion mismatch\nEvidence: bun test\nError: raw output failure",
+          "Outcome: failed\nCause: assertion mismatch\nVerification: bun test\nError: raw output failure",
         stderr: "stderr failure",
         errorMessage: "error message failure",
       }),
@@ -177,7 +187,7 @@ test("parent formatter chooses first actionable failure cause by precedence", ()
       result({
         exitCode: 1,
         finalOutput:
-          "Outcome: failed\nEvidence: bun test\n    at Object.<anonymous> (/tmp/test.ts:1:1)\nError: raw output failure",
+          "Outcome: failed\nVerification: bun test\n    at Object.<anonymous> (/tmp/test.ts:1:1)\nError: raw output failure",
         stderr: "stderr failure",
         errorMessage: "error message failure",
       }),
@@ -188,7 +198,7 @@ test("parent formatter chooses first actionable failure cause by precedence", ()
       result({
         exitCode: 1,
         finalOutput:
-          "Outcome: failed\nEvidence: bun test\n    at Object.<anonymous> (/tmp/test.ts:1:1)\nError: raw output failure",
+          "Outcome: failed\nVerification: bun test\n    at Object.<anonymous> (/tmp/test.ts:1:1)\nError: raw output failure",
         stderr: "Failed: stderr failure",
       }),
     ),
@@ -199,7 +209,7 @@ test("parent formatter chooses first actionable failure cause by precedence", ()
         exitCode: 1,
         stderr: "noise\n    at stderrFrame (/tmp/stderr.ts:1:1)",
         finalOutput:
-          "Outcome: failed\nEvidence: bun test\nError: raw output failure",
+          "Outcome: failed\nVerification: bun test\nError: raw output failure",
       }),
     ),
   ).toContain("Cause: stderrFrame (/tmp/stderr.ts:1:1)");
@@ -208,7 +218,7 @@ test("parent formatter chooses first actionable failure cause by precedence", ()
       result({
         exitCode: 1,
         finalOutput:
-          "Outcome: failed\nEvidence: bun test\n    at Object.<anonymous> (/tmp/test.ts:1:1)\nError: raw output failure",
+          "Outcome: failed\nVerification: bun test\n    at Object.<anonymous> (/tmp/test.ts:1:1)\nError: raw output failure",
       }),
     ),
   ).toContain("Cause: raw output failure");
@@ -217,7 +227,7 @@ test("parent formatter chooses first actionable failure cause by precedence", ()
       result({
         exitCode: 1,
         finalOutput:
-          "Outcome: failed\nEvidence: bun test\n    at Object.<anonymous> (/tmp/test.ts:1:1)",
+          "Outcome: failed\nVerification: bun test\n    at Object.<anonymous> (/tmp/test.ts:1:1)",
       }),
     ),
   ).toContain("Cause: Object.<anonymous> (/tmp/test.ts:1:1)");

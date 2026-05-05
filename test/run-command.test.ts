@@ -312,7 +312,7 @@ Prompt`,
 test("/run final result uses semantic content without truncating details", async () => {
   const sentMessages: SendMessageArg[] = [];
   const longOutcome = `shipped ${"x".repeat(2600)}`;
-  const finalOutput = `noisy transcript SECRET_RAW\nOutcome: ${longOutcome}\nChanged: src/index.ts\nEvidence: bun test passed\nNext: none`;
+  const finalOutput = `noisy transcript SECRET_RAW\nOutcome: ${longOutcome}\nChanged: src/index.ts\nVerification: bun test passed\nNext: none`;
   const { tool, cwd } = await setupTest({
     sendMessage: (msg) => sentMessages.push(msg),
     piScript: `#!/bin/sh

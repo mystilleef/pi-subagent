@@ -28,19 +28,21 @@ const MAX_SUBAGENT_DEPTH = 3;
 const TOOL_RESULT_FAILED_MESSAGE = "Subagent tool result failed.";
 const RESULT_FORMAT_INSTRUCTIONS = `Optimize your final answer for the main agent with aggressive agent, token, and context efficiency.
 Return only decision-useful facts. Do not include reasoning, logs, raw tool output, greetings, apologies, or transcript details.
-Keep each field concise and specific.
+Compress every field aggressively.
 Use this concise markdown format:
-Outcome: <one short sentence>
-Changed: <paths or none>
-Evidence: <test/check result>
-Next: <single next action or none>
+Outcome: <one highly optimized brief statement summarizing the result>
+Changed: <changed paths, or none>
+Verification: <one highly optimized sentence proving the outcome>
+Next: <single next action, or none>
 
 If the task failed, use this format:
-Outcome: failed at <step>
-Cause: <short cause>
-Evidence: <error/check>
-Next: <fix/retry action>
+Outcome: <one highly optimized brief statement summarizing the failed result>
+Cause: <short root cause or blocker>
+Verification: <one highly optimized sentence proving the failure state>
+Next: <single fix or retry action>
 
+Do not paste logs or raw output. Summarize verification in one concise statement.
+Mention commands/checks only when they increase confidence.
 Use plain values; avoid backticks unless needed.
 Use none for empty fields.`;
 

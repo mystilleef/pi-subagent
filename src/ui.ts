@@ -83,8 +83,8 @@ function formatSummary(
 ): string[] {
   const summary = extractSummaryLabels(output);
   const labels: SummaryLabel[] = failed
-    ? ["Cause", "Evidence", "Next"]
-    : ["Outcome", "Changed", "Evidence", "Next"];
+    ? ["Cause", "Verification", "Next"]
+    : ["Outcome", "Changed", "Verification", "Next"];
   const lines = labels.flatMap((label) => {
     const value = summary[label]
       ? normalizeSummaryValue(summary[label], label)
