@@ -70,15 +70,6 @@ export function getFinalOutput(messages: Message[]): string {
   return lastText?.type === "text" ? lastText.text : "";
 }
 
-function formatDuration(ms: number): string {
-  if (ms < 1000) return `${ms}ms`;
-  const seconds = ms / 1000;
-  if (seconds < 60) return `${seconds.toFixed(seconds < 10 ? 1 : 0)}s`;
-  const minutes = Math.floor(seconds / 60);
-  const rest = Math.round(seconds % 60);
-  return `${minutes}m ${rest}s`;
-}
-
 function makeMarkdownTheme(theme: SubagentTheme): MarkdownTheme {
   return {
     heading: (text) => theme.fg("mdHeading", text),
@@ -138,17 +129,9 @@ export function renderSubagentResult(
     r.stopReason === "aborted" ||
     !!r.errorMessage ||
     detectMessageError(r.messages ?? []);
-  const icon = failed ? theme.fg("error", "✗") : theme.fg("success", "✓");
   const finalOutput = r.finalOutput ?? getFinalOutput(r.messages ?? []);
-  const headerParts = [theme.fg("toolTitle", theme.bold(r.agent))];
-  if (r.durationMs !== undefined)
-    headerParts.push(theme.fg("muted", formatDuration(r.durationMs)));
-  let headerText = `${icon} ${headerParts.join(theme.fg("muted", " · "))}`;
-  if (failed && r.stopReason)
-    headerText += ` ${theme.fg("error", `[${r.stopReason}]`)}`;
   const bg = failed ? "toolErrorBg" : "toolSuccessBg";
   const box = new Box(0, 0, (line) => theme.bg(bg, line));
-  box.addChild(new Text(headerText, 0, 0));
   const bodyText = getResultBodyText(finalOutput);
   if (bodyText) {
     box.addChild(

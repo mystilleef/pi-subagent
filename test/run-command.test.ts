@@ -532,7 +532,7 @@ test("/run success sends final result message with final output", async () => {
   expect(sentMessages.at(-1)?.content).toBe("done");
 });
 
-test("/run final result message renderer shows header and success background", async () => {
+test("/run final result message renderer hides header and keeps success background", async () => {
   const sentMessages: SendMessageArg[] = [];
   const { tool, cwd } = await setupTest({
     sendMessage: (msg) => sentMessages.push(msg),
@@ -555,8 +555,9 @@ test("/run final result message renderer shows header and success background", a
     fakeTheme as Parameters<RegisteredMessageRenderer>[2],
   ) as unknown as { render: (width: number) => string[] };
   const renderedText = rendered.render(10000).join("\n");
-  expect(renderedText).toContain("[success]✓[/success]");
-  expect(renderedText).toContain("[toolTitle]*hang*[/toolTitle]");
+  expect(renderedText).not.toContain("[success]✓[/success]");
+  expect(renderedText).not.toContain("[toolTitle]*hang*[/toolTitle]");
+  expect(renderedText).toContain("[toolOutput]done[/toolOutput]");
   expect(
     rendered
       .render(120)
