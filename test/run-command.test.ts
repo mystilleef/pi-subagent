@@ -569,7 +569,7 @@ test("/run final result message renderer hides header and keeps success backgrou
   ).toBe(true);
 });
 
-test("/run final result message renderer prefers semantic message content", async () => {
+test("/run final result keeps semantic content while renderer uses full final output", async () => {
   const sentMessages: SendMessageArg[] = [];
   const finalOutput =
     "Hello! I can help.\nError: noisy stack line\nSemantic summary";
@@ -600,7 +600,9 @@ exit 0
   ) as unknown as { render: (width: number) => string[] };
   const renderedText = rendered.render(10000).join("\n");
   expect(sentMessages.at(-1)?.content).toBe("Semantic summary");
+  expect(renderedText).toContain("[toolOutput]Hello! I can help.[/toolOutput]");
+  expect(renderedText).toContain(
+    "[toolOutput]Error: noisy stack line[/toolOutput]",
+  );
   expect(renderedText).toContain("[toolOutput]Semantic summary[/toolOutput]");
-  expect(renderedText).not.toContain("Hello! I can help.");
-  expect(renderedText).not.toContain("Error: noisy stack line");
 });

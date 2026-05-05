@@ -58,7 +58,9 @@ exit 0
   );
   const argsText = await Bun.file(path.join(cwd, "args.txt")).text();
   expect(argsText).toContain("Task: ship it");
-  expect(argsText).toContain("Summarize your result for the main agent");
+  expect(argsText).toContain(
+    "Summarize the result of your task for the main agent",
+  );
   expect(argsText).toContain(
     "Optimize your summary for token and context efficiency",
   );

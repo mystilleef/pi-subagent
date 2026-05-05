@@ -1251,6 +1251,62 @@ test("subagent result preserves raw output lines in UI", () => {
   expect(renderedText).toContain("[toolOutput]third[/toolOutput]");
 });
 
+test("subagent-result renderer uses full final output instead of compact content", () => {
+  const { registeredMessageRenderers } = getSubagentTool();
+  const renderer = registeredMessageRenderers.get("subagent-result");
+  if (!renderer) throw new Error("subagent-result renderer missing");
+  const fakeTheme: FakeTheme = {
+    fg: (color, text) => `[${color}]${text}[/${color}]`,
+    bg: (color, text) => `[${color}]${text}[/${color}]`,
+    bold: (text) => `*${text}*`,
+  };
+  const details: SubagentDetails = {
+    mode: "single",
+    agentScope: "both",
+    projectAgentsDir: null,
+    results: [
+      {
+        agent: "plain",
+        agentSource: "user",
+        task: "plain",
+        exitCode: 0,
+        finalOutput: "# Full result\n\nParagraph one.\n\nParagraph two.",
+        messages: [],
+        stderr: "",
+        usage: {
+          input: 0,
+          output: 0,
+          cacheRead: 0,
+          cacheWrite: 0,
+          cost: 0,
+          contextTokens: 0,
+          turns: 0,
+        },
+      },
+    ],
+  };
+  const originalDetails = structuredClone(details);
+  const rendered = renderer(
+    {
+      role: "assistant",
+      customType: "subagent-result",
+      content: [{ type: "text", text: "Compact parent summary." }],
+      details,
+    } as unknown as Parameters<RegisteredMessageRenderer>[0],
+    {} as Parameters<RegisteredMessageRenderer>[1],
+    fakeTheme as Parameters<RegisteredMessageRenderer>[2],
+  );
+  const renderedText = renderToString(rendered, 40);
+  expect(renderedText).toContain("Full result");
+  expect(renderedText).toContain("[toolOutput]Paragraph one.[/toolOutput]");
+  expect(renderedText).toContain("[toolOutput]Paragraph two.[/toolOutput]");
+  expect(renderedText).toContain(
+    `[toolSuccessBg]${" ".repeat(40)}[/toolSuccessBg]`,
+  );
+  expect(renderedText).not.toContain("Compact parent summary.");
+  expect(details).toEqual(originalDetails);
+});
+
 test("/run final result message renderer hides header and keeps success background", async () => {
   const { cwd } = await setupFakePi();
   const sentMessages: SendMessageArg[] = [];

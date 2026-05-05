@@ -27,9 +27,9 @@ type RuntimeResult = SingleResult & { messages: Message[] };
 const MAX_SUBAGENT_DEPTH = 3;
 const TOOL_RESULT_FAILED_MESSAGE = "Subagent tool result failed.";
 const RESULT_FORMAT_INSTRUCTIONS = `
-- Summarize your result for the main agent.
+- Summarize the result of your task for the main agent.
 - Optimize your summary for token and context efficiency.
-- Add an empty line between headings and sections.
+- Add an empty line between paragraphs, headings and sections.
 - Add an empty line at the end of the summary.
 - Use elegant, well-structured, idiomatic markdown.
 `;
