@@ -20,6 +20,12 @@ import {
 } from "../src/progress.js";
 import type { SubagentDetails } from "../src/types.js";
 
+const realDateNow = Date.now;
+
+function setDateNow(now: number): void {
+  Date.now = () => now;
+}
+
 function makeDetails(
   messages: { role: string; content: unknown[] }[],
 ): SubagentDetails {
@@ -51,8 +57,13 @@ function makeDetails(
 }
 
 afterEach(() => {
+  Date.now = realDateNow;
   clearProgressState("req-1");
   clearProgressState("req-2");
+  clearProgressState("rend-live");
+  clearProgressState("iso-success");
+  clearProgressState("iso-error");
+  clearProgressState("iso-running");
   for (let i = 1; i <= 9; i++) clearProgressState(`rend-${i}`);
 });
 
@@ -170,6 +181,67 @@ test("cancelProgressState with no reason leaves errorText undefined", () => {
   const state = getProgressState("req-1");
   expect(state?.status).toBe("cancelled");
   expect(state?.errorText).toBeUndefined();
+});
+
+test("terminal helpers capture deterministic duration", () => {
+  setDateNow(1000);
+  createProgressState("req-1", "agent-a", "task a");
+  setDateNow(3450);
+  finalizeProgressState("req-1", "all done");
+  expect(getProgressState("req-1")?.durationMs).toBe(2450);
+  setDateNow(2000);
+  createProgressState("req-2", "agent-b", "task b");
+  setDateNow(7600);
+  failProgressState("req-2", "something exploded");
+  expect(getProgressState("req-2")?.durationMs).toBe(5600);
+});
+
+test("terminal helper no-ops for missing state", () => {
+  expect(() => finalizeProgressState("req-1", "all done")).not.toThrow();
+  expect(getProgressState("req-1")).toBeUndefined();
+});
+
+test("terminal helpers preserve existing duration", () => {
+  setDateNow(1000);
+  createProgressState("req-1", "agent-a", "task a");
+  patchProgressState("req-1", { durationMs: 123 });
+  setDateNow(9000);
+  cancelProgressState("req-1", "user aborted");
+  const state = getProgressState("req-1");
+  expect(state?.durationMs).toBe(123);
+  expect(state?.status).toBe("cancelled");
+});
+
+test("terminal durations stay isolated by request", () => {
+  setDateNow(1000);
+  createProgressState("iso-success", "agent-a", "task a");
+  setDateNow(2000);
+  createProgressState("iso-error", "agent-b", "task b");
+  setDateNow(3000);
+  createProgressState("iso-running", "agent-c", "task c");
+  setDateNow(5500);
+  finalizeProgressState("iso-success", "all done");
+  expect(getProgressState("iso-success")?.durationMs).toBe(4500);
+  expect(getProgressState("iso-error")?.durationMs).toBeUndefined();
+  expect(getProgressState("iso-running")?.durationMs).toBeUndefined();
+  setDateNow(9000);
+  failProgressState("iso-error", "child failed");
+  expect(getProgressState("iso-success")?.durationMs).toBe(4500);
+  expect(getProgressState("iso-error")?.durationMs).toBe(7000);
+  setDateNow(12_500);
+  const theme = makeTheme();
+  const runningResult = renderSubagentProgress(
+    {
+      customType: "subagent-progress",
+      content: "",
+      display: true,
+      details: { requestId: "iso-running" },
+    },
+    { expanded: false },
+    theme,
+  );
+  expect(renderText(runningResult)).toContain("9.5s");
+  expect(getProgressState("iso-running")?.durationMs).toBeUndefined();
 });
 
 test("clearProgressState removes state", () => {
@@ -709,4 +781,83 @@ test("renderSubagentProgress expanded error includes error text", () => {
   const text = renderText(result);
   expect(text).toContain("error task");
   expect(text).toContain("child failed");
+});
+
+test("renderSubagentProgress freezes success elapsed after completion", () => {
+  setDateNow(1000);
+  createProgressState("rend-7", "ok-agent", "a task");
+  setDateNow(2500);
+  finalizeProgressState("rend-7", "final result text");
+  setDateNow(9000);
+  const theme = makeTheme();
+  const result = renderSubagentProgress(
+    {
+      customType: "subagent-progress",
+      content: "",
+      display: true,
+      details: { requestId: "rend-7" },
+    },
+    { expanded: false },
+    theme,
+  );
+  expect(renderText(result)).toContain("1.5s");
+  expect(renderText(result)).not.toContain("8.0s");
+});
+
+test("renderSubagentProgress freezes error and cancelled elapsed after completion", () => {
+  setDateNow(1000);
+  createProgressState("rend-8", "err-agent", "error task");
+  setDateNow(4000);
+  failProgressState("rend-8", "child failed");
+  setDateNow(10_000);
+  const theme = makeTheme();
+  const errorResult = renderSubagentProgress(
+    {
+      customType: "subagent-progress",
+      content: "",
+      display: true,
+      details: { requestId: "rend-8" },
+    },
+    { expanded: false },
+    theme,
+  );
+  expect(renderText(errorResult)).toContain("3.0s");
+  expect(renderText(errorResult)).not.toContain("9.0s");
+  setDateNow(2000);
+  createProgressState("rend-9", "cancel-agent", "cancel task");
+  setDateNow(6500);
+  cancelProgressState("rend-9", "user cancelled");
+  setDateNow(12_000);
+  const cancelResult = renderSubagentProgress(
+    {
+      customType: "subagent-progress",
+      content: "",
+      display: true,
+      details: { requestId: "rend-9" },
+    },
+    { expanded: false },
+    theme,
+  );
+  expect(renderText(cancelResult)).toContain("4.5s");
+  expect(renderText(cancelResult)).not.toContain("10.0s");
+});
+
+test("renderSubagentProgress keeps running elapsed live", () => {
+  setDateNow(1000);
+  createProgressState("rend-live", "live-agent", "live task");
+  const theme = makeTheme();
+  const result = renderSubagentProgress(
+    {
+      customType: "subagent-progress",
+      content: "",
+      display: true,
+      details: { requestId: "rend-live" },
+    },
+    { expanded: false },
+    theme,
+  );
+  setDateNow(2500);
+  expect(renderText(result)).toContain("1.5s");
+  setDateNow(5200);
+  expect(renderText(result)).toContain("4.2s");
 });

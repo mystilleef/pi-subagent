@@ -17,6 +17,7 @@ export interface SubagentProgressState {
   taskPreview: string;
   status: ProgressStatus;
   startTime: number;
+  durationMs?: number;
   lastToolName?: string;
   lastToolPreview?: string;
   toolCount: number;
@@ -64,11 +65,21 @@ export function patchProgressState(
   store.set(requestId, { ...state, ...patch });
 }
 
+function storeTerminalProgressState(
+  requestId: string,
+  patch: Partial<SubagentProgressState>,
+): void {
+  const state = store.get(requestId);
+  if (!state) return;
+  const durationMs = state.durationMs ?? Date.now() - state.startTime;
+  store.set(requestId, { ...state, ...patch, durationMs });
+}
+
 export function finalizeProgressState(
   requestId: string,
   finalOutput: string,
 ): void {
-  patchProgressState(requestId, {
+  storeTerminalProgressState(requestId, {
     status: "success",
     finalOutput: makeProgressFinalOutput(finalOutput),
     lastToolName: undefined,
@@ -77,7 +88,7 @@ export function finalizeProgressState(
 }
 
 export function failProgressState(requestId: string, errorText: string): void {
-  patchProgressState(requestId, {
+  storeTerminalProgressState(requestId, {
     status: "error",
     errorText: extractProgressSemanticErrorLine(errorText),
     lastToolName: undefined,
@@ -86,7 +97,7 @@ export function failProgressState(requestId: string, errorText: string): void {
 }
 
 export function cancelProgressState(requestId: string, reason?: string): void {
-  patchProgressState(requestId, {
+  storeTerminalProgressState(requestId, {
     status: "cancelled",
     lastToolName: undefined,
     lastToolPreview: undefined,
@@ -290,7 +301,8 @@ function formatProgressText(
 ): string | undefined {
   const state = getProgressState(requestId);
   if (!state) return undefined;
-  const elapsed = formatElapsed(Date.now() - state.startTime);
+  const elapsedMs = state.durationMs ?? Date.now() - state.startTime;
+  const elapsed = formatElapsed(elapsedMs);
   const statusColorMap: Record<ProgressStatus, ThemeColor> = {
     success: "success",
     error: "error",
