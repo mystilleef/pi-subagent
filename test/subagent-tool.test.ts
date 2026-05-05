@@ -64,11 +64,11 @@ exit 0
   expect(argsText).not.toContain("under 600 characters");
   expect(argsText).toContain("Compress every field aggressively.");
   expect(argsText).toContain(
-    "Outcome: <one highly optimized brief statement summarizing the result>",
+    "Outcome: <a brief, concise phrase summarizing the result>",
   );
   expect(argsText).toContain("Changed: <changed paths, or none>");
   expect(argsText).toContain(
-    "Verification: <one highly optimized sentence proving the outcome>",
+    "Verification: <a brief, concise phrase proving the outcome>",
   );
   expect(argsText).toContain("Next: <single next action, or none>");
   expect(argsText).toContain("If the task failed, use this format:");
