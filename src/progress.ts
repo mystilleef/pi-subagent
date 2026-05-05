@@ -32,6 +32,7 @@ export interface SubagentProgressState {
   errorText?: string;
 }
 
+const TOOL_PREVIEW_MAX_CHARS = 120;
 const store = new Map<string, SubagentProgressState>();
 
 export function createProgressState(
@@ -160,7 +161,15 @@ export function makeToolPreview(
   args: Record<string, unknown> | undefined,
 ): string {
   if (!args || Object.keys(args).length === 0) return toolName;
-  return `${toolName}: ${extractSemanticToolTarget(toolName, args)}`;
+  return truncateToolPreview(
+    `${toolName}: ${extractSemanticToolTarget(toolName, args)}`,
+  );
+}
+
+function truncateToolPreview(preview: string): string {
+  const characters = Array.from(preview);
+  if (characters.length <= TOOL_PREVIEW_MAX_CHARS) return preview;
+  return `${characters.slice(0, TOOL_PREVIEW_MAX_CHARS - 1).join("")}…`;
 }
 
 function makeProgressFinalOutput(finalOutput: string): string {

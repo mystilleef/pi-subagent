@@ -227,6 +227,51 @@ test("makeToolPreview keeps semantic target without ellipsis", () => {
   expect(preview).not.toContain("...");
 });
 
+test("makeToolPreview leaves 120 displayed characters unchanged", () => {
+  const command = "λ".repeat(114);
+  const preview = makeToolPreview("bash", { command });
+  expect(preview).toBe(`bash: ${command}`);
+  expect(Array.from(preview).length).toBe(120);
+  expect(preview.endsWith("…")).toBe(false);
+});
+
+test("makeToolPreview truncates long previews to 120 displayed characters", () => {
+  const command = "λ".repeat(115);
+  const preview = makeToolPreview("bash", { command });
+  expect(Array.from(preview).length).toBe(120);
+  expect(preview.endsWith("…")).toBe(true);
+  expect(preview).toBe(`${"bash: "}${"λ".repeat(113)}…`);
+});
+
+test("makeToolPreview truncates long path preview after tool prefix", () => {
+  const path = `/tmp/${"x".repeat(130)}`;
+  const preview = makeToolPreview("read", { path });
+  expect(Array.from(preview).length).toBe(120);
+  expect(preview).toBe(`${"read: "}${path.slice(0, 113)}…`);
+  expect(preview).not.toContain("x".repeat(115));
+});
+
+test("makeToolPreview truncates fallback JSON preview after tool prefix", () => {
+  const args = { query: `${"z".repeat(130)}-sentinel` };
+  const preview = makeToolPreview("unknown_tool", args);
+  expect(Array.from(preview).length).toBe(120);
+  expect(preview.startsWith('unknown_tool: {"query":"')).toBe(true);
+  expect(preview.endsWith("…")).toBe(true);
+  expect(preview).not.toContain("sentinel");
+});
+
+test("makeToolPreview truncates subagent semantic preview after tool prefix", () => {
+  const preview = makeToolPreview("subagent", {
+    agent: "builder",
+    task: `${"review ".repeat(30)}sentinel`,
+    agentScope: "project",
+  });
+  expect(Array.from(preview).length).toBe(120);
+  expect(preview.startsWith("subagent: builder review review")).toBe(true);
+  expect(preview.endsWith("…")).toBe(true);
+  expect(preview).not.toContain("sentinel");
+});
+
 test("makeToolPreview handles empty args", () => {
   expect(makeToolPreview("bash", {})).toBe("bash");
   expect(makeToolPreview("bash", undefined)).toBe("bash");
@@ -498,11 +543,16 @@ test("renderSubagentProgress collapsed running shows agent, status, tool count, 
   ).toBe(true);
 });
 
-test("renderSubagentProgress expanded running includes task preview", () => {
-  createProgressState("rend-2", "my-agent", "do the thing");
+test("renderSubagentProgress expanded running includes truncated tool preview and full task preview", () => {
+  const toolSentinel = "SHOULD_NOT_RENDER";
+  const taskSentinel = "TASK_SHOULD_RENDER";
+  const taskPreview = `do the thing ${taskSentinel}`;
+  const longCommand = `${"x".repeat(160)}${toolSentinel}`;
+  const lastToolPreview = makeToolPreview("bash", { command: longCommand });
+  createProgressState("rend-2", "my-agent", taskPreview);
   patchProgressState("rend-2", {
     toolCount: 1,
-    lastToolPreview: "read: /tmp/x",
+    lastToolPreview,
   });
   const theme = makeTheme();
   const result = renderSubagentProgress(
@@ -517,7 +567,11 @@ test("renderSubagentProgress expanded running includes task preview", () => {
   );
   expect(result).toBeDefined();
   const text = renderText(result);
-  expect(text).toContain("do the thing");
+  expect(lastToolPreview).toEndWith("…");
+  expect(text).toContain("→ bash:");
+  expect(text).toContain("…");
+  expect(text).toContain(taskPreview);
+  expect(text).not.toContain(toolSentinel);
 });
 
 test("renderSubagentProgress component reads patched state on later renders", () => {
