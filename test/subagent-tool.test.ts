@@ -224,6 +224,38 @@ exit 0
   );
 });
 
+test("subagent rejects assistant errorMessage without error stop reason", async () => {
+  const { binDir, cwd } = await setupFakePi();
+  const messageEnd = JSON.stringify({
+    type: "message_end",
+    message: {
+      role: "assistant",
+      content: [{ type: "text", text: "looks successful" }],
+      stopReason: "stop",
+      errorMessage: "recorded child failure",
+    },
+  });
+  await writeFile(
+    path.join(binDir, "pi"),
+    `#!/bin/sh
+printf '%s\n' ${shellQuote(messageEnd)}
+printf '%s\n' '{"type":"agent_end"}'
+exit 0
+`,
+  );
+  const tool = getSubagentTool();
+  process.env.PI_SUBAGENT_DEPTH = "0";
+  await expect(
+    tool.execute(
+      "test-tool-call",
+      { agent: "hang", task: "test" },
+      undefined,
+      undefined,
+      { cwd, hasUI: false } as unknown as ExtensionContext,
+    ),
+  ).rejects.toThrow("Agent stop: recorded child failure");
+});
+
 test("subagent reports spawn errors", async () => {
   const { binDir, cwd } = await setupFakePi();
   await unlink(path.join(binDir, "pi"));
@@ -615,22 +647,17 @@ exit 0
 test("subagent reports depth, skill resolution, and stderr failures", async () => {
   const { agentDir, binDir, cwd } = await setupFakePi();
   const tool = getSubagentTool();
-  const originalDepth = process.env.PI_SUBAGENT_DEPTH;
-  process.env.PI_SUBAGENT_DEPTH = "3";
-  try {
-    await expect(
-      tool.execute(
-        "test-tool-call",
-        { agent: "hang", task: "nested" },
-        undefined,
-        undefined,
-        { cwd, hasUI: false } as unknown as ExtensionContext,
-      ),
-    ).rejects.toThrow("Subagent nesting limit reached");
-  } finally {
-    if (originalDepth === undefined) delete process.env.PI_SUBAGENT_DEPTH;
-    else process.env.PI_SUBAGENT_DEPTH = originalDepth;
-  }
+  process.env.PI_SUBAGENT_DEPTH = "1";
+  await expect(
+    tool.execute(
+      "test-tool-call",
+      { agent: "hang", task: "nested" },
+      undefined,
+      undefined,
+      { cwd, hasUI: false } as unknown as ExtensionContext,
+    ),
+  ).rejects.toThrow("Subagent nesting limit reached (depth 1/1).");
+  process.env.PI_SUBAGENT_DEPTH = "0";
   await writeFile(
     path.join(agentDir, "agents", "needs-skill.md"),
     `---

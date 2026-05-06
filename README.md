@@ -103,7 +103,7 @@ includes both sources.
 - Project-local agents require UI confirmation before execution when UI
   support exists.
 - Nested subagent calls use `PI_SUBAGENT_DEPTH`; execution stops at
-  depth `3`.
+  depth `1`.
 - Output truncation uses `PI_SUBAGENT_MAX_OUTPUT_BYTES` with default
   `50000` and `PI_SUBAGENT_MAX_OUTPUT_LINES` with default `500`.
 - `Stderr` capture stops after `10000` bytes.

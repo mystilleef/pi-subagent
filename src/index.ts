@@ -35,6 +35,7 @@ import {
 import { detectMessageError } from "./utils.js";
 
 const AGENT_COMPLETION_CACHE_TTL_MS = 1_000;
+const TOOL_RESULT_FAILED_MESSAGE = "Subagent tool result failed.";
 
 type SubagentToolResult = {
   content: { type: "text"; text: string }[];
@@ -118,16 +119,21 @@ function hasSubagentFailed(result: SingleResult): boolean {
     result.exitCode !== 0 ||
     result.stopReason === "error" ||
     result.stopReason === "aborted" ||
+    Boolean(result.errorMessage?.trim()) ||
     detectMessageError(result.messages ?? [])
   );
 }
 
 function createSubagentError(result: SingleResult): Error {
   const formatted = formatSubagentResultForParent(result);
+  const errorMessage = result.errorMessage?.trim();
+  const preferErrorMessage =
+    errorMessage && errorMessage !== TOOL_RESULT_FAILED_MESSAGE;
   const errorMsg =
+    (preferErrorMessage ? errorMessage : undefined) ||
     formatted ||
     result.stderr ||
-    result.errorMessage ||
+    errorMessage ||
     result.finalOutput ||
     "(no output)";
   return new Error(`Agent ${result.stopReason || "failed"}: ${errorMsg}`);

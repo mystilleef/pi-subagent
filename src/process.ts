@@ -24,7 +24,7 @@ const MAX_STDERR_BYTES = 10_000;
 
 type RuntimeResult = SingleResult & { messages: Message[] };
 
-const MAX_SUBAGENT_DEPTH = 3;
+const MAX_SUBAGENT_DEPTH = 1;
 const TOOL_RESULT_FAILED_MESSAGE = "Subagent tool result failed.";
 const RESULT_FORMAT_INSTRUCTIONS = `
 - Summarize the result of your task for the main agent.

@@ -19,6 +19,7 @@ import type { SubagentDetails } from "../src/types.js";
 const ORIGINAL_ARGV_1 = process.argv[1] ?? "";
 const ORIGINAL_PATH = process.env.PATH;
 const ORIGINAL_AGENT_DIR = process.env.PI_CODING_AGENT_DIR;
+const ORIGINAL_SUBAGENT_DEPTH = process.env.PI_SUBAGENT_DEPTH;
 
 let tempDirs: string[] = [];
 
@@ -179,8 +180,8 @@ export function timeoutAfter(
 export function setupHooks() {
   beforeEach(() => {
     tempDirs = [];
+    process.env.PI_SUBAGENT_DEPTH = "0";
   });
-
   afterEach(async () => {
     process.argv[1] = ORIGINAL_ARGV_1;
     if (ORIGINAL_PATH === undefined) delete process.env.PATH;
@@ -188,6 +189,9 @@ export function setupHooks() {
     if (ORIGINAL_AGENT_DIR === undefined)
       delete process.env.PI_CODING_AGENT_DIR;
     else process.env.PI_CODING_AGENT_DIR = ORIGINAL_AGENT_DIR;
+    if (ORIGINAL_SUBAGENT_DEPTH === undefined)
+      delete process.env.PI_SUBAGENT_DEPTH;
+    else process.env.PI_SUBAGENT_DEPTH = ORIGINAL_SUBAGENT_DEPTH;
     await Promise.all(
       tempDirs.map((dir) => rm(dir, { recursive: true, force: true })),
     );
