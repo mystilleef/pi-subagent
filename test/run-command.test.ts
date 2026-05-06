@@ -292,7 +292,7 @@ test("/run success marks state success with trimmed finalOutput and clears trans
   expect(state?.lastToolPreview).toBeUndefined();
 });
 
-test("/run empty success sends no-output text and stores no-output final state", async () => {
+test("/run empty success preserves result whitespace and stores no-output final state", async () => {
   const sentMessages: SendMessageArg[] = [];
   const { tool, cwd } = await setupTest({
     sendMessage: (msg) => sentMessages.push(msg),
@@ -309,7 +309,7 @@ exit 0
   } as unknown as ExtensionCommandContext);
   expect(sentMessages).toHaveLength(2);
   expect(sentMessages.at(-1)?.customType).toBe("subagent-result");
-  expect(sentMessages.at(-1)?.content).toBe("(no output)");
+  expect(sentMessages.at(-1)?.content).toBe("   ");
   const requestId = (sentMessages[0]?.details as { requestId?: string })
     ?.requestId;
   if (!requestId) throw new Error("requestId missing");
@@ -373,10 +373,10 @@ Prompt`,
   expect(state?.status).toBe("cancelled");
 });
 
-test("/run final result uses semantic content without truncating details", async () => {
+test("/run result dumps subagent summary and feedback keeps semantic one-liner", async () => {
   const sentMessages: SendMessageArg[] = [];
-  const longOutcome = `shipped ${"x".repeat(2600)}`;
-  const finalOutput = `${longOutcome}\nAll tests pass.\nNo rollback needed.`;
+  const finalOutput =
+    "Outcome: Updated src/index.ts from raw final output.\nAll tests pass.";
   const { tool, cwd } = await setupTest({
     sendMessage: (msg) => sentMessages.push(msg),
     piScript: `#!/bin/sh
@@ -392,13 +392,19 @@ exit 0
     ui: { notify: () => {} },
   } as unknown as ExtensionCommandContext);
   const resultMessage = sentMessages.at(-1);
-  expect(resultMessage?.content).toContain(longOutcome);
+  expect(resultMessage?.content).toBe(finalOutput);
+  expect(resultMessage?.content).toContain("All tests pass");
   expect(resultMessage?.content).not.toContain("SECRET_COMMAND");
-  expect(resultMessage?.content).not.toContain("[truncated:");
   const details = resultMessage?.details as {
     results?: { finalOutput?: string }[];
   };
   expect(details.results?.[0]?.finalOutput).toBe(finalOutput);
+  const requestId = (sentMessages[0]?.details as { requestId?: string })
+    ?.requestId;
+  if (!requestId) throw new Error("requestId missing");
+  expect(getProgressState(requestId)?.finalOutput).toBe(
+    "updated src/index.ts from raw final output",
+  );
 });
 
 test("/run debug includes child messages in final details", async () => {
@@ -454,6 +460,10 @@ exit 0
     requestId: (sentMessages[0]?.details as { requestId?: string }).requestId,
   });
   expect(sentMessages.at(-1)?.content).toBe("done");
+  const requestId = (sentMessages[0]?.details as { requestId?: string })
+    ?.requestId;
+  if (!requestId) throw new Error("requestId missing");
+  expect(getProgressState(requestId)?.finalOutput).toBe("completed task");
   const resultDetails = JSON.stringify(sentMessages.at(-1)?.details ?? {});
   expect(resultDetails).not.toContain("TOOL_SECRET");
   expect(resultDetails).not.toContain("TOOL_RESULT_SECRET");
@@ -581,7 +591,7 @@ wait $!
   expect(state?.status).toBe("cancelled");
 });
 
-test("/run success sends final result message with final output", async () => {
+test("/run success sends final result message with raw subagent summary", async () => {
   const sentMessages: SendMessageArg[] = [];
   const { tool, cwd } = await setupTest({
     sendMessage: (msg) => sentMessages.push(msg),
@@ -621,7 +631,8 @@ test("/run final result message renderer hides header and keeps success backgrou
   const renderedText = rendered.render(10000).join("\n");
   expect(renderedText).not.toContain("[success]✓[/success]");
   expect(renderedText).not.toContain("[toolTitle]*hang*[/toolTitle]");
-  expect(renderedText).toContain("[toolOutput]done[/toolOutput]");
+  expect(renderedText).toContain("[toolOutput]done");
+  expect(renderedText).toContain("[/toolOutput]");
   expect(
     rendered
       .render(120)
@@ -633,10 +644,10 @@ test("/run final result message renderer hides header and keeps success backgrou
   ).toBe(true);
 });
 
-test("/run final result keeps semantic content while renderer uses full final output", async () => {
+test("/run final result renders raw summary and feedback uses semantic content", async () => {
   const sentMessages: SendMessageArg[] = [];
   const finalOutput =
-    "Hello! I can help.\nError: noisy stack line\nSemantic summary";
+    "Hello! I can help.\nError: noisy stack line\nOutcome: Updated semantic summary";
   const { tool, cwd } = await setupTest({
     sendMessage: (msg) => sentMessages.push(msg),
     piScript: `#!/bin/sh
@@ -663,10 +674,14 @@ exit 0
     fakeTheme as Parameters<RegisteredMessageRenderer>[2],
   ) as unknown as { render: (width: number) => string[] };
   const renderedText = rendered.render(10000).join("\n");
-  expect(sentMessages.at(-1)?.content).toBe("Semantic summary");
-  expect(renderedText).toContain("[toolOutput]Hello! I can help.[/toolOutput]");
-  expect(renderedText).toContain(
-    "[toolOutput]Error: noisy stack line[/toolOutput]",
+  expect(sentMessages.at(-1)?.content).toBe(finalOutput);
+  expect(renderedText).toContain("Hello! I can help.");
+  expect(renderedText).toContain("Error: noisy stack line");
+  expect(renderedText).not.toContain("Outcome: Updated semantic summary");
+  const requestId = (sentMessages[0]?.details as { requestId?: string })
+    ?.requestId;
+  if (!requestId) throw new Error("requestId missing");
+  expect(getProgressState(requestId)?.finalOutput).toBe(
+    "updated semantic summary",
   );
-  expect(renderedText).toContain("[toolOutput]Semantic summary[/toolOutput]");
 });

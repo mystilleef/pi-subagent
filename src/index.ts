@@ -21,7 +21,10 @@ import {
   patchProgressState,
   renderSubagentProgress,
 } from "./progress.js";
-import { formatSubagentResultForParent } from "./summary.js";
+import {
+  formatSubagentResultForParent,
+  summarizeFeedbackUiFinalOutput,
+} from "./summary.js";
 import type {
   OnUpdateCallback,
   SingleResult,
@@ -207,7 +210,13 @@ function renderSubagentResultMessage(
         ? (message.content as { type: string; text?: string }[])
         : [];
   const details = message.details as SubagentDetails | undefined;
-  return renderSubagentResult({ content, details }, theme);
+  const bodyOverride = content.find((item) => item.type === "text")?.text;
+  return renderSubagentResult(
+    { content, details },
+    theme,
+    undefined,
+    bodyOverride,
+  );
 }
 
 function sanitizeDetailsForDisplay(
@@ -286,6 +295,17 @@ function getSubagentText(result: SubagentToolResult): string {
   return (result.content[0] as { text?: string })?.text ?? "";
 }
 
+function getResultDisplayText(result: SubagentToolResult): string {
+  return result.details.results[0]?.finalOutput ?? getSubagentText(result);
+}
+
+function getFeedbackSummaryText(result: SubagentToolResult): string {
+  const rawFinalOutput = result.details.results[0]?.finalOutput;
+  if (rawFinalOutput?.trim())
+    return summarizeFeedbackUiFinalOutput(rawFinalOutput);
+  return getSubagentText(result).trim() || "(no output)";
+}
+
 export default function (pi: ExtensionAPI) {
   pi.registerMessageRenderer("subagent-progress", (message, options, theme) =>
     renderSubagentProgress(message, options, theme),
@@ -340,16 +360,17 @@ export default function (pi: ExtensionAPI) {
           onUpdate,
         );
         const text = getSubagentText(result);
-        const finalText = text.trim() || "(no output)";
+        const resultText = getResultDisplayText(result);
+        const feedbackText = getFeedbackSummaryText(result);
         if (text.startsWith("Canceled")) {
           cancelProgressState(requestId, text);
           requestProgressRender();
         } else {
-          finalizeProgressState(requestId, finalText);
+          finalizeProgressState(requestId, feedbackText);
           requestProgressRender();
           pi.sendMessage({
             customType: "subagent-result",
-            content: finalText,
+            content: resultText,
             display: true,
             details: sanitizeDetailsForDisplay(result.details, debug),
           });

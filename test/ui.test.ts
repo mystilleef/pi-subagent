@@ -760,6 +760,113 @@ test("ui helpers format units, fallback output, and failed tool results", () => 
   expect(failedText).toContain("[muted](no output)[/muted]");
 });
 
+test("subagent-result message renderer uses summarized content and preserves result chrome", () => {
+  const tool = getSubagentTool();
+  const renderer = tool.registeredMessageRenderers.get("subagent-result");
+  const fakeTheme: FakeTheme = {
+    fg: (color, text) => `[${color}]${text}[/${color}]`,
+    bg: (color, text) => `[${color}]${text}[/${color}]`,
+    bold: (text) => `*${text}*`,
+  };
+  const details: SubagentDetails = {
+    mode: "single",
+    agentScope: "both",
+    projectAgentsDir: null,
+    results: [
+      {
+        agent: "runner",
+        agentSource: "project",
+        task: "pass",
+        exitCode: 0,
+        finalOutput: "raw child output must stay hidden from run card",
+        messages: [],
+        stderr: "",
+        usage: {
+          input: 10,
+          output: 20,
+          cacheRead: 0,
+          cacheWrite: 0,
+          cost: 0.01,
+          contextTokens: 0,
+          turns: 1,
+        },
+      },
+    ],
+  };
+  if (!renderer) throw new Error("subagent-result renderer missing");
+  const rendered = renderer(
+    {
+      role: "custom",
+      customType: "subagent-result",
+      content: "summarized semantic outcome",
+      display: true,
+      timestamp: 0,
+      details,
+    },
+    { expanded: false },
+    fakeTheme as never,
+  ) as unknown as { render: (width: number) => string[] };
+  const lines = rendered.render(120);
+  const text = lines.join("\n");
+  expect(text).toContain("[toolOutput]summarized semantic outcome");
+  expect(text).toContain("[/toolOutput]");
+  expect(text).not.toContain("raw child output must stay hidden from run card");
+  expect(text).toContain("[dim]1 turn · $0.0100[/dim]");
+  expect(
+    lines.every(
+      (line) =>
+        line.startsWith("[toolSuccessBg]") && line.endsWith("[/toolSuccessBg]"),
+    ),
+  ).toBe(true);
+  expect(details.results[0]?.finalOutput).toBe(
+    "raw child output must stay hidden from run card",
+  );
+});
+
+test("normal subagent tool rendering continues to use raw final output", () => {
+  const fakeTheme: FakeTheme = {
+    fg: (color, text) => `[${color}]${text}[/${color}]`,
+    bg: (color, text) => `[${color}]${text}[/${color}]`,
+    bold: (text) => `*${text}*`,
+  };
+  const rendered = renderSubagentResult(
+    {
+      content: [{ type: "text", text: "formatted parent content" }],
+      details: {
+        mode: "single",
+        agentScope: "both",
+        projectAgentsDir: null,
+        results: [
+          {
+            agent: "tool",
+            agentSource: "user",
+            task: "pass",
+            exitCode: 0,
+            finalOutput: "raw final output remains body",
+            messages: [],
+            stderr: "",
+            usage: {
+              input: 0,
+              output: 0,
+              cacheRead: 0,
+              cacheWrite: 0,
+              cost: 0,
+              contextTokens: 0,
+              turns: 0,
+            },
+          },
+        ],
+      },
+    },
+    fakeTheme,
+  ) as unknown as { render: (width: number) => string[] };
+  const text = renderToString(rendered);
+  expect(text).toContain(
+    "[toolOutput]raw final output remains body[/toolOutput]",
+  );
+  expect(text).not.toContain("formatted parent content");
+});
+
 test("subagent result backgrounds cover representative success and failure cards", () => {
   const fakeTheme: FakeTheme = {
     fg: (color, text) => `[${color}]${text}[/${color}]`,
@@ -856,7 +963,7 @@ test("subagent result backgrounds cover representative success and failure cards
   const successText = renderToString(success);
   expect(successText).not.toContain("[success]✓[/success]");
   expect(successText).not.toContain("[accent]bash[/accent]");
-  expect(successText).toContain("[toolOutput]Outcome: shipped[/toolOutput]");
+  expect(successText).not.toContain("Outcome: shipped");
   expect(successText).toContain("1 turn · $0.0100");
   expect(successText).not.toContain("↑1.0k");
   expect(successText).not.toContain("↓2.0k");
@@ -884,6 +991,48 @@ test("subagent result backgrounds cover representative success and failure cards
           line.startsWith("[toolErrorBg]") && line.endsWith("[/toolErrorBg]"),
       ),
   ).toBe(true);
+});
+
+test("subagent result renders outcome-only output instead of no output", () => {
+  const fakeTheme: FakeTheme = {
+    fg: (color, text) => `[${color}]${text}[/${color}]`,
+    bg: (color, text) => `[${color}]${text}[/${color}]`,
+    bold: (text) => `*${text}*`,
+  };
+  const rendered = renderSubagentResult(
+    {
+      content: [{ type: "text", text: "ignored" }],
+      details: {
+        mode: "single",
+        agentScope: "both",
+        projectAgentsDir: null,
+        results: [
+          {
+            agent: "builder",
+            agentSource: "project",
+            task: "pass",
+            exitCode: 0,
+            finalOutput: "Outcome: shipped",
+            messages: [],
+            stderr: "",
+            usage: {
+              input: 0,
+              output: 0,
+              cacheRead: 0,
+              cacheWrite: 0,
+              cost: 0,
+              contextTokens: 0,
+              turns: 0,
+            },
+          },
+        ],
+      },
+    },
+    fakeTheme,
+  );
+  const renderedText = renderToString(rendered);
+  expect(renderedText).toContain("[toolOutput]Outcome: shipped[/toolOutput]");
+  expect(renderedText).not.toContain("[muted](no output)[/muted]");
 });
 
 test("subagent result renders compact structured success output", () => {
@@ -930,7 +1079,7 @@ test("subagent result renders compact structured success output", () => {
   expect(renderedText).not.toContain("[success]✓[/success]");
   expect(renderedText).not.toContain("builder");
   expect(renderedText).not.toContain("[muted]1.2s[/muted]");
-  expect(renderedText).toContain("[toolOutput]Outcome: shipped[/toolOutput]");
+  expect(renderedText).not.toContain("Outcome: shipped");
   expect(renderedText).toContain("[toolOutput]Changed: src/ui.ts[/toolOutput]");
   expect(renderedText).toContain(
     "provider/model:high · ctx:38k · 3 turns · 1.2s · $0.0120",
@@ -982,7 +1131,7 @@ test("subagent result suppresses success no-op fields and keeps fallback", () =>
       "Outcome: shipped\nChanged: none\nVerification: bun test\nNext: n/a",
     ),
   );
-  expect(partialText).toContain("[toolOutput]Outcome: shipped[/toolOutput]");
+  expect(partialText).not.toContain("Outcome: shipped");
   expect(partialText).toContain("[toolOutput]Changed: none[/toolOutput]");
   expect(partialText).toContain(
     "[toolOutput]Verification: bun test[/toolOutput]",
@@ -993,7 +1142,7 @@ test("subagent result suppresses success no-op fields and keeps fallback", () =>
       "Outcome: none\nChanged: no changes\nVerification: not applicable\nNext: unchanged",
     ),
   );
-  expect(fallbackText).toContain("[toolOutput]Outcome: none[/toolOutput]");
+  expect(fallbackText).not.toContain("Outcome: none");
   expect(fallbackText).toContain(
     "[toolOutput]Changed: no changes[/toolOutput]",
   );
@@ -1199,18 +1348,14 @@ test("subagent result derives failure cause only when output lacks parsed cause"
     ),
   );
   expect(withHeadingCauseText).not.toContain("[error]✗[/error]");
-  expect(withHeadingCauseText).toContain(
-    "[toolOutput]Outcome: failed at build[/toolOutput]",
-  );
+  expect(withHeadingCauseText).not.toContain("Outcome: failed at build");
   const withoutCauseText = renderToString(
     render(
       "Outcome: failed at build\nVerification: tsc failed\nNext: fix types",
     ),
   );
   expect(withoutCauseText).not.toContain("[error]✗[/error]");
-  expect(withoutCauseText).toContain(
-    "[toolOutput]Outcome: failed at build[/toolOutput]",
-  );
+  expect(withoutCauseText).not.toContain("Outcome: failed at build");
 });
 
 test("subagent result suppresses failure no-op fields and keeps fallback", () => {
@@ -1307,7 +1452,7 @@ test("subagent result preserves raw output lines in UI", () => {
   expect(renderedText).toContain("[toolOutput]third[/toolOutput]");
 });
 
-test("subagent-result renderer uses full final output instead of compact content", () => {
+test("subagent-result renderer uses compact content instead of full final output", () => {
   const { registeredMessageRenderers } = getSubagentTool();
   const renderer = registeredMessageRenderers.get("subagent-result");
   if (!renderer) throw new Error("subagent-result renderer missing");
@@ -1353,13 +1498,11 @@ test("subagent-result renderer uses full final output instead of compact content
     fakeTheme as Parameters<RegisteredMessageRenderer>[2],
   );
   const renderedText = renderToString(rendered, 40);
-  expect(renderedText).toContain("Full result");
-  expect(renderedText).toContain("[toolOutput]Paragraph one.[/toolOutput]");
-  expect(renderedText).toContain("[toolOutput]Paragraph two.[/toolOutput]");
-  expect(renderedText).toContain(
-    `[toolSuccessBg]${" ".repeat(40)}[/toolSuccessBg]`,
-  );
-  expect(renderedText).not.toContain("Compact parent summary.");
+  expect(renderedText).toContain("Compact parent");
+  expect(renderedText).toContain("summary.");
+  expect(renderedText).not.toContain("Full result");
+  expect(renderedText).not.toContain("Paragraph one.");
+  expect(renderedText).not.toContain("Paragraph two.");
   expect(details).toEqual(originalDetails);
 });
 

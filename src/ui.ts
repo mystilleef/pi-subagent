@@ -95,6 +95,11 @@ export function getFinalOutput(messages: Message[]): string {
   return lastText?.type === "text" ? lastText.text : "";
 }
 
+function stripOutcomeLineForResultUi(output: string): string {
+  const stripped = output.replace(/^\s*Outcome:[^\r\n]*(?:\r?\n|$)/gim, "");
+  return stripped.trim() ? stripped : output;
+}
+
 function makeMarkdownTheme(theme: SubagentTheme): MarkdownTheme {
   return {
     heading: (text) => theme.fg("mdHeading", text),
@@ -112,10 +117,6 @@ function makeMarkdownTheme(theme: SubagentTheme): MarkdownTheme {
     strikethrough: (text) => `\x1b[9m${text}\x1b[29m`,
     underline: (text) => `\x1b[4m${text}\x1b[24m`,
   };
-}
-
-function getResultBodyText(output: string): string {
-  return output;
 }
 
 export function renderSubagentCall(
@@ -137,6 +138,7 @@ export function renderSubagentResult(
   result: { content: { type: string; text?: string }[]; details?: unknown },
   theme: SubagentTheme,
   _display?: { isPartial?: boolean },
+  bodyOverride?: string,
 ): Component {
   const details = result.details as SubagentDetails | undefined;
   const r = details?.results?.[0];
@@ -157,7 +159,7 @@ export function renderSubagentResult(
   const finalOutput = r.finalOutput ?? getFinalOutput(r.messages ?? []);
   const bg = failed ? "toolErrorBg" : "toolSuccessBg";
   const box = new Box(0, 0, (line) => theme.bg(bg, line));
-  const bodyText = getResultBodyText(finalOutput);
+  const bodyText = stripOutcomeLineForResultUi(bodyOverride ?? finalOutput);
   if (bodyText) {
     box.addChild(
       new Markdown(bodyText, 0, 0, makeMarkdownTheme(theme), {

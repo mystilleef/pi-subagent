@@ -1,9 +1,11 @@
 import { expect, test } from "bun:test";
 import {
   extractSemanticToolTarget,
+  FEEDBACK_UI_SUMMARY_MAX_CHARS,
   formatSubagentResultForParent,
   isFailureDiagnosticLine,
   isTranscriptNoiseLine,
+  summarizeFeedbackUiFinalOutput,
 } from "../src/summary.js";
 import type { SingleResult } from "../src/types.js";
 
@@ -82,6 +84,77 @@ test("parent formatter returns plain prose without label extraction", () => {
       }),
     ),
   ).toBe("Migration applied to 3 tables. All tests pass. No rollback needed.");
+});
+
+test("feedback UI summarizer strips labels and cleans markdown", () => {
+  expect(
+    summarizeFeedbackUiFinalOutput(
+      "## Summary:\n- Outcome: **Rendered custom card body from message content.**",
+    ),
+  ).toBe("rendered custom card body from message content");
+  expect(
+    summarizeFeedbackUiFinalOutput("```\nResult: `Updated src/ui.ts`.\n```"),
+  ).toBe("updated src/ui.ts");
+});
+
+test("feedback UI summarizer prefers concrete action candidates", () => {
+  expect(
+    summarizeFeedbackUiFinalOutput(
+      "Verification: bun test passed.\nProject summary: Routed run result cards through summarized message content.",
+    ),
+  ).toBe("routed run result cards through summarized message content");
+});
+
+test("feedback UI summarizer prefers later outcome over earlier summary", () => {
+  expect(
+    summarizeFeedbackUiFinalOutput(
+      "Summary: Updated fallback rendering.\nOutcome: Preserved outcome precedence for feedback cards.",
+    ),
+  ).toBe("preserved outcome precedence for feedback cards");
+});
+
+test("feedback UI summarizer prefers later outcome over earlier status", () => {
+  expect(
+    summarizeFeedbackUiFinalOutput(
+      "Status: Added summary candidates.\nOutcome: Selected outcome before status labels.",
+    ),
+  ).toBe("selected outcome before status labels");
+});
+
+test("feedback UI summarizer prefers new labels over unlabeled candidates", () => {
+  expect(
+    summarizeFeedbackUiFinalOutput(
+      "Plain fallback candidate works.\nMessage: Recognized message label first.",
+    ),
+  ).toBe("recognized message label first");
+});
+
+test("feedback UI summarizer lower-cases and trims punctuation clutter", () => {
+  expect(
+    summarizeFeedbackUiFinalOutput("Outcome: Shipped RESULT CARD FIX!!!"),
+  ).toBe("shipped result card fix");
+});
+
+test("feedback UI summarizer truncates compact output", () => {
+  const summary = summarizeFeedbackUiFinalOutput(
+    `Outcome: Implemented ${"semantic result ".repeat(20)}for run cards.`,
+  );
+  expect(Array.from(summary).length).toBe(FEEDBACK_UI_SUMMARY_MAX_CHARS);
+  expect(summary.endsWith("…")).toBe(true);
+});
+
+test("feedback UI summarizer falls back for generic status-only output", () => {
+  expect(summarizeFeedbackUiFinalOutput("Summary\nStatus: success\nDone")).toBe(
+    "completed task",
+  );
+});
+
+test("parent formatter remains raw formatted content", () => {
+  expect(
+    formatSubagentResultForParent(
+      result({ finalOutput: "Outcome: Shipped fix.\nVerification: bun test" }),
+    ),
+  ).toBe("Outcome: Shipped fix.\nVerification: bun test");
 });
 
 test("isTranscriptNoiseLine identifies noise correctly", () => {

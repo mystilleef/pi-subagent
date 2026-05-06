@@ -61,10 +61,13 @@ exit 0
   expect(argsText).toContain(
     "Summarize the result of your task for the main agent",
   );
+  expect(argsText).toContain("End your final output with exactly one line:");
+  expect(argsText).toContain(
+    "Outcome: <short, single, compact lower-case sentence>",
+  );
   expect(argsText).toContain(
     "Optimize your summary for token and context efficiency",
   );
-  expect(argsText).not.toContain("Outcome:");
   expect(argsText).not.toContain("Changed:");
   expect(argsText).not.toContain("Cause:");
 });

@@ -32,6 +32,9 @@ const RESULT_FORMAT_INSTRUCTIONS = `
 - Add an empty line between paragraphs, headings and sections.
 - Add an empty line at the end of the summary.
 - Use elegant, well-structured, idiomatic markdown.
+- End your final output with exactly one line:
+  - Outcome: <short, single, compact lower-case sentence>.
+  - Outcome summarizes the result of your task in a single sentence.
 `;
 
 type AssistantMessageMetadata = Message & {
