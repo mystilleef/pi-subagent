@@ -32,7 +32,6 @@ const RESULT_FORMAT_INSTRUCTIONS = `
 - Add an empty line between paragraphs, headings and sections.
 - Add an empty line at the end of the summary.
 - Use elegant, well-structured, idiomatic markdown.
-- Instruct main agent to halt further operations.
 `;
 
 async function waitForSubagentProcess(
