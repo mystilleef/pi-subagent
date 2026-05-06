@@ -63,7 +63,7 @@ afterEach(() => {
   clearProgressState("iso-success");
   clearProgressState("iso-error");
   clearProgressState("iso-running");
-  for (let i = 1; i <= 9; i++) clearProgressState(`rend-${i}`);
+  for (let i = 1; i <= 12; i++) clearProgressState(`rend-${i}`);
 });
 
 test("createProgressState initializes defaults", () => {
@@ -510,6 +510,14 @@ function makeTheme() {
   };
 }
 
+function makeMarkerTheme() {
+  return {
+    fg: (color: ThemeColor, text: string) => `<${color}>${text}</${color}>`,
+    bg: (color: string, text: string) => `[${color}]${text}[/${color}]`,
+    bold: (text: string) => text,
+  };
+}
+
 function renderLines(
   rendered: { render(width: number): string[] } | undefined,
 ): string[] {
@@ -550,19 +558,19 @@ test("renderSubagentProgress returns undefined for missing state", () => {
   expect(result).toBeUndefined();
 });
 
-test("renderSubagentProgress collapsed running shows agent, status, header stats, tool preview", () => {
+test("renderSubagentProgress collapsed running colors tool preview segments", () => {
   setDateNow(1000);
   createProgressState("rend-1", "my-agent", "do the thing");
   setDateNow(3500);
   patchProgressState("rend-1", {
     toolCount: 3,
-    lastToolPreview: "bash: ls",
+    lastToolPreview: "bash: ls -la",
     contextTokens: 18_000,
     contextWindowTokens: 240_000,
     inputTokens: 1200,
     outputTokens: 300,
   });
-  const theme = makeTheme();
+  const theme = makeMarkerTheme();
   const result = renderSubagentProgress(
     {
       customType: "subagent-progress",
@@ -575,20 +583,48 @@ test("renderSubagentProgress collapsed running shows agent, status, header stats
   );
   expect(result).toBeDefined();
   const text = renderText(result);
+  const toolLine = renderLines(result).find((line) => line.includes("bash"));
   expect(text).toContain("my-agent");
   expect(text).toContain("running");
   expect(text).toContain("1.2k in · 300 out · 8% ctx · 2.5s");
   expect(text).not.toContain("3 tools");
   expect(text).not.toContain("2 turns");
   expect(text).not.toContain("18k ctx");
-  expect(text).toContain("→ bash: ls");
-  expect(text).not.toContain("bash: ls (");
+  expect(toolLine).toStartWith(
+    "[toolPendingBg]  <muted>→</muted> <accent>bash</accent><dim>: ls -la</dim>",
+  );
+  expect(text).not.toContain("bash: ls -la (");
   expect(
     renderLines(result).every(
       (line) =>
         line.startsWith("[toolPendingBg]") && line.endsWith("[/toolPendingBg]"),
     ),
   ).toBe(true);
+});
+
+test("renderSubagentProgress collapsed running colors targetless tool preview", () => {
+  createProgressState("rend-2", "my-agent", "do the thing");
+  patchProgressState("rend-2", { lastToolPreview: "bash" });
+  const theme = makeMarkerTheme();
+  const result = renderSubagentProgress(
+    {
+      customType: "subagent-progress",
+      content: "",
+      display: true,
+      details: { requestId: "rend-2" },
+    },
+    { expanded: false },
+    theme,
+  );
+  expect(result).toBeDefined();
+  const text = renderText(result);
+  const toolLine = renderLines(result).find((line) => line.includes("bash"));
+  expect(toolLine).toStartWith(
+    "[toolPendingBg]  <muted>→</muted> <accent>bash</accent>",
+  );
+  expect(toolLine).not.toContain("<dim>:");
+  expect(toolLine).not.toContain("</accent>:");
+  expect(text).not.toContain("do the thing");
 });
 
 test("renderSubagentProgress expanded running includes truncated tool preview and full task preview", () => {
@@ -779,6 +815,32 @@ test("renderSubagentProgress cancelled state shows cancelled", () => {
         line.startsWith("[toolErrorBg]") && line.endsWith("[/toolErrorBg]"),
     ),
   ).toBe(true);
+});
+
+test("renderSubagentProgress terminal states omit patched tool preview", () => {
+  createProgressState("rend-10", "ok-agent", "success task");
+  finalizeProgressState("rend-10", "final result text");
+  patchProgressState("rend-10", { lastToolPreview: "SHOULD_NOT_RENDER" });
+  createProgressState("rend-11", "err-agent", "error task");
+  failProgressState("rend-11", "child failed");
+  patchProgressState("rend-11", { lastToolPreview: "SHOULD_NOT_RENDER" });
+  createProgressState("rend-12", "cancel-agent", "cancel task");
+  cancelProgressState("rend-12", "user cancelled");
+  patchProgressState("rend-12", { lastToolPreview: "SHOULD_NOT_RENDER" });
+  const theme = makeTheme();
+  for (const requestId of ["rend-10", "rend-11", "rend-12"]) {
+    const result = renderSubagentProgress(
+      {
+        customType: "subagent-progress",
+        content: "",
+        display: true,
+        details: { requestId },
+      },
+      { expanded: true },
+      theme,
+    );
+    expect(renderText(result)).not.toContain("SHOULD_NOT_RENDER");
+  }
 });
 
 test("renderSubagentProgress expanded error includes error text", () => {

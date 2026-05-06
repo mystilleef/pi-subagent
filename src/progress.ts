@@ -171,6 +171,18 @@ function truncateToolPreview(preview: string): string {
   return `${characters.slice(0, TOOL_PREVIEW_MAX_CHARS - 1).join("")}…`;
 }
 
+function formatRunningToolPreview(
+  preview: string,
+  theme: SubagentTheme,
+): string {
+  const separatorIndex = preview.indexOf(":");
+  const arrow = theme.fg("muted", "→");
+  if (separatorIndex === -1) return `${arrow} ${theme.fg("accent", preview)}`;
+  const toolName = preview.slice(0, separatorIndex);
+  const rest = preview.slice(separatorIndex);
+  return `${arrow} ${theme.fg("accent", toolName)}${theme.fg("dim", rest)}`;
+}
+
 function makeProgressFinalOutput(finalOutput: string): string {
   return filterOutputLines(finalOutput).join("\n");
 }
@@ -318,7 +330,7 @@ function formatProgressText(
   const taskLine = `\n  ${theme.fg("dim", state.taskPreview)}`;
   if (state.status === "running") {
     const toolLine = state.lastToolPreview
-      ? `\n  ${theme.fg("dim", `→ ${state.lastToolPreview}`)}`
+      ? `\n  ${formatRunningToolPreview(state.lastToolPreview, theme)}`
       : "";
     return options.expanded ? header + toolLine + taskLine : header + toolLine;
   }
