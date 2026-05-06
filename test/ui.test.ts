@@ -9,6 +9,8 @@ import type {
 } from "@mariozechner/pi-coding-agent";
 import type { SubagentDetails } from "../src/types.js";
 import {
+  formatDuration,
+  formatResultFooter,
   formatTokens,
   formatToolCall,
   formatUsageStats,
@@ -586,6 +588,39 @@ test("ui helpers format units, fallback output, and failed tool results", () => 
   expect(formatTokens(1500)).toBe("1.5k");
   expect(formatTokens(15_000)).toBe("15k");
   expect(formatTokens(1_500_000)).toBe("1.5M");
+  expect(formatDuration(850)).toBe("850ms");
+  expect(formatDuration(1234)).toBe("1.2s");
+  expect(formatDuration(65000)).toBe("1m 05s");
+  expect(
+    formatResultFooter(
+      {
+        turns: 3,
+        input: 12_000,
+        output: 1100,
+        cacheRead: 999,
+        cacheWrite: 1500,
+        cost: 0.012,
+        contextTokens: 38_000,
+      },
+      "provider/model:high",
+      1234,
+    ),
+  ).toBe("provider/model:high · ctx:38k · 3 turns · 1.2s · $0.0120");
+  expect(
+    formatResultFooter(
+      {
+        turns: 0,
+        input: 12_000,
+        output: 1100,
+        cacheRead: 999,
+        cacheWrite: 1500,
+        cost: 0,
+        contextTokens: 0,
+      },
+      undefined,
+      0,
+    ),
+  ).toBe("0ms");
   expect(
     formatUsageStats(
       {
@@ -809,7 +844,9 @@ test("subagent result backgrounds cover representative success and failure cards
   expect(successText).not.toContain("[success]✓[/success]");
   expect(successText).not.toContain("[accent]bash[/accent]");
   expect(successText).toContain("[toolOutput]Outcome: shipped[/toolOutput]");
-  expect(successText).toContain("1 turn · ↑1.0k ↓2.0k · $0.0100");
+  expect(successText).toContain("1 turn · $0.0100");
+  expect(successText).not.toContain("↑1.0k");
+  expect(successText).not.toContain("↓2.0k");
   expect(
     success
       .render(120)
@@ -823,7 +860,9 @@ test("subagent result backgrounds cover representative success and failure cards
   expect(failureText).not.toContain("[error]✗[/error]");
   expect(failureText).not.toContain("[accent]read[/accent]");
   expect(failureText).toContain("[toolOutput]first failure line[/toolOutput]");
-  expect(failureText).toContain("2 turns · ↑3.0k ↓4.0k · $0.0200");
+  expect(failureText).toContain("2 turns · $0.0200");
+  expect(failureText).not.toContain("↑3.0k");
+  expect(failureText).not.toContain("↓4.0k");
   expect(
     failure
       .render(120)
@@ -857,6 +896,7 @@ test("subagent result renders compact structured success output", () => {
               "Outcome: shipped\nChanged: src/ui.ts\nVerification: bun test\nNext: none",
             messages: [],
             stderr: "",
+            model: "provider/model:high",
             durationMs: 1234,
             usage: {
               input: 12_000,
@@ -879,8 +919,11 @@ test("subagent result renders compact structured success output", () => {
   expect(renderedText).not.toContain("[muted]1.2s[/muted]");
   expect(renderedText).toContain("[toolOutput]Outcome: shipped[/toolOutput]");
   expect(renderedText).toContain("[toolOutput]Changed: src/ui.ts[/toolOutput]");
-  expect(renderedText).not.toContain("ctx:");
-  expect(renderedText).toContain("3 turns · ↑12k ↓1.1k · $0.0120");
+  expect(renderedText).toContain(
+    "provider/model:high · ctx:38k · 3 turns · 1.2s · $0.0120",
+  );
+  expect(renderedText).not.toContain("↑12k");
+  expect(renderedText).not.toContain("↓1.1k");
 });
 
 test("subagent result suppresses success no-op fields and keeps fallback", () => {

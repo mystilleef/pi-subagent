@@ -54,6 +54,30 @@ export function formatUsageStats(
   return parts.join(" · ");
 }
 
+export function formatDuration(ms: number): string {
+  if (ms < 1000) return `${Math.floor(ms)}ms`;
+  if (ms < 60000) return `${(ms / 1000).toFixed(1)}s`;
+  const minutes = Math.floor(ms / 60000);
+  const seconds = Math.floor((ms % 60000) / 1000);
+  return `${minutes}m ${seconds.toString().padStart(2, "0")}s`;
+}
+
+export function formatResultFooter(
+  usage: UsageStats,
+  model?: string,
+  durationMs?: number,
+): string {
+  const parts: string[] = [];
+  if (model) parts.push(model);
+  if (usage.contextTokens && usage.contextTokens > 0)
+    parts.push(`ctx:${formatTokens(usage.contextTokens)}`);
+  if (usage.turns)
+    parts.push(`${usage.turns} turn${usage.turns > 1 ? "s" : ""}`);
+  if (typeof durationMs === "number") parts.push(formatDuration(durationMs));
+  if (usage.cost) parts.push(`$${usage.cost.toFixed(4)}`);
+  return parts.join(" · ");
+}
+
 export function formatToolCall(
   toolName: string,
   args: Record<string, unknown>,
@@ -142,7 +166,7 @@ export function renderSubagentResult(
   } else {
     box.addChild(new Text(theme.fg("muted", "(no output)"), 0, 0));
   }
-  const usageStr = formatUsageStats(r.usage, r.model, true);
+  const usageStr = formatResultFooter(r.usage, r.model, r.durationMs);
   if (usageStr) box.addChild(new Text(theme.fg("dim", usageStr), 0, 0));
   return box;
 }
