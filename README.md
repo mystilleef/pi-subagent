@@ -1,117 +1,42 @@
-# Pi subagent
+# Project summary
 
-Delegate Pi work to isolated child Pi processes. This extension adds the
-`subagent` tool and `/run` command so a parent Pi session can hand work
-to a named agent with its own context window, prompt, tools, skills,
-thinking level, and result stream.
+`pi-subagent` extends `pi` with subagent orchestration. It adds a `subagent` tool and `/run` command that delegate tasks to isolated child `pi --json` processes with separate context windows.
 
-## Setup
+## Core flow
 
-- Runtime: Bun, Node-compatible TypeScript, ES modules.
-- Install dependencies: `bun install`.
-- Pi discovers the extension from `package.json` `pi.extensions` at
-  `./src/index.ts`.
+- Discovers user agents in `~/.pi/agents/*.md` and project agents in nearest `.pi/agents/*.md`.
+- Parses Markdown frontmatter: `name`, `description`, optional `tools`, `skills`, `thinking`.
+- Launches child Pi with generated prompt files, scoped tools/skills, depth tracking, streaming updates, usage capture, and structured failure handling.
+- Returns concise parent-facing output while preserving detailed metadata when `debug: true`.
 
-## Commands
+## Main modules
 
-- Verify checks and tests: `bun verify` or `make verify`.
-- Run checks, tests, and coverage: `bun coverage` or `make coverage`.
-- Apply Biome fixes and type-check: `bun run check` or `make check`.
-- Run Biome migrations: `bun run migrate` or `make migrate`.
+- `src/index.ts`: extension registration, `subagent` tool, `/run`, autocomplete, UI confirmation, progress patching, result cleanup.
+- `src/agents.ts`: agent discovery, frontmatter parsing, scope resolution, list formatting.
+- `src/process.ts`: child process launch, prompt resolution, streaming JSON handling, usage/error propagation.
+- `src/progress.ts`: running/success/failure/cancelled progress state and rendering.
+- `src/summary.ts`: child output normalization and transcript-noise filtering.
+- `src/ui.ts`: tool/result cards, Markdown output, usage details.
+- `src/utils.ts`: Pi invocation, output truncation, temp prompt files, skill args, depth env.
+- `src/types.ts`: shared result/update/usage/detail types.
 
-## Usage
+## Safeguards
 
-### `/run <agent> [task]`
+- Project-local agents require UI confirmation when UI context exists.
+- Nested subagent calls stop at depth `1` via `PI_SUBAGENT_DEPTH`.
+- Output truncation defaults: `50000` bytes and `500` lines.
+- Stderr capture stops after `10000` bytes.
+- Child tool failures, aborts, error stop reasons, and non-zero exits propagate to parent errors.
 
-Delegates through the `subagent` execution path, renders live progress,
-emits a final result card, then stops. Autocomplete suggests known user
-and project agents after `/run `.
+## Tooling
 
-Use `/run --debug <agent> [task]` to include child messages in display
-details.
+- Runtime: Bun with TypeScript ES modules.
+- Extension entry: `package.json` → `pi.extensions: ["./src/index.ts"]`.
+- Commands:
+  - `bun verify`: type/check plus tests.
+  - `bun coverage`: coverage run.
+  - `bun check`: Biome fix plus `tsc --noEmit`.
 
-## Agent definitions
+## Tests
 
-Pi subagent loads Markdown agent files from:
-
-- user agents: `~/.pi/agents/*.md`
-- nearest project agents directory: `.pi/agents/*.md`, found by walking
-  up from the current working directory
-
-`Frontmatter` fields:
-
-- required: `name`, `description`
-- optional: `tools`, `skills`, `thinking`
-
-`tools` and `skills` use comma-separated values. `thinking` accepts
-`off`, `minimal`, `low`, `medium`, `high`, or `xhigh`. The Markdown body
-supplies the appended system prompt.
-
-Project agents override user agents with the same name when `agentScope`
-includes both sources.
-
-## Runtime behavior
-
-- Child processes run in the parent working directory through the
-  current Pi invocation when possible, or the `pi` binary fallback.
-- Agent system prompts use temporary `0600` files passed through
-  `--append-system-prompt`; cleanup runs after completion.
-- Agent `tools` map to `--tools`.
-- Agent `skills` resolve through Pi's resource loader and map to
-  `--skill` paths.
-- Child output receives result-format instructions for concise Markdown
-  summaries optimized for the parent agent.
-- Usage details track turns, tokens, cache use, context tokens, cost,
-  model, duration, `stderr`, and stop reason.
-
-## UI and summaries
-
-- Tool calls render the selected agent, scope, and semantic task target.
-- `/run` progress tracks status, elapsed time, tool count, last tool
-  preview, usage stats, final output, and semantic errors.
-- Final result cards render Markdown output and compact usage
-  statistics.
-- Parent summaries filter transcript noise and failure diagnostics
-  before display.
-- Returned details omit full child messages unless `debug` requests them
-  or live progress needs a short recent-message snapshot.
-
-## Architecture
-
-- `src/index.ts`: registers the `subagent` tool, `/run` command,
-  autocomplete, UI confirmation, progress updates, result cleanup, and
-  `renderers`.
-- `src/agents.ts`: discovers user and project agent files, parses
-  `frontmatter`, resolves scope, and formats agent lists.
-- `src/process.ts`: launches child Pi processes; resolves prompts,
-  tools, skills, model, thinking, depth, updates, usage, failures, and
-  cleanup.
-- `src/progress.ts`: tracks running, successful, failed, and cancelled
-  `/run` progress and renders dynamic progress cards.
-- `src/summary.ts`: normalizes child output, extracts semantic tool
-  targets, and filters transcript noise.
-- `src/ui.ts`: formats tool calls, result cards, Markdown output, usage
-  details, and final assistant output extraction.
-- `src/utils.ts`: handles Pi invocation, output truncation, temporary
-  prompt files, skill arguments, depth environment values, and
-  message-error detection.
-- `src/types.ts`: defines shared result, usage, details, and update
-  callback types.
-
-## Safeguards and limits
-
-- Project-local agents require UI confirmation before execution when UI
-  support exists.
-- Nested subagent calls use `PI_SUBAGENT_DEPTH`; execution stops at
-  depth `1`.
-- Output truncation uses `PI_SUBAGENT_MAX_OUTPUT_BYTES` with default
-  `50000` and `PI_SUBAGENT_MAX_OUTPUT_LINES` with default `500`.
-- `Stderr` capture stops after `10000` bytes.
-- Failed child tool results, error stop reasons, aborts, and non-zero
-  exits propagate as parent errors.
-
-## Testing
-
-Tests live under `test/` and cover discovery, tool execution, `/run`,
-progress state, summaries, UI rendering, utilities, safeguards,
-truncation, and error handling.
+Tests cover discovery, tool contract, `/run`, child process behavior, progress rendering, summaries, UI, utilities, safeguards, truncation, aborts, debug hygiene, and error handling.
