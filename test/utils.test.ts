@@ -227,9 +227,68 @@ test("discoverAgents tolerates missing, invalid, and unreadable entries", async 
     path.join(agentsDir, "broken.md"),
   );
   await writeFile(
-    path.join(agentsDir, "invalid.md"),
+    path.join(agentsDir, "missing-description.md"),
     `---
 name: invalid
+---
+Prompt`,
+  );
+  await writeFile(
+    path.join(agentsDir, "invalid-yaml.md"),
+    `---
+name: [unterminated
+---
+Prompt`,
+  );
+  await writeFile(
+    path.join(agentsDir, "non-object.md"),
+    `---
+- name
+---
+Prompt`,
+  );
+  await writeFile(
+    path.join(agentsDir, "non-string-name.md"),
+    `---
+name: 1
+description: Bad name
+---
+Prompt`,
+  );
+  await writeFile(
+    path.join(agentsDir, "non-string-description.md"),
+    `---
+name: bad-description
+description: 1
+---
+Prompt`,
+  );
+  await writeFile(
+    path.join(agentsDir, "non-string-tools.md"),
+    `---
+name: bad-tools
+description: Bad tools
+tools:
+  - bash
+---
+Prompt`,
+  );
+  await writeFile(
+    path.join(agentsDir, "non-string-skills.md"),
+    `---
+name: bad-skills
+description: Bad skills
+skills:
+  - helper
+---
+Prompt`,
+  );
+  await writeFile(
+    path.join(agentsDir, "non-string-thinking.md"),
+    `---
+name: bad-thinking
+description: Bad thinking
+thinking: 1
 ---
 Prompt`,
   );

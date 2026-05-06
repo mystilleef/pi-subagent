@@ -50,6 +50,10 @@ function parseThinkingLevel(
     : undefined;
 }
 
+function isFrontmatterObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
 function loadAgentsFromDir(
   dir: string,
   source: "user" | "project",
@@ -74,24 +78,43 @@ function loadAgentsFromDir(
     } catch {
       continue;
     }
-    const { frontmatter, body } =
-      parseFrontmatter<Record<string, string>>(content);
-    if (!frontmatter.name || !frontmatter.description) {
+    let parsed: ReturnType<typeof parseFrontmatter<Record<string, unknown>>>;
+    try {
+      parsed = parseFrontmatter<Record<string, unknown>>(content);
+    } catch {
       continue;
     }
-    const tools = frontmatter.tools
+    const { frontmatter, body } = parsed;
+    if (!isFrontmatterObject(frontmatter)) continue;
+    const {
+      name,
+      description,
+      tools: rawTools,
+      skills: rawSkills,
+      thinking: rawThinking,
+    } = frontmatter;
+    if (typeof name !== "string" || typeof description !== "string") continue;
+    if (rawTools !== undefined && typeof rawTools !== "string") continue;
+    if (
+      rawSkills !== undefined &&
+      rawSkills !== null &&
+      typeof rawSkills !== "string"
+    )
+      continue;
+    if (rawThinking !== undefined && typeof rawThinking !== "string") continue;
+    const tools = rawTools
       ?.split(",")
       .map((t: string) => t.trim())
       .filter(Boolean);
     const hasSkills = Object.hasOwn(frontmatter, "skills");
-    const skills = frontmatter.skills
+    const skills = rawSkills
       ?.split(",")
       .map((s: string) => s.trim())
       .filter(Boolean);
-    const thinking = parseThinkingLevel(frontmatter.thinking);
+    const thinking = parseThinkingLevel(rawThinking);
     agents.push({
-      name: frontmatter.name,
-      description: frontmatter.description,
+      name,
+      description,
       tools: tools && tools.length > 0 ? tools : undefined,
       skills: hasSkills ? (skills ?? []) : undefined,
       thinking,
