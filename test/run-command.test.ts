@@ -1,7 +1,12 @@
 import { expect, test } from "bun:test";
 import path from "node:path";
 import type { ExtensionCommandContext } from "@mariozechner/pi-coding-agent";
-import { getProgressState } from "../src/progress.js";
+import {
+  clearProgressState,
+  createProgressState,
+  getProgressState,
+  patchProgressState,
+} from "../src/progress.js";
 import {
   type FakeTheme,
   type RegisteredMessageRenderer,
@@ -34,6 +39,68 @@ test("run slash command sends one subagent-progress message and one final result
     throw new Error("progress request id missing");
   expect(details.requestId.length).toBeGreaterThan(0);
   expect(messagesSentBeforeChildExit).toBe(1);
+});
+
+test("run slash command patches context window into progress state", async () => {
+  const sentMessages: SendMessageArg[] = [];
+  const { tool, cwd } = await setupTest({
+    sendMessage: (msg) => sentMessages.push(msg),
+    piScript: `#!/bin/sh
+printf '%s\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"done"}],"provider":"openai","model":"gpt-4o-mini","usage":{"input":10,"output":20,"cacheRead":0,"cacheWrite":0,"totalTokens":30,"cost":{"total":0}}}}'
+printf '%s\n' '{"type":"agent_end","messages":[]}'
+exit 0
+`,
+  });
+  const runCommand = tool.registeredCommands.get("run");
+  await runCommand?.handler("hang test task", {
+    cwd,
+    ui: { notify: () => {} },
+  } as unknown as ExtensionCommandContext);
+  const details = sentMessages[0]?.details as
+    | { requestId?: string }
+    | undefined;
+  const requestId = details?.requestId;
+  if (!requestId) throw new Error("progress request id missing");
+  const state = getProgressState(requestId);
+  expect(state?.contextTokens).toBe(30);
+  expect(state?.contextWindowTokens).toBe(128000);
+  clearProgressState(requestId);
+});
+
+test("run slash command keeps context window unknown without metadata", async () => {
+  const sentMessages: SendMessageArg[] = [];
+  const { tool, cwd } = await setupTest({
+    sendMessage: (msg) => sentMessages.push(msg),
+    piScript: `#!/bin/sh
+printf '%s\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"done"}],"usage":{"input":10,"output":20,"cacheRead":0,"cacheWrite":0,"totalTokens":30,"cost":{"total":0}}}}'
+printf '%s\n' '{"type":"agent_end","messages":[]}'
+exit 0
+`,
+  });
+  const runCommand = tool.registeredCommands.get("run");
+  await runCommand?.handler("hang test task", {
+    cwd,
+    ui: { notify: () => {} },
+  } as unknown as ExtensionCommandContext);
+  const details = sentMessages[0]?.details as
+    | { requestId?: string }
+    | undefined;
+  const requestId = details?.requestId;
+  if (!requestId) throw new Error("progress request id missing");
+  const state = getProgressState(requestId);
+  expect(state?.contextTokens).toBe(30);
+  expect(state?.contextWindowTokens).toBeUndefined();
+  clearProgressState(requestId);
+});
+
+test("patchProgressState missing usage fields keeps existing context window", () => {
+  const requestId = "manual-progress-context-window";
+  clearProgressState(requestId);
+  createProgressState(requestId, "agent", "task");
+  patchProgressState(requestId, { contextWindowTokens: 128000 });
+  patchProgressState(requestId, { inputTokens: 10 });
+  expect(getProgressState(requestId)?.contextWindowTokens).toBe(128000);
+  clearProgressState(requestId);
 });
 
 test("run slash command does not append progress refresh messages", async () => {
@@ -222,7 +289,6 @@ test("/run success marks state success with trimmed finalOutput and clears trans
   const state = getProgressState(requestId);
   expect(state?.status).toBe("success");
   expect(state?.finalOutput).toBe("done");
-  expect(state?.lastToolName).toBeUndefined();
   expect(state?.lastToolPreview).toBeUndefined();
 });
 
@@ -250,7 +316,6 @@ exit 0
   const state = getProgressState(requestId);
   expect(state?.status).toBe("success");
   expect(state?.finalOutput).toBe("(no output)");
-  expect(state?.lastToolName).toBeUndefined();
   expect(state?.lastToolPreview).toBeUndefined();
 });
 
@@ -275,7 +340,6 @@ exit 7
   const state = getProgressState(requestId);
   expect(state?.status).toBe("error");
   expect(state?.errorText).toBeTruthy();
-  expect(state?.lastToolName).toBeUndefined();
   expect(state?.lastToolPreview).toBeUndefined();
 });
 

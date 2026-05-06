@@ -256,22 +256,21 @@ function patchProgressFromDetails(
   seenToolCallIds: Set<string>,
 ): void {
   const latestResult = details.results[0];
-  const { newToolCallIds, lastToolName, lastToolPreview } =
-    extractProgressFromDetails(details, seenToolCallIds);
+  const { newToolCallIds, lastToolPreview } = extractProgressFromDetails(
+    details,
+    seenToolCallIds,
+  );
   const current = getProgressState(requestId);
   if (!current) return;
   patchProgressState(requestId, {
     toolCount: current.toolCount + newToolCallIds.length,
-    ...(lastToolName ? { lastToolName, lastToolPreview } : {}),
+    ...(lastToolPreview ? { lastToolPreview } : {}),
     ...(latestResult?.usage
       ? {
-          turns: latestResult.usage.turns,
           inputTokens: latestResult.usage.input,
           outputTokens: latestResult.usage.output,
-          cacheReadTokens: latestResult.usage.cacheRead,
-          cacheWriteTokens: latestResult.usage.cacheWrite,
           contextTokens: latestResult.usage.contextTokens,
-          cost: latestResult.usage.cost,
+          contextWindowTokens: latestResult.usage.contextWindowTokens,
         }
       : {}),
   });

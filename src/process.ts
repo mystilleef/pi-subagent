@@ -1,7 +1,7 @@
 import { type ChildProcess, spawn } from "node:child_process";
 import * as fs from "node:fs";
 import readline from "node:readline";
-import type { Message } from "@mariozechner/pi-ai";
+import { getModel, type Message } from "@mariozechner/pi-ai";
 import type { AgentConfig, ThinkingLevel } from "./agents.js";
 import { extractSemanticToolTarget } from "./summary.js";
 import type {
@@ -33,6 +33,25 @@ const RESULT_FORMAT_INSTRUCTIONS = `
 - Add an empty line at the end of the summary.
 - Use elegant, well-structured, idiomatic markdown.
 `;
+
+type AssistantMessageMetadata = Message & {
+  provider?: unknown;
+  model?: unknown;
+};
+
+function resolveContextWindowTokens(msg: Message): number | undefined {
+  const { provider, model } = msg as AssistantMessageMetadata;
+  if (typeof provider !== "string" || typeof model !== "string") return;
+  try {
+    const resolved = getModel(provider as never, model as never);
+    const contextWindow = resolved.contextWindow;
+    return Number.isFinite(contextWindow) && contextWindow > 0
+      ? contextWindow
+      : undefined;
+  } catch {
+    return;
+  }
+}
 
 async function waitForSubagentProcess(
   proc: ChildProcess,
@@ -238,6 +257,9 @@ export async function runSingleAgent(
           currentResult.usage.cacheWrite += usage.cacheWrite || 0;
           currentResult.usage.cost += usage.cost?.total || 0;
           currentResult.usage.contextTokens = usage.totalTokens || 0;
+          currentResult.usage.contextWindowTokens =
+            resolveContextWindowTokens(msg) ??
+            currentResult.usage.contextWindowTokens;
         }
         if (!currentResult.model && msg.model) currentResult.model = msg.model;
         if (msg.stopReason) currentResult.stopReason = msg.stopReason;

@@ -354,7 +354,7 @@ test("subagent captures pi output including usage and model", async () => {
   await writeFile(
     path.join(binDir, "pi"),
     `#!/bin/sh
-printf '%s\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"Outcome: hello"}],"model":"gpt-4","usage":{"input":10,"output":20,"totalTokens":30,"cost":{"total":0.001}}}}'
+printf '%s\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"Outcome: hello"}],"provider":"openai","model":"gpt-4o-mini","usage":{"input":10,"output":20,"totalTokens":30,"cost":{"total":0.001}}}}'
 printf '%s\n' '{"type":"agent_end"}'
 exit 0
 `,
@@ -372,7 +372,8 @@ exit 0
   expect(details.results[0]?.usage.input).toBe(10);
   expect(details.results[0]?.finalOutput).toBe("Outcome: hello");
   expect(details.results[0]?.messages).toBeUndefined();
-  if (details.results[0]?.model !== "gpt-4")
+  expect(details.results[0]?.usage.contextWindowTokens).toBe(128000);
+  if (details.results[0]?.model !== "gpt-4o-mini")
     expect(details.results[0]?.model).toBe("thinking:off");
   const debugResult = await tool.execute(
     "test-tool-call",
@@ -383,6 +384,28 @@ exit 0
   );
   const debugDetails = debugResult.details as SubagentDetails;
   expect(debugDetails.results[0]?.messages).toHaveLength(1);
+});
+
+test("subagent leaves context window unknown for unknown metadata", async () => {
+  const { binDir, cwd } = await setupFakePi();
+  await writeFile(
+    path.join(binDir, "pi"),
+    `#!/bin/sh
+printf '%s\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"Outcome: hello"}],"provider":"unknown-provider","model":"unknown-model","usage":{"input":10,"output":20,"totalTokens":30,"cost":{"total":0.001}}}}'
+printf '%s\n' '{"type":"agent_end"}'
+exit 0
+`,
+  );
+  const tool = getSubagentTool();
+  const result = await tool.execute(
+    "test-tool-call",
+    { agent: "hang", task: "test" },
+    undefined,
+    undefined,
+    { cwd, hasUI: false } as unknown as ExtensionContext,
+  );
+  const details = result.details as SubagentDetails;
+  expect(details.results[0]?.usage.contextWindowTokens).toBeUndefined();
 });
 
 test("subagent updates correctly format tool calls and final text", async () => {

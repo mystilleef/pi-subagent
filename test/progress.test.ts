@@ -8,7 +8,6 @@ import {
   extractProgressFromDetails,
   failProgressState,
   finalizeProgressState,
-  formatCost,
   formatElapsed,
   formatHeaderStats,
   formatTokenCount,
@@ -78,7 +77,6 @@ test("createProgressState initializes defaults", () => {
   expect(state?.status).toBe("running");
   expect(state?.startTime).toBeGreaterThanOrEqual(before);
   expect(state?.toolCount).toBe(0);
-  expect(state?.lastToolName).toBeUndefined();
   expect(state?.lastToolPreview).toBeUndefined();
   expect(state?.finalOutput).toBeUndefined();
   expect(state?.errorText).toBeUndefined();
@@ -90,10 +88,10 @@ test("getProgressState returns undefined for unknown request id", () => {
 
 test("patchProgressState merges fields without replacing unpatched fields", () => {
   createProgressState("req-1", "agent-a", "task a");
-  patchProgressState("req-1", { toolCount: 3, lastToolName: "bash" });
+  patchProgressState("req-1", { toolCount: 3, lastToolPreview: "bash: ls" });
   const state = getProgressState("req-1");
   expect(state?.toolCount).toBe(3);
-  expect(state?.lastToolName).toBe("bash");
+  expect(state?.lastToolPreview).toBe("bash: ls");
   expect(state?.agent).toBe("agent-a");
   expect(state?.status).toBe("running");
 });
@@ -109,26 +107,18 @@ test("finalizeProgressState sets success status and final output", () => {
 
 test("terminal helpers clear transient tool fields and keep semantic text", () => {
   createProgressState("req-1", "agent-a", "task a");
-  patchProgressState("req-1", {
-    lastToolName: "bash",
-    lastToolPreview: "bash: noisy command",
-  });
+  patchProgressState("req-1", { lastToolPreview: "bash: noisy command" });
   const longOutcome = "x".repeat(600);
   finalizeProgressState("req-1", longOutcome);
   const successState = getProgressState("req-1");
-  expect(successState?.lastToolName).toBeUndefined();
   expect(successState?.lastToolPreview).toBeUndefined();
   expect(successState?.finalOutput).toContain(longOutcome);
   expect(successState?.finalOutput).not.toContain("...");
   createProgressState("req-2", "agent-b", "task b");
-  patchProgressState("req-2", {
-    lastToolName: "read",
-    lastToolPreview: "read: /tmp/file",
-  });
+  patchProgressState("req-2", { lastToolPreview: "read: /tmp/file" });
   const longCause = `migration failed ${"e".repeat(600)}`;
   failProgressState("req-2", longCause);
   const errorState = getProgressState("req-2");
-  expect(errorState?.lastToolName).toBeUndefined();
   expect(errorState?.lastToolPreview).toBeUndefined();
   expect(errorState?.errorText).toBe(longCause);
   expect(errorState?.errorText).not.toContain("...");
@@ -351,7 +341,6 @@ test("extractProgressFromDetails returns empty result for details with no messag
   const seen = new Set<string>();
   const result = extractProgressFromDetails(details, seen);
   expect(result.newToolCallIds).toEqual([]);
-  expect(result.lastToolName).toBeUndefined();
   expect(result.lastToolPreview).toBeUndefined();
 });
 
@@ -454,11 +443,10 @@ test("extractProgressFromDetails handles malformed and nested message data safel
   const seen = new Set<string>();
   const result = extractProgressFromDetails(details, seen);
   expect(result.newToolCallIds).toEqual(["tc-nested"]);
-  expect(result.lastToolName).toBe("outer");
   expect(result.lastToolPreview).toBe('outer: {"nested":{"path":"/tmp/x"}}');
 });
 
-test("extractProgressFromDetails returns last tool name and preview", () => {
+test("extractProgressFromDetails returns last tool preview", () => {
   const details = makeDetails([
     {
       role: "assistant",
@@ -480,7 +468,6 @@ test("extractProgressFromDetails returns last tool name and preview", () => {
   ]);
   const seen = new Set<string>();
   const result = extractProgressFromDetails(details, seen);
-  expect(result.lastToolName).toBe("read");
   expect(result.lastToolPreview).toBe("read: /tmp/foo");
 });
 
@@ -501,7 +488,6 @@ test("extractProgressFromDetails ignores non-assistant messages", () => {
   const seen = new Set<string>();
   const result = extractProgressFromDetails(details, seen);
   expect(result.newToolCallIds).toEqual([]);
-  expect(result.lastToolName).toBeUndefined();
 });
 
 test("extractProgressFromDetails handles empty output when no results", () => {
@@ -514,7 +500,6 @@ test("extractProgressFromDetails handles empty output when no results", () => {
   const seen = new Set<string>();
   const result = extractProgressFromDetails(details, seen);
   expect(result.newToolCallIds).toEqual([]);
-  expect(result.lastToolName).toBeUndefined();
 });
 
 function makeTheme() {
@@ -565,13 +550,17 @@ test("renderSubagentProgress returns undefined for missing state", () => {
   expect(result).toBeUndefined();
 });
 
-test("renderSubagentProgress collapsed running shows agent, status, tool count, tool preview", () => {
+test("renderSubagentProgress collapsed running shows agent, status, header stats, tool preview", () => {
+  setDateNow(1000);
   createProgressState("rend-1", "my-agent", "do the thing");
+  setDateNow(3500);
   patchProgressState("rend-1", {
     toolCount: 3,
     lastToolPreview: "bash: ls",
-    turns: 2,
     contextTokens: 18_000,
+    contextWindowTokens: 240_000,
+    inputTokens: 1200,
+    outputTokens: 300,
   });
   const theme = makeTheme();
   const result = renderSubagentProgress(
@@ -588,9 +577,10 @@ test("renderSubagentProgress collapsed running shows agent, status, tool count, 
   const text = renderText(result);
   expect(text).toContain("my-agent");
   expect(text).toContain("running");
-  expect(text).toContain("3 tools");
-  expect(text).toContain("2 turns");
-  expect(text).toContain("18k ctx");
+  expect(text).toContain("1.2k in · 300 out · 8% ctx · 2.5s");
+  expect(text).not.toContain("3 tools");
+  expect(text).not.toContain("2 turns");
+  expect(text).not.toContain("18k ctx");
   expect(text).toContain("→ bash: ls");
   expect(text).not.toContain("bash: ls (");
   expect(
@@ -645,27 +635,26 @@ test("renderSubagentProgress component reads patched state on later renders", ()
     { expanded: false },
     theme,
   );
-  expect(renderText(result)).toContain("0 tools");
+  expect(renderText(result)).toContain("0 in · 0 out · --% ctx");
   patchProgressState("rend-live", {
     toolCount: 2,
     lastToolPreview: "bash: pwd",
-    turns: 3,
     contextTokens: 10_000,
     inputTokens: 1200,
     outputTokens: 300,
   });
   const text = renderText(result);
-  expect(text).toContain("2 tools");
-  expect(text).toContain("3 turns");
-  expect(text).toContain("10k ctx");
-  expect(text).toContain("1.2k in / 300 out");
+  expect(text).toContain("1.2k in · 300 out · --% ctx");
+  expect(text).not.toContain("2 tools");
+  expect(text).not.toContain("3 turns");
+  expect(text).not.toContain("10k ctx");
+  expect(text).not.toContain("1.2k in / 300 out");
   expect(text).toContain("→ bash: pwd");
   expect(text).not.toContain("bash: pwd (");
 });
 
-test("format header stats compacts usage fields", () => {
+test("format header stats renders input output context percent and elapsed", () => {
   expect(formatTokenCount(12345)).toBe("12.3k");
-  expect(formatCost(0.034)).toBe("$0.03");
   expect(
     formatHeaderStats({
       requestId: "req-1",
@@ -673,18 +662,47 @@ test("format header stats compacts usage fields", () => {
       taskPreview: "task a",
       status: "running",
       startTime: 0,
+      durationMs: 2500,
       toolCount: 3,
-      turns: 2,
       contextTokens: 18_000,
+      contextWindowTokens: 240_000,
       inputTokens: 7100,
       outputTokens: 890,
-      cacheReadTokens: 1000,
-      cacheWriteTokens: 400,
-      cost: 0.034,
     }),
-  ).toBe(
-    "3 tools · 2 turns · 18k ctx · 7.1k in / 890 out · 1.4k cache · $0.03",
-  );
+  ).toBe("7.1k in · 890 out · 8% ctx · 2.5s");
+});
+
+test("format header stats handles zero usage and context fallbacks", () => {
+  setDateNow(4000);
+  const base = {
+    requestId: "req-1",
+    agent: "agent-a",
+    taskPreview: "task a",
+    status: "running" as const,
+    startTime: 1000,
+    toolCount: 0,
+  };
+  expect(formatHeaderStats(base)).toBe("0 in · 0 out · --% ctx · 3.0s");
+  expect(
+    formatHeaderStats({ ...base, contextTokens: -1, contextWindowTokens: 100 }),
+  ).toBe("0 in · 0 out · 0% ctx · 3.0s");
+  expect(
+    formatHeaderStats({
+      ...base,
+      contextTokens: Number.NaN,
+      contextWindowTokens: 100,
+    }),
+  ).toBe("0 in · 0 out · 0% ctx · 3.0s");
+  expect(
+    formatHeaderStats({ ...base, contextTokens: 50, contextWindowTokens: 0 }),
+  ).toBe("0 in · 0 out · --% ctx · 3.0s");
+  expect(
+    formatHeaderStats({
+      ...base,
+      contextTokens: 50,
+      contextWindowTokens: Number.POSITIVE_INFINITY,
+    }),
+  ).toBe("0 in · 0 out · --% ctx · 3.0s");
 });
 
 test("renderSubagentProgress error state shows error text", () => {

@@ -8,6 +8,7 @@ export interface UsageStats {
   cacheWrite: number;
   cost: number;
   contextTokens: number;
+  contextWindowTokens?: number;
   turns: number;
 }
 

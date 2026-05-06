@@ -18,16 +18,12 @@ export interface SubagentProgressState {
   status: ProgressStatus;
   startTime: number;
   durationMs?: number;
-  lastToolName?: string;
   lastToolPreview?: string;
   toolCount: number;
-  turns?: number;
   inputTokens?: number;
   outputTokens?: number;
-  cacheReadTokens?: number;
-  cacheWriteTokens?: number;
   contextTokens?: number;
-  cost?: number;
+  contextWindowTokens?: number;
   finalOutput?: string;
   errorText?: string;
 }
@@ -82,7 +78,6 @@ export function finalizeProgressState(
   storeTerminalProgressState(requestId, {
     status: "success",
     finalOutput: makeProgressFinalOutput(finalOutput),
-    lastToolName: undefined,
     lastToolPreview: undefined,
   });
 }
@@ -91,7 +86,6 @@ export function failProgressState(requestId: string, errorText: string): void {
   storeTerminalProgressState(requestId, {
     status: "error",
     errorText: extractProgressSemanticErrorLine(errorText),
-    lastToolName: undefined,
     lastToolPreview: undefined,
   });
 }
@@ -99,7 +93,6 @@ export function failProgressState(requestId: string, errorText: string): void {
 export function cancelProgressState(requestId: string, reason?: string): void {
   storeTerminalProgressState(requestId, {
     status: "cancelled",
-    lastToolName: undefined,
     lastToolPreview: undefined,
     ...(reason !== undefined
       ? { errorText: extractProgressSemanticErrorLine(reason) }
@@ -117,7 +110,6 @@ export function makeTaskPreview(task: string): string {
 }
 
 export interface DetailsProgress {
-  lastToolName?: string;
   lastToolPreview?: string;
   newToolCallIds: string[];
 }
@@ -127,7 +119,6 @@ export function extractProgressFromDetails(
   seenToolCallIds: Set<string>,
 ): DetailsProgress {
   const newToolCallIds: string[] = [];
-  let lastToolName: string | undefined;
   let lastToolPreview: string | undefined;
   const results = Array.isArray(details.results) ? details.results : [];
   for (const result of results) {
@@ -136,7 +127,6 @@ export function extractProgressFromDetails(
       if (msg.role !== "assistant" || !Array.isArray(msg.content)) continue;
       for (const part of msg.content) {
         if (!isToolCallPart(part)) continue;
-        lastToolName = part.name;
         lastToolPreview = makeToolPreview(part.name, part.arguments);
         if (seenToolCallIds.has(part.id)) continue;
         seenToolCallIds.add(part.id);
@@ -145,7 +135,6 @@ export function extractProgressFromDetails(
     }
   }
   return {
-    lastToolName,
     lastToolPreview,
     newToolCallIds,
   };
@@ -224,30 +213,32 @@ export function formatTokenCount(count: number): string {
   return `${trimTrailingZero((count / divisor).toFixed(1))}${unit}`;
 }
 
-export function formatCost(cost: number): string {
-  return `$${cost.toFixed(cost >= 0.01 ? 2 : 4)}`;
+export function formatHeaderStats(state: SubagentProgressState): string {
+  const elapsedMs = state.durationMs ?? Date.now() - state.startTime;
+  return [
+    `${formatTokenCount(state.inputTokens ?? 0)} in`,
+    `${formatTokenCount(state.outputTokens ?? 0)} out`,
+    `${formatContextPercent(state)} ctx`,
+    formatElapsed(elapsedMs),
+  ].join(" · ");
 }
 
-export function formatHeaderStats(state: SubagentProgressState): string {
-  const segments = [
-    `${state.toolCount} ${state.toolCount === 1 ? "tool" : "tools"}`,
-  ];
-  if (state.turns && state.turns > 0)
-    segments.push(`${state.turns} ${state.turns === 1 ? "turn" : "turns"}`);
-  if (state.contextTokens && state.contextTokens > 0)
-    segments.push(`${formatTokenCount(state.contextTokens)} ctx`);
+function formatContextPercent(state: SubagentProgressState): string {
+  const denominator = state.contextWindowTokens;
   if (
-    (state.inputTokens && state.inputTokens > 0) ||
-    (state.outputTokens && state.outputTokens > 0)
+    typeof denominator !== "number" ||
+    !Number.isFinite(denominator) ||
+    denominator <= 0
   )
-    segments.push(
-      `${formatTokenCount(state.inputTokens ?? 0)} in / ${formatTokenCount(state.outputTokens ?? 0)} out`,
-    );
-  const cacheTokens =
-    (state.cacheReadTokens ?? 0) + (state.cacheWriteTokens ?? 0);
-  if (cacheTokens > 0) segments.push(`${formatTokenCount(cacheTokens)} cache`);
-  if (state.cost && state.cost > 0) segments.push(formatCost(state.cost));
-  return segments.join(" · ");
+    return "--%";
+  const numerator = state.contextTokens;
+  if (
+    typeof numerator !== "number" ||
+    !Number.isFinite(numerator) ||
+    numerator <= 0
+  )
+    return "0%";
+  return `${Math.round((numerator / denominator) * 100)}%`;
 }
 
 function trimTrailingZero(value: string): string {
@@ -301,8 +292,6 @@ function formatProgressText(
 ): string | undefined {
   const state = getProgressState(requestId);
   if (!state) return undefined;
-  const elapsedMs = state.durationMs ?? Date.now() - state.startTime;
-  const elapsed = formatElapsed(elapsedMs);
   const statusColorMap: Record<ProgressStatus, ThemeColor> = {
     success: "success",
     error: "error",
@@ -325,7 +314,7 @@ function formatProgressText(
     " " +
     theme.fg("dim", `[${state.status}]`) +
     " " +
-    theme.fg("muted", `${elapsed} · ${headerStats}`);
+    theme.fg("muted", headerStats);
   const taskLine = `\n  ${theme.fg("dim", state.taskPreview)}`;
   if (state.status === "running") {
     const toolLine = state.lastToolPreview
