@@ -5,7 +5,7 @@ import {
   extractSemanticToolTarget,
   filterOutputLines,
   normalizeSummaryValue,
-} from "./summary.js";
+} from "./normalize.js";
 import type { SubagentDetails } from "./types.js";
 import type { SubagentTheme, ThemeBg } from "./ui.js";
 

@@ -8,7 +8,7 @@ import {
   Text,
 } from "@mariozechner/pi-tui";
 import type { AgentScope } from "./agents.js";
-import { extractSemanticToolTarget } from "./summary.js";
+import { extractSemanticToolTarget } from "./normalize.js";
 import type { SubagentDetails, UsageStats } from "./types.js";
 import { detectMessageError } from "./utils.js";
 

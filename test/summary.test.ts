@@ -1,10 +1,12 @@
 import { expect, test } from "bun:test";
 import {
   extractSemanticToolTarget,
-  FEEDBACK_UI_SUMMARY_MAX_CHARS,
-  formatSubagentResultForParent,
   isFailureDiagnosticLine,
   isTranscriptNoiseLine,
+} from "../src/normalize.js";
+import {
+  FEEDBACK_UI_SUMMARY_MAX_CHARS,
+  formatSubagentResultForParent,
   summarizeFeedbackUiFinalOutput,
 } from "../src/summary.js";
 import type { SingleResult } from "../src/types.js";

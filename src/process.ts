@@ -3,7 +3,7 @@ import * as fs from "node:fs";
 import readline from "node:readline";
 import { getModel, type Message } from "@mariozechner/pi-ai";
 import type { AgentConfig, ThinkingLevel } from "./agents.js";
-import { extractSemanticToolTarget } from "./summary.js";
+import { extractSemanticToolTarget } from "./normalize.js";
 import type {
   OnUpdateCallback,
   SingleResult,
@@ -25,7 +25,16 @@ const MAX_STDERR_BYTES = 10_000;
 type RuntimeResult = SingleResult & { messages: Message[] };
 
 const MAX_SUBAGENT_DEPTH = 1;
-const TOOL_RESULT_FAILED_MESSAGE = "Subagent tool result failed.";
+export const TOOL_RESULT_FAILED_MESSAGE = "Subagent tool result failed.";
+
+function appendWithByteLimit(
+  current: string,
+  data: string,
+  max: number,
+): string {
+  if (current.length >= max) return current;
+  return current + data.slice(0, max - current.length);
+}
 const RESULT_FORMAT_INSTRUCTIONS = `
 - Summarize the result of your task for the main agent.
 - Aggresively optimize your summary for token and context efficiency.
@@ -237,8 +246,11 @@ export async function runSingleAgent(
     let spawnError: Error | undefined;
     proc.once("error", (error) => {
       spawnError = error;
-      if (currentResult.stderr.length < MAX_STDERR_BYTES)
-        currentResult.stderr += error.message;
+      currentResult.stderr = appendWithByteLimit(
+        currentResult.stderr,
+        error.message,
+        MAX_STDERR_BYTES,
+      );
     });
     let wasAborted = false;
     const addMessage = (msg: Message) => {
@@ -300,8 +312,11 @@ export async function runSingleAgent(
     }
     if (proc.stderr) {
       proc.stderr.on("data", (data) => {
-        if (currentResult.stderr.length < MAX_STDERR_BYTES)
-          currentResult.stderr += data.toString();
+        currentResult.stderr = appendWithByteLimit(
+          currentResult.stderr,
+          data.toString(),
+          MAX_STDERR_BYTES,
+        );
       });
     }
     if (signal) {

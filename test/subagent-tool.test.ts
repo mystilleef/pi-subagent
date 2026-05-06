@@ -66,7 +66,7 @@ exit 0
     "Outcome: <short, single, compact lower-case sentence>",
   );
   expect(argsText).toContain(
-    "Optimize your summary for token and context efficiency",
+    "Aggresively optimize your summary for token and context efficiency",
   );
   expect(argsText).not.toContain("Changed:");
   expect(argsText).not.toContain("Cause:");
