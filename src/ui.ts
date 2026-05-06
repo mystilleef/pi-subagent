@@ -75,7 +75,7 @@ export function formatResultFooter(
     parts.push(`${usage.turns} turn${usage.turns > 1 ? "s" : ""}`);
   if (typeof durationMs === "number") parts.push(formatDuration(durationMs));
   if (usage.cost) parts.push(`$${usage.cost.toFixed(4)}`);
-  return parts.join(" · ");
+  return `\n${parts.join(" · ")}`;
 }
 
 export function formatToolCall(
@@ -158,7 +158,7 @@ export function renderSubagentResult(
     detectMessageError(r.messages ?? []);
   const finalOutput = r.finalOutput ?? getFinalOutput(r.messages ?? []);
   const bg = failed ? "toolErrorBg" : "toolSuccessBg";
-  const box = new Box(0, 0, (line) => theme.bg(bg, line));
+  const box = new Box(1, 1, (line) => theme.bg(bg, line));
   const bodyText = stripOutcomeLineForResultUi(bodyOverride ?? finalOutput);
   if (bodyText) {
     box.addChild(

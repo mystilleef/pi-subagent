@@ -605,7 +605,7 @@ test("ui helpers format units, fallback output, and failed tool results", () => 
       "provider/model:high",
       1234,
     ),
-  ).toBe("provider/model:high · ctx:38k · 3 turns · 1.2s · $0.0120");
+  ).toBe("\nprovider/model:high · ctx:38k · 3 turns · 1.2s · $0.0120");
   expect(
     formatResultFooter(
       {
@@ -620,7 +620,7 @@ test("ui helpers format units, fallback output, and failed tool results", () => 
       undefined,
       0,
     ),
-  ).toBe("0ms");
+  ).toBe("\n0ms");
   expect(
     formatUsageStats(
       {
@@ -811,7 +811,7 @@ test("subagent-result message renderer uses summarized content and preserves res
   expect(text).toContain("[toolOutput]summarized semantic outcome");
   expect(text).toContain("[/toolOutput]");
   expect(text).not.toContain("raw child output must stay hidden from run card");
-  expect(text).toContain("[dim]1 turn · $0.0100[/dim]");
+  expect(text).toContain("[toolSuccessBg] 1 turn · $0.0100[/dim]");
   expect(
     lines.every(
       (line) =>

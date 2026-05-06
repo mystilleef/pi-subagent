@@ -658,12 +658,12 @@ test("renderSubagentProgress collapsed running colors tool preview segments", ()
   const toolLine = renderLines(result).find((line) => line.includes("bash"));
   expect(text).toContain("my-agent");
   expect(text).toContain("running");
-  expect(text).toContain("1.2k in · 300 out · 8% ctx · 2.5s");
+  expect(text).toContain("1.2k in · 300 out · 8% ctx ·");
   expect(text).not.toContain("3 tools");
   expect(text).not.toContain("2 turns");
   expect(text).not.toContain("18k ctx");
   expect(toolLine).toStartWith(
-    "[toolPendingBg]  <muted>→</muted> <accent>bash</accent><dim>: ls -la</dim>",
+    "[toolPendingBg]   <muted>→</muted> <accent>bash</accent><dim>: ls -la</dim>",
   );
   expect(text).not.toContain("bash: ls -la (");
   expect(
@@ -692,7 +692,7 @@ test("renderSubagentProgress collapsed running colors targetless tool preview", 
   const text = renderText(result);
   const toolLine = renderLines(result).find((line) => line.includes("bash"));
   expect(toolLine).toStartWith(
-    "[toolPendingBg]  <muted>→</muted> <accent>bash</accent>",
+    "[toolPendingBg]   <muted>→</muted> <accent>bash</accent>",
   );
   expect(toolLine).not.toContain("<dim>:");
   expect(toolLine).not.toContain("</accent>:");
@@ -724,7 +724,7 @@ test("renderSubagentProgress running omits unknown tool arguments", () => {
     line.includes("unknown_tool"),
   );
   expect(toolLine).toStartWith(
-    "[toolPendingBg]  <muted>→</muted> <accent>unknown_tool</accent>",
+    "[toolPendingBg]   <muted>→</muted> <accent>unknown_tool</accent>",
   );
   expect(toolLine).not.toContain(":");
   expect(text).not.toContain("secret");

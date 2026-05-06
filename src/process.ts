@@ -39,12 +39,10 @@ const RESULT_FORMAT_INSTRUCTIONS = `
 - Summarize the result of your task for the main agent.
 - Aggresively optimize your summary for token and context efficiency.
 - Add an empty line between paragraphs, headings and sections.
-- Add an empty line at the end of the summary.
 - Use elegant, well-structured, idiomatic markdown.
 - End your final output with exactly one line:
   - Outcome: <short, single, compact lower-case sentence>.
   - Outcome summarizes the result of your task in a single sentence.
-  - Add an empty line at the end of the outcome.
 `;
 
 type AssistantMessageMetadata = Message & {

@@ -352,7 +352,7 @@ class DynamicSubagentProgressText implements Component {
     const text = formatProgressText(this.requestId, this.options, this.theme);
     const bg = getProgressBackground(state.status);
     return text
-      ? new Text(text, 0, 0, (line) => this.theme.bg(bg, line)).render(width)
+      ? new Text(text, 1, 1, (line) => this.theme.bg(bg, line)).render(width)
       : [];
   }
 }
