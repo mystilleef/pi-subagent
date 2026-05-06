@@ -500,6 +500,103 @@ exit 0
   expect(texts.some((t) => t === "final")).toBe(false);
 });
 
+test("streaming updates hide unknown tool arguments", async () => {
+  const { binDir, cwd } = await setupFakePi();
+  const unknownToolEvent = JSON.stringify({
+    type: "message_end",
+    message: {
+      role: "assistant",
+      content: [
+        {
+          type: "toolCall",
+          name: "unknown",
+          id: "1",
+          arguments: {
+            token: "SECRET_TOKEN",
+            password: "SECRET_PASSWORD",
+            nested: { value: "SECRET_NESTED" },
+          },
+        },
+      ],
+    },
+  });
+  const bashEvent = JSON.stringify({
+    type: "message_end",
+    message: {
+      role: "assistant",
+      content: [
+        {
+          type: "toolCall",
+          name: "bash",
+          id: "2",
+          arguments: { command: "ls" },
+        },
+      ],
+    },
+  });
+  const readEvent = JSON.stringify({
+    type: "message_end",
+    message: {
+      role: "assistant",
+      content: [
+        {
+          type: "toolCall",
+          name: "read",
+          id: "3",
+          arguments: { path: "src/process.ts" },
+        },
+      ],
+    },
+  });
+  const subagentEvent = JSON.stringify({
+    type: "message_end",
+    message: {
+      role: "assistant",
+      content: [
+        {
+          type: "toolCall",
+          name: "subagent",
+          id: "4",
+          arguments: {
+            agent: "reviewer",
+            task: "check safety",
+            agentScope: "both",
+          },
+        },
+      ],
+    },
+  });
+  await writeFile(
+    path.join(binDir, "pi"),
+    `#!/bin/sh
+printf '%s\n' ${shellQuote(unknownToolEvent)}
+printf '%s\n' ${shellQuote(bashEvent)}
+printf '%s\n' ${shellQuote(readEvent)}
+printf '%s\n' ${shellQuote(subagentEvent)}
+printf '%s\n' '{"type":"agent_end"}'
+exit 0
+`,
+  );
+  const tool = getSubagentTool();
+  const updates: AgentToolResult<SubagentDetails>[] = [];
+  await tool.execute(
+    "test-tool-call",
+    { agent: "hang", task: "test" },
+    undefined,
+    (update) => updates.push(update),
+    { cwd, hasUI: false } as unknown as ExtensionContext,
+  );
+  const texts = updates.map((u) => (u.content[0] as TextContent)?.text);
+  expect(texts).toContain("unknown");
+  expect(texts).toContain("bash: ls");
+  expect(texts).toContain("read: src/process.ts");
+  expect(texts).toContain("subagent: reviewer check safety [both]");
+  expect(texts.join("\n")).not.toContain("SECRET_TOKEN");
+  expect(texts.join("\n")).not.toContain("SECRET_PASSWORD");
+  expect(texts.join("\n")).not.toContain("SECRET_NESTED");
+  expect(texts).not.toContain("unknown: ");
+});
+
 test("streaming update details keep recent messages after final text anchor", async () => {
   const { binDir, cwd } = await setupFakePi();
   const longCommand = "0123456789".repeat(7);

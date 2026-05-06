@@ -640,6 +640,19 @@ test("ui helpers format units, fallback output, and failed tool results", () => 
   expect(formatToolCall("subagent", { agent: "child" }, fakeTheme.fg)).toBe(
     "[accent]subagent[/accent][dim] child[/dim]",
   );
+  expect(
+    formatToolCall(
+      "unknown",
+      { token: "secret", password: "hidden", nested: { value: "leak" } },
+      fakeTheme.fg,
+    ),
+  ).toBe("[accent]unknown[/accent]");
+  expect(
+    formatToolCall("unknown", { token: "secret" }, fakeTheme.fg, true),
+  ).toBe('[accent]unknown[/accent][dim] {"token":"secret"}[/dim]');
+  expect(formatToolCall("bash", { command: "bun test" }, fakeTheme.fg)).toBe(
+    "[accent]bash[/accent][dim] bun test[/dim]",
+  );
   const call = renderSubagentCall({}, fakeTheme) as unknown as {
     text: string;
     render: (width: number) => string[];

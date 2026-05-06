@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
 import {
+  extractSemanticToolTarget,
   formatSubagentResultForParent,
   isFailureDiagnosticLine,
   isTranscriptNoiseLine,
@@ -44,6 +45,14 @@ test("parent formatter filters transcript noise lines", () => {
       }),
     ),
   ).toBe("Actual result here.");
+  expect(
+    formatSubagentResultForParent(
+      result({
+        finalOutput:
+          "Hi there\nHi, there\nHigh severity issue\nhistory\nhiatus",
+      }),
+    ),
+  ).toBe("High severity issue\nhistory\nhiatus");
 });
 
 test("parent formatter filters failure diagnostic lines", () => {
@@ -77,8 +86,15 @@ test("parent formatter returns plain prose without label extraction", () => {
 
 test("isTranscriptNoiseLine identifies noise correctly", () => {
   expect(isTranscriptNoiseLine("Hello! I can help.")).toBe(true);
+  expect(isTranscriptNoiseLine("Hi there")).toBe(true);
+  expect(isTranscriptNoiseLine("Hi, there")).toBe(true);
   expect(isTranscriptNoiseLine("Reasoning: I checked the repo")).toBe(true);
+  expect(isTranscriptNoiseLine("Raw log: child output")).toBe(true);
   expect(isTranscriptNoiseLine("Apologies for the issue")).toBe(true);
+  expect(isTranscriptNoiseLine("Sorry for the issue")).toBe(true);
+  expect(isTranscriptNoiseLine("High severity issue")).toBe(false);
+  expect(isTranscriptNoiseLine("history matters")).toBe(false);
+  expect(isTranscriptNoiseLine("hiatus planned")).toBe(false);
   expect(isTranscriptNoiseLine("Migration applied successfully.")).toBe(false);
 });
 
@@ -88,4 +104,32 @@ test("isFailureDiagnosticLine identifies diagnostics correctly", () => {
     true,
   );
   expect(isFailureDiagnosticLine("Migration applied.")).toBe(false);
+});
+
+test("extractSemanticToolTarget hides unknown args unless forced", () => {
+  const secretArgs = {
+    token: "secret-token",
+    password: "secret-password",
+    nested: { value: "hidden" },
+  };
+  expect(extractSemanticToolTarget("unknown", secretArgs)).toBe("");
+  expect(extractSemanticToolTarget("unknown", secretArgs, true)).toBe(
+    JSON.stringify(secretArgs),
+  );
+});
+
+test("extractSemanticToolTarget keeps known safe targets", () => {
+  expect(extractSemanticToolTarget("bash", { command: "bun test" })).toBe(
+    "bun test",
+  );
+  expect(extractSemanticToolTarget("read", { path: "src/index.ts" })).toBe(
+    "src/index.ts",
+  );
+  expect(
+    extractSemanticToolTarget("subagent", {
+      agent: "reviewer",
+      task: "**Check UI**",
+      agentScope: "project",
+    }),
+  ).toBe("reviewer Check UI [project]");
 });

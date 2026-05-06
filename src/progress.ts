@@ -29,6 +29,7 @@ export interface SubagentProgressState {
 }
 
 const TOOL_PREVIEW_MAX_CHARS = 120;
+const TERMINAL_SENTENCE_MAX_CHARS = 160;
 const store = new Map<string, SubagentProgressState>();
 
 export function createProgressState(
@@ -83,9 +84,10 @@ export function finalizeProgressState(
 }
 
 export function failProgressState(requestId: string, errorText: string): void {
+  const sentence = _deriveFailureTerminalSentence(errorText);
   storeTerminalProgressState(requestId, {
     status: "error",
-    errorText: extractProgressSemanticErrorLine(errorText),
+    errorText: sentence,
     lastToolPreview: undefined,
   });
 }
@@ -95,7 +97,7 @@ export function cancelProgressState(requestId: string, reason?: string): void {
     status: "cancelled",
     lastToolPreview: undefined,
     ...(reason !== undefined
-      ? { errorText: extractProgressSemanticErrorLine(reason) }
+      ? { errorText: _deriveAmbiguousTerminalSentence(reason) }
       : {}),
   });
 }
@@ -160,9 +162,9 @@ export function makeToolPreview(
   args: Record<string, unknown> | undefined,
 ): string {
   if (!args || Object.keys(args).length === 0) return toolName;
-  return truncateToolPreview(
-    `${toolName}: ${extractSemanticToolTarget(toolName, args)}`,
-  );
+  const target = extractSemanticToolTarget(toolName, args);
+  if (!target) return toolName;
+  return truncateToolPreview(`${toolName}: ${target}`);
 }
 
 function truncateToolPreview(preview: string): string {
@@ -184,7 +186,71 @@ function formatRunningToolPreview(
 }
 
 function makeProgressFinalOutput(finalOutput: string): string {
-  return filterOutputLines(finalOutput).join("\n");
+  return _deriveSuccessTerminalSentence(finalOutput);
+}
+
+function _deriveSuccessTerminalSentence(finalOutput: string): string {
+  const lines = filterOutputLines(finalOutput)
+    .map((line) => normalizeTerminalSentence(line))
+    .filter(Boolean);
+  const outcome = lines.find((line) => /^Outcome:\s*/i.test(line));
+  const selected = outcome
+    ? outcome.replace(/^Outcome:\s*/i, "")
+    : (lines[0] ?? "");
+  const normalized = normalizeTerminalSentence(selected);
+  if (!normalized) return "";
+  if (isStatusOnlySuccessTerminalSentence(normalized)) return "completed task";
+  return normalized;
+}
+
+function _deriveFailureTerminalSentence(errorText: string): string {
+  const source = extractProgressSemanticErrorLine(errorText);
+  if (!source || source === "Large unstructured error output omitted.")
+    return source;
+  const normalized = normalizeTerminalSentence(source);
+  if (!normalized || isStatusOnlyFailureTerminalSentence(normalized))
+    return "task failed";
+  return normalized;
+}
+
+function _deriveAmbiguousTerminalSentence(text: string): string {
+  return normalizeTerminalSentence(text);
+}
+
+function normalizeTerminalSentence(value: string): string {
+  const unwrapped = value
+    .replace(/^\s*(?:[-*>]\s*)+/, "")
+    .replace(/^\s*#{1,6}\s+/, "")
+    .replace(/^\s*`{1,3}([^`]+)`{1,3}\s*$/, "$1")
+    .replace(/^\s*\*\*([^*]+)\*\*\s*$/, "$1")
+    .replace(/^\s*__([^_]+)__\s*$/, "$1");
+  const withoutStatusPrefix = stripTerminalStatusPrefixes(unwrapped);
+  const withoutLabel = withoutStatusPrefix.replace(
+    /^\s*(?:status|summary|result|output|message|error|check):\s+/i,
+    "",
+  );
+  const collapsed = normalizeSummaryValue(withoutLabel)
+    .replace(/\s+/g, " ")
+    .trim();
+  return truncateTerminalSentence(collapsed);
+}
+
+function stripTerminalStatusPrefixes(value: string): string {
+  return value.replace(/^(?:(?:success|failure):\s*)+/i, "");
+}
+
+function isStatusOnlySuccessTerminalSentence(value: string): boolean {
+  return /^(?:success|done)$/i.test(value.trim());
+}
+
+function isStatusOnlyFailureTerminalSentence(value: string): boolean {
+  return /^(?:failure|failed|error)$/i.test(value.trim());
+}
+
+function truncateTerminalSentence(value: string): string {
+  const characters = Array.from(value);
+  if (characters.length <= TERMINAL_SENTENCE_MAX_CHARS) return value;
+  return `${characters.slice(0, TERMINAL_SENTENCE_MAX_CHARS - 1).join("")}…`;
 }
 
 function extractProgressSemanticErrorLine(errorText: string): string {
@@ -343,11 +409,9 @@ function formatProgressText(
       : header + errorLine;
   }
   if (state.status === "success") {
-    const output = state.finalOutput?.trim() ?? "";
+    const output = state.finalOutput?.trim().split("\n")[0] ?? "";
     if (!options.expanded) {
-      const preview = output
-        ? `\n  ${theme.fg("toolOutput", output.split("\n")[0] ?? "")}`
-        : "";
+      const preview = output ? `\n  ${theme.fg("toolOutput", output)}` : "";
       return header + preview;
     }
     const outputSection = output

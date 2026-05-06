@@ -288,7 +288,7 @@ test("/run success marks state success with trimmed finalOutput and clears trans
   if (!requestId) throw new Error("requestId missing");
   const state = getProgressState(requestId);
   expect(state?.status).toBe("success");
-  expect(state?.finalOutput).toBe("done");
+  expect(state?.finalOutput).toBe("completed task");
   expect(state?.lastToolPreview).toBeUndefined();
 });
 

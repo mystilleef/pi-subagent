@@ -27,12 +27,13 @@ export function extractSemanticToolTarget(
       parts.push(normalizeSummaryValue(args.task));
     if (typeof args.agentScope === "string") parts.push(`[${args.agentScope}]`);
     if (parts.length) return parts.join(" ");
+    return JSON.stringify(args);
   }
-  return JSON.stringify(args);
+  return "";
 }
 
 export function isTranscriptNoiseLine(line: string): boolean {
-  return /^(?:hello|hi|hey|reasoning:|raw log:|apolog(?:y|ies)|sorry\b)/i.test(
+  return /^(?:(?:hello|hi|hey)(?:[!,.?:;]+|\s|$)|reasoning:|raw log:|apolog(?:y|ies)|sorry\b)/i.test(
     line,
   );
 }

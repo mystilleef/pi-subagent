@@ -96,7 +96,7 @@ test("patchProgressState merges fields without replacing unpatched fields", () =
   expect(state?.status).toBe("running");
 });
 
-test("finalizeProgressState sets success status and final output", () => {
+test("finalizeProgressState sets success status and semantic final output", () => {
   createProgressState("req-1", "agent-a", "task a");
   finalizeProgressState("req-1", "all done");
   const state = getProgressState("req-1");
@@ -105,23 +105,67 @@ test("finalizeProgressState sets success status and final output", () => {
   expect(state?.errorText).toBeUndefined();
 });
 
-test("terminal helpers clear transient tool fields and keep semantic text", () => {
+test("terminal final output uses outcome and leaves neutral text unprefixed", () => {
+  createProgressState("req-1", "agent-a", "task a");
+  finalizeProgressState("req-1", "noise\nOutcome: completed requested fix");
+  expect(getProgressState("req-1")?.finalOutput).toBe(
+    "completed requested fix",
+  );
+  createProgressState("req-2", "agent-b", "task b");
+  finalizeProgressState("req-2", "Result: needs follow-up review");
+  expect(getProgressState("req-2")?.finalOutput).toBe("needs follow-up review");
+});
+
+test("terminal success normalizes status prefixes labels and status-only output", () => {
+  createProgressState("req-1", "agent-a", "task a");
+  finalizeProgressState("req-1", "SUCCESS: SUCCESS");
+  expect(getProgressState("req-1")?.finalOutput).toBe("completed task");
+  createProgressState("req-2", "agent-b", "task b");
+  finalizeProgressState("req-2", "SUCCESS");
+  expect(getProgressState("req-2")?.finalOutput).toBe("completed task");
+  createProgressState("iso-success", "agent-c", "task c");
+  finalizeProgressState("iso-success", "DONE");
+  expect(getProgressState("iso-success")?.finalOutput).toBe("completed task");
+  createProgressState("iso-running", "agent-d", "task d");
+  finalizeProgressState("iso-running", "Status: DONE");
+  expect(getProgressState("iso-running")?.finalOutput).toBe("completed task");
+  createProgressState("iso-error", "agent-e", "task e");
+  finalizeProgressState("iso-error", "SUCCESS: Result: implemented fix");
+  expect(getProgressState("iso-error")?.finalOutput).toBe("implemented fix");
+});
+
+test("terminal failure normalizes status prefixes and status-only text", () => {
+  createProgressState("req-1", "agent-a", "task a");
+  failProgressState("req-1", "FAILURE: child failed");
+  expect(getProgressState("req-1")?.errorText).toBe("child failed");
+  createProgressState("req-2", "agent-b", "task b");
+  failProgressState("req-2", "FAILURE: FAILURE");
+  expect(getProgressState("req-2")?.errorText).toBe("task failed");
+  createProgressState("req-3", "agent-c", "task c");
+  failProgressState("req-3", "Error: ERROR");
+  expect(getProgressState("req-3")?.errorText).toBe("task failed");
+  createProgressState("req-4", "agent-d", "task d");
+  failProgressState("req-4", "FAILURE: Error: permission denied");
+  expect(getProgressState("req-4")?.errorText).toBe("permission denied");
+});
+
+test("terminal helpers clear transient tool fields and compact semantic text", () => {
   createProgressState("req-1", "agent-a", "task a");
   patchProgressState("req-1", { lastToolPreview: "bash: noisy command" });
-  const longOutcome = "x".repeat(600);
+  const longOutcome = `Outcome: implemented ${"x".repeat(600)}`;
   finalizeProgressState("req-1", longOutcome);
   const successState = getProgressState("req-1");
   expect(successState?.lastToolPreview).toBeUndefined();
-  expect(successState?.finalOutput).toContain(longOutcome);
-  expect(successState?.finalOutput).not.toContain("...");
+  expect(successState?.finalOutput).toStartWith("implemented ");
+  expect(successState?.finalOutput).toEndWith("…");
   createProgressState("req-2", "agent-b", "task b");
   patchProgressState("req-2", { lastToolPreview: "read: /tmp/file" });
   const longCause = `migration failed ${"e".repeat(600)}`;
   failProgressState("req-2", longCause);
   const errorState = getProgressState("req-2");
   expect(errorState?.lastToolPreview).toBeUndefined();
-  expect(errorState?.errorText).toBe(longCause);
-  expect(errorState?.errorText).not.toContain("...");
+  expect(errorState?.errorText).toStartWith("migration failed ");
+  expect(errorState?.errorText).toEndWith("…");
 });
 
 test("progress error omits long unstructured blobs", () => {
@@ -142,7 +186,7 @@ test("progress error chooses status error check then semantic line", () => {
     "req-1",
     "debug: noisy\nCheck: bun test failed\nmeaningful fallback line",
   );
-  expect(getProgressState("req-1")?.errorText).toBe("Check: bun test failed");
+  expect(getProgressState("req-1")?.errorText).toBe("bun test failed");
   createProgressState("req-2", "agent-b", "task b");
   failProgressState("req-2", "debug: noisy\nmeaningful fallback line");
   expect(getProgressState("req-2")?.errorText).toBe("meaningful fallback line");
@@ -157,9 +201,9 @@ test("failProgressState sets error status and error text", () => {
   expect(state?.finalOutput).toBeUndefined();
 });
 
-test("cancelProgressState sets cancelled status", () => {
+test("cancelProgressState sets cancelled status with unprefixed reason", () => {
   createProgressState("req-1", "agent-a", "task a");
-  cancelProgressState("req-1", "user aborted");
+  cancelProgressState("req-1", "Status: user aborted");
   const state = getProgressState("req-1");
   expect(state?.status).toBe("cancelled");
   expect(state?.errorText).toBe("user aborted");
@@ -299,13 +343,16 @@ test("makeToolPreview truncates long path preview after tool prefix", () => {
   expect(preview).not.toContain("x".repeat(115));
 });
 
-test("makeToolPreview truncates fallback JSON preview after tool prefix", () => {
-  const args = { query: `${"z".repeat(130)}-sentinel` };
+test("makeToolPreview omits unknown tool arguments", () => {
+  const args = {
+    token: "secret-token",
+    password: "secret-password",
+    nested: { value: "secret-nested" },
+  };
   const preview = makeToolPreview("unknown_tool", args);
-  expect(Array.from(preview).length).toBe(120);
-  expect(preview.startsWith('unknown_tool: {"query":"')).toBe(true);
-  expect(preview.endsWith("…")).toBe(true);
-  expect(preview).not.toContain("sentinel");
+  expect(preview).toBe("unknown_tool");
+  expect(preview).not.toContain(":");
+  expect(preview).not.toContain("secret");
 });
 
 test("makeToolPreview truncates subagent semantic preview after tool prefix", () => {
@@ -443,7 +490,7 @@ test("extractProgressFromDetails handles malformed and nested message data safel
   const seen = new Set<string>();
   const result = extractProgressFromDetails(details, seen);
   expect(result.newToolCallIds).toEqual(["tc-nested"]);
-  expect(result.lastToolPreview).toBe('outer: {"nested":{"path":"/tmp/x"}}');
+  expect(result.lastToolPreview).toBe("outer");
 });
 
 test("extractProgressFromDetails returns last tool preview", () => {
@@ -469,6 +516,31 @@ test("extractProgressFromDetails returns last tool preview", () => {
   const seen = new Set<string>();
   const result = extractProgressFromDetails(details, seen);
   expect(result.lastToolPreview).toBe("read: /tmp/foo");
+});
+
+test("extractProgressFromDetails omits unknown secret arguments", () => {
+  const details = makeDetails([
+    {
+      role: "assistant",
+      content: [
+        {
+          type: "toolCall",
+          id: "tc-secret",
+          name: "unknown_tool",
+          arguments: {
+            token: "secret-token",
+            password: "secret-password",
+            nested: { value: "secret-nested" },
+          },
+        },
+      ],
+    },
+  ]);
+  const seen = new Set<string>();
+  const result = extractProgressFromDetails(details, seen);
+  expect(result.lastToolPreview).toBe("unknown_tool");
+  expect(result.lastToolPreview).not.toContain(":");
+  expect(result.lastToolPreview).not.toContain("secret");
 });
 
 test("extractProgressFromDetails ignores non-assistant messages", () => {
@@ -627,6 +699,37 @@ test("renderSubagentProgress collapsed running colors targetless tool preview", 
   expect(text).not.toContain("do the thing");
 });
 
+test("renderSubagentProgress running omits unknown tool arguments", () => {
+  createProgressState("rend-12", "my-agent", "do the thing");
+  patchProgressState("rend-12", {
+    lastToolPreview: makeToolPreview("unknown_tool", {
+      token: "secret-token",
+      password: "secret-password",
+      nested: { value: "secret-nested" },
+    }),
+  });
+  const theme = makeMarkerTheme();
+  const result = renderSubagentProgress(
+    {
+      customType: "subagent-progress",
+      content: "",
+      display: true,
+      details: { requestId: "rend-12" },
+    },
+    { expanded: false },
+    theme,
+  );
+  const text = renderText(result);
+  const toolLine = renderLines(result).find((line) =>
+    line.includes("unknown_tool"),
+  );
+  expect(toolLine).toStartWith(
+    "[toolPendingBg]  <muted>→</muted> <accent>unknown_tool</accent>",
+  );
+  expect(toolLine).not.toContain(":");
+  expect(text).not.toContain("secret");
+});
+
 test("renderSubagentProgress expanded running includes truncated tool preview and full task preview", () => {
   const toolSentinel = "SHOULD_NOT_RENDER";
   const taskSentinel = "TASK_SHOULD_RENDER";
@@ -759,12 +862,77 @@ test("renderSubagentProgress error state shows error text", () => {
   const text = renderText(result);
   expect(text).toContain("error");
   expect(text).toContain("something exploded");
+  expect(text).not.toContain("FAILURE: something exploded");
   expect(
     renderLines(result).every(
       (line) =>
         line.startsWith("[toolErrorBg]") && line.endsWith("[/toolErrorBg]"),
     ),
   ).toBe(true);
+});
+
+test("renderSubagentProgress terminal renderer keeps compact state text", () => {
+  createProgressState("rend-1", "ok-agent", "success task");
+  finalizeProgressState(
+    "rend-1",
+    "Outcome: completed first line\nraw detail SHOULD_NOT_RENDER",
+  );
+  createProgressState("rend-2", "neutral-agent", "neutral task");
+  finalizeProgressState(
+    "rend-2",
+    "Result: needs follow-up review\nraw detail SHOULD_NOT_RENDER",
+  );
+  const theme = makeTheme();
+  const collapsed = renderSubagentProgress(
+    {
+      customType: "subagent-progress",
+      content: "",
+      display: true,
+      details: { requestId: "rend-1" },
+    },
+    { expanded: false },
+    theme,
+  );
+  const expanded = renderSubagentProgress(
+    {
+      customType: "subagent-progress",
+      content: "",
+      display: true,
+      details: { requestId: "rend-2" },
+    },
+    { expanded: true },
+    theme,
+  );
+  expect(renderText(collapsed)).toContain("completed first line");
+  expect(renderText(expanded)).toContain("needs follow-up review");
+  expect(renderText(collapsed)).not.toContain("SUCCESS:");
+  expect(renderText(collapsed)).not.toContain("SHOULD_NOT_RENDER");
+  expect(renderText(expanded)).not.toContain("SUCCESS:");
+  expect(renderText(expanded)).not.toContain("SHOULD_NOT_RENDER");
+});
+
+test("renderSubagentProgress expanded success ignores patched raw multiline output", () => {
+  createProgressState("rend-3", "ok-agent", "success task");
+  finalizeProgressState("rend-3", "done");
+  patchProgressState("rend-3", {
+    finalOutput: "done\nraw detail SHOULD_NOT_RENDER",
+    lastToolPreview: "SHOULD_NOT_RENDER_TOOL",
+  });
+  const theme = makeTheme();
+  const result = renderSubagentProgress(
+    {
+      customType: "subagent-progress",
+      content: "",
+      display: true,
+      details: { requestId: "rend-3" },
+    },
+    { expanded: true },
+    theme,
+  );
+  const text = renderText(result);
+  expect(text).toContain("done");
+  expect(text).not.toContain("SHOULD_NOT_RENDER");
+  expect(text).not.toContain("SHOULD_NOT_RENDER_TOOL");
 });
 
 test("renderSubagentProgress final success with output uses text fallback when no Markdown", () => {
@@ -861,6 +1029,7 @@ test("renderSubagentProgress expanded error includes error text", () => {
   const text = renderText(result);
   expect(text).toContain("error task");
   expect(text).toContain("child failed");
+  expect(text).not.toContain("FAILURE:");
 });
 
 test("renderSubagentProgress freezes success elapsed after completion", () => {

@@ -85,6 +85,7 @@ export function formatToolCall(
   forceJson = false,
 ): string {
   const target = extractSemanticToolTarget(toolName, args, forceJson);
+  if (!target) return themeFg("accent", toolName);
   return themeFg("accent", toolName) + themeFg("dim", ` ${target}`);
 }
 
