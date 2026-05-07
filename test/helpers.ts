@@ -14,6 +14,7 @@ import registerSubagentExtension, {
   resetAgentCache,
   type SubagentParams,
 } from "../src/index.js";
+import { listRunJobs } from "../src/run-registry.js";
 import type { SubagentDetails } from "../src/types.js";
 
 const ORIGINAL_ARGV_1 = process.argv[1] ?? "";
@@ -28,6 +29,47 @@ export type FakeTheme = {
   bg: (color: string, text: string) => string;
   bold: (text: string) => string;
 };
+
+export async function waitFor<T>(
+  predicate: () => T | undefined | false,
+  label: string,
+): Promise<T> {
+  const deadline = Date.now() + 2000;
+  while (Date.now() < deadline) {
+    const value = predicate();
+    if (value) return value;
+    await Bun.sleep(5);
+  }
+  throw new Error(`Timed out waiting for ${label}`);
+}
+
+export async function waitForRunJobCount(count: number) {
+  await waitFor(
+    () => listRunJobs().length >= count,
+    `${count} active /run job(s)`,
+  );
+}
+
+export async function waitForRunJobsCleared() {
+  await waitFor(
+    () => listRunJobs().length === 0 || undefined,
+    "active /run jobs cleared",
+  );
+}
+
+export async function waitForSentMessage(sentMessages: SendMessageArg[]) {
+  await waitFor(() => sentMessages[0], "first sent message");
+}
+
+export async function waitForSentMessageCount(
+  sentMessages: SendMessageArg[],
+  count: number,
+) {
+  await waitFor(
+    () => sentMessages.length >= count || undefined,
+    `${count} sent message(s)`,
+  );
+}
 
 export async function makeTempDir(prefix: string): Promise<string> {
   const dir = await mkdtemp(path.join(tmpdir(), prefix));

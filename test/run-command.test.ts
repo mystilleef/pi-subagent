@@ -19,9 +19,49 @@ import {
   type SendMessageArg,
   setupHooks,
   setupTest,
+  waitFor,
+  waitForRunJobCount,
+  waitForRunJobsCleared,
+  waitForSentMessage,
+  waitForSentMessageCount,
 } from "./helpers.js";
 
 setupHooks();
+
+test("/run handler resolves before child completion and cancel command reaches active job", async () => {
+  clearRunJobsForTests();
+  const notices: string[] = [];
+  const sentMessages: SendMessageArg[] = [];
+  const { tool, cwd } = await setupTest({
+    sendMessage: (msg) => sentMessages.push(msg),
+    piScript: `#!/bin/sh
+trap 'exit 0' TERM
+sleep 10 &
+wait $!
+`,
+  });
+  const runCommand = tool.registeredCommands.get("run");
+  const cancelCommand = tool.registeredCommands.get("cancel-subagent");
+  await runCommand?.handler("hang task", {
+    cwd,
+    ui: { notify: (message: string) => notices.push(message) },
+  } as unknown as ExtensionCommandContext);
+  expect(sentMessages).toHaveLength(1);
+  const requestId = (sentMessages[0]?.details as { requestId?: string })
+    ?.requestId;
+  if (!requestId) throw new Error("requestId missing");
+  expect(getRunJob(requestId)?.agentName).toBe("hang");
+  cancelCommand?.handler(requestId, {
+    cwd,
+    ui: { notify: (message: string) => notices.push(message) },
+  } as unknown as ExtensionCommandContext);
+  expect(getRunJob(requestId)?.cancelReason).toBe(
+    "Cancelled by /cancel-subagent",
+  );
+  await waitForRunJobsCleared();
+  expect(getProgressState(requestId)?.status).toBe("cancelled");
+  expect(notices).toEqual([`Cancelled /run job ${requestId}.`]);
+});
 
 test("/run registry registers active job and removes it after internal cancellation", async () => {
   clearRunJobsForTests();
@@ -39,7 +79,7 @@ wait $!
     cwd,
     ui: { notify: () => {} },
   } as unknown as ExtensionCommandContext);
-  while (sentMessages.length === 0) await new Promise((r) => setTimeout(r, 5));
+  await waitForSentMessage(sentMessages);
   const requestId = (sentMessages[0]?.details as { requestId?: string })
     ?.requestId;
   if (!requestId) throw new Error("requestId missing");
@@ -51,6 +91,7 @@ wait $!
   expect(cancelRunJob(requestId, "test cancel")).toBe(true);
   expect(cancelRunJob(requestId, "test cancel again")).toBe(true);
   await promise;
+  await waitForRunJobsCleared();
   expect(listRunJobs()).toHaveLength(0);
   expect(getProgressState(requestId)?.status).toBe("cancelled");
 });
@@ -58,6 +99,7 @@ wait $!
 test("/run registry removes job after host signal cancellation", async () => {
   clearRunJobsForTests();
   const controller = new AbortController();
+  const notices: string[] = [];
   const sentMessages: SendMessageArg[] = [];
   const { tool, cwd } = await setupTest({
     sendMessage: (msg) => sentMessages.push(msg),
@@ -71,12 +113,14 @@ wait $!
   const promise = runCommand?.handler("hang task", {
     cwd,
     signal: controller.signal,
-    ui: { notify: () => {} },
+    ui: { notify: (message: string) => notices.push(message) },
   } as unknown as ExtensionCommandContext);
-  while (listRunJobs().length === 0) await new Promise((r) => setTimeout(r, 5));
+  await waitForRunJobCount(1);
   controller.abort();
   await promise;
+  await waitForRunJobsCleared();
   expect(listRunJobs()).toHaveLength(0);
+  expect(notices).toHaveLength(0);
 });
 
 test("/cancel-subagent lists active request ids", async () => {
@@ -97,7 +141,7 @@ wait $!
     cwd,
     ui: { notify: () => {} },
   } as unknown as ExtensionCommandContext);
-  while (listRunJobs().length === 0) await new Promise((r) => setTimeout(r, 5));
+  await waitForRunJobCount(1);
   const requestId = listRunJobs()[0]?.requestId;
   cancelCommand?.handler("", {
     cwd,
@@ -106,6 +150,7 @@ wait $!
   expect(notices).toEqual([`Active /run jobs: ${requestId}`]);
   cancelRunJob(requestId ?? "", "cleanup");
   await promise;
+  await waitForRunJobsCleared();
 });
 
 test("/cancel-subagent cancels matching request id with reason", async () => {
@@ -124,7 +169,7 @@ wait $!
     cwd,
     ui: { notify: () => {} },
   } as unknown as ExtensionCommandContext);
-  while (listRunJobs().length === 0) await new Promise((r) => setTimeout(r, 5));
+  await waitForRunJobCount(1);
   const requestId = listRunJobs()[0]?.requestId ?? "";
   cancelCommand?.handler(requestId, {
     cwd,
@@ -134,6 +179,7 @@ wait $!
     "Cancelled by /cancel-subagent",
   );
   await promise;
+  await waitForRunJobsCleared();
   const state = getProgressState(requestId);
   expect(notices).toEqual([`Cancelled /run job ${requestId}.`]);
   expect(state?.status).toBe("cancelled");
@@ -162,12 +208,13 @@ wait $!
     cwd,
     ui: { notify: () => {} },
   } as unknown as ExtensionCommandContext);
-  while (listRunJobs().length < 2) await new Promise((r) => setTimeout(r, 5));
+  await waitForRunJobCount(2);
   cancelCommand?.handler("all", {
     cwd,
     ui: { notify: (message: string) => notices.push(message) },
   } as unknown as ExtensionCommandContext);
   await Promise.all([first, second]);
+  await waitForRunJobsCleared();
   expect(notices).toEqual(["Cancelled 2 /run jobs."]);
   expect(listRunJobs()).toHaveLength(0);
 });
@@ -186,6 +233,7 @@ test("/cancel-subagent reports missing and already-finished jobs", async () => {
     cwd,
     ui: { notify: () => {} },
   } as unknown as ExtensionCommandContext);
+  await waitForRunJobsCleared();
   const requestId =
     [...(getProgressState("missing") ? ["missing"] : [])][0] ?? "finished";
   cancelCommand?.handler(requestId, {
@@ -228,6 +276,7 @@ test("run slash command sends one subagent-progress message and one final result
   } as unknown as ExtensionCommandContext);
   const messagesSentBeforeChildExit = sentMessages.length;
   await handlerPromise;
+  await waitForSentMessageCount(sentMessages, 2);
   expect(sentMessages).toHaveLength(2);
   expect(sentMessages[0]?.customType).toBe("subagent-progress");
   const details = sentMessages[0]?.details as
@@ -236,6 +285,7 @@ test("run slash command sends one subagent-progress message and one final result
   if (typeof details?.requestId !== "string")
     throw new Error("progress request id missing");
   expect(details.requestId.length).toBeGreaterThan(0);
+  expect(Object.keys(details)).toEqual(["requestId"]);
   expect(messagesSentBeforeChildExit).toBe(1);
 });
 
@@ -254,6 +304,7 @@ exit 0
     cwd,
     ui: { notify: () => {} },
   } as unknown as ExtensionCommandContext);
+  await waitForSentMessageCount(sentMessages, 2);
   const details = sentMessages[0]?.details as
     | { requestId?: string }
     | undefined;
@@ -280,6 +331,7 @@ exit 0
     cwd,
     ui: { notify: () => {} },
   } as unknown as ExtensionCommandContext);
+  await waitForSentMessageCount(sentMessages, 2);
   const details = sentMessages[0]?.details as
     | { requestId?: string }
     | undefined;
@@ -317,6 +369,7 @@ exit 0
     cwd,
     ui: { notify: () => {} },
   } as unknown as ExtensionCommandContext);
+  await waitForSentMessageCount(sentMessages, 2);
   const progressMessages = sentMessages.filter(
     (msg) => msg.customType === "subagent-progress",
   );
@@ -329,7 +382,6 @@ exit 0
   }
   expect(sentMessages.at(-1)?.customType).toBe("subagent-result");
   const countAfterCompletion = sentMessages.length;
-  await new Promise((resolve) => setTimeout(resolve, 1100));
   expect(sentMessages).toHaveLength(countAfterCompletion);
 });
 
@@ -343,10 +395,12 @@ exit 0
 `,
   });
   const runCommand = tool.registeredCommands.get("run");
-  await runCommand?.handler("hang", {
+  const runPromise = runCommand?.handler("hang", {
     cwd,
     ui: { notify: () => {} },
   } as unknown as ExtensionCommandContext);
+  await runPromise;
+  await waitForRunJobsCleared();
   const argsText = await Bun.file(path.join(cwd, "args.txt")).text();
   expect(argsText).not.toContain("Task:");
   expect(argsText).toContain("Run according to your system prompt");
@@ -362,10 +416,12 @@ exit 0
 `,
   });
   const runCommand = tool.registeredCommands.get("run");
-  await runCommand?.handler("hang explicit task", {
+  const runPromise = runCommand?.handler("hang explicit task", {
     cwd,
     ui: { notify: () => {} },
   } as unknown as ExtensionCommandContext);
+  await runPromise;
+  await waitForRunJobsCleared();
   const argsText = await Bun.file(path.join(cwd, "args.txt")).text();
   expect(argsText).toContain("Task: explicit task");
 });
@@ -415,6 +471,7 @@ exit 0
         statusUpdates.push([key, text]),
     },
   } as unknown as ExtensionCommandContext);
+  await waitForSentMessageCount(sentMessages, 2);
   expect(sentMessages).toHaveLength(2);
   const requestId = (sentMessages[0]?.details as { requestId?: string })
     ?.requestId;
@@ -442,6 +499,7 @@ exit 0
     cwd,
     ui: { notify: () => {} },
   } as unknown as ExtensionCommandContext);
+  await waitForSentMessageCount(sentMessages, 2);
   const progressDetails = sentMessages[0]?.details as { requestId?: string };
   expect(Object.keys(progressDetails)).toEqual(["requestId"]);
   const requestId = progressDetails.requestId;
@@ -514,6 +572,7 @@ test("/run success marks state success with trimmed finalOutput and clears trans
     cwd,
     ui: { notify: () => {} },
   } as unknown as ExtensionCommandContext);
+  await waitForSentMessageCount(sentMessages, 2);
   expect(sentMessages).toHaveLength(2);
   expect(sentMessages.at(-1)?.customType).toBe("subagent-result");
   expect(sentMessages.at(-1)?.content).toBe("done");
@@ -541,6 +600,7 @@ exit 0
     cwd,
     ui: { notify: () => {} },
   } as unknown as ExtensionCommandContext);
+  await waitForSentMessageCount(sentMessages, 2);
   expect(sentMessages).toHaveLength(2);
   expect(sentMessages.at(-1)?.customType).toBe("subagent-result");
   expect(sentMessages.at(-1)?.content).toBe("   ");
@@ -554,6 +614,7 @@ exit 0
 });
 
 test("/run child failure marks state error with concise error text and clears transient fields", async () => {
+  const notices: string[] = [];
   const sentMessages: SendMessageArg[] = [];
   const { tool, cwd } = await setupTest({
     sendMessage: (msg) => sentMessages.push(msg),
@@ -565,9 +626,12 @@ exit 7
   const runCommand = tool.registeredCommands.get("run");
   await runCommand?.handler("hang test task", {
     cwd,
-    ui: { notify: () => {} },
+    ui: { notify: (message: string) => notices.push(message) },
   } as unknown as ExtensionCommandContext);
-  expect(sentMessages).toHaveLength(1);
+  await waitForRunJobsCleared();
+  expect(sentMessages).toHaveLength(2);
+  expect(sentMessages[0]?.customType).toBe("subagent-progress");
+  expect(sentMessages.at(-1)?.customType).toBe("subagent-result");
   const requestId = (sentMessages[0]?.details as { requestId?: string })
     ?.requestId;
   if (!requestId) throw new Error("requestId missing");
@@ -575,9 +639,11 @@ exit 7
   expect(state?.status).toBe("error");
   expect(state?.errorText).toBeTruthy();
   expect(state?.lastToolPreview).toBeUndefined();
+  expect(notices).toHaveLength(1);
 });
 
-test("/run project-agent denial marks state cancelled", async () => {
+test("/run project-agent denial marks state cancelled and cleans up without result card", async () => {
+  clearRunJobsForTests();
   const { cwd } = await setupTest();
   const projectAgentsDir = path.join(cwd, ".pi", "agents");
   await Bun.$`mkdir -p ${projectAgentsDir}`;
@@ -599,12 +665,15 @@ Prompt`,
     hasUI: true,
     ui: { notify: () => {}, confirm: async () => false },
   } as unknown as ExtensionCommandContext);
+  await waitForRunJobsCleared();
   expect(sentMessages).toHaveLength(1);
+  expect(sentMessages[0]?.customType).toBe("subagent-progress");
   const requestId = (sentMessages[0]?.details as { requestId?: string })
     ?.requestId;
   if (!requestId) throw new Error("requestId missing");
   const state = getProgressState(requestId);
   expect(state?.status).toBe("cancelled");
+  expect(listRunJobs()).toHaveLength(0);
 });
 
 test("/run result dumps subagent summary and feedback keeps semantic one-liner", async () => {
@@ -625,6 +694,7 @@ exit 0
     cwd,
     ui: { notify: () => {} },
   } as unknown as ExtensionCommandContext);
+  await waitForSentMessageCount(sentMessages, 2);
   const resultMessage = sentMessages.at(-1);
   expect(resultMessage?.content).toBe(finalOutput);
   expect(resultMessage?.content).toContain("All tests pass");
@@ -657,6 +727,7 @@ exit 0
     cwd,
     ui: { notify: () => {} },
   } as unknown as ExtensionCommandContext);
+  await waitForSentMessageCount(sentMessages, 2);
   const details = sentMessages.at(-1)?.details as {
     results?: { messages?: unknown[] }[];
   };
@@ -680,6 +751,7 @@ exit 0
     cwd,
     ui: { notify: () => {} },
   } as unknown as ExtensionCommandContext);
+  await waitForSentMessageCount(sentMessages, 2);
   expect(sentMessages).toHaveLength(2);
   for (const message of sentMessages) {
     const content = String(message.content ?? "");
@@ -719,6 +791,7 @@ exit 0
     cwd,
     ui: { notify: () => {} },
   } as unknown as ExtensionCommandContext);
+  await waitForSentMessageCount(sentMessages, 2);
   expect(sentMessages).toHaveLength(2);
   const msgDetails = sentMessages[0]?.details as Record<string, unknown>;
   expect(Object.keys(msgDetails)).toEqual(["requestId"]);
@@ -744,6 +817,13 @@ node -e "process.stderr.write('E'.repeat(5000));process.exit(7);"
     cwd,
     ui: { notify: () => {} },
   } as unknown as ExtensionCommandContext);
+  await waitFor(() => {
+    const requestId = (sentMessages[0]?.details as { requestId?: string })
+      ?.requestId;
+    return requestId && getProgressState(requestId)?.status === "error"
+      ? true
+      : undefined;
+  }, "error progress state");
   const requestId = (sentMessages[0]?.details as { requestId?: string })
     ?.requestId;
   if (!requestId) throw new Error("requestId missing");
@@ -770,6 +850,7 @@ exit 0
     cwd,
     ui: { notify: () => {} },
   } as unknown as ExtensionCommandContext);
+  await waitForSentMessageCount(sentMessages, 2);
   expect(sentMessages).toHaveLength(2);
   const requestId = (sentMessages[0]?.details as { requestId?: string })
     ?.requestId;
@@ -789,6 +870,7 @@ test("/run retains progress state after terminal transition", async () => {
     cwd,
     ui: { notify: () => {} },
   } as unknown as ExtensionCommandContext);
+  await waitForSentMessageCount(sentMessages, 2);
   const requestId = (sentMessages[0]?.details as { requestId?: string })
     ?.requestId;
   if (!requestId) throw new Error("requestId missing");
@@ -812,12 +894,15 @@ wait $!
 `,
   });
   const runCommand = tool.registeredCommands.get("run");
-  setTimeout(() => controller.abort(), 50);
-  await runCommand?.handler("hang task", {
+  const promise = runCommand?.handler("hang task", {
     cwd,
     signal: controller.signal,
     ui: { notify: () => {} },
   } as unknown as ExtensionCommandContext);
+  await waitForSentMessage(sentMessages);
+  controller.abort();
+  await promise;
+  await waitForRunJobsCleared();
   const requestId = (sentMessages[0]?.details as { requestId?: string })
     ?.requestId;
   if (!requestId) throw new Error("requestId missing");
@@ -835,6 +920,7 @@ test("/run success sends final result message with raw subagent summary", async 
     cwd,
     ui: { notify: () => {} },
   } as unknown as ExtensionCommandContext);
+  await waitForSentMessageCount(sentMessages, 2);
   expect(sentMessages).toHaveLength(2);
   expect(sentMessages.at(-1)?.customType).toBe("subagent-result");
   expect(sentMessages.at(-1)?.content).toBe("done");
@@ -850,6 +936,7 @@ test("/run final result message renderer hides header and keeps success backgrou
     cwd,
     ui: { notify: () => {} },
   } as unknown as ExtensionCommandContext);
+  await waitForSentMessageCount(sentMessages, 2);
   const renderer = tool.registeredMessageRenderers.get("subagent-result");
   if (!renderer) throw new Error("subagent-result renderer missing");
   const fakeTheme: FakeTheme = {
@@ -895,6 +982,7 @@ exit 0
     cwd,
     ui: { notify: () => {} },
   } as unknown as ExtensionCommandContext);
+  await waitForSentMessageCount(sentMessages, 2);
   const renderer = tool.registeredMessageRenderers.get("subagent-result");
   if (!renderer) throw new Error("subagent-result renderer missing");
   const fakeTheme: FakeTheme = {

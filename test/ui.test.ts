@@ -1,12 +1,10 @@
 import { expect, test } from "bun:test";
-import { writeFile } from "node:fs/promises";
-import path from "node:path";
-import type { TextContent } from "@mariozechner/pi-ai";
 import type {
   AgentToolResult,
   ExtensionCommandContext,
   ExtensionContext,
 } from "@mariozechner/pi-coding-agent";
+import { getProgressState } from "../src/progress.js";
 import type { SubagentDetails } from "../src/types.js";
 import {
   formatDuration,
@@ -24,6 +22,8 @@ import {
   type SendMessageArg,
   setupFakePi,
   setupHooks,
+  setupTest,
+  waitForSentMessageCount,
 } from "./helpers.js";
 
 setupHooks();
@@ -248,95 +248,90 @@ test("renderResult expanded output", () => {
   expect(text).toContain("[toolOutput]final output line[/toolOutput]");
 });
 
-test("subagent updates correctly format tool calls and final text", async () => {
-  const { binDir, cwd } = await setupFakePi();
-  await writeFile(
-    path.join(binDir, "pi"),
-    `#!/bin/sh
-printf '%s\n' '{"type":"message_end","message":{"role":"assistant","content":[]}}'
-printf '%s\n' '{"type":"content_block_start","index":0,"contentBlock":{"type":"toolCall","name":"bash","id":"1","arguments":{"command":"ls"}}}'
-printf '%s\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"toolCall","name":"bash","id":"1","arguments":{"command":"ls"}}]}}'
-printf '%s\n' '{"type":"message_end","message":{"role":"user","content":[]}}'
-printf '%s\n' '{"type":"content_block_start","index":0,"contentBlock":{"type":"text","text":"result"}}'
-printf '%s\n' '{"type":"message_end","message":{"role":"user","content":[{"type":"text","text":"result"}]}}'
-printf '%s\n' '{"type":"message_end","message":{"role":"assistant","content":[]}}'
-printf '%s\n' '{"type":"content_block_start","index":0,"contentBlock":{"type":"text","text":"final"}}'
-printf '%s\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"final"}]}}'
-printf '%s\n' '{"type":"agent_end"}'
-exit 0
-`,
-  );
-  const tool = getSubagentTool();
-  const updates: AgentToolResult<SubagentDetails>[] = [];
-  await tool.execute(
-    "test-tool-call",
-    { agent: "hang", task: "test" },
-    undefined,
-    (update) => updates.push(update),
-    { cwd, hasUI: false } as unknown as ExtensionContext,
-  );
-  const texts = updates.map((u) => (u.content[0] as TextContent)?.text);
-  expect(updates.length).toBeGreaterThan(0);
-  expect(texts.some((t) => t === "(running...)")).toBe(true);
-  expect(texts.some((t) => t === "bash: ls")).toBe(true);
-  expect(texts.indexOf("(running...)")).toBeLessThan(texts.indexOf("bash: ls"));
-});
-
-test("streaming updates emit tool-call format instead of output text", async () => {
-  const { binDir, cwd } = await setupFakePi();
-  await writeFile(
-    path.join(binDir, "pi"),
-    `#!/bin/sh
+test("result details track tool calls from subagent execution", async () => {
+  const sentMessages: SendMessageArg[] = [];
+  const { tool, cwd } = await setupTest({
+    sendMessage: (msg) => sentMessages.push(msg),
+    piScript: `#!/bin/sh
 printf '%s\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"toolCall","name":"bash","id":"1","arguments":{"command":"ls"}}]}}'
 printf '%s\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"final"}]}}'
 printf '%s\n' '{"type":"agent_end"}'
 exit 0
 `,
-  );
-  const tool = getSubagentTool();
-  const updates: AgentToolResult<SubagentDetails>[] = [];
+  });
   await tool.execute(
     "test-tool-call",
     { agent: "hang", task: "test" },
     undefined,
-    (update) => updates.push(update),
+    undefined,
     { cwd, hasUI: false } as unknown as ExtensionContext,
   );
-  const texts = updates.map((u) => (u.content[0] as TextContent)?.text);
-  expect(texts.some((t) => t === "bash: ls")).toBe(true);
-  expect(texts.some((t) => t === "final")).toBe(false);
+  await waitForSentMessageCount(sentMessages, 2);
+  const requestId = (sentMessages[0]?.details as { requestId?: string })
+    ?.requestId;
+  if (!requestId) throw new Error("requestId missing");
+  const state = getProgressState(requestId);
+  expect(state?.toolCount).toBeGreaterThanOrEqual(1);
+  const resultDetails = sentMessages.at(-1)?.details as
+    | SubagentDetails
+    | undefined;
+  expect(resultDetails?.results[0]?.progress?.lastToolPreview).toBe("bash: ls");
 });
 
-test("non-debug streaming update details expose derived progress without raw child data", async () => {
-  const { binDir, cwd } = await setupFakePi();
+test("result details show tool call name not final output text", async () => {
+  const sentMessages: SendMessageArg[] = [];
+  const { tool, cwd } = await setupTest({
+    sendMessage: (msg) => sentMessages.push(msg),
+    piScript: `#!/bin/sh
+printf '%s\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"toolCall","name":"bash","id":"1","arguments":{"command":"ls"}}]}}'
+printf '%s\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"final"}]}}'
+printf '%s\n' '{"type":"agent_end"}'
+exit 0
+`,
+  });
+  await tool.execute(
+    "test-tool-call",
+    { agent: "hang", task: "test" },
+    undefined,
+    undefined,
+    { cwd, hasUI: false } as unknown as ExtensionContext,
+  );
+  await waitForSentMessageCount(sentMessages, 2);
+  const resultDetails = sentMessages.at(-1)?.details as
+    | SubagentDetails
+    | undefined;
+  expect(resultDetails?.results[0]?.progress?.lastToolPreview).toBe("bash: ls");
+  expect(resultDetails?.results[0]?.progress?.lastToolPreview).not.toBe(
+    "final",
+  );
+});
+
+test("non-debug result details expose derived progress without raw child data", async () => {
+  const sentMessages: SendMessageArg[] = [];
   const longCommand = "0123456789".repeat(7);
-  await writeFile(
-    path.join(binDir, "pi"),
-    `#!/bin/sh
-printf '%s\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"old"}]}}'
-printf '%s\n' '{"type":"message_end","message":{"role":"toolResult","content":[{"type":"text","text":"old result"}],"toolCallId":"old"}}'
-printf '%s\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"checkpoint"}]}}'
-printf '%s\n' '{"type":"message_end","message":{"role":"toolResult","content":[{"type":"text","text":"fresh result"}],"toolCallId":"1"}}'
-printf '%s\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"toolCall","name":"bash","id":"2","arguments":{"command":"${longCommand}"}}]}}'
-printf '%s\n' '{"type":"agent_end"}'
+  const { tool, cwd } = await setupTest({
+    sendMessage: (msg) => sentMessages.push(msg),
+    piScript: `#!/bin/sh
+printf '%s\\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"old"}]}}'
+printf '%s\\n' '{"type":"message_end","message":{"role":"toolResult","content":[{"type":"text","text":"old result"}],"toolCallId":"old"}}'
+printf '%s\\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"checkpoint"}]}}'
+printf '%s\\n' '{"type":"message_end","message":{"role":"toolResult","content":[{"type":"text","text":"fresh result"}],"toolCallId":"1"}}'
+printf '%s\\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"toolCall","name":"bash","id":"2","arguments":{"command":"${longCommand}"}}]}}'
+printf '%s\\n' '{"type":"agent_end"}'
 exit 0
 `,
-  );
-  const tool = getSubagentTool();
-  const updates: AgentToolResult<SubagentDetails>[] = [];
+  });
   await tool.execute(
     "test-tool-call",
     { agent: "hang", task: "test" },
     undefined,
-    (update) => updates.push(update),
+    undefined,
     { cwd, hasUI: false } as unknown as ExtensionContext,
   );
-  const latest = updates.at(-1);
-  const result = latest?.details?.results[0];
+  await waitForSentMessageCount(sentMessages, 2);
+  const details = sentMessages.at(-1)?.details as SubagentDetails | undefined;
+  const result = details?.results[0];
   const json = JSON.stringify(result);
-  expect((latest?.content[0] as TextContent | undefined)?.text).toBe(
-    `bash: ${longCommand}`,
-  );
   expect(result?.messages).toBeUndefined();
   expect(result?.termination).toBeUndefined();
   expect(result?.stderr).toBe("");
@@ -348,27 +343,27 @@ exit 0
   expect(json).not.toContain("command");
 });
 
-test("debug streaming update details include recent child messages", async () => {
-  const { binDir, cwd } = await setupFakePi();
-  await writeFile(
-    path.join(binDir, "pi"),
-    `#!/bin/sh
+test("debug result details include child messages in sent result card", async () => {
+  const sentMessages: SendMessageArg[] = [];
+  const { tool, cwd } = await setupTest({
+    sendMessage: (msg) => sentMessages.push(msg),
+    piScript: `#!/bin/sh
 printf '%s\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"checkpoint"}]}}'
 printf '%s\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"toolCall","name":"read","id":"debug-1","arguments":{"path":"safe.txt"}}]}}'
 printf '%s\n' '{"type":"agent_end"}'
 exit 0
 `,
-  );
-  const tool = getSubagentTool();
-  const updates: AgentToolResult<SubagentDetails>[] = [];
+  });
   await tool.execute(
     "test-tool-call",
     { agent: "hang", task: "test", debug: true },
     undefined,
-    (update) => updates.push(update),
+    undefined,
     { cwd, hasUI: false } as unknown as ExtensionContext,
   );
-  const result = updates.at(-1)?.details.results[0];
+  await waitForSentMessageCount(sentMessages, 2);
+  const details = sentMessages.at(-1)?.details as SubagentDetails | undefined;
+  const result = details?.results[0];
   expect(result?.messages?.map((m) => m.role)).toEqual([
     "assistant",
     "assistant",
@@ -376,63 +371,99 @@ exit 0
   expect(JSON.stringify(result?.messages)).toContain("safe.txt");
 });
 
-test("subagent keeps realtime feedback updating after a child tool error", async () => {
-  const { binDir, cwd } = await setupFakePi();
-  await writeFile(
-    path.join(binDir, "pi"),
-    `#!/bin/sh
-printf '%s\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"toolCall","name":"bash","id":"1","arguments":{"command":"false"}}]}}'
-printf '%s\n' '{"type":"tool_result_end","message":{"role":"toolResult","content":[{"type":"text","text":"failed"}],"toolCallId":"1","isError":true}}'
-printf '%s\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"toolCall","name":"read","id":"2","arguments":{"path":"later.txt"}}]}}'
-printf '%s\n' '{"type":"tool_result_end","message":{"role":"toolResult","content":[{"type":"text","text":"later result"}],"toolCallId":"2"}}'
-printf '%s\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"recovered"}]}}'
-printf '%s\n' '{"type":"agent_end"}'
-exit 0
-`,
-  );
+test("renderResult with partial details after tool error does not show error icon", () => {
   const tool = getSubagentTool();
   const fakeTheme: FakeTheme = {
     fg: (color, text) => `[${color}]${text}[/${color}]`,
     bg: (color, text) => `[${color}]${text}[/${color}]`,
     bold: (text) => `*${text}*`,
   };
-  const updates: AgentToolResult<SubagentDetails>[] = [];
-  await tool.execute(
-    "test-tool-call",
-    { agent: "hang", task: "test", debug: true },
-    undefined,
-    (update) => updates.push(update),
-    { cwd, hasUI: false } as unknown as ExtensionContext,
-  );
-  const afterFailedTool = updates.find((update) =>
-    update.details.results[0]?.messages?.some(
-      (message) => message.role === "toolResult" && message.isError,
-    ),
-  );
-  expect(afterFailedTool).toBeDefined();
+  const afterFailedTool: AgentToolResult<SubagentDetails> = {
+    content: [{ type: "text" as const, text: "bash: false" }],
+    details: {
+      mode: "single" as const,
+      agentScope: "user" as const,
+      projectAgentsDir: null,
+      results: [
+        {
+          agent: "hang",
+          agentSource: "user" as const,
+          task: "test",
+          exitCode: 0,
+          finalOutput: "",
+          stderr: "",
+          usage: {
+            input: 0,
+            output: 0,
+            cacheRead: 0,
+            cacheWrite: 0,
+            cost: 0,
+            contextTokens: 0,
+            turns: 0,
+          },
+          messages: [
+            {
+              role: "assistant" as const,
+              content: [
+                {
+                  type: "toolCall" as const,
+                  name: "bash",
+                  id: "1",
+                  arguments: { command: "false" },
+                },
+              ],
+            },
+            {
+              role: "toolResult" as const,
+              content: [{ type: "text" as const, text: "failed" }],
+              toolCallId: "1",
+              isError: true,
+            },
+          ] as never[],
+        },
+      ],
+    },
+  };
   expect(
     renderToString(
       tool.renderResult?.(
-        afterFailedTool as AgentToolResult<SubagentDetails>,
+        afterFailedTool,
         { expanded: false, isPartial: true },
         fakeTheme as never,
         {} as never,
       ),
     ),
   ).not.toContain("[error]✗[/error]");
-  const afterLaterToolCall = updates.find((update) =>
-    update.details.results[0]?.messages?.some((message) =>
-      Array.isArray(message.content)
-        ? message.content.some(
-            (part) => part.type === "toolCall" && part.name === "read",
-          )
-        : false,
-    ),
-  );
-  expect(afterLaterToolCall).toBeDefined();
+  const afterLaterToolCall: AgentToolResult<SubagentDetails> = {
+    content: [{ type: "text" as const, text: "read: later.txt" }],
+    details: {
+      ...afterFailedTool.details,
+      results: [
+        {
+          ...(afterFailedTool.details.results[0] as NonNullable<
+            SubagentDetails["results"][0]
+          >),
+          messages: [
+            ...(afterFailedTool.details.results[0]?.messages ?? []),
+            {
+              role: "assistant" as const,
+              content: [
+                {
+                  type: "toolCall" as const,
+                  name: "read",
+                  id: "2",
+                  arguments: { path: "later.txt" },
+                },
+              ],
+            } as never,
+          ],
+        },
+      ],
+    },
+  };
   const renderedLaterToolCallText = renderToString(
     tool.renderResult?.(
-      afterLaterToolCall as AgentToolResult<SubagentDetails>,
+      afterLaterToolCall,
       { expanded: false, isPartial: true },
       fakeTheme as never,
       {} as never,
@@ -441,9 +472,6 @@ exit 0
   expect(renderedLaterToolCallText).not.toContain("[accent]read[/accent]");
   expect(renderedLaterToolCallText).not.toContain(
     "Subagent tool result failed.",
-  );
-  expect((updates.at(-1)?.content[0] as TextContent)?.text).toBe(
-    "read: later.txt",
   );
 });
 

@@ -6,11 +6,11 @@ import type { AgentConfig } from "./agents.js";
 import { cancelSubagentCommandHandler } from "./cancel-command.js";
 import { renderSubagentProgress } from "./progress.js";
 import {
-  executeSubagent,
   getCachedAgentCompletions,
   renderSubagentResultMessage,
   runCommandHandler,
   SubagentParams,
+  startSubagentJob,
 } from "./run.js";
 import { renderSubagentCall, renderSubagentResult } from "./ui.js";
 
@@ -49,18 +49,46 @@ export default function (pi: ExtensionAPI) {
   pi.registerTool({
     name: "subagent",
     label: "Subagent",
-    description: ["Delegate a task to a subagent with isolated context."].join(
-      " ",
-    ),
+    description: "Delegate a task to a subagent with isolated context.",
     parameters: SubagentParams,
-    async execute(_toolCallId, params, signal, onUpdate, ctx) {
-      return executeSubagent(
+    async execute(_toolCallId, params, signal, _onUpdate, ctx) {
+      const result = await startSubagentJob(
         pi,
         ctx,
         params,
-        signal ?? new AbortController().signal,
-        onUpdate,
+        signal ?? undefined,
       );
+      if (result.kind === "not_found") {
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: `Unknown agent: "${params.agent}"`,
+            },
+          ],
+          details: result.makeDetails([]),
+        };
+      }
+      if (result.kind === "cancelled") {
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: "Canceled: project-local agent not approved.",
+            },
+          ],
+          details: result.makeDetails([]),
+        };
+      }
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: `Subagent ${params.agent} started (job: ${result.requestId}).`,
+          },
+        ],
+        details: result.makeDetails([]),
+      };
     },
     renderCall(args, theme, _context) {
       return renderSubagentCall(args, theme);
