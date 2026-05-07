@@ -263,6 +263,63 @@ test("/cancel-subagent lists no jobs when called without a target", async () => 
   expect(notices).toEqual(["No active /run jobs."]);
 });
 
+test("/run without args reports usage without starting a job", async () => {
+  clearRunJobsForTests();
+  const notices: string[] = [];
+  const { tool, cwd } = await setupTest();
+  const runCommand = tool.registeredCommands.get("run");
+  await runCommand?.handler("   ", {
+    cwd,
+    ui: { notify: (message: string) => notices.push(message) },
+  } as unknown as ExtensionCommandContext);
+  expect(notices).toEqual(["Usage: /run <agent> [task]"]);
+  expect(listRunJobs()).toHaveLength(0);
+});
+
+test("/run unknown agent reports an error without starting a job", async () => {
+  clearRunJobsForTests();
+  const notices: string[] = [];
+  const { tool, cwd } = await setupTest();
+  const runCommand = tool.registeredCommands.get("run");
+  await runCommand?.handler("missing task", {
+    cwd,
+    ui: { notify: (message: string) => notices.push(message) },
+  } as unknown as ExtensionCommandContext);
+  expect(notices).toEqual(["Unknown agent: missing"]);
+  expect(listRunJobs()).toHaveLength(0);
+});
+
+test("/run pre-aborted host signal cancels before worker starts", async () => {
+  clearRunJobsForTests();
+  const notices: string[] = [];
+  const sentMessages: SendMessageArg[] = [];
+  const controller = new AbortController();
+  controller.abort("already cancelled");
+  const { tool, cwd } = await setupTest({
+    sendMessage: (msg) => sentMessages.push(msg),
+    piScript: `#!/bin/sh
+printf '%s\n' worker-ran > worker-ran.txt
+exit 0
+`,
+  });
+  const runCommand = tool.registeredCommands.get("run");
+  await runCommand?.handler("hang task", {
+    cwd,
+    signal: controller.signal,
+    ui: { notify: (message: string) => notices.push(message) },
+  } as unknown as ExtensionCommandContext);
+  await waitForRunJobsCleared();
+  expect(sentMessages).toHaveLength(1);
+  const requestId = (sentMessages[0]?.details as { requestId?: string })
+    ?.requestId;
+  if (!requestId) throw new Error("requestId missing");
+  expect(getProgressState(requestId)?.status).toBe("cancelled");
+  expect(getProgressState(requestId)?.errorText).toBe("Aborted");
+  expect(await Bun.file(path.join(cwd, "worker-ran.txt")).exists()).toBe(false);
+  expect(notices).toEqual(["Cancelled"]);
+  expect(listRunJobs()).toHaveLength(0);
+});
+
 test("run slash command sends one subagent-progress message and one final result", async () => {
   const sentMessages: SendMessageArg[] = [];
   const { tool, cwd } = await setupTest({
@@ -642,8 +699,84 @@ exit 7
   expect(notices).toHaveLength(1);
 });
 
+test("/run final result send failure marks state error and sends fallback", async () => {
+  clearRunJobsForTests();
+  const notices: string[] = [];
+  const sentMessages: SendMessageArg[] = [];
+  let failNextResult = true;
+  const { tool, cwd } = await setupTest({
+    sendMessage: (msg) => {
+      if (msg.customType === "subagent-result" && failNextResult) {
+        failNextResult = false;
+        throw new Error("send failed");
+      }
+      sentMessages.push(msg);
+    },
+  });
+  const runCommand = tool.registeredCommands.get("run");
+  await runCommand?.handler("hang test task", {
+    cwd,
+    ui: { notify: (message: string) => notices.push(message) },
+  } as unknown as ExtensionCommandContext);
+  await waitForRunJobsCleared();
+  expect(sentMessages).toHaveLength(2);
+  expect(sentMessages[0]?.customType).toBe("subagent-progress");
+  expect(sentMessages.at(-1)?.customType).toBe("subagent-result");
+  expect(sentMessages.at(-1)?.content).toBe("send failed");
+  const requestId = (sentMessages[0]?.details as { requestId?: string })
+    ?.requestId;
+  if (!requestId) throw new Error("requestId missing");
+  const state = getProgressState(requestId);
+  expect(state?.status).toBe("error");
+  expect(state?.errorText).toBe("send failed");
+  expect(notices).toEqual(["send failed"]);
+  expect(listRunJobs()).toHaveLength(0);
+});
+
+test("/run project-agent confirmation failure cancels job and propagates error", async () => {
+  clearRunJobsForTests();
+  const { cwd } = await setupTest();
+  const projectAgentsDir = path.join(cwd, ".pi", "agents");
+  await Bun.$`mkdir -p ${projectAgentsDir}`;
+  await Bun.write(
+    path.join(projectAgentsDir, "proj-agent.md"),
+    `---
+name: proj-agent
+description: Project agent
+---
+Prompt`,
+  );
+  const sentMessages: SendMessageArg[] = [];
+  const { tool } = await setupTest({
+    sendMessage: (msg) => sentMessages.push(msg),
+  });
+  const runCommand = tool.registeredCommands.get("run");
+  await expect(
+    runCommand?.handler("proj-agent task", {
+      cwd,
+      hasUI: true,
+      ui: {
+        notify: () => {},
+        confirm: async () => {
+          throw new Error("confirm failed hard");
+        },
+      },
+    } as unknown as ExtensionCommandContext),
+  ).rejects.toThrow("confirm failed hard");
+  await waitForRunJobsCleared();
+  expect(sentMessages).toHaveLength(1);
+  const requestId = (sentMessages[0]?.details as { requestId?: string })
+    ?.requestId;
+  if (!requestId) throw new Error("requestId missing");
+  const state = getProgressState(requestId);
+  expect(state?.status).toBe("cancelled");
+  expect(state?.errorText).toBe("Confirm failed");
+  expect(listRunJobs()).toHaveLength(0);
+});
+
 test("/run project-agent denial marks state cancelled and cleans up without result card", async () => {
   clearRunJobsForTests();
+  const notices: string[] = [];
   const { cwd } = await setupTest();
   const projectAgentsDir = path.join(cwd, ".pi", "agents");
   await Bun.$`mkdir -p ${projectAgentsDir}`;
@@ -663,7 +796,10 @@ Prompt`,
   await runCommand?.handler("proj-agent task", {
     cwd,
     hasUI: true,
-    ui: { notify: () => {}, confirm: async () => false },
+    ui: {
+      notify: (message: string) => notices.push(message),
+      confirm: async () => false,
+    },
   } as unknown as ExtensionCommandContext);
   await waitForRunJobsCleared();
   expect(sentMessages).toHaveLength(1);
@@ -673,6 +809,7 @@ Prompt`,
   if (!requestId) throw new Error("requestId missing");
   const state = getProgressState(requestId);
   expect(state?.status).toBe("cancelled");
+  expect(notices).toEqual(["Cancelled"]);
   expect(listRunJobs()).toHaveLength(0);
 });
 
