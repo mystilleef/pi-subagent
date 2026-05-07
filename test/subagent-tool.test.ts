@@ -40,7 +40,7 @@ exit 0
   expect(argsText).not.toContain("Task:");
 });
 
-test("subagent tool injects concise result format", async () => {
+test("subagent tool injects current result format", async () => {
   const { tool, cwd } = await setupTest({
     piScript: `#!/bin/sh
 printf '%s\n' "$*" > args.txt
@@ -59,14 +59,23 @@ exit 0
   const argsText = await Bun.file(path.join(cwd, "args.txt")).text();
   expect(argsText).toContain("Task: ship it");
   expect(argsText).toContain(
-    "Summarize the result of your task for the main agent",
-  );
-  expect(argsText).toContain("End your final output with exactly one line:");
-  expect(argsText).toContain(
-    "Outcome: <short, single, compact lower-case sentence>",
+    "When your task is complete, summarize its result.",
   );
   expect(argsText).toContain(
-    "Aggresively optimize your summary for token and context efficiency",
+    "Optimize the summary for token and context efficiency.",
+  );
+  expect(argsText).toContain(
+    "Add an empty line between paragraphs, headings and sections.",
+  );
+  expect(argsText).toContain(
+    "Use elegant, well-structured, idiomatic markdown.",
+  );
+  expect(argsText).toContain("End your final response with exactly one line:");
+  expect(argsText).toContain(
+    "Outcome: <short, single, compact lower-case sentence>.",
+  );
+  expect(argsText).toContain(
+    "Outcome summarizes the result of your task in a single sentence.",
   );
   expect(argsText).not.toContain("Changed:");
   expect(argsText).not.toContain("Cause:");

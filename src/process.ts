@@ -35,12 +35,13 @@ function appendWithByteLimit(
   if (current.length >= max) return current;
   return current + data.slice(0, max - current.length);
 }
+// - Summarize the result of your task for the main agent.
 const RESULT_FORMAT_INSTRUCTIONS = `
-- Summarize the result of your task for the main agent.
-- Aggresively optimize your summary for token and context efficiency.
+- When your task is complete, summarize its result.
+- Optimize the summary for token and context efficiency.
 - Add an empty line between paragraphs, headings and sections.
 - Use elegant, well-structured, idiomatic markdown.
-- End your final output with exactly one line:
+- End your final response with exactly one line:
   - Outcome: <short, single, compact lower-case sentence>.
   - Outcome summarizes the result of your task in a single sentence.
 `;
