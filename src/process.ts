@@ -42,8 +42,8 @@ function appendWithByteLimit(
 }
 // - Summarize the result of your task for the main agent.
 const RESULT_FORMAT_INSTRUCTIONS = `
-- Use context to decide whether, or not, to summarize task result.
-- Favor brief, precise, concise prose while maintaining clarity.
+- Use context, and your discretion, to decide whether, or not, to summarize task result.
+- Use brief, precise, concise prose while maintaining clarity.
 - Optimize prose for token and context efficiency.
 - Add an empty line between paragraphs, headings and sections.
 - Use elegant, well-structured, idiomatic markdown.

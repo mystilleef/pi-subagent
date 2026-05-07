@@ -144,10 +144,10 @@ exit 0
   const argsText = await Bun.file(path.join(cwd, "args.txt")).text();
   expect(argsText).toContain("Task: ship it");
   expect(argsText).toContain(
-    "Use context to decide whether, or not, to summarize task result.",
+    "Use context, and your discretion, to decide whether, or not, to summarize task result.",
   );
   expect(argsText).toContain(
-    "Favor brief, precise, concise prose while maintaining clarity.",
+    "Use brief, precise, concise prose while maintaining clarity.",
   );
   expect(argsText).toContain(
     "Optimize prose for token and context efficiency.",
