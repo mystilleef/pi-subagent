@@ -710,6 +710,19 @@ test("ui helpers format units, fallback output, and failed tool results", () => 
   expect(formatToolCall("bash", { command: "bun test" }, fakeTheme.fg)).toBe(
     "[accent]bash[/accent][dim] bun test[/dim]",
   );
+  expect(
+    formatToolCall("bash", { command: "printf 'a'\n\t  echo b" }, fakeTheme.fg),
+  ).toBe("[accent]bash[/accent][dim] printf 'a' echo b[/dim]");
+  expect(formatToolCall("bash", { command: "\n\t  " }, fakeTheme.fg)).toBe(
+    "[accent]bash[/accent]",
+  );
+  expect(
+    formatToolCall(
+      "subagent",
+      { agent: "child", task: "line one\n\t  line two" },
+      fakeTheme.fg,
+    ),
+  ).toBe("[accent]subagent[/accent][dim] child line one line two[/dim]");
   const call = renderSubagentCall({}, fakeTheme) as unknown as {
     text: string;
     render: (width: number) => string[];

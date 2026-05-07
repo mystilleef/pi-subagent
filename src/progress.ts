@@ -136,7 +136,8 @@ export function extractProgressFromDetails(
     if (result.progress) {
       for (const toolCall of result.progress.toolCalls) {
         if (!isDerivedToolCall(toolCall)) continue;
-        lastToolPreview = toolCall.preview;
+        const preview = normalizeToolPreview(toolCall.preview);
+        lastToolPreview = preview;
         if (seenToolCallIds.has(toolCall.id)) continue;
         seenToolCallIds.add(toolCall.id);
         newToolCallIds.push(toolCall.id);
@@ -190,9 +191,15 @@ export function makeToolPreview(
   args: Record<string, unknown> | undefined,
 ): string {
   if (!args || Object.keys(args).length === 0) return toolName;
-  const target = extractSemanticToolTarget(toolName, args);
+  const target = normalizeSummaryValue(
+    extractSemanticToolTarget(toolName, args),
+  );
   if (!target) return toolName;
-  return truncateToolPreview(`${toolName}: ${target}`);
+  return normalizeToolPreview(`${toolName}: ${target}`);
+}
+
+function normalizeToolPreview(preview: string): string {
+  return truncateToolPreview(normalizeSummaryValue(preview));
 }
 
 function truncateToolPreview(preview: string): string {

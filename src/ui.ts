@@ -8,7 +8,10 @@ import {
   Text,
 } from "@mariozechner/pi-tui";
 import type { AgentScope } from "./agents.js";
-import { extractSemanticToolTarget } from "./normalize.js";
+import {
+  extractSemanticToolTarget,
+  normalizeSummaryValue,
+} from "./normalize.js";
 import type { SubagentDetails, UsageStats } from "./types.js";
 import { detectMessageError } from "./utils.js";
 
@@ -84,7 +87,9 @@ export function formatToolCall(
   themeFg: (color: ThemeColor, text: string) => string,
   forceJson = false,
 ): string {
-  const target = extractSemanticToolTarget(toolName, args, forceJson);
+  const target = normalizeSummaryValue(
+    extractSemanticToolTarget(toolName, args, forceJson),
+  );
   if (!target) return themeFg("accent", toolName);
   return themeFg("accent", toolName) + themeFg("dim", ` ${target}`);
 }

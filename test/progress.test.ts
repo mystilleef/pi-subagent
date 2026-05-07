@@ -323,6 +323,22 @@ test("makeToolPreview formats tool name and first arg value", () => {
   expect(preview).toBe("bash: ls -la");
 });
 
+test("makeToolPreview collapses multiline whitespace", () => {
+  const preview = makeToolPreview("bash", {
+    command: "printf 'a'\n\t  echo b",
+  });
+  expect(preview).toBe("bash: printf 'a' echo b");
+  expect(preview).not.toContain("\n");
+});
+
+test("makeToolPreview truncates after whitespace normalization", () => {
+  const command = `${"x".repeat(100)}\n\t${"y".repeat(40)}`;
+  const preview = makeToolPreview("bash", { command });
+  expect(Array.from(preview).length).toBe(120);
+  expect(preview).toBe(`${"bash: "}${"x".repeat(100)} ${"y".repeat(12)}…`);
+  expect(preview).not.toContain("\n");
+});
+
 test("makeToolPreview keeps semantic target without ellipsis", () => {
   const path = "a".repeat(100);
   const preview = makeToolPreview("read", { path });
@@ -381,6 +397,10 @@ test("makeToolPreview truncates subagent semantic preview after tool prefix", ()
 test("makeToolPreview handles empty args", () => {
   expect(makeToolPreview("bash", {})).toBe("bash");
   expect(makeToolPreview("bash", undefined)).toBe("bash");
+});
+
+test("makeToolPreview omits blank semantic targets", () => {
+  expect(makeToolPreview("bash", { command: "\n\t  " })).toBe("bash");
 });
 
 test("multiple independent request ids are isolated", () => {
@@ -462,6 +482,23 @@ test("extractProgressFromDetails ignores malformed derived progress ids", () => 
   const result = extractProgressFromDetails(details, seen);
   expect(result.newToolCallIds).toEqual(["safe-1"]);
   expect(result.lastToolPreview).toBe("bash");
+});
+
+test("extractProgressFromDetails normalizes derived progress previews", () => {
+  const details = makeDetails([]);
+  const firstResult = details.results[0];
+  if (!firstResult) throw new Error("missing result");
+  firstResult.progress = {
+    toolCalls: [
+      { id: "safe-1", preview: "bash: printf 'a'\n\t  echo b" },
+      { id: "safe-2", preview: `read: /tmp/foo\n${"x".repeat(130)}` },
+    ],
+  };
+  const seen = new Set<string>(["safe-1"]);
+  const result = extractProgressFromDetails(details, seen);
+  expect(result.newToolCallIds).toEqual(["safe-2"]);
+  expect(result.lastToolPreview).toBe(`read: /tmp/foo ${"x".repeat(104)}…`);
+  expect([...seen]).toEqual(["safe-1", "safe-2"]);
 });
 
 test("extractProgressFromDetails returns new tool call ids from assistant messages", () => {
