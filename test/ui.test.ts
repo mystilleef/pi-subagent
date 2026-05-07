@@ -4,6 +4,10 @@ import type {
   ExtensionCommandContext,
   ExtensionContext,
 } from "@mariozechner/pi-coding-agent";
+import {
+  resetCapabilitiesCache,
+  setCapabilities,
+} from "@mariozechner/pi-tui/dist/terminal-image.js";
 import { getProgressState } from "../src/progress.js";
 import type { SubagentDetails } from "../src/types.js";
 import {
@@ -811,6 +815,66 @@ test("ui helpers format units, fallback output, and failed tool results", () => 
   const failedText = renderToString(failed);
   expect(failedText).not.toContain("[error]✗[/error]");
   expect(failedText).toContain("[muted](no output)[/muted]");
+});
+
+test("subagent result markdown invokes theme callbacks", () => {
+  const fakeTheme: FakeTheme = {
+    fg: (color, text) => `[${color}]${text}[/${color}]`,
+    bg: (color, text) => `[${color}]${text}[/${color}]`,
+    bold: (text) => `*${text}*`,
+  };
+  setCapabilities({ images: null, trueColor: false, hyperlinks: false });
+  const markdown = `# Heading\n\n[docs](https://example.com) and \`inline\`\n\n\`\`\`ts\nconst x = 1\n\`\`\`\n\n> quoted **bold** and *italic* and ~~gone~~\n\n---\n\n- item`;
+  const rendered = renderSubagentResult(
+    {
+      content: [{ type: "text", text: "ignored" }],
+      details: {
+        mode: "single",
+        agentScope: "both",
+        projectAgentsDir: null,
+        results: [
+          {
+            agent: "builder",
+            agentSource: "project",
+            task: "pass",
+            exitCode: 0,
+            finalOutput: markdown,
+            messages: [],
+            stderr: "",
+            usage: {
+              input: 0,
+              output: 0,
+              cacheRead: 0,
+              cacheWrite: 0,
+              cost: 0,
+              contextTokens: 0,
+              turns: 0,
+            },
+          },
+        ],
+      },
+    },
+    fakeTheme,
+  );
+  const renderedText = renderToString(rendered);
+  resetCapabilitiesCache();
+  expect(renderedText).toContain("[mdHeading]");
+  expect(renderedText).toContain("[mdLink]");
+  expect(renderedText).toContain(
+    "[mdLinkUrl] (https://example.com)[/mdLinkUrl]",
+  );
+  expect(renderedText).toContain("[mdCode]inline[/mdCode]");
+  expect(renderedText).toContain(
+    "[mdCodeBlockBorder]```ts[/mdCodeBlockBorder]",
+  );
+  expect(renderedText).toContain("[mdCodeBlock]const x = 1[/mdCodeBlock]");
+  expect(renderedText).toContain("[mdQuoteBorder]│ [/mdQuoteBorder]");
+  expect(renderedText).toContain("[mdQuote]");
+  expect(renderedText).toContain("[mdHr]");
+  expect(renderedText).toContain("[mdListBullet]- [/mdListBullet]");
+  expect(renderedText).toContain("\x1b[3mitalic\x1b[23m");
+  expect(renderedText).toContain("\x1b[9mgone\x1b[29m");
+  expect(renderedText).toContain("\x1b[4m");
 });
 
 test("subagent-result message renderer uses summarized content and preserves result chrome", () => {
