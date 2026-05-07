@@ -293,12 +293,8 @@ export function formatTokenCount(count: number): string {
 
 export function formatHeaderStats(state: SubagentProgressState): string {
   const elapsedMs = state.durationMs ?? Date.now() - state.startTime;
-  return `${[
-    `${formatTokenCount(state.inputTokens ?? 0)} in`,
-    `${formatTokenCount(state.outputTokens ?? 0)} out`,
-    `${formatContextPercent(state)} ctx`,
-    formatElapsed(elapsedMs),
-  ].join(" · ")}\n`;
+  const toolLabel = state.toolCount === 1 ? "tool" : "tools";
+  return `${state.toolCount} ${toolLabel} · ${formatContextPercent(state)} ctx · ${formatElapsed(elapsedMs)}\n`;
 }
 
 function formatContextPercent(state: SubagentProgressState): string {

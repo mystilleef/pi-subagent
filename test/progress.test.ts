@@ -658,8 +658,10 @@ test("renderSubagentProgress collapsed running colors tool preview segments", ()
   const toolLine = renderLines(result).find((line) => line.includes("bash"));
   expect(text).toContain("my-agent");
   expect(text).toContain("running");
-  expect(text).toContain("1.2k in · 300 out · 8% ctx ·");
-  expect(text).not.toContain("3 tools");
+  expect(text).toContain("3 tools · 8% ctx ·");
+  expect(text).not.toContain("1.2k in");
+  expect(text).not.toContain("300 out");
+  expect(text).not.toContain("1.2k in · 300 out · 8% ctx");
   expect(text).not.toContain("2 turns");
   expect(text).not.toContain("18k ctx");
   expect(toolLine).toStartWith(
@@ -774,7 +776,7 @@ test("renderSubagentProgress component reads patched state on later renders", ()
     { expanded: false },
     theme,
   );
-  expect(renderText(result)).toContain("0 in · 0 out · --% ctx");
+  expect(renderText(result)).toContain("0 tools · --% ctx");
   patchProgressState("rend-live", {
     toolCount: 2,
     lastToolPreview: "bash: pwd",
@@ -783,8 +785,10 @@ test("renderSubagentProgress component reads patched state on later renders", ()
     outputTokens: 300,
   });
   const text = renderText(result);
-  expect(text).toContain("1.2k in · 300 out · --% ctx");
-  expect(text).not.toContain("2 tools");
+  expect(text).toContain("2 tools · --% ctx");
+  expect(text).not.toContain("1.2k in");
+  expect(text).not.toContain("300 out");
+  expect(text).not.toContain("1.2k in · 300 out · --% ctx");
   expect(text).not.toContain("3 turns");
   expect(text).not.toContain("10k ctx");
   expect(text).not.toContain("1.2k in / 300 out");
@@ -792,23 +796,44 @@ test("renderSubagentProgress component reads patched state on later renders", ()
   expect(text).not.toContain("bash: pwd (");
 });
 
-test("format header stats renders input output context percent and elapsed", () => {
+test("format header stats renders tool count context percent and elapsed", () => {
   expect(formatTokenCount(12345)).toBe("12.3k");
-  expect(
-    formatHeaderStats({
-      requestId: "req-1",
-      agent: "agent-a",
-      taskPreview: "task a",
-      status: "running",
-      startTime: 0,
-      durationMs: 2500,
-      toolCount: 3,
-      contextTokens: 18_000,
-      contextWindowTokens: 240_000,
-      inputTokens: 7100,
-      outputTokens: 890,
-    }),
-  ).toBe("7.1k in · 890 out · 8% ctx · 2.5s");
+  const stats = formatHeaderStats({
+    requestId: "req-1",
+    agent: "agent-a",
+    taskPreview: "task a",
+    status: "running",
+    startTime: 0,
+    durationMs: 2500,
+    toolCount: 3,
+    contextTokens: 18_000,
+    contextWindowTokens: 240_000,
+    inputTokens: 7100,
+    outputTokens: 890,
+  });
+  expect(stats).toBe("3 tools · 8% ctx · 2.5s\n");
+  expect(stats).not.toContain("7.1k in");
+  expect(stats).not.toContain("890 out");
+});
+
+test("format header stats pluralizes zero singular and plural tool counts", () => {
+  const base = {
+    requestId: "req-1",
+    agent: "agent-a",
+    taskPreview: "task a",
+    status: "running" as const,
+    startTime: 0,
+    durationMs: 2500,
+  };
+  expect(formatHeaderStats({ ...base, toolCount: 0 })).toBe(
+    "0 tools · --% ctx · 2.5s\n",
+  );
+  expect(formatHeaderStats({ ...base, toolCount: 1 })).toBe(
+    "1 tool · --% ctx · 2.5s\n",
+  );
+  expect(formatHeaderStats({ ...base, toolCount: 2 })).toBe(
+    "2 tools · --% ctx · 2.5s\n",
+  );
 });
 
 test("format header stats handles zero usage and context fallbacks", () => {
@@ -821,27 +846,27 @@ test("format header stats handles zero usage and context fallbacks", () => {
     startTime: 1000,
     toolCount: 0,
   };
-  expect(formatHeaderStats(base)).toBe("0 in · 0 out · --% ctx · 3.0s");
+  expect(formatHeaderStats(base)).toBe("0 tools · --% ctx · 3.0s\n");
   expect(
     formatHeaderStats({ ...base, contextTokens: -1, contextWindowTokens: 100 }),
-  ).toBe("0 in · 0 out · 0% ctx · 3.0s");
+  ).toBe("0 tools · 0% ctx · 3.0s\n");
   expect(
     formatHeaderStats({
       ...base,
       contextTokens: Number.NaN,
       contextWindowTokens: 100,
     }),
-  ).toBe("0 in · 0 out · 0% ctx · 3.0s");
+  ).toBe("0 tools · 0% ctx · 3.0s\n");
   expect(
     formatHeaderStats({ ...base, contextTokens: 50, contextWindowTokens: 0 }),
-  ).toBe("0 in · 0 out · --% ctx · 3.0s");
+  ).toBe("0 tools · --% ctx · 3.0s\n");
   expect(
     formatHeaderStats({
       ...base,
       contextTokens: 50,
       contextWindowTokens: Number.POSITIVE_INFINITY,
     }),
-  ).toBe("0 in · 0 out · --% ctx · 3.0s");
+  ).toBe("0 tools · --% ctx · 3.0s\n");
 });
 
 test("renderSubagentProgress error state shows error text", () => {
