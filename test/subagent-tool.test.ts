@@ -634,23 +634,16 @@ exit 0
     { cwd, hasUI: false } as unknown as ExtensionContext,
   );
   const latest = updates.at(-1);
-  const messages = latest?.details?.results[0]?.messages ?? [];
+  const result = latest?.details?.results[0];
   expect((latest?.content[0] as TextContent | undefined)?.text).toBe(
     `bash: ${longCommand}`,
   );
-  expect(messages.map((m) => m.role)).toEqual([
-    "assistant",
-    "toolResult",
-    "assistant",
+  expect(result?.messages).toBeUndefined();
+  expect(result?.termination).toBeUndefined();
+  expect(result?.stderr).toBe("");
+  expect(result?.progress?.toolCalls).toEqual([
+    { id: "2", preview: `bash: ${longCommand}` },
   ]);
-  expect((messages[0]?.content[0] as TextContent | undefined)?.text).toBe(
-    "checkpoint",
-  );
-  expect(
-    messages.some(
-      (m) => (m.content[0] as TextContent | undefined)?.text === "old",
-    ),
-  ).toBe(false);
 });
 
 test("subagent keeps realtime feedback updating after a child tool error", async () => {
@@ -671,7 +664,7 @@ exit 0
   const updates: AgentToolResult<SubagentDetails>[] = [];
   await tool.execute(
     "test-tool-call",
-    { agent: "hang", task: "test" },
+    { agent: "hang", task: "test", debug: true },
     undefined,
     (update) => updates.push(update),
     { cwd, hasUI: false } as unknown as ExtensionContext,
@@ -693,7 +686,7 @@ exit 0
   );
   expect(afterLaterToolCall).toBeDefined();
   expect((updates.at(-1)?.content[0] as TextContent)?.text).toBe(
-    "(running...)",
+    "read: later.txt",
   );
 });
 
@@ -724,7 +717,7 @@ exit 0
   expect((result.content[0] as TextContent).text).toBe("Outcome: hello world");
   expect(updates[0]?.details.results[0]?.finalOutput).toBe("Outcome: hello");
   expect(updates[0]?.details.results[0]?.usage.input).toBe(1);
-  expect(updates[0]?.details.results[0]?.messages).toBeDefined();
+  expect(updates[0]?.details.results[0]?.messages).toBeUndefined();
   expect(result.details?.results[0]?.finalOutput).toBe("Outcome: hello world");
   expect(result.details?.results[0]?.messages).toBeUndefined();
 });
@@ -812,6 +805,7 @@ test("subagent debug hygiene: child messages stay in details only for debug resu
 printf '%s\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"toolCall","name":"bash","id":"tc-1","arguments":{"command":"SECRET_DEBUG"}}]}}'
 printf '%s\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"Outcome: hello"}],"model":"gpt-4","usage":{"input":1,"output":1,"totalTokens":2,"cost":{"total":0}}}}'
 printf '%s\n' '{"type":"agent_end"}'
+printf '%s\n' 'STDERR_DEBUG' >&2
 exit 0
 `,
   );
@@ -826,6 +820,8 @@ exit 0
   );
   const normalDetails = normalResult.details as SubagentDetails;
   expect(normalDetails.results[0]?.messages).toBeUndefined();
+  expect(normalDetails.results[0]?.termination).toBeUndefined();
+  expect(normalDetails.results[0]?.stderr).toBe("");
   expect((normalResult.content[0] as TextContent).text).toBe("Outcome: hello");
   expect((normalResult.content[0] as TextContent).text).not.toContain(
     "SECRET_DEBUG",
@@ -839,6 +835,8 @@ exit 0
   );
   const debugDetails = debugResult.details as SubagentDetails;
   expect(debugDetails.results[0]?.messages).toHaveLength(2);
+  expect(debugDetails.results[0]?.termination?.cancelReason).toBe("agent_end");
+  expect(debugDetails.results[0]?.stderr).toContain("STDERR_DEBUG");
   expect(JSON.stringify(debugDetails.results[0]?.messages)).toContain(
     "SECRET_DEBUG",
   );

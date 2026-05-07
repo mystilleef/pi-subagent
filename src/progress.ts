@@ -59,6 +59,15 @@ export function patchProgressState(
 ): void {
   const state = store.get(requestId);
   if (!state) return;
+  if (state.status !== "running") {
+    const { lastToolPreview: _lastToolPreview, ...safePatch } = patch;
+    store.set(requestId, {
+      ...state,
+      ...safePatch,
+      lastToolPreview: undefined,
+    });
+    return;
+  }
   store.set(requestId, { ...state, ...patch });
 }
 
@@ -124,6 +133,16 @@ export function extractProgressFromDetails(
   let lastToolPreview: string | undefined;
   const results = Array.isArray(details.results) ? details.results : [];
   for (const result of results) {
+    if (result.progress) {
+      for (const toolCall of result.progress.toolCalls) {
+        if (!isDerivedToolCall(toolCall)) continue;
+        lastToolPreview = toolCall.preview;
+        if (seenToolCallIds.has(toolCall.id)) continue;
+        seenToolCallIds.add(toolCall.id);
+        newToolCallIds.push(toolCall.id);
+      }
+      continue;
+    }
     const messages = Array.isArray(result.messages) ? result.messages : [];
     for (const msg of messages) {
       if (msg.role !== "assistant" || !Array.isArray(msg.content)) continue;
@@ -140,6 +159,15 @@ export function extractProgressFromDetails(
     lastToolPreview,
     newToolCallIds,
   };
+}
+
+function isDerivedToolCall(part: unknown): part is {
+  id: string;
+  preview: string;
+} {
+  if (typeof part !== "object" || part === null) return false;
+  const maybe = part as { id?: unknown; preview?: unknown };
+  return typeof maybe.id === "string" && typeof maybe.preview === "string";
 }
 
 function isToolCallPart(part: unknown): part is {

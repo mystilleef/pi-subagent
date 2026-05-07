@@ -209,6 +209,17 @@ test("cancelProgressState sets cancelled status with unprefixed reason", () => {
   expect(state?.errorText).toBe("user aborted");
 });
 
+test("cancelled progress ignores late tool previews", () => {
+  createProgressState("req-1", "agent-a", "task a");
+  patchProgressState("req-1", { lastToolPreview: "bash: running" });
+  cancelProgressState("req-1", "user cancelled");
+  patchProgressState("req-1", { lastToolPreview: "read: stale" });
+  const state = getProgressState("req-1");
+  expect(state?.status).toBe("cancelled");
+  expect(state?.lastToolPreview).toBeUndefined();
+  expect(state?.errorText).toBe("user cancelled");
+});
+
 test("cancelProgressState with no reason leaves errorText undefined", () => {
   createProgressState("req-1", "agent-a", "task a");
   cancelProgressState("req-1");
@@ -389,6 +400,68 @@ test("extractProgressFromDetails returns empty result for details with no messag
   const result = extractProgressFromDetails(details, seen);
   expect(result.newToolCallIds).toEqual([]);
   expect(result.lastToolPreview).toBeUndefined();
+});
+
+test("extractProgressFromDetails returns derived progress without messages", () => {
+  const details = makeDetails([]);
+  const firstResult = details.results[0];
+  if (!firstResult) throw new Error("missing result");
+  delete firstResult.messages;
+  firstResult.progress = {
+    toolCalls: [
+      { id: "safe-1", preview: "bash: ls" },
+      { id: "safe-2", preview: "read: /tmp/foo" },
+    ],
+    lastToolPreview: "read: /tmp/foo",
+  };
+  const seen = new Set<string>();
+  const result = extractProgressFromDetails(details, seen);
+  expect(result.newToolCallIds).toEqual(["safe-1", "safe-2"]);
+  expect(result.lastToolPreview).toBe("read: /tmp/foo");
+  expect([...seen]).toEqual(["safe-1", "safe-2"]);
+});
+
+test("extractProgressFromDetails prefers derived progress over legacy messages", () => {
+  const details = makeDetails([
+    {
+      role: "assistant",
+      content: [
+        {
+          type: "toolCall",
+          id: "raw-1",
+          name: "bash",
+          arguments: { command: "secret-token" },
+        },
+      ],
+    },
+  ]);
+  const firstResult = details.results[0];
+  if (!firstResult) throw new Error("missing result");
+  firstResult.progress = {
+    toolCalls: [{ id: "safe-1", preview: "bash" }],
+  };
+  const seen = new Set<string>();
+  const result = extractProgressFromDetails(details, seen);
+  expect(result.newToolCallIds).toEqual(["safe-1"]);
+  expect(result.lastToolPreview).toBe("bash");
+  expect(seen.has("raw-1")).toBe(false);
+});
+
+test("extractProgressFromDetails ignores malformed derived progress ids", () => {
+  const details = makeDetails([]) as unknown as SubagentDetails;
+  const firstResult = details.results[0];
+  if (!firstResult) throw new Error("missing result");
+  firstResult.progress = {
+    toolCalls: [
+      { id: "safe-1", preview: "bash" },
+      { id: 7, preview: "bad" },
+      { id: "bad", preview: null },
+    ] as unknown as { id: string; preview: string }[],
+  };
+  const seen = new Set<string>();
+  const result = extractProgressFromDetails(details, seen);
+  expect(result.newToolCallIds).toEqual(["safe-1"]);
+  expect(result.lastToolPreview).toBe("bash");
 });
 
 test("extractProgressFromDetails returns new tool call ids from assistant messages", () => {

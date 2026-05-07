@@ -3,10 +3,15 @@ import * as fs from "node:fs";
 import readline from "node:readline";
 import { getModel, type Message } from "@mariozechner/pi-ai";
 import type { AgentConfig, ThinkingLevel } from "./agents.js";
-import { extractSemanticToolTarget } from "./normalize.js";
+import { makeToolPreview } from "./progress.js";
+import {
+  getProcessTreeSpawnOptions,
+  terminateChildProcess,
+} from "./termination.js";
 import type {
   OnUpdateCallback,
   SingleResult,
+  StreamingProgress,
   SubagentDetails,
 } from "./types.js";
 import { getFinalOutput } from "./ui.js";
@@ -65,6 +70,13 @@ function resolveContextWindowTokens(msg: Message): number | undefined {
   }
 }
 
+function getAbortReason(signal: AbortSignal): string {
+  const reason = signal.reason;
+  if (reason instanceof Error && reason.message) return reason.message;
+  if (typeof reason === "string" && reason.trim()) return reason;
+  return "abort";
+}
+
 async function waitForSubagentProcess(
   proc: ChildProcess,
   idleMs = 100,
@@ -120,7 +132,7 @@ export async function runSingleAgent(
   onUpdate: OnUpdateCallback | undefined,
   makeDetails: (
     results: RuntimeResult[],
-    options?: { includeMessages?: boolean },
+    options?: { includeMessages?: boolean; recentMessages?: Message[] },
   ) => SubagentDetails,
   parentModel: { provider: string; id: string } | undefined,
   parentThinking: ThinkingLevel,
@@ -183,17 +195,9 @@ export async function runSingleAgent(
     model: modelDisplay,
   };
   const nextUpdateText = () => {
-    const msgs = currentResult.messages;
-    const last = msgs.findLast((m) => m.role === "assistant");
-    const toolCall = Array.isArray(last?.content)
-      ? last.content.findLast((p) => p.type === "toolCall")
-      : undefined;
-    if (!toolCall) return "(running...)";
-    const target = extractSemanticToolTarget(
-      toolCall.name,
-      toolCall.arguments ?? {},
-    );
-    return target ? `${toolCall.name}: ${target}` : toolCall.name;
+    const progress = deriveStreamingProgress(currentResult.messages);
+    currentResult.progress = progress;
+    return progress.activityText ?? "(running...)";
   };
   const emitUpdate = () => {
     const msgs = currentResult.messages;
@@ -212,10 +216,13 @@ export async function runSingleAgent(
     }
     const recentMessages =
       anchorIdx >= 0 ? msgs.slice(anchorIdx) : msgs.slice(-5);
-    const snapshot = { ...currentResult, messages: recentMessages };
+    const activityText = nextUpdateText();
     onUpdate?.({
-      content: [{ type: "text", text: nextUpdateText() }],
-      details: makeDetails([snapshot], { includeMessages: true }),
+      content: [{ type: "text", text: activityText }],
+      details: makeDetails([currentResult], {
+        includeMessages: true,
+        recentMessages,
+      }),
     });
   };
   let tmpPrompt: { dir: string; filePath: string } | null = null;
@@ -235,11 +242,17 @@ export async function runSingleAgent(
       : "Run according to your system prompt. If no explicit task was provided, use the default context described there.";
     args.push(`${taskPrompt}\n\n${RESULT_FORMAT_INSTRUCTIONS}`);
     const invocation = getPiInvocation(args);
+    const terminateOptions = {
+      tree: true,
+      platform: process.platform,
+      processTreeDetached: process.platform !== "win32",
+    };
     const proc = spawn(invocation.command, invocation.args, {
       cwd: defaultCwd,
       shell: invocation.command === "pi" && process.platform === "win32",
       stdio: ["ignore", "pipe", "pipe"],
       env: { ...process.env, ...subagentDepthEnv() },
+      ...getProcessTreeSpawnOptions(terminateOptions.tree),
     });
     const processDone = waitForSubagentProcess(proc);
     let spawnError: Error | undefined;
@@ -252,6 +265,16 @@ export async function runSingleAgent(
       );
     });
     let wasAborted = false;
+    let terminationPromise: Promise<unknown> | undefined;
+    const requestTermination = (reason: string) => {
+      terminationPromise ??= terminateChildProcess(proc, {
+        ...terminateOptions,
+        reason,
+      }).then((metadata) => {
+        currentResult.termination = metadata;
+      });
+      return terminationPromise;
+    };
     const addMessage = (msg: Message) => {
       currentResult.messages.push(msg);
       currentResult.finalOutput = truncateOutput(
@@ -300,7 +323,7 @@ export async function runSingleAgent(
             for (const msg of event.messages as Message[]) addMessage(msg);
             emitUpdate();
           }
-          proc.kill("SIGTERM");
+          void requestTermination("agent_end");
         }
       } catch {
         /* ignore invalid JSON */
@@ -318,22 +341,28 @@ export async function runSingleAgent(
         );
       });
     }
+    let onAbort: (() => void) | undefined;
     if (signal) {
-      const onAbort = () => {
+      onAbort = () => {
         wasAborted = true;
-        proc.kill("SIGTERM");
+        void requestTermination(getAbortReason(signal));
       };
       if (signal.aborted) onAbort();
       else signal.addEventListener("abort", onAbort, { once: true });
     }
-    currentResult.exitCode = (await processDone) ?? 0;
-    currentResult.durationMs = Date.now() - startedAt;
-    if (spawnError) currentResult.exitCode = 1;
-    if (detectMessageError(currentResult.messages)) {
-      currentResult.errorMessage ||= TOOL_RESULT_FAILED_MESSAGE;
+    try {
+      currentResult.exitCode = (await processDone) ?? 0;
+      currentResult.durationMs = Date.now() - startedAt;
+      if (terminationPromise) await terminationPromise;
+      if (spawnError) currentResult.exitCode = 1;
+      if (detectMessageError(currentResult.messages)) {
+        currentResult.errorMessage ||= TOOL_RESULT_FAILED_MESSAGE;
+      }
+      if (wasAborted) throw new Error("Subagent was aborted");
+      return currentResult;
+    } finally {
+      if (signal && onAbort) signal.removeEventListener("abort", onAbort);
     }
-    if (wasAborted) throw new Error("Subagent was aborted");
-    return currentResult;
   } finally {
     if (tmpPrompt) {
       try {
@@ -344,6 +373,43 @@ export async function runSingleAgent(
       }
     }
   }
+}
+
+function deriveStreamingProgress(messages: Message[]): StreamingProgress {
+  const toolCalls: { id: string; preview: string }[] = [];
+  let lastToolPreview: string | undefined;
+  for (const msg of messages) {
+    if (msg.role !== "assistant" || !Array.isArray(msg.content)) continue;
+    for (const part of msg.content) {
+      if (!isStreamingToolCall(part)) continue;
+      const preview = sanitizeProgressPreview(
+        makeToolPreview(part.name, part.arguments),
+        part.name,
+      );
+      toolCalls.push({ id: part.id, preview });
+      lastToolPreview = preview;
+    }
+  }
+  return { activityText: lastToolPreview, toolCalls, lastToolPreview };
+}
+
+function sanitizeProgressPreview(preview: string, toolName: string): string {
+  return /secret|token|password/i.test(preview) ? toolName : preview;
+}
+
+function isStreamingToolCall(part: unknown): part is {
+  type: "toolCall";
+  id: string;
+  name: string;
+  arguments?: Record<string, unknown>;
+} {
+  if (typeof part !== "object" || part === null) return false;
+  const maybe = part as { type?: unknown; id?: unknown; name?: unknown };
+  return (
+    maybe.type === "toolCall" &&
+    typeof maybe.id === "string" &&
+    typeof maybe.name === "string"
+  );
 }
 
 function createErrorResult(

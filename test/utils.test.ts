@@ -95,12 +95,22 @@ test("utility helpers cover truncation, invocation, prompt files, depth, and mes
   expect(await Bun.file(promptFile.filePath).text()).toBe("secret");
   const originalDepth = process.env.PI_SUBAGENT_DEPTH;
   try {
-    process.env.PI_SUBAGENT_DEPTH = "not-a-number";
-    expect(getSubagentDepth()).toBe(0);
-    expect(subagentDepthEnv()).toEqual({ PI_SUBAGENT_DEPTH: "1" });
-    process.env.PI_SUBAGENT_DEPTH = "2";
-    expect(getSubagentDepth()).toBe(2);
-    expect(subagentDepthEnv()).toEqual({ PI_SUBAGENT_DEPTH: "3" });
+    const cases: Array<[string | undefined, number, string]> = [
+      [undefined, 0, "1"],
+      ["not-a-number", 0, "1"],
+      ["Infinity", 0, "1"],
+      ["-1", 0, "1"],
+      ["-0.5", 0, "1"],
+      ["0.9", 0, "1"],
+      ["1.7", 1, "2"],
+      ["2", 2, "3"],
+    ];
+    for (const [value, depth, nextDepth] of cases) {
+      if (value === undefined) delete process.env.PI_SUBAGENT_DEPTH;
+      else process.env.PI_SUBAGENT_DEPTH = value;
+      expect(getSubagentDepth()).toBe(depth);
+      expect(subagentDepthEnv()).toEqual({ PI_SUBAGENT_DEPTH: nextDepth });
+    }
   } finally {
     if (originalDepth === undefined) delete process.env.PI_SUBAGENT_DEPTH;
     else process.env.PI_SUBAGENT_DEPTH = originalDepth;

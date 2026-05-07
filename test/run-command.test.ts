@@ -8,6 +8,12 @@ import {
   patchProgressState,
 } from "../src/progress.js";
 import {
+  cancelRunJob,
+  clearRunJobsForTests,
+  getRunJob,
+  listRunJobs,
+} from "../src/run-registry.js";
+import {
   type FakeTheme,
   type RegisteredMessageRenderer,
   type SendMessageArg,
@@ -16,6 +22,198 @@ import {
 } from "./helpers.js";
 
 setupHooks();
+
+test("/run registry registers active job and removes it after internal cancellation", async () => {
+  clearRunJobsForTests();
+  const sentMessages: SendMessageArg[] = [];
+  const { tool, cwd } = await setupTest({
+    sendMessage: (msg) => sentMessages.push(msg),
+    piScript: `#!/bin/sh
+trap 'exit 0' TERM
+sleep 10 &
+wait $!
+`,
+  });
+  const runCommand = tool.registeredCommands.get("run");
+  const promise = runCommand?.handler("hang task", {
+    cwd,
+    ui: { notify: () => {} },
+  } as unknown as ExtensionCommandContext);
+  while (sentMessages.length === 0) await new Promise((r) => setTimeout(r, 5));
+  const requestId = (sentMessages[0]?.details as { requestId?: string })
+    ?.requestId;
+  if (!requestId) throw new Error("requestId missing");
+  const active = listRunJobs();
+  expect(active.map((job) => job.requestId)).toContain(requestId);
+  expect(active.find((job) => job.requestId === requestId)?.agentName).toBe(
+    "hang",
+  );
+  expect(cancelRunJob(requestId, "test cancel")).toBe(true);
+  expect(cancelRunJob(requestId, "test cancel again")).toBe(true);
+  await promise;
+  expect(listRunJobs()).toHaveLength(0);
+  expect(getProgressState(requestId)?.status).toBe("cancelled");
+});
+
+test("/run registry removes job after host signal cancellation", async () => {
+  clearRunJobsForTests();
+  const controller = new AbortController();
+  const sentMessages: SendMessageArg[] = [];
+  const { tool, cwd } = await setupTest({
+    sendMessage: (msg) => sentMessages.push(msg),
+    piScript: `#!/bin/sh
+trap 'exit 0' TERM
+sleep 10 &
+wait $!
+`,
+  });
+  const runCommand = tool.registeredCommands.get("run");
+  const promise = runCommand?.handler("hang task", {
+    cwd,
+    signal: controller.signal,
+    ui: { notify: () => {} },
+  } as unknown as ExtensionCommandContext);
+  while (listRunJobs().length === 0) await new Promise((r) => setTimeout(r, 5));
+  controller.abort();
+  await promise;
+  expect(listRunJobs()).toHaveLength(0);
+});
+
+test("/cancel-subagent lists active request ids", async () => {
+  clearRunJobsForTests();
+  const notices: string[] = [];
+  const sentMessages: SendMessageArg[] = [];
+  const { tool, cwd } = await setupTest({
+    sendMessage: (msg) => sentMessages.push(msg),
+    piScript: `#!/bin/sh
+trap 'exit 0' TERM
+sleep 10 &
+wait $!
+`,
+  });
+  const runCommand = tool.registeredCommands.get("run");
+  const cancelCommand = tool.registeredCommands.get("cancel-subagent");
+  const promise = runCommand?.handler("hang task", {
+    cwd,
+    ui: { notify: () => {} },
+  } as unknown as ExtensionCommandContext);
+  while (listRunJobs().length === 0) await new Promise((r) => setTimeout(r, 5));
+  const requestId = listRunJobs()[0]?.requestId;
+  cancelCommand?.handler("", {
+    cwd,
+    ui: { notify: (message: string) => notices.push(message) },
+  } as unknown as ExtensionCommandContext);
+  expect(notices).toEqual([`Active /run jobs: ${requestId}`]);
+  cancelRunJob(requestId ?? "", "cleanup");
+  await promise;
+});
+
+test("/cancel-subagent cancels matching request id with reason", async () => {
+  clearRunJobsForTests();
+  const notices: string[] = [];
+  const { tool, cwd } = await setupTest({
+    piScript: `#!/bin/sh
+trap 'exit 0' TERM
+sleep 10 &
+wait $!
+`,
+  });
+  const runCommand = tool.registeredCommands.get("run");
+  const cancelCommand = tool.registeredCommands.get("cancel-subagent");
+  const promise = runCommand?.handler("hang task", {
+    cwd,
+    ui: { notify: () => {} },
+  } as unknown as ExtensionCommandContext);
+  while (listRunJobs().length === 0) await new Promise((r) => setTimeout(r, 5));
+  const requestId = listRunJobs()[0]?.requestId ?? "";
+  cancelCommand?.handler(requestId, {
+    cwd,
+    ui: { notify: (message: string) => notices.push(message) },
+  } as unknown as ExtensionCommandContext);
+  expect(getRunJob(requestId)?.cancelReason).toBe(
+    "Cancelled by /cancel-subagent",
+  );
+  await promise;
+  const state = getProgressState(requestId);
+  expect(notices).toEqual([`Cancelled /run job ${requestId}.`]);
+  expect(state?.status).toBe("cancelled");
+  expect(state?.errorText).toBe("Cancelled by /cancel-subagent");
+  expect(state?.lastToolPreview).toBeUndefined();
+  expect(listRunJobs()).toHaveLength(0);
+});
+
+test("/cancel-subagent all cancels every active job", async () => {
+  clearRunJobsForTests();
+  const notices: string[] = [];
+  const { tool, cwd } = await setupTest({
+    piScript: `#!/bin/sh
+trap 'exit 0' TERM
+sleep 10 &
+wait $!
+`,
+  });
+  const runCommand = tool.registeredCommands.get("run");
+  const cancelCommand = tool.registeredCommands.get("cancel-subagent");
+  const first = runCommand?.handler("hang one", {
+    cwd,
+    ui: { notify: () => {} },
+  } as unknown as ExtensionCommandContext);
+  const second = runCommand?.handler("hang two", {
+    cwd,
+    ui: { notify: () => {} },
+  } as unknown as ExtensionCommandContext);
+  while (listRunJobs().length < 2) await new Promise((r) => setTimeout(r, 5));
+  cancelCommand?.handler("all", {
+    cwd,
+    ui: { notify: (message: string) => notices.push(message) },
+  } as unknown as ExtensionCommandContext);
+  await Promise.all([first, second]);
+  expect(notices).toEqual(["Cancelled 2 /run jobs."]);
+  expect(listRunJobs()).toHaveLength(0);
+});
+
+test("/cancel-subagent reports missing and already-finished jobs", async () => {
+  clearRunJobsForTests();
+  const notices: string[] = [];
+  const { tool, cwd } = await setupTest();
+  const runCommand = tool.registeredCommands.get("run");
+  const cancelCommand = tool.registeredCommands.get("cancel-subagent");
+  cancelCommand?.handler("missing", {
+    cwd,
+    ui: { notify: (message: string) => notices.push(message) },
+  } as unknown as ExtensionCommandContext);
+  await runCommand?.handler("hang done", {
+    cwd,
+    ui: { notify: () => {} },
+  } as unknown as ExtensionCommandContext);
+  const requestId =
+    [...(getProgressState("missing") ? ["missing"] : [])][0] ?? "finished";
+  cancelCommand?.handler(requestId, {
+    cwd,
+    ui: { notify: (message: string) => notices.push(message) },
+  } as unknown as ExtensionCommandContext);
+  cancelCommand?.handler("all", {
+    cwd,
+    ui: { notify: (message: string) => notices.push(message) },
+  } as unknown as ExtensionCommandContext);
+  expect(notices).toEqual([
+    "No active /run job missing.",
+    `No active /run job ${requestId}.`,
+    "No active /run jobs.",
+  ]);
+});
+
+test("/cancel-subagent lists no jobs when called without a target", async () => {
+  clearRunJobsForTests();
+  const notices: string[] = [];
+  const { tool, cwd } = await setupTest();
+  const cancelCommand = tool.registeredCommands.get("cancel-subagent");
+  cancelCommand?.handler("   ", {
+    cwd,
+    ui: { notify: (message: string) => notices.push(message) },
+  } as unknown as ExtensionCommandContext);
+  expect(notices).toEqual(["No active /run jobs."]);
+});
 
 test("run slash command sends one subagent-progress message and one final result", async () => {
   const sentMessages: SendMessageArg[] = [];
@@ -225,6 +423,42 @@ exit 0
   expect(state?.toolCount).toBeGreaterThan(0);
   expect(statusUpdates.length).toBeGreaterThan(0);
   expect(statusUpdates.some(([, text]) => text === undefined)).toBe(true);
+});
+
+test("/run non-debug progress consumes derived data without raw messages", async () => {
+  const sentMessages: SendMessageArg[] = [];
+  const { tool, cwd } = await setupTest({
+    sendMessage: (msg) => sentMessages.push(msg),
+    piScript: `#!/bin/sh
+printf '%s\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"toolCall","name":"bash","id":"tc-1","arguments":{"command":"ls"}}],"provider":"openai","model":"gpt-4o-mini","usage":{"input":2,"output":3,"totalTokens":5,"cost":{"total":0}}}}'
+printf '%s\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"toolCall","name":"read","id":"tc-2","arguments":{"path":"/tmp/foo"}},{"type":"toolCall","name":"read","id":"tc-2","arguments":{"path":"/tmp/foo"}}],"provider":"openai","model":"gpt-4o-mini","usage":{"input":4,"output":5,"totalTokens":9,"cost":{"total":0}}}}'
+printf '%s\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"Feedback:\\nLooks good.\\n\\nOutcome: shipped fix"}],"provider":"openai","model":"gpt-4o-mini","usage":{"input":6,"output":7,"totalTokens":13,"cost":{"total":0}}}}'
+printf '%s\n' '{"type":"agent_end"}'
+exit 0
+`,
+  });
+  const runCommand = tool.registeredCommands.get("run");
+  await runCommand?.handler("hang test task", {
+    cwd,
+    ui: { notify: () => {} },
+  } as unknown as ExtensionCommandContext);
+  const progressDetails = sentMessages[0]?.details as { requestId?: string };
+  expect(Object.keys(progressDetails)).toEqual(["requestId"]);
+  const requestId = progressDetails.requestId;
+  if (!requestId) throw new Error("requestId missing");
+  const state = getProgressState(requestId);
+  expect(state?.toolCount).toBe(2);
+  expect(state?.inputTokens).toBe(12);
+  expect(state?.outputTokens).toBe(15);
+  expect(state?.contextTokens).toBe(13);
+  expect(state?.contextWindowTokens).toBe(128000);
+  expect(state?.finalOutput).toBe("shipped fix");
+  expect(state?.lastToolPreview).toBeUndefined();
+  const resultDetails = sentMessages[1]?.details as {
+    results?: { messages?: unknown }[];
+  };
+  expect(resultDetails.results?.[0]?.messages).toBeUndefined();
+  clearProgressState(requestId);
 });
 
 test("/run progress refresh does not emit fallback notifications", async () => {

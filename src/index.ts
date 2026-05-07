@@ -3,6 +3,7 @@ import type {
   ExtensionContext,
 } from "@mariozechner/pi-coding-agent";
 import type { AgentConfig } from "./agents.js";
+import { cancelSubagentCommandHandler } from "./cancel-command.js";
 import { renderSubagentProgress } from "./progress.js";
 import {
   executeSubagent,
@@ -39,6 +40,11 @@ export default function (pi: ExtensionAPI) {
       ),
     handler: async (args, ctx) =>
       runCommandHandler(pi, ctx as ExtensionContext, args),
+  });
+  pi.registerCommand("cancel-subagent", {
+    description:
+      "Cancel active /run subagents: /cancel-subagent [requestId|all]",
+    handler: async (args, ctx) => cancelSubagentCommandHandler(ctx, args),
   });
   pi.registerTool({
     name: "subagent",

@@ -1,4 +1,4 @@
-import { StringEnum } from "@mariozechner/pi-ai";
+import { type Message, StringEnum } from "@mariozechner/pi-ai";
 import type {
   ExtensionAPI,
   ExtensionContext,
@@ -20,6 +20,7 @@ import {
   getProgressState,
   patchProgressState,
 } from "./progress.js";
+import { type RunJob, registerRunJob, removeRunJob } from "./run-registry.js";
 import {
   formatSubagentResultForParent,
   summarizeFeedbackUiFinalOutput,
@@ -62,7 +63,7 @@ export type SubagentToolResult = {
   details: SubagentDetails;
 };
 
-type DetailsOptions = { includeMessages?: boolean };
+type DetailsOptions = { includeMessages?: boolean; recentMessages?: Message[] };
 
 function createDetailsBuilder(
   agentScope: AgentScope,
@@ -84,12 +85,35 @@ function sanitizeResultDetails(
   includeDebugMessages: boolean,
   options: DetailsOptions | undefined,
 ): SingleResult {
-  const { messages, ...rest } = result;
-  const base = { ...rest, usage: { ...result.usage } };
-  if (includeDebugMessages || options?.includeMessages) {
-    return { ...base, messages: messages ? [...messages] : undefined };
-  }
-  return base;
+  const { messages, termination, stderr, ...rest } = result;
+  const includeMessages =
+    includeDebugMessages && (options?.includeMessages ?? true);
+  const progress = result.progress
+    ? {
+        ...result.progress,
+        toolCalls: result.progress.toolCalls.map((toolCall) => ({
+          ...toolCall,
+        })),
+      }
+    : undefined;
+  const base = {
+    ...rest,
+    ...(progress ? { progress } : {}),
+    usage: { ...result.usage },
+    stderr: includeDebugMessages ? stderr : "",
+  };
+  if (!includeMessages) return base;
+  return {
+    ...base,
+    messages: options?.recentMessages
+      ? [...options.recentMessages]
+      : messages
+        ? [...messages]
+        : undefined,
+    ...(includeDebugMessages && termination
+      ? { termination: { ...termination } }
+      : {}),
+  };
 }
 
 function createCanceledResult(details: SubagentDetails): SubagentToolResult {
@@ -212,10 +236,10 @@ export function sanitizeDetailsForDisplay(
 ): SubagentDetails {
   return {
     ...details,
-    results: details.results.map(({ messages, ...result }) => ({
+    results: details.results.map(({ messages, termination, ...result }) => ({
       ...result,
-      stderr: "",
-      ...(includeMessages ? { messages } : {}),
+      stderr: includeMessages ? result.stderr : "",
+      ...(includeMessages ? { messages, termination } : {}),
     })),
   };
 }
@@ -278,6 +302,26 @@ export function parseRunArgs(
   };
 }
 
+function createMergedRunSignal(
+  hostSignal: AbortSignal | undefined,
+  jobSignal: AbortSignal,
+): { signal: AbortSignal; cleanup: () => void } {
+  const relay = new AbortController();
+  const abortFromHost = () => relay.abort(hostSignal?.reason);
+  const abortFromJob = () => relay.abort(jobSignal.reason);
+  if (hostSignal?.aborted) abortFromHost();
+  else hostSignal?.addEventListener("abort", abortFromHost, { once: true });
+  if (jobSignal.aborted) abortFromJob();
+  else jobSignal.addEventListener("abort", abortFromJob, { once: true });
+  return {
+    signal: relay.signal,
+    cleanup: () => {
+      hostSignal?.removeEventListener("abort", abortFromHost);
+      jobSignal.removeEventListener("abort", abortFromJob);
+    },
+  };
+}
+
 export async function runCommandHandler(
   pi: ExtensionAPI,
   ctx: ExtensionContext,
@@ -295,6 +339,14 @@ export async function runCommandHandler(
     return;
   }
   const requestId = crypto.randomUUID();
+  const controller = new AbortController();
+  const job: RunJob = registerRunJob({
+    requestId,
+    agentName,
+    controller,
+    startedAt: Date.now(),
+  });
+  const mergedSignal = createMergedRunSignal(ctx.signal, job.controller.signal);
   createProgressState(requestId, agentName, task);
   // Commands lack a public mutable tool-result lifecycle. Emit one
   // progress entry only; later session renders read final state by
@@ -315,20 +367,19 @@ export async function runCommandHandler(
     patchProgressFromDetails(requestId, result.details, seenToolCallIds);
     requestProgressRender();
   };
-  const signal = ctx.signal ?? new AbortController().signal;
   try {
     const result = await executeSubagent(
       pi,
       ctx,
       { agent: agentName, task, debug },
-      signal,
+      mergedSignal.signal,
       onUpdate,
     );
     const text = getSubagentText(result);
     const resultText = getResultDisplayText(result);
     const feedbackText = getFeedbackSummaryText(result);
     if (text.startsWith("Canceled")) {
-      cancelProgressState(requestId, text);
+      cancelProgressState(requestId, job.cancelReason ?? text);
       requestProgressRender();
     } else {
       finalizeProgressState(requestId, feedbackText);
@@ -342,13 +393,16 @@ export async function runCommandHandler(
     }
   } catch (error) {
     const errorMsg = error instanceof Error ? error.message : String(error);
-    if (signal.aborted) {
-      cancelProgressState(requestId, errorMsg);
+    if (mergedSignal.signal.aborted) {
+      cancelProgressState(requestId, job.cancelReason ?? errorMsg);
     } else {
       failProgressState(requestId, errorMsg);
     }
     requestProgressRender();
     ctx.ui.notify(errorMsg, "error");
+  } finally {
+    mergedSignal.cleanup();
+    removeRunJob(requestId);
   }
 }
 

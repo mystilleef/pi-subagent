@@ -136,7 +136,8 @@ export async function resolveAgentSkillArgs(
 
 export function getSubagentDepth(): number {
   const d = Number(process.env.PI_SUBAGENT_DEPTH ?? "0");
-  return Number.isFinite(d) ? d : 0;
+  if (!Number.isFinite(d) || d < 0) return 0;
+  return Math.floor(d);
 }
 
 export function subagentDepthEnv(): Record<string, string> {

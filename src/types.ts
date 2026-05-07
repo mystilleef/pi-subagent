@@ -1,5 +1,6 @@
 import type { Message } from "@mariozechner/pi-ai";
 import type { AgentScope } from "./agents.js";
+import type { TerminationMetadata } from "./termination.js";
 
 export interface UsageStats {
   input: number;
@@ -10,6 +11,17 @@ export interface UsageStats {
   contextTokens: number;
   contextWindowTokens?: number;
   turns: number;
+}
+
+export interface StreamingProgressToolCall {
+  id: string;
+  preview: string;
+}
+
+export interface StreamingProgress {
+  activityText?: string;
+  toolCalls: StreamingProgressToolCall[];
+  lastToolPreview?: string;
 }
 
 export interface SingleResult {
@@ -24,7 +36,9 @@ export interface SingleResult {
   stopReason?: string;
   errorMessage?: string;
   durationMs?: number;
+  progress?: StreamingProgress;
   messages?: Message[];
+  termination?: TerminationMetadata;
 }
 
 export interface SubagentDetails {

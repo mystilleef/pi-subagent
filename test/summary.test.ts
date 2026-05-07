@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 import {
   extractSemanticToolTarget,
+  filterOutputLines,
   isFailureDiagnosticLine,
   isTranscriptNoiseLine,
 } from "../src/normalize.js";
@@ -40,41 +41,23 @@ test("parent formatter returns all non-noise lines", () => {
   ).toBe("line one\nline two\nline three\nline four");
 });
 
-test("parent formatter filters transcript noise lines", () => {
-  expect(
-    formatSubagentResultForParent(
-      result({
-        finalOutput:
-          "Hello! I can help.\nApologies for the delay.\nActual result here.",
-      }),
-    ),
-  ).toBe("Actual result here.");
-  expect(
-    formatSubagentResultForParent(
-      result({
-        finalOutput:
-          "Hi there\nHi, there\nHigh severity issue\nhistory\nhiatus",
-      }),
-    ),
-  ).toBe("High severity issue\nhistory\nhiatus");
+test("parent formatter preserves transcript-like and diagnostic lines", () => {
+  const output =
+    "Hello! I can help.\nError: bad import\nFailed: command exited\nTraceback (most recent call last):\nat Object.<anonymous> (/tmp/test.ts:1:1)\nActual result here.";
+  expect(formatSubagentResultForParent(result({ finalOutput: output }))).toBe(
+    output,
+  );
 });
 
-test("parent formatter filters failure diagnostic lines", () => {
-  expect(
-    formatSubagentResultForParent(
-      result({
-        finalOutput:
-          "at Object.<anonymous> (/tmp/test.ts:1:1)\nError: bad import\nMigration applied successfully.",
-      }),
-    ),
-  ).toBe("Migration applied successfully.");
+test("parent formatter preserves blank lines and surrounding whitespace", () => {
+  const output = "  \n\n  padded result  \n\n";
+  expect(formatSubagentResultForParent(result({ finalOutput: output }))).toBe(
+    output,
+  );
 });
 
 test("parent formatter returns empty string for empty output", () => {
   expect(formatSubagentResultForParent(result({ finalOutput: "" }))).toBe("");
-  expect(
-    formatSubagentResultForParent(result({ finalOutput: "  \n  \n  " })),
-  ).toBe("");
 });
 
 test("parent formatter returns plain prose without label extraction", () => {
@@ -179,6 +162,22 @@ test("isFailureDiagnosticLine identifies diagnostics correctly", () => {
     true,
   );
   expect(isFailureDiagnosticLine("Migration applied.")).toBe(false);
+});
+
+test("filterOutputLines keeps UI-only filtering behavior", () => {
+  expect(
+    filterOutputLines(
+      "Hello! I can help.\nApologies for the delay.\nActual result here.",
+    ),
+  ).toEqual(["Actual result here."]);
+  expect(
+    filterOutputLines(
+      "at Object.<anonymous> (/tmp/test.ts:1:1)\nError: bad import\nMigration applied successfully.",
+    ),
+  ).toEqual(["Migration applied successfully."]);
+  expect(
+    filterOutputLines("Hi there\nHigh severity issue\nhistory\nhiatus"),
+  ).toEqual(["High severity issue", "history", "hiatus"]);
 });
 
 test("extractSemanticToolTarget hides unknown args unless forced", () => {

@@ -1,4 +1,4 @@
-import { filterOutputLines, normalizeSummaryValue } from "./normalize.js";
+import { normalizeSummaryValue } from "./normalize.js";
 import type { SingleResult } from "./types.js";
 
 export const FEEDBACK_UI_SUMMARY_MAX_CHARS = 120;
@@ -20,7 +20,7 @@ const FEEDBACK_UI_LABEL_PATTERN =
   /^\s*(outcome|project summary|result|summary|status|output|message|error|check):\s*/i;
 
 export function formatSubagentResultForParent(result: SingleResult): string {
-  return filterOutputLines(result.finalOutput).join("\n");
+  return result.finalOutput;
 }
 
 export function summarizeFeedbackUiFinalOutput(finalOutput: string): string {
