@@ -1,0 +1,66 @@
+import { expect, test } from "bun:test";
+import type { AgentConfig } from "../src/agents.js";
+import { runSingleAgent } from "../src/process.js";
+import type { SubagentDetails } from "../src/types.js";
+import { setupHooks, setupTest } from "./helpers.js";
+
+setupHooks();
+
+const makeDetails = (results: SubagentDetails["results"]): SubagentDetails => ({
+  mode: "single",
+  agentScope: "both",
+  projectAgentsDir: null,
+  results,
+});
+
+const hangAgent: AgentConfig = {
+  name: "hang",
+  description: "Test agent",
+  thinking: "off",
+  systemPrompt: "Test agent prompt.",
+  source: "user",
+  filePath: "hang.md",
+};
+
+test("runSingleAgent reports unknown agents with available names", async () => {
+  const result = await runSingleAgent(
+    "/tmp",
+    [hangAgent],
+    "missing",
+    "task",
+    undefined,
+    undefined,
+    makeDetails,
+    undefined,
+    "off",
+  );
+  expect(result.exitCode).toBe(1);
+  expect(result.agentSource).toBe("unknown");
+  expect(result.stderr).toBe(
+    'Unknown agent: "missing". Available agents: "hang".',
+  );
+});
+
+test("runSingleAgent cancels cleanly with nonstandard abort reason", async () => {
+  const { cwd } = await setupTest({
+    piScript: `#!/bin/sh
+trap 'exit 0' TERM
+sleep 10 &
+wait $!
+`,
+  });
+  const controller = new AbortController();
+  const promise = runSingleAgent(
+    cwd,
+    [hangAgent],
+    "hang",
+    "task",
+    controller.signal,
+    undefined,
+    makeDetails,
+    undefined,
+    "off",
+  );
+  controller.abort(null);
+  await expect(promise).rejects.toThrow("Subagent was aborted");
+});

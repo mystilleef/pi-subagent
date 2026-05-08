@@ -103,6 +103,30 @@ test("subagent tool result appears in sent messages after child exits", async ()
   expect(sentMessages.at(-1)?.content).toBe("done");
 });
 
+test("subagent tool finishes when child exits with inherited open streams", async () => {
+  const sentMessages: SendMessageArg[] = [];
+  const { tool, cwd } = await setupTest({
+    sendMessage: (msg) => sentMessages.push(msg),
+    piScript: `#!/bin/sh
+printf '%s\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"done"}],"api":"fake","provider":"fake","model":"fake","usage":{"input":1,"output":1,"totalTokens":2,"cost":{"total":0}}}}'
+printf '%s\n' '{"type":"agent_end","messages":[]}'
+sleep 10 &
+exit 0
+`,
+  });
+  await tool.execute(
+    "test-tool-call",
+    { agent: "hang", task: "orphaned-streams" },
+    undefined,
+    undefined,
+    { cwd, hasUI: false } as unknown as ExtensionContext,
+  );
+  await waitForSentMessageCount(sentMessages, 2);
+  expect(sentMessages.at(-1)?.content).toBe("done");
+  const details = sentMessages.at(-1)?.details as SubagentDetails;
+  expect(details.results[0]?.termination).toBeUndefined();
+});
+
 test("subagent tool accepts omitted task", async () => {
   const { tool, cwd } = await setupTest({
     piScript: `#!/bin/sh
@@ -144,7 +168,10 @@ exit 0
   const argsText = await Bun.file(path.join(cwd, "args.txt")).text();
   expect(argsText).toContain("Task: ship it");
   expect(argsText).toContain(
-    "Use context, and your discretion, to decide whether, or not, to summarize task result.",
+    "Don't summarize tasks that have a standardized result output.",
+  );
+  expect(argsText).toContain(
+    "use context to decide whether to summarize task result.",
   );
   expect(argsText).toContain(
     "Use brief, precise, concise prose while maintaining clarity.",
@@ -198,24 +225,69 @@ esac
 exit 0
 `,
   });
-  const controller = new AbortController();
   await tool.execute(
     "test-tool-call",
-    { agent: "hang", task: "agent-end-no-exit" },
-    controller.signal,
+    { agent: "hang", task: "agent-end-no-exit", debug: true },
+    undefined,
     undefined,
     { cwd, hasUI: false } as unknown as ExtensionContext,
   );
-  await Promise.race([
-    waitForSentMessageCount(sentMessages, 2),
-    new Promise<void>((_, reject) =>
-      setTimeout(() => {
-        controller.abort();
-        reject(new Error("timed out"));
-      }, 500),
-    ),
-  ]);
+  await waitForSentMessageCount(sentMessages, 2);
   expect(sentMessages.at(-1)?.content).toBe("done");
+  const details = sentMessages.at(-1)?.details as SubagentDetails;
+  expect(details.results[0]?.termination?.cancelReason).toBe(
+    "agent_end_timeout",
+  );
+});
+
+test("subagent tool hides agent_end_timeout metadata outside debug", async () => {
+  const sentMessages: SendMessageArg[] = [];
+  const { tool, cwd } = await setupTest({
+    sendMessage: (msg) => sentMessages.push(msg),
+    piScript: `#!/bin/sh
+printf '%s\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"done"}],"api":"fake","provider":"fake","model":"fake","usage":{"input":1,"output":1,"totalTokens":2,"cost":{"total":0}}}}'
+printf '%s\n' '{"type":"agent_end","messages":[]}'
+sleep 10
+`,
+  });
+  await tool.execute(
+    "test-tool-call",
+    { agent: "hang", task: "agent-end-no-exit" },
+    undefined,
+    undefined,
+    { cwd, hasUI: false } as unknown as ExtensionContext,
+  );
+  await waitForSentMessageCount(sentMessages, 2);
+  const details = sentMessages.at(-1)?.details as SubagentDetails;
+  expect(sentMessages.at(-1)?.content).toBe("done");
+  expect(details.results[0]?.messages).toBeUndefined();
+  expect(details.results[0]?.termination).toBeUndefined();
+  expect(details.results[0]?.stderr).toBe("");
+});
+
+test("subagent tool fails agent_end timeout with empty transcript", async () => {
+  const sentMessages: SendMessageArg[] = [];
+  const { tool, cwd } = await setupTest({
+    sendMessage: (msg) => sentMessages.push(msg),
+    piScript: `#!/bin/sh
+printf '%s\n' '{"type":"agent_end","messages":[]}'
+sleep 10
+`,
+  });
+  await tool.execute(
+    "test-tool-call",
+    { agent: "hang", task: "agent-end-no-output", debug: true },
+    undefined,
+    undefined,
+    { cwd, hasUI: false } as unknown as ExtensionContext,
+  );
+  await waitForSentMessageCount(sentMessages, 2);
+  expect(sentMessages.at(-1)?.content).toBe("(failed)");
+  const details = sentMessages.at(-1)?.details as SubagentDetails;
+  expect(details.results[0]?.exitCode).toBe(1);
+  expect(details.results[0]?.termination?.cancelReason).toBe(
+    "agent_end_timeout",
+  );
 });
 
 test("subagent tool falls back to agent_end messages", async () => {
@@ -669,6 +741,91 @@ exit 0
   expect(getProgressState(requestId)?.status).toBe("success");
 });
 
+test("subagent tool preserves stopReason error after agent_end timeout", async () => {
+  const sentMessages: SendMessageArg[] = [];
+  const { binDir, cwd } = await setupFakePi();
+  const messageEnd = JSON.stringify({
+    type: "message_end",
+    message: {
+      role: "assistant",
+      content: [{ type: "text", text: "looks successful" }],
+      stopReason: "error",
+    },
+  });
+  await writeFile(
+    path.join(binDir, "pi"),
+    `#!/bin/sh
+trap 'exit 0' TERM
+printf '%s\n' ${shellQuote(messageEnd)}
+printf '%s\n' '{"type":"agent_end"}'
+sleep 10 &
+wait $!
+`,
+  );
+  await chmod(path.join(binDir, "pi"), 0o755);
+  const tool = getSubagentTool({
+    sendMessage: (msg) => sentMessages.push(msg),
+  });
+  await tool.execute(
+    "test-tool-call",
+    { agent: "hang", task: "timeout", debug: true },
+    undefined,
+    undefined,
+    { cwd, hasUI: false } as unknown as ExtensionContext,
+  );
+  await waitFor(() => {
+    const requestId = (sentMessages[0]?.details as { requestId?: string })
+      ?.requestId;
+    return requestId && getProgressState(requestId)?.status === "error"
+      ? true
+      : undefined;
+  }, "error state after stopReason timeout");
+  const resultDetails = sentMessages.at(-1)?.details as SubagentDetails;
+  expect(resultDetails.results[0]?.stopReason).toBe("error");
+  expect(resultDetails.results[0]?.termination?.cancelReason).toBe(
+    "agent_end_timeout",
+  );
+});
+
+test("subagent tool fails agent_end timeout with tool-only transcript", async () => {
+  const sentMessages: SendMessageArg[] = [];
+  const { binDir, cwd } = await setupFakePi();
+  await writeFile(
+    path.join(binDir, "pi"),
+    `#!/bin/sh
+trap 'exit 0' TERM
+printf '%s\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"toolCall","name":"bash","id":"tc-1","arguments":{"command":"ls"}}]}}'
+printf '%s\n' '{"type":"agent_end"}'
+sleep 10 &
+wait $!
+`,
+  );
+  await chmod(path.join(binDir, "pi"), 0o755);
+  const tool = getSubagentTool({
+    sendMessage: (msg) => sentMessages.push(msg),
+  });
+  await tool.execute(
+    "test-tool-call",
+    { agent: "hang", task: "timeout", debug: true },
+    undefined,
+    undefined,
+    { cwd, hasUI: false } as unknown as ExtensionContext,
+  );
+  await waitFor(() => {
+    const requestId = (sentMessages[0]?.details as { requestId?: string })
+      ?.requestId;
+    return requestId && getProgressState(requestId)?.status === "error"
+      ? true
+      : undefined;
+  }, "error state after missing output timeout");
+  const resultDetails = sentMessages.at(-1)?.details as SubagentDetails;
+  expect(resultDetails.results[0]?.exitCode).toBe(1);
+  expect(resultDetails.results[0]?.finalOutput).toBe("");
+  expect(resultDetails.results[0]?.termination?.cancelReason).toBe(
+    "agent_end_timeout",
+  );
+});
+
 test("subagent tool reports depth limit synchronously via sent messages", async () => {
   const sentMessages: SendMessageArg[] = [];
   const { cwd } = await setupFakePi();
@@ -814,7 +971,7 @@ exit 0
   await waitForSentMessageCount(sentMessages2, 2);
   const debugDetails = sentMessages2.at(-1)?.details as SubagentDetails;
   expect(debugDetails.results[0]?.messages).toHaveLength(2);
-  expect(debugDetails.results[0]?.termination?.cancelReason).toBe("agent_end");
+  expect(debugDetails.results[0]?.termination).toBeUndefined();
   expect(debugDetails.results[0]?.stderr).toContain("STDERR_DEBUG");
   expect(JSON.stringify(debugDetails.results[0]?.messages)).toContain(
     "SECRET_DEBUG",

@@ -26,6 +26,7 @@ import {
 } from "./utils.js";
 
 const MAX_STDERR_BYTES = 10_000;
+const AGENT_END_GRACE_MS = 250;
 
 type RuntimeResult = SingleResult & { messages: Message[] };
 
@@ -42,7 +43,9 @@ function appendWithByteLimit(
 }
 // - Summarize the result of your task for the main agent.
 const RESULT_FORMAT_INSTRUCTIONS = `
-- Use context, and your discretion, to decide whether, or not, to summarize task result.
+- Don't summarize tasks that have a standardized result output.
+- For tasks that don't have a standard result output,
+  use context to decide whether to summarize task result.
 - Use brief, precise, concise prose while maintaining clarity.
 - Optimize prose for token and context efficiency.
 - Add an empty line between paragraphs, headings and sections.
@@ -76,6 +79,28 @@ function getAbortReason(signal: AbortSignal): string {
   if (reason instanceof Error && reason.message) return reason.message;
   if (typeof reason === "string" && reason.trim()) return reason;
   return "abort";
+}
+
+function hasCompletedAgentOutput(result: RuntimeResult): boolean {
+  if (result.finalOutput.trim()) return true;
+  return result.messages.some(
+    (msg) =>
+      msg.role === "assistant" &&
+      msg.content.some(
+        (part) => part.type === "text" && Boolean(part.text?.trim()),
+      ),
+  );
+}
+
+function getAgentEndTimeoutExitCode(
+  result: RuntimeResult,
+  spawnError: Error | undefined,
+): number | undefined {
+  if (result.termination?.cancelReason !== "agent_end_timeout") return;
+  if (spawnError) return;
+  if (result.stopReason === "error" || result.stopReason === "aborted") return;
+  if (result.errorMessage?.trim()) return;
+  return hasCompletedAgentOutput(result) ? 0 : 1;
 }
 
 async function waitForSubagentProcess(
@@ -267,6 +292,12 @@ export async function runSingleAgent(
     });
     let wasAborted = false;
     let terminationPromise: Promise<unknown> | undefined;
+    let agentEndGraceTimer: ReturnType<typeof setTimeout> | undefined;
+    const clearAgentEndGraceTimer = () => {
+      if (!agentEndGraceTimer) return;
+      clearTimeout(agentEndGraceTimer);
+      agentEndGraceTimer = undefined;
+    };
     const requestTermination = (reason: string) => {
       terminationPromise ??= terminateChildProcess(proc, {
         ...terminateOptions,
@@ -324,7 +355,13 @@ export async function runSingleAgent(
             for (const msg of event.messages as Message[]) addMessage(msg);
             emitUpdate();
           }
-          void requestTermination("agent_end");
+          if (!agentEndGraceTimer && !terminationPromise) {
+            agentEndGraceTimer = setTimeout(() => {
+              agentEndGraceTimer = undefined;
+              void requestTermination("agent_end_timeout");
+            }, AGENT_END_GRACE_MS);
+            agentEndGraceTimer.unref?.();
+          }
         }
       } catch {
         /* ignore invalid JSON */
@@ -346,6 +383,7 @@ export async function runSingleAgent(
     if (signal) {
       onAbort = () => {
         wasAborted = true;
+        clearAgentEndGraceTimer();
         void requestTermination(getAbortReason(signal));
       };
       if (signal.aborted) onAbort();
@@ -354,14 +392,23 @@ export async function runSingleAgent(
     try {
       currentResult.exitCode = (await processDone) ?? 0;
       currentResult.durationMs = Date.now() - startedAt;
+      clearAgentEndGraceTimer();
       if (terminationPromise) await terminationPromise;
       if (spawnError) currentResult.exitCode = 1;
       if (detectMessageError(currentResult.messages)) {
         currentResult.errorMessage ||= TOOL_RESULT_FAILED_MESSAGE;
       }
+      const agentEndTimeoutExitCode = getAgentEndTimeoutExitCode(
+        currentResult,
+        spawnError,
+      );
+      if (agentEndTimeoutExitCode !== undefined) {
+        currentResult.exitCode = agentEndTimeoutExitCode;
+      }
       if (wasAborted) throw new Error("Subagent was aborted");
       return currentResult;
     } finally {
+      clearAgentEndGraceTimer();
       if (signal && onAbort) signal.removeEventListener("abort", onAbort);
     }
   } finally {

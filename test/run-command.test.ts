@@ -848,6 +848,72 @@ exit 0
   );
 });
 
+test("/run success after agent_end_timeout keeps final content and hides metadata", async () => {
+  const sentMessages: SendMessageArg[] = [];
+  const finalOutput = "Outcome: completed after timeout";
+  const { tool, cwd } = await setupTest({
+    sendMessage: (msg) => sentMessages.push(msg),
+    piScript: `#!/bin/sh
+printf '%s\n' '${JSON.stringify({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: finalOutput }], usage: { input: 1, output: 1, totalTokens: 2, cost: { total: 0 } } } })}'
+printf '%s\n' '{"type":"agent_end","messages":[]}'
+sleep 10
+`,
+  });
+  const runCommand = tool.registeredCommands.get("run");
+  await runCommand?.handler("hang test task", {
+    cwd,
+    ui: { notify: () => {} },
+  } as unknown as ExtensionCommandContext);
+  await waitForSentMessageCount(sentMessages, 2);
+  expect(sentMessages.at(-1)?.content).toBe(finalOutput);
+  const details = sentMessages.at(-1)?.details as {
+    results?: {
+      finalOutput?: string;
+      messages?: unknown;
+      termination?: unknown;
+    }[];
+  };
+  expect(details.results?.[0]?.finalOutput).toBe(finalOutput);
+  expect(details.results?.[0]?.messages).toBeUndefined();
+  expect(details.results?.[0]?.termination).toBeUndefined();
+  const requestId = (sentMessages[0]?.details as { requestId?: string })
+    ?.requestId;
+  if (!requestId) throw new Error("requestId missing");
+  expect(getProgressState(requestId)?.status).toBe("success");
+  expect(getProgressState(requestId)?.finalOutput).toBe(
+    "completed after timeout",
+  );
+});
+
+test("/run debug exposes agent_end_timeout metadata", async () => {
+  const sentMessages: SendMessageArg[] = [];
+  const { tool, cwd } = await setupTest({
+    sendMessage: (msg) => sentMessages.push(msg),
+    piScript: `#!/bin/sh
+printf '%s\n' '${JSON.stringify({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "Outcome: debug timeout" }], usage: { input: 1, output: 1, totalTokens: 2, cost: { total: 0 } } } })}'
+printf '%s\n' '{"type":"agent_end","messages":[]}'
+sleep 10
+`,
+  });
+  const runCommand = tool.registeredCommands.get("run");
+  await runCommand?.handler("--debug hang test task", {
+    cwd,
+    ui: { notify: () => {} },
+  } as unknown as ExtensionCommandContext);
+  await waitForSentMessageCount(sentMessages, 2);
+  const details = sentMessages.at(-1)?.details as {
+    results?: {
+      termination?: { cancelReason?: string };
+      messages?: unknown[];
+    }[];
+  };
+  expect(sentMessages.at(-1)?.content).toBe("Outcome: debug timeout");
+  expect(details.results?.[0]?.messages).toHaveLength(1);
+  expect(details.results?.[0]?.termination?.cancelReason).toBe(
+    "agent_end_timeout",
+  );
+});
+
 test("/run debug includes child messages in final details", async () => {
   const sentMessages: SendMessageArg[] = [];
   const { tool, cwd } = await setupTest({
