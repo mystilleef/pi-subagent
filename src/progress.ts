@@ -1,6 +1,6 @@
-import type { ThemeColor } from "@mariozechner/pi-coding-agent";
-import type { Component } from "@mariozechner/pi-tui";
-import { Text } from "@mariozechner/pi-tui";
+import type { ThemeColor } from "@earendil-works/pi-coding-agent";
+import type { Component } from "@earendil-works/pi-tui";
+import { Text } from "@earendil-works/pi-tui";
 import {
   extractSemanticToolTarget,
   filterOutputLines,

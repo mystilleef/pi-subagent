@@ -3,11 +3,11 @@ import type {
   AgentToolResult,
   ExtensionCommandContext,
   ExtensionContext,
-} from "@mariozechner/pi-coding-agent";
+} from "@earendil-works/pi-coding-agent";
 import {
   resetCapabilitiesCache,
   setCapabilities,
-} from "@mariozechner/pi-tui/dist/terminal-image.js";
+} from "@earendil-works/pi-tui/dist/terminal-image.js";
 import { getProgressState } from "../src/progress.js";
 import type { SubagentDetails } from "../src/types.js";
 import {

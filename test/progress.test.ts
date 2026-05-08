@@ -1,6 +1,6 @@
 import { afterEach, expect, test } from "bun:test";
-import type { Message } from "@mariozechner/pi-ai";
-import type { ThemeColor } from "@mariozechner/pi-coding-agent";
+import type { Message } from "@earendil-works/pi-ai";
+import type { ThemeColor } from "@earendil-works/pi-coding-agent";
 import {
   cancelProgressState,
   clearProgressState,

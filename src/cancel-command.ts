@@ -1,4 +1,4 @@
-import type { ExtensionCommandContext } from "@mariozechner/pi-coding-agent";
+import type { ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import { cancelAllRunJobs, cancelRunJob, listRunJobs } from "./run-registry.js";
 
 const CANCEL_REASON = "Cancelled by /cancel-subagent";

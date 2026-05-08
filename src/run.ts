@@ -1,8 +1,8 @@
-import { type Message, StringEnum } from "@mariozechner/pi-ai";
+import { type Message, StringEnum } from "@earendil-works/pi-ai";
 import type {
   ExtensionAPI,
   ExtensionContext,
-} from "@mariozechner/pi-coding-agent";
+} from "@earendil-works/pi-coding-agent";
 import { type Static, Type } from "typebox";
 import {
   type AgentConfig,

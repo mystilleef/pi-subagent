@@ -1,7 +1,7 @@
 import type {
   ExtensionAPI,
   ExtensionContext,
-} from "@mariozechner/pi-coding-agent";
+} from "@earendil-works/pi-coding-agent";
 import type { AgentConfig } from "./agents.js";
 import { cancelSubagentCommandHandler } from "./cancel-command.js";
 import { renderSubagentProgress } from "./progress.js";

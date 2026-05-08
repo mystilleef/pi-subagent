@@ -1,12 +1,12 @@
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import type { Message } from "@mariozechner/pi-ai";
+import type { Message } from "@earendil-works/pi-ai";
 import {
   DefaultResourceLoader,
   getAgentDir,
   withFileMutationQueue,
-} from "@mariozechner/pi-coding-agent";
+} from "@earendil-works/pi-coding-agent";
 
 export const DEFAULT_MAX_OUTPUT_BYTES = 50_000;
 export const DEFAULT_MAX_OUTPUT_LINES = 500;

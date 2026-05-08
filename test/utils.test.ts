@@ -2,8 +2,8 @@ import { expect, test } from "bun:test";
 import { mkdir, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import type { Message } from "@mariozechner/pi-ai";
-import { DefaultResourceLoader } from "@mariozechner/pi-coding-agent";
+import type { Message } from "@earendil-works/pi-ai";
+import { DefaultResourceLoader } from "@earendil-works/pi-coding-agent";
 import type { AgentConfig } from "../src/agents.js";
 import { discoverAgents, formatAgentList } from "../src/agents.js";
 import {

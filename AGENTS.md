@@ -12,9 +12,9 @@ with separate context windows.
 - **Language:** TypeScript, ES modules.
 - **Pi integration:** `package.json` registers `./src/index.ts` through
   `pi.extensions`.
-- **Core dependencies:** `@mariozechner/pi-agent-core`,
-  `@mariozechner/pi-ai`, `@mariozechner/pi-coding-agent`,
-  `@mariozechner/pi-tui`, and `typebox`.
+- **Core dependencies:** `@earendil-works/pi-agent-core`,
+  `@earendil-works/pi-ai`, `@earendil-works/pi-coding-agent`,
+  `@earendil-works/pi-tui`, and `typebox`.
 - **Tooling:** Biome, TypeScript, and Bun test runner.
 
 ## Architecture

@@ -1,8 +1,8 @@
 import { expect, test } from "bun:test";
 import { chmod, writeFile } from "node:fs/promises";
 import path from "node:path";
-import type { TextContent } from "@mariozechner/pi-ai";
-import type { ExtensionContext } from "@mariozechner/pi-coding-agent";
+import type { TextContent } from "@earendil-works/pi-ai";
+import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { getProgressState } from "../src/progress.js";
 import { listRunJobs } from "../src/run-registry.js";
 import type { SubagentDetails } from "../src/types.js";

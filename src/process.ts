@@ -1,7 +1,7 @@
 import { type ChildProcess, spawn } from "node:child_process";
 import * as fs from "node:fs";
 import readline from "node:readline";
-import { getModel, type Message } from "@mariozechner/pi-ai";
+import { getModel, type Message } from "@earendil-works/pi-ai";
 import type { AgentConfig, ThinkingLevel } from "./agents.js";
 import { makeToolPreview } from "./progress.js";
 import {

@@ -2,14 +2,14 @@ import { afterEach, beforeEach } from "bun:test";
 import { chmod, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import type { AgentToolUpdateCallback } from "@mariozechner/pi-agent-core";
+import type { AgentToolUpdateCallback } from "@earendil-works/pi-agent-core";
 import type {
   AgentToolResult,
   ExtensionAPI,
   ExtensionContext,
   ThemeColor,
   ToolDefinition,
-} from "@mariozechner/pi-coding-agent";
+} from "@earendil-works/pi-coding-agent";
 import registerSubagentExtension, {
   resetAgentCache,
   type SubagentParams,
