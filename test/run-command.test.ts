@@ -385,40 +385,6 @@ exit 0
   ]);
 });
 
-test("/run worker scheduler falls back when setImmediate is unavailable", async () => {
-  clearRunJobsForTests();
-  const sentMessages: SendMessageArg[] = [];
-  const globalWithImmediate = globalThis as unknown as {
-    setImmediate: typeof setImmediate | undefined;
-  };
-  const originalSetImmediate = globalWithImmediate.setImmediate;
-  const { tool, cwd } = await setupTest({
-    sendMessage: (msg) => sentMessages.push(msg),
-    piScript: `#!/bin/sh
-printf '%s\n' fallback-ran > fallback-ran.txt
-exit 0
-`,
-  });
-  const runCommand = tool.registeredCommands.get("run");
-  try {
-    globalWithImmediate.setImmediate = undefined;
-    await runCommand?.handler("hang task", {
-      cwd,
-      ui: { notify: () => {} },
-    } as unknown as ExtensionCommandContext);
-    await waitForSentMessageCount(sentMessages, 2);
-  } finally {
-    globalWithImmediate.setImmediate = originalSetImmediate;
-  }
-  expect(await Bun.file(path.join(cwd, "fallback-ran.txt")).exists()).toBe(
-    true,
-  );
-  expect(sentMessages.map((msg) => msg.customType)).toEqual([
-    "subagent-progress",
-    "subagent-result",
-  ]);
-});
-
 test("run slash command sends one subagent-progress message and one final result", async () => {
   const sentMessages: SendMessageArg[] = [];
   const { tool, cwd } = await setupTest({

@@ -195,30 +195,6 @@ export function getSubagentTool(overrides?: {
   });
 }
 
-export async function executeSubagent(task: string, signal?: AbortSignal) {
-  const { cwd } = await setupFakePi();
-  const tool = getSubagentTool();
-  return tool.execute(
-    "test-tool-call",
-    { agent: "hang", task },
-    signal,
-    undefined,
-    { cwd, hasUI: false } as unknown as ExtensionContext,
-  );
-}
-
-export function timeoutAfter(
-  ms: number,
-  onTimeout: () => void,
-): Promise<never> {
-  return new Promise((_resolve, reject) => {
-    setTimeout(() => {
-      onTimeout();
-      reject(new Error(`timed out after ${ms}ms`));
-    }, ms);
-  });
-}
-
 export function setupHooks() {
   beforeEach(() => {
     tempDirs = [];

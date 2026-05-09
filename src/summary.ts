@@ -1,4 +1,4 @@
-import { normalizeSummaryValue } from "./normalize.js";
+import { normalizeTerminalSentence } from "./normalize.js";
 import type { SingleResult } from "./types.js";
 
 export const FEEDBACK_UI_SUMMARY_MAX_CHARS = 120;
@@ -32,9 +32,7 @@ export function summarizeFeedbackUiFinalOutput(finalOutput: string): string {
     candidates.find(({ label }) => label === "outcome") ??
     candidates.find(({ label }) => label) ??
     candidates[0];
-  return truncateFeedbackUiSummary(
-    (selected?.text ?? "completed task").toLowerCase(),
-  );
+  return (selected?.text ?? "completed task").toLowerCase();
 }
 
 type FeedbackUiSummaryCandidate = {
@@ -45,20 +43,11 @@ type FeedbackUiSummaryCandidate = {
 function normalizeFeedbackUiSummaryCandidate(
   candidate: string,
 ): FeedbackUiSummaryCandidate {
-  const unwrapped = candidate
-    .replace(/^\s*```[\w-]*\s*/, "")
-    .replace(/\s*```\s*$/, "")
-    .replace(/^\s*(?:[-*+]\s+|\d+[.)]\s+|>\s*)+/, "")
-    .replace(/^\s*#{1,6}\s+/, "")
-    .replace(/^\s*`{1,3}([^`]+)`{1,3}\s*$/, "$1")
-    .replace(/^\s*\*\*([^*]+)\*\*\s*$/, "$1")
-    .replace(/^\s*__([^_]+)__\s*$/, "$1");
   const label =
-    unwrapped.match(FEEDBACK_UI_LABEL_PATTERN)?.[1]?.toLowerCase() ?? null;
-  const text = normalizeSummaryValue(
-    normalizeSummaryValue(
-      unwrapped.replace(FEEDBACK_UI_LABEL_PATTERN, ""),
-    ).replace(/[\s.!,;:—–-]+$/g, ""),
+    candidate.match(FEEDBACK_UI_LABEL_PATTERN)?.[1]?.toLowerCase() ?? null;
+  const text = normalizeTerminalSentence(
+    candidate,
+    FEEDBACK_UI_SUMMARY_MAX_CHARS,
   );
   return { text, label };
 }
@@ -71,10 +60,4 @@ function hasSummaryValue(candidate: string): boolean {
     /[a-z]/i.test(candidate) &&
     /\s/.test(candidate)
   );
-}
-
-function truncateFeedbackUiSummary(value: string): string {
-  const characters = Array.from(value);
-  if (characters.length <= FEEDBACK_UI_SUMMARY_MAX_CHARS) return value;
-  return `${characters.slice(0, FEEDBACK_UI_SUMMARY_MAX_CHARS - 1).join("")}…`;
 }

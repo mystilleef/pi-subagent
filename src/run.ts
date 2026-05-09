@@ -19,7 +19,6 @@ import {
   failProgressState,
   finalizeProgressState,
   getProgressState,
-  patchProgressState,
 } from "./progress.js";
 import { type RunJob, registerRunJob, removeRunJob } from "./run-registry.js";
 import {
@@ -69,7 +68,6 @@ type DetailsBuilder = (
   results: SingleResult[],
   options?: DetailsOptions,
 ) => SubagentDetails;
-type MergedRunSignal = { signal: AbortSignal; cleanup: () => void };
 export type AgentDiscoveryCacheEntry = {
   agents: AgentConfig[];
   projectAgentsDir: string | null;
@@ -126,35 +124,64 @@ function sanitizeResultDetails(
   includeDebugMessages: boolean,
   options: DetailsOptions | undefined,
 ): SingleResult {
-  const { messages, termination, stderr, ...rest } = result;
   const includeMessages =
     includeDebugMessages && (options?.includeMessages ?? true);
-  const progress = result.progress
-    ? {
-        ...result.progress,
-        toolCalls: result.progress.toolCalls.map((toolCall) => ({
-          ...toolCall,
-        })),
-      }
-    : undefined;
-  const base = {
-    ...rest,
-    ...(progress ? { progress } : {}),
-    usage: { ...result.usage },
-    stderr: includeDebugMessages ? stderr : "",
+  const target = {} as SingleResult;
+  target.agent = result.agent;
+  target.agentSource = result.agentSource;
+  target.task = result.task;
+  target.exitCode = result.exitCode;
+  target.finalOutput = result.finalOutput;
+  target.stderr = includeDebugMessages ? result.stderr : "";
+  target.usage = {
+    input: result.usage.input,
+    output: result.usage.output,
+    cacheRead: result.usage.cacheRead,
+    cacheWrite: result.usage.cacheWrite,
+    cost: result.usage.cost,
+    contextTokens: result.usage.contextTokens,
+    turns: result.usage.turns,
   };
-  if (!includeMessages) return base;
-  return {
-    ...base,
-    messages: options?.recentMessages
-      ? [...options.recentMessages]
-      : messages
-        ? [...messages]
-        : undefined,
-    ...(includeDebugMessages && termination
-      ? { termination: { ...termination } }
-      : {}),
-  };
+  if (result.model !== undefined) target.model = result.model;
+  if (result.stopReason !== undefined) target.stopReason = result.stopReason;
+  if (result.errorMessage !== undefined)
+    target.errorMessage = result.errorMessage;
+  if (result.durationMs !== undefined) target.durationMs = result.durationMs;
+  if (result.usage.contextWindowTokens !== undefined)
+    target.usage.contextWindowTokens = result.usage.contextWindowTokens;
+  if (result.progress !== undefined) {
+    target.progress = {
+      toolCalls: result.progress.toolCalls.map((tc) => ({
+        id: tc.id,
+        preview: tc.preview,
+      })),
+    };
+    if (result.progress.activityText !== undefined)
+      target.progress.activityText = result.progress.activityText;
+    if (result.progress.lastToolPreview !== undefined)
+      target.progress.lastToolPreview = result.progress.lastToolPreview;
+  }
+  if (includeMessages) {
+    if (options?.recentMessages) target.messages = [...options.recentMessages];
+    else if (result.messages !== undefined)
+      target.messages = [...result.messages];
+    if (includeDebugMessages && result.termination !== undefined) {
+      target.termination = {
+        cancelRequestedAt: result.termination.cancelRequestedAt,
+        escalated: result.termination.escalated,
+        processTreeKilled: result.termination.processTreeKilled,
+        target: result.termination.target,
+      };
+      if (result.termination.cancelReason !== undefined)
+        target.termination.cancelReason = result.termination.cancelReason;
+      if (result.termination.terminationSignal !== undefined)
+        target.termination.terminationSignal =
+          result.termination.terminationSignal;
+      if (result.termination.fallbackCause !== undefined)
+        target.termination.fallbackCause = result.termination.fallbackCause;
+    }
+  }
+  return target;
 }
 
 function hasSubagentFailed(result: SingleResult): boolean {
@@ -184,6 +211,7 @@ function createSubagentError(result: SingleResult): Error {
 
 export function renderSubagentResultMessage(
   message: { content?: unknown; details?: unknown },
+  _options: { expanded: boolean },
   theme: SubagentTheme,
 ) {
   const content =
@@ -228,18 +256,14 @@ export function patchProgressFromDetails(
   );
   const current = getProgressState(requestId);
   if (!current) return;
-  patchProgressState(requestId, {
-    toolCount: current.toolCount + newToolCallIds.length,
-    ...(lastToolPreview ? { lastToolPreview } : {}),
-    ...(latestResult?.usage
-      ? {
-          inputTokens: latestResult.usage.input,
-          outputTokens: latestResult.usage.output,
-          contextTokens: latestResult.usage.contextTokens,
-          contextWindowTokens: latestResult.usage.contextWindowTokens,
-        }
-      : {}),
-  });
+  current.toolCount += newToolCallIds.length;
+  if (lastToolPreview) current.lastToolPreview = lastToolPreview;
+  if (latestResult?.usage) {
+    current.inputTokens = latestResult.usage.input;
+    current.outputTokens = latestResult.usage.output;
+    current.contextTokens = latestResult.usage.contextTokens;
+    current.contextWindowTokens = latestResult.usage.contextWindowTokens;
+  }
 }
 
 export function getSubagentText(result: SubagentToolResult): string {
@@ -274,32 +298,6 @@ export function parseRunArgs(
   };
 }
 
-function createMergedRunSignal(
-  hostSignal: AbortSignal | undefined,
-  jobSignal: AbortSignal,
-): MergedRunSignal {
-  const relay = new AbortController();
-  const abortFromHost = () => relay.abort(hostSignal?.reason);
-  const abortFromJob = () => relay.abort(jobSignal.reason);
-  if (hostSignal?.aborted) abortFromHost();
-  else {
-    hostSignal?.addEventListener("abort", abortFromHost, { once: true });
-    if (hostSignal?.aborted) abortFromHost();
-  }
-  if (jobSignal.aborted) abortFromJob();
-  else {
-    jobSignal.addEventListener("abort", abortFromJob, { once: true });
-    if (jobSignal.aborted) abortFromJob();
-  }
-  return {
-    signal: relay.signal,
-    cleanup: () => {
-      hostSignal?.removeEventListener("abort", abortFromHost);
-      jobSignal.removeEventListener("abort", abortFromJob);
-    },
-  };
-}
-
 function createProgressRenderRequester(
   ctx: ExtensionContext,
   requestId: string,
@@ -311,13 +309,8 @@ function createProgressRenderRequester(
   };
 }
 
-function cancelStartedJob(
-  job: RunJob,
-  mergedSignal: MergedRunSignal,
-  reason: string,
-): void {
+function cancelStartedJob(job: RunJob, reason: string): void {
   cancelProgressState(job.requestId, reason);
-  mergedSignal.cleanup();
   removeRunJob(job.requestId);
 }
 
@@ -334,14 +327,6 @@ function sendSubagentResultMessage(
   });
 }
 
-function scheduleRunWorker(callback: () => void): void {
-  if (typeof setImmediate === "function") {
-    setImmediate(callback);
-    return;
-  }
-  setTimeout(callback, 0);
-}
-
 async function runSubagentWorker(
   pi: ExtensionAPI,
   ctx: ExtensionContext,
@@ -354,7 +339,7 @@ async function runSubagentWorker(
   makeDetails: DetailsBuilder,
   requestId: string,
   job: RunJob,
-  mergedSignal: MergedRunSignal,
+  mergedSignal: AbortSignal,
 ): Promise<void> {
   const seenToolCallIds = new Set<string>();
   const requestProgressRender = createProgressRenderRequester(ctx, requestId);
@@ -362,31 +347,45 @@ async function runSubagentWorker(
     patchProgressFromDetails(requestId, result.details, seenToolCallIds);
     requestProgressRender();
   };
+  function handleWorkerFailure(
+    errorMessage: string,
+    isAborted: boolean,
+    details: SubagentDetails,
+  ) {
+    if (isAborted) {
+      cancelProgressState(requestId, job.cancelReason ?? errorMessage);
+    } else {
+      failProgressState(requestId, errorMessage);
+      ctx.ui?.notify(errorMessage, "error");
+      const content = details.results[0]
+        ? formatSubagentResultForParent(details.results[0] as SingleResult) ||
+          "(failed)"
+        : errorMessage;
+      sendSubagentResultMessage(
+        pi,
+        content,
+        sanitizeDetailsForDisplay(details, debug),
+      );
+    }
+  }
   try {
     const result = await runSingleAgent(
       ctx.cwd,
       agents,
       agentName,
       task,
-      mergedSignal.signal,
+      mergedSignal,
       onUpdate,
       makeDetails,
       parentModel,
       parentThinking,
     );
     if (hasSubagentFailed(result)) {
-      if (mergedSignal.signal.aborted) {
-        cancelProgressState(requestId, job.cancelReason ?? "Aborted");
-      } else {
-        const error = createSubagentError(result);
-        failProgressState(requestId, error.message);
-        ctx.ui?.notify(error.message, "error");
-        sendSubagentResultMessage(
-          pi,
-          formatSubagentResultForParent(result) || "(failed)",
-          sanitizeDetailsForDisplay(makeDetails([result]), debug),
-        );
-      }
+      handleWorkerFailure(
+        mergedSignal.aborted ? "Aborted" : createSubagentError(result).message,
+        mergedSignal.aborted,
+        makeDetails([result]),
+      );
     } else {
       const toolResult: SubagentToolResult = {
         content: [
@@ -405,29 +404,30 @@ async function runSubagentWorker(
       );
     }
   } catch (error) {
-    const errorMsg = error instanceof Error ? error.message : String(error);
-    if (mergedSignal.signal.aborted) {
-      cancelProgressState(requestId, job.cancelReason ?? errorMsg);
-    } else {
-      failProgressState(requestId, errorMsg);
-      ctx.ui?.notify(errorMsg, "error");
-      sendSubagentResultMessage(
-        pi,
-        errorMsg,
-        sanitizeDetailsForDisplay(makeDetails([]), debug),
-      );
-    }
+    handleWorkerFailure(
+      error instanceof Error ? error.message : String(error),
+      mergedSignal.aborted,
+      makeDetails([]),
+    );
   } finally {
     requestProgressRender();
-    mergedSignal.cleanup();
     removeRunJob(requestId);
   }
 }
 
-type StartJobResult =
+export type StartJobResult =
   | { kind: "started"; requestId: string; makeDetails: DetailsBuilder }
   | { kind: "cancelled"; makeDetails: DetailsBuilder }
   | { kind: "not_found"; makeDetails: DetailsBuilder };
+
+export function formatStartJobStatus(
+  agentName: string,
+  result: StartJobResult,
+): string {
+  if (result.kind === "not_found") return `Unknown agent: "${agentName}"`;
+  if (result.kind === "cancelled") return "Canceled";
+  return `Subagent ${agentName} started (job: ${result.requestId})`;
+}
 
 function needsProjectAgentConfirmation(
   ctx: ExtensionContext,
@@ -444,10 +444,7 @@ function confirmProjectAgentRun(
   const dir = projectAgentsDir ?? "(unknown)";
   return ctx.ui.confirm(
     "Run project-local agent?",
-    `Agent: ${agent.name}
-Source: ${dir}
-
-Project agents are repo-controlled. Only continue for trusted repositories.`,
+    `Agent: ${agent.name}\nSource: ${dir}\n\nProject agents are repo-controlled. Only continue for trusted repositories.`,
   );
 }
 
@@ -489,7 +486,9 @@ export async function startSubagentJob(
     controller,
     startedAt: Date.now(),
   });
-  const mergedSignal = createMergedRunSignal(hostSignal, job.controller.signal);
+  const mergedSignal = hostSignal
+    ? AbortSignal.any([hostSignal, job.controller.signal])
+    : job.controller.signal;
   createProgressState(requestId, params.agent, task);
   pi.sendMessage({
     customType: "subagent-progress",
@@ -498,9 +497,9 @@ export async function startSubagentJob(
     details: { requestId },
   });
   const requestProgressRender = createProgressRenderRequester(ctx, requestId);
-  scheduleRunWorker(() => {
-    if (mergedSignal.signal.aborted) {
-      cancelStartedJob(job, mergedSignal, job.cancelReason ?? "Aborted");
+  setImmediate(() => {
+    if (mergedSignal.aborted) {
+      cancelStartedJob(job, job.cancelReason ?? "Aborted");
       requestProgressRender();
       return;
     }
@@ -519,7 +518,7 @@ export async function startSubagentJob(
       mergedSignal,
     );
   });
-  if (mergedSignal.signal.aborted) return { kind: "cancelled", makeDetails };
+  if (mergedSignal.aborted) return { kind: "cancelled", makeDetails };
   return { kind: "started", requestId, makeDetails };
 }
 

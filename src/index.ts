@@ -5,6 +5,7 @@ import type {
 import { cancelSubagentCommandHandler } from "./cancel-command.js";
 import { renderSubagentProgress } from "./progress.js";
 import {
+  formatStartJobStatus,
   getCachedAgentCompletions,
   renderSubagentResultMessage,
   resetAgentDiscoveryCache,
@@ -20,13 +21,9 @@ export function resetAgentCache() {
   resetAgentDiscoveryCache();
 }
 
-export default function (pi: ExtensionAPI) {
-  pi.registerMessageRenderer("subagent-progress", (message, options, theme) =>
-    renderSubagentProgress(message, options, theme),
-  );
-  pi.registerMessageRenderer("subagent-result", (message, _options, theme) =>
-    renderSubagentResultMessage(message, theme),
-  );
+export default function registerSubagentExtension(pi: ExtensionAPI) {
+  pi.registerMessageRenderer("subagent-progress", renderSubagentProgress);
+  pi.registerMessageRenderer("subagent-result", renderSubagentResultMessage);
   pi.registerCommand("run", {
     description: "Run a subagent directly: /run <agent> [task]",
     getArgumentCompletions: async (prefix: string) =>
@@ -51,33 +48,11 @@ export default function (pi: ExtensionAPI) {
         params,
         signal ?? undefined,
       );
-      if (result.kind === "not_found") {
-        return {
-          content: [
-            {
-              type: "text" as const,
-              text: `Unknown agent: "${params.agent}"`,
-            },
-          ],
-          details: result.makeDetails([]),
-        };
-      }
-      if (result.kind === "cancelled") {
-        return {
-          content: [
-            {
-              type: "text" as const,
-              text: "Canceled: project-local agent not approved.",
-            },
-          ],
-          details: result.makeDetails([]),
-        };
-      }
       return {
         content: [
           {
             type: "text" as const,
-            text: `Subagent ${params.agent} started (job: ${result.requestId}).`,
+            text: formatStartJobStatus(params.agent, result),
           },
         ],
         details: result.makeDetails([]),
