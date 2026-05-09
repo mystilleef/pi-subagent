@@ -1,3 +1,4 @@
+import path from "node:path";
 import { type Message, StringEnum } from "@earendil-works/pi-ai";
 import type {
   ExtensionAPI,
@@ -69,6 +70,41 @@ type DetailsBuilder = (
   options?: DetailsOptions,
 ) => SubagentDetails;
 type MergedRunSignal = { signal: AbortSignal; cleanup: () => void };
+export type AgentDiscoveryCacheEntry = {
+  agents: AgentConfig[];
+  projectAgentsDir: string | null;
+  ts: number;
+};
+export type AgentDiscoveryCache = Map<string, AgentDiscoveryCacheEntry>;
+export const AGENT_DISCOVERY_CACHE_TTL_MS = 3_000;
+const sharedAgentDiscoveryCache: AgentDiscoveryCache = new Map();
+function getAgentDiscoveryCacheKey(cwd: string, scope: AgentScope): string {
+  return `${path.resolve(cwd)}\0${scope}`;
+}
+function hasFreshAgentDiscoveryCacheEntry(
+  entry: AgentDiscoveryCacheEntry | undefined,
+  now: number,
+  cacheTtlMs: number,
+): entry is AgentDiscoveryCacheEntry {
+  return Boolean(entry && now - entry.ts <= cacheTtlMs);
+}
+export function resetAgentDiscoveryCache(): void {
+  sharedAgentDiscoveryCache.clear();
+}
+export function getCachedAgentDiscovery(
+  cwd: string,
+  scope: AgentScope,
+  cache: AgentDiscoveryCache = sharedAgentDiscoveryCache,
+  cacheTtlMs = AGENT_DISCOVERY_CACHE_TTL_MS,
+): AgentDiscoveryCacheEntry {
+  const key = getAgentDiscoveryCacheKey(cwd, scope);
+  const now = Date.now();
+  const entry = cache.get(key);
+  if (hasFreshAgentDiscoveryCacheEntry(entry, now, cacheTtlMs)) return entry;
+  const nextEntry = { ...discoverAgents(cwd, scope), ts: now };
+  cache.set(key, nextEntry);
+  return nextEntry;
+}
 
 function createDetailsBuilder(
   agentScope: AgentScope,
@@ -285,6 +321,27 @@ function cancelStartedJob(
   removeRunJob(job.requestId);
 }
 
+function sendSubagentResultMessage(
+  pi: ExtensionAPI,
+  content: string,
+  details: SubagentDetails,
+): void {
+  pi.sendMessage({
+    customType: "subagent-result",
+    content,
+    display: true,
+    details,
+  });
+}
+
+function scheduleRunWorker(callback: () => void): void {
+  if (typeof setImmediate === "function") {
+    setImmediate(callback);
+    return;
+  }
+  setTimeout(callback, 0);
+}
+
 async function runSubagentWorker(
   pi: ExtensionAPI,
   ctx: ExtensionContext,
@@ -324,12 +381,11 @@ async function runSubagentWorker(
         const error = createSubagentError(result);
         failProgressState(requestId, error.message);
         ctx.ui?.notify(error.message, "error");
-        pi.sendMessage({
-          customType: "subagent-result",
-          content: formatSubagentResultForParent(result) || "(failed)",
-          display: true,
-          details: sanitizeDetailsForDisplay(makeDetails([result]), debug),
-        });
+        sendSubagentResultMessage(
+          pi,
+          formatSubagentResultForParent(result) || "(failed)",
+          sanitizeDetailsForDisplay(makeDetails([result]), debug),
+        );
       }
     } else {
       const toolResult: SubagentToolResult = {
@@ -342,12 +398,11 @@ async function runSubagentWorker(
         details: makeDetails([result]),
       };
       finalizeProgressState(requestId, getFeedbackSummaryText(toolResult));
-      pi.sendMessage({
-        customType: "subagent-result",
-        content: getResultDisplayText(toolResult),
-        display: true,
-        details: sanitizeDetailsForDisplay(toolResult.details, debug),
-      });
+      sendSubagentResultMessage(
+        pi,
+        getResultDisplayText(toolResult),
+        sanitizeDetailsForDisplay(toolResult.details, debug),
+      );
     }
   } catch (error) {
     const errorMsg = error instanceof Error ? error.message : String(error);
@@ -356,12 +411,11 @@ async function runSubagentWorker(
     } else {
       failProgressState(requestId, errorMsg);
       ctx.ui?.notify(errorMsg, "error");
-      pi.sendMessage({
-        customType: "subagent-result",
-        content: errorMsg,
-        display: true,
-        details: sanitizeDetailsForDisplay(makeDetails([]), debug),
-      });
+      sendSubagentResultMessage(
+        pi,
+        errorMsg,
+        sanitizeDetailsForDisplay(makeDetails([]), debug),
+      );
     }
   } finally {
     requestProgressRender();
@@ -372,8 +426,30 @@ async function runSubagentWorker(
 
 type StartJobResult =
   | { kind: "started"; requestId: string; makeDetails: DetailsBuilder }
-  | { kind: "cancelled"; requestId: string; makeDetails: DetailsBuilder }
+  | { kind: "cancelled"; makeDetails: DetailsBuilder }
   | { kind: "not_found"; makeDetails: DetailsBuilder };
+
+function needsProjectAgentConfirmation(
+  ctx: ExtensionContext,
+  agent: AgentConfig,
+): boolean {
+  return ctx.hasUI && agent.source === "project";
+}
+
+function confirmProjectAgentRun(
+  ctx: ExtensionContext,
+  agent: AgentConfig,
+  projectAgentsDir: string | null,
+): Promise<boolean> {
+  const dir = projectAgentsDir ?? "(unknown)";
+  return ctx.ui.confirm(
+    "Run project-local agent?",
+    `Agent: ${agent.name}
+Source: ${dir}
+
+Project agents are repo-controlled. Only continue for trusted repositories.`,
+  );
+}
 
 export async function startSubagentJob(
   pi: ExtensionAPI,
@@ -382,7 +458,7 @@ export async function startSubagentJob(
   hostSignal: AbortSignal | undefined,
 ): Promise<StartJobResult> {
   const agentScope: AgentScope = params.agentScope ?? "both";
-  const discovery = discoverAgents(ctx.cwd, agentScope);
+  const discovery = getCachedAgentDiscovery(ctx.cwd, agentScope);
   const agents = discovery.agents;
   const debug = params.debug === true;
   const makeDetails = createDetailsBuilder(
@@ -392,11 +468,19 @@ export async function startSubagentJob(
   );
   const requested = agents.find((a) => a.name === params.agent);
   if (!requested) return { kind: "not_found", makeDetails };
+  const task = params.task?.trim() ?? "";
+  if (needsProjectAgentConfirmation(ctx, requested)) {
+    const confirmed = await confirmProjectAgentRun(
+      ctx,
+      requested,
+      discovery.projectAgentsDir,
+    );
+    if (!confirmed) return { kind: "cancelled", makeDetails };
+  }
   const parentModel = ctx.model
     ? { provider: ctx.model.provider, id: ctx.model.id }
     : undefined;
   const parentThinking = pi.getThinkingLevel() as ThinkingLevel;
-  const task = params.task?.trim() ?? "";
   const requestId = crypto.randomUUID();
   const controller = new AbortController();
   const job: RunJob = registerRunJob({
@@ -414,34 +498,7 @@ export async function startSubagentJob(
     details: { requestId },
   });
   const requestProgressRender = createProgressRenderRequester(ctx, requestId);
-  if ((agentScope === "project" || agentScope === "both") && ctx.hasUI) {
-    if (requested.source === "project") {
-      const dir = discovery.projectAgentsDir ?? "(unknown)";
-      let ok: boolean;
-      try {
-        ok = await ctx.ui.confirm(
-          "Run project-local agent?",
-          `Agent: ${requested.name}
-Source: ${dir}
-
-Project agents are repo-controlled. Only continue for trusted repositories.`,
-        );
-      } catch (e) {
-        cancelStartedJob(job, mergedSignal, "Confirm failed");
-        throw e;
-      }
-      if (!ok) {
-        cancelStartedJob(
-          job,
-          mergedSignal,
-          "Canceled: project-local agent not approved.",
-        );
-        requestProgressRender();
-        return { kind: "cancelled", requestId, makeDetails };
-      }
-    }
-  }
-  queueMicrotask(() => {
+  scheduleRunWorker(() => {
     if (mergedSignal.signal.aborted) {
       cancelStartedJob(job, mergedSignal, job.cancelReason ?? "Aborted");
       requestProgressRender();
@@ -462,10 +519,7 @@ Project agents are repo-controlled. Only continue for trusted repositories.`,
       mergedSignal,
     );
   });
-  await Promise.resolve();
-  if (mergedSignal.signal.aborted) {
-    return { kind: "cancelled", requestId, makeDetails };
-  }
+  if (mergedSignal.signal.aborted) return { kind: "cancelled", makeDetails };
   return { kind: "started", requestId, makeDetails };
 }
 
@@ -494,18 +548,12 @@ export async function runCommandHandler(
 }
 
 export function getCachedAgentCompletions(
-  agentCache: Map<string, { agents: AgentConfig[]; ts: number }>,
-  cacheTtlMs: number,
   prefix: string,
+  cwd = process.cwd(),
+  cache: AgentDiscoveryCache = sharedAgentDiscoveryCache,
+  cacheTtlMs = AGENT_DISCOVERY_CACHE_TTL_MS,
 ): { value: string; label: string }[] {
-  const cwd = process.cwd();
-  const now = Date.now();
-  let entry = agentCache.get(cwd);
-  if (!entry || now - entry.ts > cacheTtlMs) {
-    entry = { agents: discoverAgents(cwd, "both").agents, ts: now };
-    agentCache.set(cwd, entry);
-  }
-  return entry.agents
-    .filter((agent) => agent.name.startsWith(prefix))
+  return getCachedAgentDiscovery(cwd, "both", cache, cacheTtlMs)
+    .agents.filter((agent) => agent.name.startsWith(prefix))
     .map((agent) => ({ value: agent.name, label: agent.name }));
 }

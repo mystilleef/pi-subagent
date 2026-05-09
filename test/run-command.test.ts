@@ -1,6 +1,10 @@
 import { expect, test } from "bun:test";
+import { existsSync } from "node:fs";
 import path from "node:path";
-import type { ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
+import {
+  DefaultResourceLoader,
+  type ExtensionCommandContext,
+} from "@earendil-works/pi-coding-agent";
 import {
   clearProgressState,
   createProgressState,
@@ -61,6 +65,38 @@ wait $!
   await waitForRunJobsCleared();
   expect(getProgressState(requestId)?.status).toBe("cancelled");
   expect(notices).toEqual([`Cancelled /run job ${requestId}.`]);
+});
+
+test("/run startup reuses completion discovery cache", async () => {
+  clearRunJobsForTests();
+  const notices: string[] = [];
+  const { tool, cwd } = await setupTest();
+  const runCommand = tool.registeredCommands.get("run");
+  const originalCwd = process.cwd();
+  process.chdir(cwd);
+  try {
+    expect(await runCommand?.getArgumentCompletions?.("hang")).toEqual([
+      { value: "hang", label: "hang" },
+    ]);
+    const projectAgentsDir = path.join(cwd, ".pi", "agents");
+    await Bun.$`mkdir -p ${projectAgentsDir}`;
+    await Bun.write(
+      path.join(projectAgentsDir, "fresh.md"),
+      `---
+name: fresh
+description: Fresh project agent
+---
+Fresh prompt`,
+    );
+    await runCommand?.handler("fresh task", {
+      cwd,
+      ui: { notify: (message: string) => notices.push(message) },
+    } as unknown as ExtensionCommandContext);
+  } finally {
+    process.chdir(originalCwd);
+  }
+  expect(notices).toEqual(["Unknown agent: fresh"]);
+  expect(listRunJobs()).toEqual([]);
 });
 
 test("/run registry registers active job and removes it after internal cancellation", async () => {
@@ -318,6 +354,69 @@ exit 0
   expect(await Bun.file(path.join(cwd, "worker-ran.txt")).exists()).toBe(false);
   expect(notices).toEqual(["Cancelled"]);
   expect(listRunJobs()).toHaveLength(0);
+});
+
+test("/run worker launch waits for a macrotask turn", async () => {
+  clearRunJobsForTests();
+  const sentMessages: SendMessageArg[] = [];
+  const { tool, cwd } = await setupTest({
+    sendMessage: (msg) => sentMessages.push(msg),
+    piScript: `#!/bin/sh
+printf '%s\n' worker-ran > worker-ran.txt
+exit 0
+`,
+  });
+  const runCommand = tool.registeredCommands.get("run");
+  await runCommand?.handler("hang task", {
+    cwd,
+    ui: { notify: () => {} },
+  } as unknown as ExtensionCommandContext);
+  await Promise.resolve();
+  expect(await Bun.file(path.join(cwd, "worker-ran.txt")).exists()).toBe(false);
+  expect(sentMessages.map((msg) => msg.customType)).toEqual([
+    "subagent-progress",
+  ]);
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  await waitForSentMessageCount(sentMessages, 2);
+  expect(await Bun.file(path.join(cwd, "worker-ran.txt")).exists()).toBe(true);
+  expect(sentMessages.map((msg) => msg.customType)).toEqual([
+    "subagent-progress",
+    "subagent-result",
+  ]);
+});
+
+test("/run worker scheduler falls back when setImmediate is unavailable", async () => {
+  clearRunJobsForTests();
+  const sentMessages: SendMessageArg[] = [];
+  const globalWithImmediate = globalThis as unknown as {
+    setImmediate: typeof setImmediate | undefined;
+  };
+  const originalSetImmediate = globalWithImmediate.setImmediate;
+  const { tool, cwd } = await setupTest({
+    sendMessage: (msg) => sentMessages.push(msg),
+    piScript: `#!/bin/sh
+printf '%s\n' fallback-ran > fallback-ran.txt
+exit 0
+`,
+  });
+  const runCommand = tool.registeredCommands.get("run");
+  try {
+    globalWithImmediate.setImmediate = undefined;
+    await runCommand?.handler("hang task", {
+      cwd,
+      ui: { notify: () => {} },
+    } as unknown as ExtensionCommandContext);
+    await waitForSentMessageCount(sentMessages, 2);
+  } finally {
+    globalWithImmediate.setImmediate = originalSetImmediate;
+  }
+  expect(await Bun.file(path.join(cwd, "fallback-ran.txt")).exists()).toBe(
+    true,
+  );
+  expect(sentMessages.map((msg) => msg.customType)).toEqual([
+    "subagent-progress",
+    "subagent-result",
+  ]);
 });
 
 test("run slash command sends one subagent-progress message and one final result", async () => {
@@ -764,17 +863,11 @@ Prompt`,
     } as unknown as ExtensionCommandContext),
   ).rejects.toThrow("confirm failed hard");
   await waitForRunJobsCleared();
-  expect(sentMessages).toHaveLength(1);
-  const requestId = (sentMessages[0]?.details as { requestId?: string })
-    ?.requestId;
-  if (!requestId) throw new Error("requestId missing");
-  const state = getProgressState(requestId);
-  expect(state?.status).toBe("cancelled");
-  expect(state?.errorText).toBe("Confirm failed");
+  expect(sentMessages).toHaveLength(0);
   expect(listRunJobs()).toHaveLength(0);
 });
 
-test("/run project-agent denial marks state cancelled and cleans up without result card", async () => {
+test("/run project-agent denial creates no side effects", async () => {
   clearRunJobsForTests();
   const notices: string[] = [];
   const { cwd } = await setupTest();
@@ -802,13 +895,7 @@ Prompt`,
     },
   } as unknown as ExtensionCommandContext);
   await waitForRunJobsCleared();
-  expect(sentMessages).toHaveLength(1);
-  expect(sentMessages[0]?.customType).toBe("subagent-progress");
-  const requestId = (sentMessages[0]?.details as { requestId?: string })
-    ?.requestId;
-  if (!requestId) throw new Error("requestId missing");
-  const state = getProgressState(requestId);
-  expect(state?.status).toBe("cancelled");
+  expect(sentMessages).toHaveLength(0);
   expect(notices).toEqual(["Cancelled"]);
   expect(listRunJobs()).toHaveLength(0);
 });
@@ -1111,6 +1198,91 @@ wait $!
   if (!requestId) throw new Error("requestId missing");
   const state = getProgressState(requestId);
   expect(state?.status).toBe("cancelled");
+});
+
+test("/run abort after child starts records aborted worker failure as cancellation", async () => {
+  const controller = new AbortController();
+  const sentMessages: SendMessageArg[] = [];
+  const { tool, cwd } = await setupTest({
+    sendMessage: (msg) => sentMessages.push(msg),
+    piScript: `#!/bin/sh
+printf '%s\n' started > started.txt
+trap 'exit 0' TERM
+sleep 10 &
+wait $!
+`,
+  });
+  const runCommand = tool.registeredCommands.get("run");
+  await runCommand?.handler("hang task", {
+    cwd,
+    signal: controller.signal,
+    ui: { notify: () => {} },
+  } as unknown as ExtensionCommandContext);
+  await waitForSentMessage(sentMessages);
+  await waitFor(
+    () => existsSync(path.join(cwd, "started.txt")) || undefined,
+    "child process start",
+  );
+  controller.abort("host stopped");
+  await waitForRunJobsCleared();
+  const requestId = (sentMessages[0]?.details as { requestId?: string })
+    ?.requestId;
+  if (!requestId) throw new Error("requestId missing");
+  const state = getProgressState(requestId);
+  expect(state?.status).toBe("cancelled");
+  expect(state?.errorText).toBe("Subagent was aborted");
+});
+
+test("/run abort during skill discovery records failed result as cancellation", async () => {
+  const controller = new AbortController();
+  const sentMessages: SendMessageArg[] = [];
+  const originalReload = DefaultResourceLoader.prototype.reload;
+  let releaseReload!: () => void;
+  let enteredReload!: () => void;
+  const reloadEntered = new Promise<void>((resolve) => {
+    enteredReload = resolve;
+  });
+  const reloadRelease = new Promise<void>((resolve) => {
+    releaseReload = resolve;
+  });
+  const { tool, cwd, agentDir } = await setupTest({
+    sendMessage: (msg) => sentMessages.push(msg),
+  });
+  await Bun.write(
+    path.join(agentDir, "agents", "badskill.md"),
+    `---
+name: badskill
+description: Bad skill
+skills: missing-skill
+---
+Prompt`,
+  );
+  DefaultResourceLoader.prototype.reload = async function delayedReload() {
+    enteredReload();
+    await reloadRelease;
+    return originalReload.call(this);
+  };
+  const runCommand = tool.registeredCommands.get("run");
+  try {
+    await runCommand?.handler("badskill task", {
+      cwd,
+      signal: controller.signal,
+      ui: { notify: () => {} },
+    } as unknown as ExtensionCommandContext);
+    await reloadEntered;
+    controller.abort("host stopped");
+    releaseReload();
+    await waitForRunJobsCleared();
+  } finally {
+    DefaultResourceLoader.prototype.reload = originalReload;
+  }
+  const requestId = (sentMessages[0]?.details as { requestId?: string })
+    ?.requestId;
+  if (!requestId) throw new Error("requestId missing");
+  const state = getProgressState(requestId);
+  expect(state?.status).toBe("cancelled");
+  expect(state?.errorText).toBe("Aborted");
+  expect(sentMessages).toHaveLength(1);
 });
 
 test("/run success sends final result message with raw subagent summary", async () => {

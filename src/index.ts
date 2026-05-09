@@ -2,12 +2,12 @@ import type {
   ExtensionAPI,
   ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
-import type { AgentConfig } from "./agents.js";
 import { cancelSubagentCommandHandler } from "./cancel-command.js";
 import { renderSubagentProgress } from "./progress.js";
 import {
   getCachedAgentCompletions,
   renderSubagentResultMessage,
+  resetAgentDiscoveryCache,
   runCommandHandler,
   SubagentParams,
   startSubagentJob,
@@ -16,11 +16,8 @@ import { renderSubagentCall, renderSubagentResult } from "./ui.js";
 
 export { SubagentParams };
 
-const AGENT_COMPLETION_CACHE_TTL_MS = 300_000;
-const agentCache = new Map<string, { agents: AgentConfig[]; ts: number }>();
-
 export function resetAgentCache() {
-  agentCache.clear();
+  resetAgentDiscoveryCache();
 }
 
 export default function (pi: ExtensionAPI) {
@@ -33,11 +30,7 @@ export default function (pi: ExtensionAPI) {
   pi.registerCommand("run", {
     description: "Run a subagent directly: /run <agent> [task]",
     getArgumentCompletions: async (prefix: string) =>
-      getCachedAgentCompletions(
-        agentCache,
-        AGENT_COMPLETION_CACHE_TTL_MS,
-        prefix,
-      ),
+      getCachedAgentCompletions(prefix),
     handler: async (args, ctx) =>
       runCommandHandler(pi, ctx as ExtensionContext, args),
   });

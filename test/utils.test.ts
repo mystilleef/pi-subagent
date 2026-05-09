@@ -7,6 +7,11 @@ import { DefaultResourceLoader } from "@earendil-works/pi-coding-agent";
 import type { AgentConfig } from "../src/agents.js";
 import { discoverAgents, formatAgentList } from "../src/agents.js";
 import {
+  type AgentDiscoveryCache,
+  getCachedAgentCompletions,
+  getCachedAgentDiscovery,
+} from "../src/run.js";
+import {
   DEFAULT_MAX_OUTPUT_BYTES,
   DEFAULT_MAX_OUTPUT_LINES,
   detectMessageError,
@@ -216,6 +221,83 @@ Project prompt`,
   expect(bothAgents.find((a) => a.name === "same")?.source).toBe("project");
   expect(bothAgents.some((a) => a.name === "user-only")).toBe(true);
   expect(bothAgents.some((a) => a.name === "project-only")).toBe(true);
+});
+
+test("agent discovery cache separates cwd and scope, reuses completions, and expires", async () => {
+  const root = await makeTempDir("pi-subagent-cache-");
+  const agentDir = path.join(root, "agent");
+  const userDir = path.join(agentDir, "agents");
+  const cwdA = path.join(root, "a");
+  const cwdB = path.join(root, "b");
+  const projectDirA = path.join(cwdA, ".pi", "agents");
+  const projectDirB = path.join(cwdB, ".pi", "agents");
+  await mkdir(userDir, { recursive: true });
+  await mkdir(projectDirA, { recursive: true });
+  await mkdir(projectDirB, { recursive: true });
+  await writeFile(
+    path.join(userDir, "user.md"),
+    `---
+name: user
+description: User
+---
+User prompt`,
+  );
+  await writeFile(
+    path.join(projectDirA, "project-a.md"),
+    `---
+name: project-a
+description: Project A
+---
+Project A prompt`,
+  );
+  await writeFile(
+    path.join(projectDirB, "project-b.md"),
+    `---
+name: project-b
+description: Project B
+---
+Project B prompt`,
+  );
+  process.env.PI_CODING_AGENT_DIR = agentDir;
+  const cache: AgentDiscoveryCache = new Map();
+  let now = 1000;
+  const originalNow = Date.now;
+  Date.now = () => now;
+  try {
+    const bothA = getCachedAgentDiscovery(cwdA, "both", cache, 3000);
+    const projectA = getCachedAgentDiscovery(cwdA, "project", cache, 3000);
+    const bothB = getCachedAgentDiscovery(cwdB, "both", cache, 3000);
+    expect(bothA.agents.map((agent) => agent.name).sort()).toEqual([
+      "project-a",
+      "user",
+    ]);
+    expect(projectA.agents.map((agent) => agent.name)).toEqual(["project-a"]);
+    expect(bothB.agents.map((agent) => agent.name).sort()).toEqual([
+      "project-b",
+      "user",
+    ]);
+    expect(cache.size).toBe(3);
+    expect(getCachedAgentCompletions("project", cwdA, cache, 3000)).toEqual([
+      { value: "project-a", label: "project-a" },
+    ]);
+    await writeFile(
+      path.join(projectDirA, "project-c.md"),
+      `---
+name: project-c
+description: Project C
+---
+Project C prompt`,
+    );
+    expect(getCachedAgentDiscovery(cwdA, "both", cache, 3000)).toBe(bothA);
+    now += 3001;
+    expect(
+      getCachedAgentDiscovery(cwdA, "both", cache, 3000).agents.some(
+        (agent) => agent.name === "project-c",
+      ),
+    ).toBe(true);
+  } finally {
+    Date.now = originalNow;
+  }
 });
 
 test("discoverAgents tolerates missing, invalid, and unreadable entries", async () => {
