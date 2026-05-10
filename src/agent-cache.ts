@@ -6,12 +6,15 @@ export type AgentDiscoveryCacheEntry = {
   projectAgentsDir: string | null;
   ts: number;
 };
+
 export type AgentDiscoveryCache = Map<string, AgentDiscoveryCacheEntry>;
 export const AGENT_DISCOVERY_CACHE_TTL_MS = 3_000;
 const sharedAgentDiscoveryCache: AgentDiscoveryCache = new Map();
+
 function getAgentDiscoveryCacheKey(cwd: string, scope: AgentScope): string {
   return `${path.resolve(cwd)}\0${scope}`;
 }
+
 function hasFreshAgentDiscoveryCacheEntry(
   entry: AgentDiscoveryCacheEntry | undefined,
   now: number,
@@ -19,9 +22,11 @@ function hasFreshAgentDiscoveryCacheEntry(
 ): entry is AgentDiscoveryCacheEntry {
   return Boolean(entry && now - entry.ts <= cacheTtlMs);
 }
+
 export function resetAgentDiscoveryCache(): void {
   sharedAgentDiscoveryCache.clear();
 }
+
 export function getCachedAgentDiscovery(
   cwd: string,
   scope: AgentScope,
@@ -36,6 +41,7 @@ export function getCachedAgentDiscovery(
   cache.set(key, nextEntry);
   return nextEntry;
 }
+
 export function getCachedAgentCompletions(
   prefix: string,
   cwd = process.cwd(),

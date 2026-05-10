@@ -93,3 +93,4 @@ with separate context windows.
 
 - Remove all empty lines inside TypeScript and JavaScript functions.
 - Don't add empty lines inside TypeScript and JavaScript functions.
+- Leave an empty line before and after functions and classes.
