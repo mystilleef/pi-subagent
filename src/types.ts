@@ -48,6 +48,11 @@ export interface SubagentDetails {
   results: SingleResult[];
 }
 
+export interface SubagentToolResult {
+  content: { type: "text"; text: string }[];
+  details: SubagentDetails;
+}
+
 export type OnUpdateCallback = (partial: {
   content: { type: "text"; text: string }[];
   details: SubagentDetails;

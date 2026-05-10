@@ -112,6 +112,9 @@ export function cancelProgressState(requestId: string, reason?: string): void {
 export function clearProgressState(requestId: string): void {
   store.delete(requestId);
 }
+export function resetProgressStore(): void {
+  store.clear();
+}
 
 export function makeTaskPreview(task: string): string {
   const flat = normalizeSummaryValue(task);
@@ -215,7 +218,7 @@ function isDerivedToolCall(part: unknown): part is {
   return typeof maybe.id === "string" && typeof maybe.preview === "string";
 }
 
-function isToolCallPart(part: unknown): part is {
+export function isToolCallPart(part: unknown): part is {
   type: "toolCall";
   id: string;
   name: string;

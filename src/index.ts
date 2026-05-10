@@ -2,17 +2,19 @@ import type {
   ExtensionAPI,
   ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
+import {
+  getCachedAgentCompletions,
+  resetAgentDiscoveryCache,
+} from "./agent-cache.js";
 import { cancelSubagentCommandHandler } from "./cancel-command.js";
 import { renderSubagentProgress } from "./progress.js";
+import { renderSubagentResultMessage } from "./run.js";
+import { runCommandHandler } from "./run-command.js";
 import {
   formatStartJobStatus,
-  getCachedAgentCompletions,
-  renderSubagentResultMessage,
-  resetAgentDiscoveryCache,
-  runCommandHandler,
   SubagentParams,
   startSubagentJob,
-} from "./run.js";
+} from "./subagent-orchestrator.js";
 import { renderSubagentCall, renderSubagentResult } from "./ui.js";
 
 export { SubagentParams };

@@ -20,6 +20,7 @@ export {
   makeTaskPreview,
   type ProgressStatus,
   patchProgressState,
+  resetProgressStore,
   type SubagentProgressState,
 } from "./progress-state.js";
 

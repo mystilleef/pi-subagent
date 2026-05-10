@@ -4,13 +4,13 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import type { Message } from "@earendil-works/pi-ai";
 import { DefaultResourceLoader } from "@earendil-works/pi-coding-agent";
-import type { AgentConfig } from "../src/agents.js";
-import { discoverAgents, formatAgentList } from "../src/agents.js";
 import {
   type AgentDiscoveryCache,
   getCachedAgentCompletions,
   getCachedAgentDiscovery,
-} from "../src/run.js";
+} from "../src/agent-cache.js";
+import type { AgentConfig } from "../src/agents.js";
+import { discoverAgents, formatAgentList } from "../src/agents.js";
 import {
   DEFAULT_MAX_OUTPUT_BYTES,
   DEFAULT_MAX_OUTPUT_LINES,

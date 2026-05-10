@@ -3,7 +3,10 @@ import * as fs from "node:fs";
 import readline from "node:readline";
 import { getModel, type Message } from "@earendil-works/pi-ai";
 import type { AgentConfig, ThinkingLevel } from "./agents.js";
+import { parseChildEventLine } from "./child-events.js";
 import { makeToolPreview } from "./progress.js";
+import { isToolCallPart } from "./progress-state.js";
+import { appendSubagentResultContract } from "./prompt-contract.js";
 import {
   getProcessTreeSpawnOptions,
   terminateChildProcess,
@@ -41,19 +44,6 @@ function appendWithByteLimit(
   if (current.length >= max) return current;
   return current + data.slice(0, max - current.length);
 }
-// - Summarize the result of your task for the main agent.
-const RESULT_FORMAT_INSTRUCTIONS = `
-- Don't summarize tasks that have a standardized result output.
-- For tasks that don't have a standard result output,
-  use context to decide whether to summarize task result.
-- Use brief, precise, concise prose while maintaining clarity.
-- Optimize prose for token and context efficiency.
-- Add an empty line between paragraphs, headings and sections.
-- Use elegant, well-structured, idiomatic markdown.
-- End your final response with exactly one line:
-  - Outcome: <short, single, compact lower-case sentence>.
-  - Outcome summarizes the result of your task in a single sentence.
-`;
 
 type AssistantMessageMetadata = Message & {
   provider?: unknown;
@@ -266,7 +256,7 @@ export async function runSingleAgent(
     const taskPrompt = task
       ? `Task: ${task}`
       : "Run according to your system prompt. If no explicit task was provided, use the default context described there.";
-    args.push(`${taskPrompt}\n\n${RESULT_FORMAT_INSTRUCTIONS}`);
+    args.push(appendSubagentResultContract(taskPrompt));
     const invocation = getPiInvocation(args);
     const terminateOptions = {
       tree: true,
@@ -337,9 +327,10 @@ export async function runSingleAgent(
       }
     };
     const processLine = (line: string) => {
-      if (!line.trim()) return;
-      try {
-        const event = JSON.parse(line);
+      const parseResult = parseChildEventLine(line);
+      if (parseResult.kind === "invalid") return;
+      if (parseResult.kind === "known") {
+        const event = parseResult.event;
         if (
           (event.type === "message_end" || event.type === "tool_result_end") &&
           event.message
@@ -363,9 +354,8 @@ export async function runSingleAgent(
             agentEndGraceTimer.unref?.();
           }
         }
-      } catch {
-        /* ignore invalid JSON */
       }
+      /* unknown events: silently ignored */
     };
     if (proc.stdout) {
       readline.createInterface({ input: proc.stdout }).on("line", processLine);
@@ -429,7 +419,7 @@ function deriveStreamingProgress(messages: Message[]): StreamingProgress {
   for (const msg of messages) {
     if (msg.role !== "assistant" || !Array.isArray(msg.content)) continue;
     for (const part of msg.content) {
-      if (!isStreamingToolCall(part)) continue;
+      if (!isToolCallPart(part)) continue;
       const preview = sanitizeProgressPreview(
         makeToolPreview(part.name, part.arguments),
         part.name,
@@ -443,21 +433,6 @@ function deriveStreamingProgress(messages: Message[]): StreamingProgress {
 
 function sanitizeProgressPreview(preview: string, toolName: string): string {
   return /secret|token|password/i.test(preview) ? toolName : preview;
-}
-
-function isStreamingToolCall(part: unknown): part is {
-  type: "toolCall";
-  id: string;
-  name: string;
-  arguments?: Record<string, unknown>;
-} {
-  if (typeof part !== "object" || part === null) return false;
-  const maybe = part as { type?: unknown; id?: unknown; name?: unknown };
-  return (
-    maybe.type === "toolCall" &&
-    typeof maybe.id === "string" &&
-    typeof maybe.name === "string"
-  );
 }
 
 function createErrorResult(

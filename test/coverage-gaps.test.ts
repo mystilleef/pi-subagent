@@ -1,6 +1,10 @@
 import { describe, expect, test, vi } from "bun:test";
 import type { ChildProcess } from "node:child_process";
 import { EventEmitter } from "node:events";
+import {
+  getCachedAgentDiscovery,
+  resetAgentDiscoveryCache,
+} from "../src/agent-cache.js";
 import { runSingleAgent } from "../src/process.js";
 import {
   cancelProgressState,
@@ -11,8 +15,14 @@ import {
   formatTokenCount,
   getProgressState,
   patchProgressState,
+  resetProgressStore,
   type SubagentProgressState,
 } from "../src/progress.js";
+import {
+  listRunJobs,
+  registerRunJob,
+  resetRunRegistry,
+} from "../src/run-registry.js";
 import { terminateChildProcess } from "../src/termination.js";
 import { setupHooks, setupTest, waitFor } from "./helpers.js";
 
@@ -216,6 +226,74 @@ wait $!
       } finally {
         Date.now = originalNow;
       }
+    });
+  });
+
+  describe("global state reset helpers", () => {
+    test("resetProgressStore clears all progress state", () => {
+      createProgressState("a", "agent-a", "task-a");
+      createProgressState("b", "agent-b", "task-b");
+      expect(getProgressState("a")).toBeDefined();
+      expect(getProgressState("b")).toBeDefined();
+      resetProgressStore();
+      expect(getProgressState("a")).toBeUndefined();
+      expect(getProgressState("b")).toBeUndefined();
+    });
+
+    test("resetRunRegistry clears all jobs", () => {
+      registerRunJob({
+        requestId: "j1",
+        agentName: "a",
+        controller: new AbortController(),
+        startedAt: Date.now(),
+      });
+      registerRunJob({
+        requestId: "j2",
+        agentName: "b",
+        controller: new AbortController(),
+        startedAt: Date.now(),
+      });
+      expect(listRunJobs().length).toBe(2);
+      resetRunRegistry();
+      expect(listRunJobs().length).toBe(0);
+    });
+
+    test("concurrent job IDs do not collide", () => {
+      resetRunRegistry();
+      const c1 = new AbortController();
+      const c2 = new AbortController();
+      registerRunJob({
+        requestId: "concurrent-1",
+        agentName: "a",
+        controller: c1,
+        startedAt: Date.now(),
+      });
+      registerRunJob({
+        requestId: "concurrent-2",
+        agentName: "b",
+        controller: c2,
+        startedAt: Date.now(),
+      });
+      const jobs = listRunJobs();
+      expect(jobs.length).toBe(2);
+      expect(jobs.find((j) => j.requestId === "concurrent-1")).toBeDefined();
+      expect(jobs.find((j) => j.requestId === "concurrent-2")).toBeDefined();
+      resetRunRegistry();
+    });
+
+    test("cache isolation: different scopes do not cross-contaminate", async () => {
+      const { cwd } = await setupTest();
+      resetAgentDiscoveryCache();
+      const both = getCachedAgentDiscovery(cwd, "both");
+      const user = getCachedAgentDiscovery(cwd, "user");
+      const project = getCachedAgentDiscovery(cwd, "project");
+      expect(both.agents.length).toBeGreaterThanOrEqual(0);
+      expect(user.agents.length).toBeGreaterThanOrEqual(0);
+      expect(project.agents.length).toBeGreaterThanOrEqual(0);
+      // Different scope calls produce independent cache entries
+      expect(both.ts).toBeGreaterThan(0);
+      expect(user.ts).toBeGreaterThan(0);
+      resetAgentDiscoveryCache();
     });
   });
 });

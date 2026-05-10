@@ -1,6 +1,10 @@
 import { expect, test } from "bun:test";
 import type { AgentConfig } from "../src/agents.js";
 import { runSingleAgent } from "../src/process.js";
+import {
+  appendSubagentResultContract,
+  SUBAGENT_RESULT_CONTRACT,
+} from "../src/prompt-contract.js";
 import type { SubagentDetails } from "../src/types.js";
 import { setupHooks, setupTest } from "./helpers.js";
 
@@ -63,4 +67,27 @@ wait $!
   );
   controller.abort(null);
   await expect(promise).rejects.toThrow("Subagent was aborted");
+});
+
+const ORIGINAL_RESULT_FORMAT_INSTRUCTIONS = `
+- Don't summarize tasks that have a standardized result output.
+- For tasks that don't have a standard result output,
+  use context to decide whether to summarize task result.
+- Use brief, precise, concise prose while maintaining clarity.
+- Optimize prose for token and context efficiency.
+- Add an empty line between paragraphs, headings and sections.
+- Use elegant, well-structured, idiomatic markdown.
+- End your final response with exactly one line:
+  - Outcome: <short, single, compact lower-case sentence>.
+  - Outcome summarizes the result of your task in a single sentence.
+`;
+
+test("SUBAGENT_RESULT_CONTRACT matches original RESULT_FORMAT_INSTRUCTIONS byte-for-byte", () => {
+  expect(SUBAGENT_RESULT_CONTRACT).toBe(ORIGINAL_RESULT_FORMAT_INSTRUCTIONS);
+});
+
+test("appendSubagentResultContract appends contract to prompt", () => {
+  const result = appendSubagentResultContract("Task: foo");
+  expect(result.startsWith("Task: foo\n\n")).toBe(true);
+  expect(result.endsWith(SUBAGENT_RESULT_CONTRACT)).toBe(true);
 });

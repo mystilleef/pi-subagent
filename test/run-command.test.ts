@@ -5,6 +5,7 @@ import {
   DefaultResourceLoader,
   type ExtensionCommandContext,
 } from "@earendil-works/pi-coding-agent";
+import { resetAgentCache } from "../src/index.js";
 import {
   clearProgressState,
   createProgressState,
@@ -1304,6 +1305,75 @@ test("/run final result message renderer hides header and keeps success backgrou
           line.endsWith("[/toolSuccessBg]"),
       ),
   ).toBe(true);
+});
+
+test("/run collision: project agent with same-named user agent emits warning", async () => {
+  clearRunJobsForTests();
+  const sentMessages: SendMessageArg[] = [];
+  const { tool, agentDir, cwd } = await setupTest({
+    sendMessage: (msg) => sentMessages.push(msg),
+  });
+  const projectAgentsDir = path.join(cwd, ".pi", "agents");
+  await Bun.$`mkdir -p ${projectAgentsDir}`;
+  await Bun.write(
+    path.join(projectAgentsDir, "reviewer.md"),
+    `---\nname: reviewer\ndescription: Project reviewer\n---\nProject prompt.`,
+  );
+  await Bun.write(
+    path.join(agentDir, "agents", "reviewer.md"),
+    `---\nname: reviewer\ndescription: User reviewer\n---\nUser prompt.`,
+  );
+  resetAgentCache();
+  const runCommand = tool.registeredCommands.get("run");
+  await runCommand?.handler("reviewer task", {
+    cwd,
+    ui: { notify: () => {} },
+  } as unknown as ExtensionCommandContext);
+  await waitForRunJobsCleared();
+  const collisionMsg = sentMessages.find(
+    (msg) =>
+      msg.customType === "subagent-progress" &&
+      typeof msg.content === "string" &&
+      msg.content.includes("Using project agent"),
+  );
+  expect(collisionMsg).toBeDefined();
+  expect(collisionMsg?.content).toContain(
+    'Using project agent "reviewer"; user agent with same name also exists.',
+  );
+  expect(sentMessages.some((msg) => msg.customType === "subagent-result")).toBe(
+    true,
+  );
+});
+
+test("/run no collision when only project agent exists", async () => {
+  clearRunJobsForTests();
+  const sentMessages: SendMessageArg[] = [];
+  const { tool, cwd } = await setupTest({
+    sendMessage: (msg) => sentMessages.push(msg),
+  });
+  const projectAgentsDir = path.join(cwd, ".pi", "agents");
+  await Bun.$`mkdir -p ${projectAgentsDir}`;
+  await Bun.write(
+    path.join(projectAgentsDir, "only-project.md"),
+    `---\nname: only-project\ndescription: Only project\n---\nPrompt.`,
+  );
+  resetAgentCache();
+  const runCommand = tool.registeredCommands.get("run");
+  await runCommand?.handler("only-project task", {
+    cwd,
+    ui: { notify: () => {} },
+  } as unknown as ExtensionCommandContext);
+  await waitForRunJobsCleared();
+  const collisionMsg = sentMessages.find(
+    (msg) =>
+      msg.customType === "subagent-progress" &&
+      typeof msg.content === "string" &&
+      msg.content.includes("Using project agent"),
+  );
+  expect(collisionMsg).toBeUndefined();
+  expect(sentMessages.some((msg) => msg.customType === "subagent-result")).toBe(
+    true,
+  );
 });
 
 test("/run final result renders raw summary and feedback uses semantic content", async () => {
