@@ -12,8 +12,8 @@ import {
   extractSemanticToolTarget,
   normalizeSummaryValue,
 } from "./normalize.js";
+import { hasSubagentFailed } from "./result-details.js";
 import type { SubagentDetails, UsageStats } from "./types.js";
-import { detectMessageError } from "./utils.js";
 
 /**
  * Background theme keys for subagent tool status.
@@ -136,17 +136,18 @@ function stripOutcomeLineForResultUi(output: string): string {
  * Maps subagent theme colors to Markdown rendering components.
  */
 function makeMarkdownTheme(theme: SubagentTheme): MarkdownTheme {
+  const fg = (c: ThemeColor) => (text: string) => theme.fg(c, text);
   return {
-    heading: (text) => theme.fg("mdHeading", text),
-    link: (text) => theme.fg("mdLink", text),
-    linkUrl: (text) => theme.fg("mdLinkUrl", text),
-    code: (text) => theme.fg("mdCode", text),
-    codeBlock: (text) => theme.fg("mdCodeBlock", text),
-    codeBlockBorder: (text) => theme.fg("mdCodeBlockBorder", text),
-    quote: (text) => theme.fg("mdQuote", text),
-    quoteBorder: (text) => theme.fg("mdQuoteBorder", text),
-    hr: (text) => theme.fg("mdHr", text),
-    listBullet: (text) => theme.fg("mdListBullet", text),
+    heading: fg("mdHeading"),
+    link: fg("mdLink"),
+    linkUrl: fg("mdLinkUrl"),
+    code: fg("mdCode"),
+    codeBlock: fg("mdCodeBlock"),
+    codeBlockBorder: fg("mdCodeBlockBorder"),
+    quote: fg("mdQuote"),
+    quoteBorder: fg("mdQuoteBorder"),
+    hr: fg("mdHr"),
+    listBullet: fg("mdListBullet"),
     bold: (text) => theme.bold(text),
     italic: (text) => `\x1b[3m${text}\x1b[23m`,
     strikethrough: (text) => `\x1b[9m${text}\x1b[29m`,
@@ -174,7 +175,7 @@ export function renderSubagentCall(
 
 /**
  * Renders the subagent result box.
- * 
+ *
  * Invariants:
  * - Red background indicates failure (exit code, error reason, or message error).
  * - Green background indicates success.
@@ -197,12 +198,7 @@ export function renderSubagentResult(
       0,
     );
   }
-  const failed =
-    r.exitCode !== 0 ||
-    r.stopReason === "error" ||
-    r.stopReason === "aborted" ||
-    !!r.errorMessage ||
-    detectMessageError(r.messages ?? []);
+  const failed = hasSubagentFailed(r);
   const finalOutput = r.finalOutput ?? getFinalOutput(r.messages ?? []);
   const bg = failed ? "toolErrorBg" : "toolSuccessBg";
   const box = new Box(1, 1, (line) => theme.bg(bg, line));
