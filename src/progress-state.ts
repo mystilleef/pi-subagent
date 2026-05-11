@@ -58,10 +58,9 @@ export function patchProgressState(
   const state = store.get(requestId);
   if (!state) return;
   if (state.status !== "running") {
-    const { lastToolPreview: _lastToolPreview, ...safePatch } = patch;
     store.set(requestId, {
       ...state,
-      ...safePatch,
+      ...patch,
       lastToolPreview: undefined,
     });
     return;
