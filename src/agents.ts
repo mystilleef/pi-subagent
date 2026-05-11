@@ -42,7 +42,7 @@ export interface AgentDiscoveryResult {
 }
 
 function parseThinkingLevel(
-  value: string | undefined,
+  value: string | undefined | null,
 ): ThinkingLevel | undefined {
   const normalized = value?.trim().toLowerCase();
   return normalized && THINKING_LEVELS.has(normalized)
@@ -52,6 +52,10 @@ function parseThinkingLevel(
 
 function isFrontmatterObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function isOptionalString(v: unknown): v is string | undefined | null {
+  return v == null || typeof v === "string";
 }
 
 function loadAgentsFromDir(
@@ -94,14 +98,9 @@ function loadAgentsFromDir(
       thinking: rawThinking,
     } = frontmatter;
     if (typeof name !== "string" || typeof description !== "string") continue;
-    if (rawTools !== undefined && typeof rawTools !== "string") continue;
-    if (
-      rawSkills !== undefined &&
-      rawSkills !== null &&
-      typeof rawSkills !== "string"
-    )
-      continue;
-    if (rawThinking !== undefined && typeof rawThinking !== "string") continue;
+    if (!isOptionalString(rawTools)) continue;
+    if (!isOptionalString(rawSkills)) continue;
+    if (!isOptionalString(rawThinking)) continue;
     const tools = rawTools
       ?.split(",")
       .map((t: string) => t.trim())
