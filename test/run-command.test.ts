@@ -160,7 +160,7 @@ wait $!
   expect(notices).toHaveLength(0);
 });
 
-test("/cancel-subagent lists active request ids", async () => {
+test("/cancel-subagent no-args opens interactive selector and cancels selected agent", async () => {
   clearRunJobsForTests();
   const notices: string[] = [];
   const sentMessages: SendMessageArg[] = [];
@@ -180,14 +180,130 @@ wait $!
   } as unknown as ExtensionCommandContext);
   await waitForRunJobCount(1);
   const requestId = listRunJobs()[0]?.requestId;
-  cancelCommand?.handler("", {
+  if (!requestId) throw new Error("requestId missing");
+  await cancelCommand?.handler("", {
     cwd,
-    ui: { notify: (message: string) => notices.push(message) },
+    ui: {
+      notify: (message: string) => notices.push(message),
+      select: async (_title: string, _options: string[]) =>
+        `hang (${requestId})`,
+    },
   } as unknown as ExtensionCommandContext);
-  expect(notices).toEqual([`Active /run jobs: ${requestId}`]);
-  cancelRunJob(requestId ?? "", "cleanup");
+  expect(notices).toEqual([`Cancelled /run job ${requestId}.`]);
+  expect(getRunJob(requestId)?.cancelReason).toBe(
+    "Cancelled by /cancel-subagent",
+  );
   await promise;
   await waitForRunJobsCleared();
+});
+
+test("/cancel-subagent dismiss selector performs no cancellation", async () => {
+  clearRunJobsForTests();
+  const notices: string[] = [];
+  const sentMessages: SendMessageArg[] = [];
+  const { tool, cwd } = await setupTest({
+    sendMessage: (msg) => sentMessages.push(msg),
+    piScript: `#!/bin/sh
+trap 'exit 0' TERM
+sleep 10 &
+wait $!
+`,
+  });
+  const runCommand = tool.registeredCommands.get("run");
+  const cancelCommand = tool.registeredCommands.get("cancel-subagent");
+  const promise = runCommand?.handler("hang task", {
+    cwd,
+    ui: { notify: () => {} },
+  } as unknown as ExtensionCommandContext);
+  await waitForRunJobCount(1);
+  const requestId = listRunJobs()[0]?.requestId;
+  if (!requestId) throw new Error("requestId missing");
+  await cancelCommand?.handler("", {
+    cwd,
+    ui: {
+      notify: (message: string) => notices.push(message),
+      select: async (_title: string, _options: string[]) => undefined,
+    },
+  } as unknown as ExtensionCommandContext);
+  expect(notices).toEqual([]);
+  expect(getRunJob(requestId)?.cancelReason).toBeUndefined();
+  cancelRunJob(requestId, "cleanup");
+  await promise;
+  await waitForRunJobsCleared();
+});
+
+test("/cancel-subagent selector all cancels every active job", async () => {
+  clearRunJobsForTests();
+  const notices: string[] = [];
+  const { tool, cwd } = await setupTest({
+    piScript: `#!/bin/sh
+trap 'exit 0' TERM
+sleep 10 &
+wait $!
+`,
+  });
+  const runCommand = tool.registeredCommands.get("run");
+  const cancelCommand = tool.registeredCommands.get("cancel-subagent");
+  const first = runCommand?.handler("hang one", {
+    cwd,
+    ui: { notify: () => {} },
+  } as unknown as ExtensionCommandContext);
+  const second = runCommand?.handler("hang two", {
+    cwd,
+    ui: { notify: () => {} },
+  } as unknown as ExtensionCommandContext);
+  await waitForRunJobCount(2);
+  await cancelCommand?.handler("", {
+    cwd,
+    ui: {
+      notify: (message: string) => notices.push(message),
+      select: async (_title: string, _options: string[]) =>
+        "All running subagents",
+    },
+  } as unknown as ExtensionCommandContext);
+  expect(notices).toEqual(["Cancelled 2 /run jobs."]);
+  await Promise.all([first, second]);
+  await waitForRunJobsCleared();
+});
+
+test("/cancel-subagent no-args with no jobs notifies without opening selector", async () => {
+  clearRunJobsForTests();
+  const notices: string[] = [];
+  let selectCalled = false;
+  const { tool, cwd } = await setupTest();
+  const cancelCommand = tool.registeredCommands.get("cancel-subagent");
+  await cancelCommand?.handler("", {
+    cwd,
+    ui: {
+      notify: (message: string) => notices.push(message),
+      select: async (_title: string, _options: string[]) => {
+        selectCalled = true;
+        return undefined;
+      },
+    },
+  } as unknown as ExtensionCommandContext);
+  expect(notices).toEqual(["No active /run jobs."]);
+  expect(selectCalled).toBe(false);
+});
+
+test("/cancel-subagent whitespace args with no jobs notifies without opening selector", async () => {
+  clearRunJobsForTests();
+  const notices: string[] = [];
+  let selectCalled = false;
+  const { tool, cwd } = await setupTest();
+  const cancelCommand = tool.registeredCommands.get("cancel-subagent");
+  await cancelCommand?.handler("   ", {
+    cwd,
+    ui: {
+      notify: (message: string) => notices.push(message),
+      select: async (_title: string, _options: string[]) => {
+        selectCalled = true;
+        return undefined;
+      },
+    },
+  } as unknown as ExtensionCommandContext);
+  expect(notices).toEqual(["No active /run jobs."]);
+  expect(selectCalled).toBe(false);
 });
 
 test("/cancel-subagent cancels matching request id with reason", async () => {

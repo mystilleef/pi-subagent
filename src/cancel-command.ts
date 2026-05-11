@@ -3,10 +3,10 @@ import { cancelAllRunJobs, cancelRunJob, listRunJobs } from "./run-registry.js";
 
 const CANCEL_REASON = "Cancelled by /cancel-subagent";
 
-export function cancelSubagentCommandHandler(
+export async function cancelSubagentCommandHandler(
   ctx: ExtensionCommandContext,
   args: string,
-): void {
+): Promise<void> {
   const target = args.trim();
   if (!target) {
     const jobs = listRunJobs();
@@ -14,9 +14,22 @@ export function cancelSubagentCommandHandler(
       ctx.ui.notify("No active /run jobs.");
       return;
     }
-    ctx.ui.notify(
-      `Active /run jobs: ${jobs.map((job) => job.requestId).join(", ")}`,
-    );
+    const options = [
+      ...jobs.map((job) => `${job.agentName} (${job.requestId})`),
+      "All running subagents",
+    ];
+    const selection = await ctx.ui.select("Cancel subagent", options);
+    if (selection === undefined) return;
+    if (selection === "All running subagents") {
+      const count = cancelAllRunJobs(CANCEL_REASON);
+      ctx.ui.notify(`Cancelled ${count} /run job${count === 1 ? "" : "s"}.`);
+      return;
+    }
+    const requestId = selection.match(/\((.*)\)$/)?.[1];
+    if (requestId) {
+      cancelRunJob(requestId, CANCEL_REASON);
+      ctx.ui.notify(`Cancelled /run job ${requestId}.`);
+    }
     return;
   }
   if (target === "all") {
