@@ -16,14 +16,14 @@ export type ThinkingLevel =
   | "high"
   | "xhigh";
 
-const THINKING_LEVELS = new Set<string>([
+const THINKING_LEVELS = [
   "off",
   "minimal",
   "low",
   "medium",
   "high",
   "xhigh",
-]);
+] as const;
 
 export interface AgentConfig {
   name: string;
@@ -41,21 +41,21 @@ export interface AgentDiscoveryResult {
   projectAgentsDir: string | null;
 }
 
-function parseThinkingLevel(
-  value: string | undefined | null,
-): ThinkingLevel | undefined {
-  const normalized = value?.trim().toLowerCase();
-  return normalized && THINKING_LEVELS.has(normalized)
+function parseCommaList(raw: unknown): string[] | undefined {
+  if (typeof raw !== "string") return undefined;
+  const items = raw
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
+  return items.length > 0 ? items : undefined;
+}
+
+function parseThinkingLevel(raw: unknown): ThinkingLevel | undefined {
+  if (typeof raw !== "string") return undefined;
+  const normalized = raw.trim().toLowerCase();
+  return (THINKING_LEVELS as readonly string[]).includes(normalized)
     ? (normalized as ThinkingLevel)
     : undefined;
-}
-
-function isFrontmatterObject(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-function isOptionalString(v: unknown): v is string | undefined | null {
-  return v == null || typeof v === "string";
 }
 
 function loadAgentsFromDir(
@@ -89,7 +89,12 @@ function loadAgentsFromDir(
       continue;
     }
     const { frontmatter, body } = parsed;
-    if (!isFrontmatterObject(frontmatter)) continue;
+    if (
+      typeof frontmatter !== "object" ||
+      frontmatter === null ||
+      Array.isArray(frontmatter)
+    )
+      continue;
     const {
       name,
       description,
@@ -98,24 +103,19 @@ function loadAgentsFromDir(
       thinking: rawThinking,
     } = frontmatter;
     if (typeof name !== "string" || typeof description !== "string") continue;
-    if (!isOptionalString(rawTools)) continue;
-    if (!isOptionalString(rawSkills)) continue;
-    if (!isOptionalString(rawThinking)) continue;
-    const tools = rawTools
-      ?.split(",")
-      .map((t: string) => t.trim())
-      .filter(Boolean);
-    const hasSkills = Object.hasOwn(frontmatter, "skills");
-    const skills = rawSkills
-      ?.split(",")
-      .map((s: string) => s.trim())
-      .filter(Boolean);
+    if (rawTools != null && typeof rawTools !== "string") continue;
+    if (rawSkills != null && typeof rawSkills !== "string") continue;
+    if (rawThinking != null && typeof rawThinking !== "string") continue;
+    const tools = parseCommaList(rawTools);
+    const skills = Object.hasOwn(frontmatter, "skills")
+      ? (parseCommaList(rawSkills) ?? [])
+      : undefined;
     const thinking = parseThinkingLevel(rawThinking);
     agents.push({
       name,
       description,
-      tools: tools && tools.length > 0 ? tools : undefined,
-      skills: hasSkills ? (skills ?? []) : undefined,
+      tools,
+      skills,
       thinking,
       systemPrompt: body,
       source,
@@ -157,8 +157,8 @@ export function discoverAgents(
       ? []
       : loadAgentsFromDir(projectAgentsDir, "project");
   const agentMap = new Map<string, AgentConfig>();
-  for (const agent of [...userAgents, ...projectAgents])
-    agentMap.set(agent.name, agent);
+  for (const agent of userAgents) agentMap.set(agent.name, agent);
+  for (const agent of projectAgents) agentMap.set(agent.name, agent);
   return { agents: Array.from(agentMap.values()), projectAgentsDir };
 }
 
