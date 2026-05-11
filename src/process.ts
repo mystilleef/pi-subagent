@@ -1,3 +1,9 @@
+/**
+ * Manages subagent execution by spawning and orchestrating child `pi` processes.
+ * Handles JSON-mode event streaming, resource tracking, and lifecycle management
+ * including timeouts and termination signals.
+ */
+
 import { type ChildProcess, spawn } from "node:child_process";
 import * as fs from "node:fs";
 import readline from "node:readline";
@@ -36,6 +42,10 @@ type RuntimeResult = SingleResult & { messages: Message[] };
 const MAX_SUBAGENT_DEPTH = 1;
 export const TOOL_RESULT_FAILED_MESSAGE = "Subagent tool result failed.";
 
+/**
+ * Appends data to a string while ensuring the result does not exceed a maximum byte limit.
+ * Used to prevent memory exhaustion when capturing child process stderr.
+ */
 function appendWithByteLimit(
   current: string,
   data: string,
@@ -50,6 +60,11 @@ type AssistantMessageMetadata = Message & {
   model?: unknown;
 };
 
+/**
+ * Attempts to resolve the context window token limit for a given message's model.
+ * Rationale: Subagent usage reporting needs context window awareness to provide
+ * meaningful "context full" indicators to the parent.
+ */
 function resolveContextWindowTokens(msg: Message): number | undefined {
   const { provider, model } = msg as AssistantMessageMetadata;
   if (typeof provider !== "string" || typeof model !== "string") return;
@@ -64,6 +79,9 @@ function resolveContextWindowTokens(msg: Message): number | undefined {
   }
 }
 
+/**
+ * Normalizes AbortSignal reasons into human-readable strings.
+ */
 function getAbortReason(signal: AbortSignal): string {
   const reason = signal.reason;
   if (reason instanceof Error && reason.message) return reason.message;
@@ -71,6 +89,11 @@ function getAbortReason(signal: AbortSignal): string {
   return "abort";
 }
 
+/**
+ * Verifies if the agent produced any textual output or final response.
+ * Precondition: Called after process exit to distinguish between clean completion
+ * and silent failures where the process exited 0 but did nothing.
+ */
 function hasCompletedAgentOutput(result: RuntimeResult): boolean {
   if (result.finalOutput.trim()) return true;
   return result.messages.some(
@@ -82,6 +105,12 @@ function hasCompletedAgentOutput(result: RuntimeResult): boolean {
   );
 }
 
+/**
+ * Determines the exit code for processes terminated via the agent_end timeout.
+ * Rationale: `pi` processes in JSON mode might hang after finishing their task;
+ * we force-kill them after a grace period and treat it as success (0) if they
+ * actually produced output.
+ */
 function getAgentEndTimeoutExitCode(
   result: RuntimeResult,
   spawnError: Error | undefined,
@@ -93,6 +122,11 @@ function getAgentEndTimeoutExitCode(
   return hasCompletedAgentOutput(result) ? 0 : 1;
 }
 
+/**
+ * Orchestrates the cleanup and exit code capture of a child process.
+ * Safety: Implements a dual-timer strategy (idle and hard) to ensure streams
+ * are destroyed and promises settled even if the process or its pipes hang.
+ */
 async function waitForSubagentProcess(
   proc: ChildProcess,
   idleMs = 100,
@@ -139,6 +173,21 @@ async function waitForSubagentProcess(
   });
 }
 
+/**
+ * Executes a single subagent task.
+ *
+ * Rationale: Subagents run in isolated child processes to protect the parent's
+ * context window and allow specialized system prompts/tools without polluting
+ * the main conversation.
+ *
+ * Safety:
+ * - Enforces a strict recursion limit (depth 1) via environment variables.
+ * - Uses temporary prompt files to pass large system prompts without shell limits.
+ * - Streams JSON events from the child to provide real-time UI updates to the parent.
+ * - Implements aggressive process tree termination to prevent orphan processes.
+ *
+ * Side Effects: Spawns a child process and writes/deletes temporary files in `/tmp`.
+ */
 export async function runSingleAgent(
   defaultCwd: string,
   agents: AgentConfig[],
@@ -355,7 +404,6 @@ export async function runSingleAgent(
           }
         }
       }
-      /* unknown events: silently ignored */
     };
     if (proc.stdout) {
       readline.createInterface({ input: proc.stdout }).on("line", processLine);
@@ -413,6 +461,10 @@ export async function runSingleAgent(
   }
 }
 
+/**
+ * Derives current execution progress from accumulated messages.
+ * Maps tool calls to UI-safe previews for real-time feedback.
+ */
 function deriveStreamingProgress(messages: Message[]): StreamingProgress {
   const toolCalls: { id: string; preview: string }[] = [];
   let lastToolPreview: string | undefined;
@@ -431,10 +483,17 @@ function deriveStreamingProgress(messages: Message[]): StreamingProgress {
   return { activityText: lastToolPreview, toolCalls, lastToolPreview };
 }
 
+/**
+ * Prevents leaking secrets in the CLI progress display.
+ * Redacts values if the preview contains sensitive keywords.
+ */
 function sanitizeProgressPreview(preview: string, toolName: string): string {
   return /secret|token|password/i.test(preview) ? toolName : preview;
 }
 
+/**
+ * Standardized error result generator.
+ */
 function createErrorResult(
   agent: string,
   source: "user" | "project" | "unknown",
@@ -461,3 +520,4 @@ function createErrorResult(
     model,
   };
 }
+

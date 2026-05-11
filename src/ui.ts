@@ -15,14 +15,23 @@ import {
 import type { SubagentDetails, UsageStats } from "./types.js";
 import { detectMessageError } from "./utils.js";
 
+/**
+ * Background theme keys for subagent tool status.
+ */
 export type ThemeBg = "toolPendingBg" | "toolSuccessBg" | "toolErrorBg";
 
+/**
+ * Abstraction for theme-aware text formatting.
+ */
 export type SubagentTheme = {
   fg: (color: ThemeColor, text: string) => string;
   bg: (color: ThemeBg, text: string) => string;
   bold: (text: string) => string;
 };
 
+/**
+ * Formats token counts into human-readable strings (e.g., "1.2k", "1.5M").
+ */
 export function formatTokens(count: number): string {
   if (count < 1000) return count.toString();
   if (count < 10000) return `${(count / 1000).toFixed(1)}k`;
@@ -30,6 +39,9 @@ export function formatTokens(count: number): string {
   return `${(count / 1000000).toFixed(1)}M`;
 }
 
+/**
+ * Formats cumulative usage statistics for compact UI display.
+ */
 export function formatUsageStats(
   usage: UsageStats,
   model?: string,
@@ -57,6 +69,9 @@ export function formatUsageStats(
   return parts.join(" · ");
 }
 
+/**
+ * Formats millisecond durations into human-readable time strings.
+ */
 export function formatDuration(ms: number): string {
   if (ms < 1000) return `${Math.floor(ms)}ms`;
   if (ms < 60000) return `${(ms / 1000).toFixed(1)}s`;
@@ -65,6 +80,9 @@ export function formatDuration(ms: number): string {
   return `${minutes}m ${seconds.toString().padStart(2, "0")}s`;
 }
 
+/**
+ * Formats the footer for subagent result cards, including model, context, turns, and cost.
+ */
 export function formatResultFooter(
   usage: UsageStats,
   model?: string,
@@ -81,6 +99,9 @@ export function formatResultFooter(
   return `\n${parts.join(" · ")}`;
 }
 
+/**
+ * Formats a tool call for the UI, optionally extracting a semantic target for clarity.
+ */
 export function formatToolCall(
   toolName: string,
   args: Record<string, unknown>,
@@ -94,17 +115,26 @@ export function formatToolCall(
   return themeFg("accent", toolName) + themeFg("dim", ` ${target}`);
 }
 
+/**
+ * Extracts the final text response from an array of assistant messages.
+ */
 export function getFinalOutput(messages: Message[]): string {
   const lastAsst = messages.findLast((m) => m.role === "assistant");
   const lastText = lastAsst?.content.findLast((p) => p.type === "text");
   return lastText?.type === "text" ? lastText.text : "";
 }
 
+/**
+ * Removes the "Outcome:" line from subagent output to avoid redundancy in result cards.
+ */
 function stripOutcomeLineForResultUi(output: string): string {
   const stripped = output.replace(/^\s*Outcome:[^\r\n]*(?:\r?\n|$)/gim, "");
   return stripped.trim() ? stripped : output;
 }
 
+/**
+ * Maps subagent theme colors to Markdown rendering components.
+ */
 function makeMarkdownTheme(theme: SubagentTheme): MarkdownTheme {
   return {
     heading: (text) => theme.fg("mdHeading", text),
@@ -124,6 +154,9 @@ function makeMarkdownTheme(theme: SubagentTheme): MarkdownTheme {
   };
 }
 
+/**
+ * Renders the pending subagent call UI component.
+ */
 export function renderSubagentCall(
   args: { agent?: string; task?: string; agentScope?: AgentScope },
   theme: SubagentTheme,
@@ -139,6 +172,15 @@ export function renderSubagentCall(
   return new Text(text, 0, 0, (line) => theme.bg("toolPendingBg", line));
 }
 
+/**
+ * Renders the subagent result box.
+ * 
+ * Invariants:
+ * - Red background indicates failure (exit code, error reason, or message error).
+ * - Green background indicates success.
+ * - Trims redundant "Outcome:" lines from the body.
+ * - Displays usage stats and duration in the footer.
+ */
 export function renderSubagentResult(
   result: { content: { type: string; text?: string }[]; details?: unknown },
   theme: SubagentTheme,
