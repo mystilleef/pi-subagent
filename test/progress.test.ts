@@ -64,6 +64,7 @@ afterEach(() => {
   clearProgressState("iso-error");
   clearProgressState("iso-running");
   for (let i = 1; i <= 12; i++) clearProgressState(`rend-${i}`);
+  clearProgressState("inv-1");
 });
 
 test("createProgressState initializes defaults", () => {
@@ -1224,6 +1225,23 @@ test("renderSubagentProgress freezes error and cancelled elapsed after completio
   );
   expect(renderText(cancelResult)).toContain("4.5s");
   expect(renderText(cancelResult)).not.toContain("10.0s");
+});
+
+test("DynamicSubagentProgressText invalidate is a no-op", () => {
+  createProgressState("inv-1", "agent", "task");
+  const theme = makeTheme();
+  const result = renderSubagentProgress(
+    {
+      customType: "subagent-progress",
+      content: "",
+      display: true,
+      details: { requestId: "inv-1" },
+    },
+    { expanded: false },
+    theme,
+  );
+  expect(result).toBeDefined();
+  expect(() => result?.invalidate()).not.toThrow();
 });
 
 test("renderSubagentProgress keeps running elapsed live", () => {

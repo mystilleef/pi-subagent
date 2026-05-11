@@ -26,6 +26,27 @@ import {
 } from "./progress-state.js";
 import type { SubagentTheme, ThemeBg } from "./ui.js";
 
+const STATUS_COLOR: Record<ProgressStatus, ThemeColor> = {
+  success: "success",
+  error: "error",
+  cancelled: "error",
+  running: "accent",
+};
+
+const STATUS_ICON: Record<ProgressStatus, string> = {
+  success: "✓",
+  error: "✗",
+  cancelled: "⊘",
+  running: "⟳",
+};
+
+const STATUS_BG: Record<ProgressStatus, ThemeBg> = {
+  success: "toolSuccessBg",
+  error: "toolErrorBg",
+  cancelled: "toolErrorBg",
+  running: "toolPendingBg",
+};
+
 export { makeToolPreview } from "./normalize.js";
 export {
   cancelProgressState,
@@ -81,21 +102,11 @@ export function formatHeaderStats(state: SubagentProgressState): string {
 }
 
 function formatContextPercent(state: SubagentProgressState): string {
-  const denominator = state.contextWindowTokens;
-  if (
-    typeof denominator !== "number" ||
-    !Number.isFinite(denominator) ||
-    denominator <= 0
-  )
-    return "--%";
-  const numerator = state.contextTokens;
-  if (
-    typeof numerator !== "number" ||
-    !Number.isFinite(numerator) ||
-    numerator <= 0
-  )
-    return "0%";
-  return `${Math.round((numerator / denominator) * 100)}%`;
+  const d = state.contextWindowTokens;
+  if (!d || d <= 0 || !Number.isFinite(d)) return "--%";
+  const n = state.contextTokens;
+  if (!n || n <= 0 || !Number.isFinite(n)) return "0%";
+  return `${Math.round((n / d) * 100)}%`;
 }
 
 function trimTrailingZero(value: string): string {
@@ -154,9 +165,7 @@ class DynamicSubagentProgressText implements Component {
 }
 
 function getProgressBackground(status: ProgressStatus): ThemeBg {
-  if (status === "running") return "toolPendingBg";
-  if (status === "success") return "toolSuccessBg";
-  return "toolErrorBg";
+  return STATUS_BG[status];
 }
 
 function formatProgressText(
@@ -166,54 +175,35 @@ function formatProgressText(
 ): string | undefined {
   const state = getProgressState(requestId);
   if (!state) return undefined;
-  const statusColorMap: Record<ProgressStatus, ThemeColor> = {
-    success: "success",
-    error: "error",
-    cancelled: "error",
-    running: "accent",
-  };
-  const iconMap: Record<ProgressStatus, string> = {
-    success: "✓",
-    error: "✗",
-    cancelled: "⊘",
-    running: "⟳",
-  };
-  const statusColor = statusColorMap[state.status];
-  const icon = iconMap[state.status];
-  const headerStats = formatHeaderStats(state);
-  const header =
-    theme.fg(statusColor, icon) +
-    " " +
-    theme.fg("toolTitle", theme.bold(state.agent)) +
-    " " +
-    theme.fg("dim", `[${state.status}]`) +
-    " " +
-    theme.fg("muted", headerStats);
-  const taskLine = `\n  ${theme.fg("dim", state.taskPreview)}`;
-  if (state.status === "running") {
+  const status = state.status;
+  const header = `${theme.fg(STATUS_COLOR[status], STATUS_ICON[status])} ${theme.fg("toolTitle", theme.bold(state.agent))} ${theme.fg("dim", `[${status}]`)} ${theme.fg("muted", formatHeaderStats(state))}`;
+  if (status === "running") {
     const toolLine = state.lastToolPreview
       ? `\n  ${formatRunningToolPreview(state.lastToolPreview, theme)}`
       : "";
-    return options.expanded ? header + toolLine + taskLine : header + toolLine;
+    const taskLine = options.expanded
+      ? `\n  ${theme.fg("dim", state.taskPreview)}`
+      : "";
+    return header + toolLine + taskLine;
   }
-  if (state.status === "error" || state.status === "cancelled") {
+  if (status === "error" || status === "cancelled") {
     const errorLine = state.errorText
       ? `\n  ${theme.fg("error", state.errorText)}`
       : "";
-    return options.expanded
-      ? header + errorLine + taskLine
-      : header + errorLine;
+    const taskLine = options.expanded
+      ? `\n  ${theme.fg("dim", state.taskPreview)}`
+      : "";
+    return header + errorLine + taskLine;
   }
-  if (state.status === "success") {
+  if (status === "success") {
     const output = state.finalOutput?.trim().split("\n")[0] ?? "";
     if (!options.expanded) {
-      const preview = output ? `\n  ${theme.fg("toolOutput", output)}` : "";
-      return header + preview;
+      return output ? `${header}\n  ${theme.fg("toolOutput", output)}` : header;
     }
     const outputSection = output
       ? `\n${theme.fg("muted", "─── Output ───")}\n${theme.fg("toolOutput", output)}`
       : `\n${theme.fg("muted", "(no output)")}`;
-    return header + taskLine + outputSection;
+    return `${header}\n  ${theme.fg("dim", state.taskPreview)}${outputSection}`;
   }
   return header;
 }

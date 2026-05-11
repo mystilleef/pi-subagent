@@ -26,8 +26,7 @@ import {
   patchProgressFromDetails,
   sanitizeDetailsForDisplay,
 } from "./result-details.js";
-import type { RunJob } from "./run-registry.js";
-import { registerRunJob, removeRunJob } from "./run-registry.js";
+import { type RunJob, registerRunJob, removeRunJob } from "./run-registry.js";
 import { formatSubagentResultForParent } from "./summary.js";
 import type {
   OnUpdateCallback,
@@ -84,14 +83,6 @@ function createDetailsBuilder(
   });
 }
 
-function setIfDefined<T>(
-  target: Record<string, unknown>,
-  key: string,
-  value: T | undefined,
-): void {
-  if (value !== undefined) target[key] = value;
-}
-
 function sanitizeResultDetails(
   result: SingleResult,
   includeDebugMessages: boolean,
@@ -99,65 +90,52 @@ function sanitizeResultDetails(
 ): SingleResult {
   const includeMessages =
     includeDebugMessages && (options?.includeMessages ?? true);
-  const target: Record<string, unknown> = {
-    agent: result.agent,
-    agentSource: result.agentSource,
-    task: result.task,
-    exitCode: result.exitCode,
-    finalOutput: result.finalOutput,
-    stderr: includeDebugMessages ? result.stderr : "",
-    usage: {
-      input: result.usage.input,
-      output: result.usage.output,
-      cacheRead: result.usage.cacheRead,
-      cacheWrite: result.usage.cacheWrite,
-      cost: result.usage.cost,
-      contextTokens: result.usage.contextTokens,
-      turns: result.usage.turns,
-    },
+  const { messages, termination, progress, stderr, usage, ...core } = result;
+  const { contextWindowTokens, ...usageBase } = usage;
+
+  const sanitized: Record<string, unknown> = {
+    ...core,
+    stderr: includeDebugMessages ? stderr : "",
+    usage: { ...usageBase },
   };
-  if (result.usage.contextWindowTokens !== undefined)
-    (target.usage as Record<string, unknown>).contextWindowTokens =
-      result.usage.contextWindowTokens;
-  setIfDefined(target, "model", result.model);
-  setIfDefined(target, "stopReason", result.stopReason);
-  setIfDefined(target, "errorMessage", result.errorMessage);
-  setIfDefined(target, "durationMs", result.durationMs);
-  if (result.progress !== undefined) {
-    const progress: Record<string, unknown> = {
-      toolCalls: result.progress.toolCalls.map((tc) => ({
+
+  if (contextWindowTokens !== undefined) {
+    (sanitized.usage as Record<string, unknown>).contextWindowTokens =
+      contextWindowTokens;
+  }
+
+  if (progress !== undefined) {
+    const { activityText, lastToolPreview, ...progBase } = progress;
+    sanitized.progress = {
+      toolCalls: progBase.toolCalls.map((tc) => ({
         id: tc.id,
         preview: tc.preview,
       })),
+      ...(activityText !== undefined && { activityText }),
+      ...(lastToolPreview !== undefined && { lastToolPreview }),
     };
-    setIfDefined(progress, "activityText", result.progress.activityText);
-    setIfDefined(progress, "lastToolPreview", result.progress.lastToolPreview);
-    target.progress = progress;
   }
+
   if (includeMessages) {
-    target.messages = options?.recentMessages
+    sanitized.messages = options?.recentMessages
       ? [...options.recentMessages]
-      : result.messages !== undefined
-        ? [...result.messages]
+      : messages !== undefined
+        ? [...messages]
         : undefined;
-    if (includeDebugMessages && result.termination !== undefined) {
-      const t: Record<string, unknown> = {
-        cancelRequestedAt: result.termination.cancelRequestedAt,
-        escalated: result.termination.escalated,
-        processTreeKilled: result.termination.processTreeKilled,
-        target: result.termination.target,
+
+    if (includeDebugMessages && termination !== undefined) {
+      const { cancelReason, terminationSignal, fallbackCause, ...termBase } =
+        termination;
+      sanitized.termination = {
+        ...termBase,
+        ...(cancelReason !== undefined && { cancelReason }),
+        ...(terminationSignal !== undefined && { terminationSignal }),
+        ...(fallbackCause !== undefined && { fallbackCause }),
       };
-      setIfDefined(t, "cancelReason", result.termination.cancelReason);
-      setIfDefined(
-        t,
-        "terminationSignal",
-        result.termination.terminationSignal,
-      );
-      setIfDefined(t, "fallbackCause", result.termination.fallbackCause);
-      target.termination = t;
     }
   }
-  return target as unknown as SingleResult;
+
+  return sanitized as unknown as SingleResult;
 }
 
 function createProgressRenderRequester(

@@ -211,6 +211,71 @@ wait $!
       const result = await promise;
       expect(result.exitCode).toBe(1);
     });
+
+    test("runSingleAgent with parentModel sets model display", async () => {
+      const { cwd } = await setupTest();
+      const agent = {
+        name: "hang",
+        description: "Test agent",
+        source: "user" as const,
+        thinking: "off" as const,
+        systemPrompt: "test",
+        filePath: "hang.md",
+      };
+      const result = await runSingleAgent(
+        cwd,
+        [agent],
+        "hang",
+        "task",
+        undefined,
+        undefined,
+        (r) => ({
+          mode: "single",
+          agentScope: "both",
+          projectAgentsDir: null,
+          results: r,
+        }),
+        { provider: "test-provider", id: "test-model" },
+        "off",
+      );
+      expect(result.model).toBe("test-provider/test-model:off");
+    });
+
+    test("runSingleAgent clears transient tool result error on assistant message", async () => {
+      const { cwd } = await setupTest({
+        piScript: `#!/bin/sh
+printf '%s\\n' '{"type":"tool_result_end","message":{"role":"toolResult","isError":true,"content":[{"type":"toolResultContent","toolCallId":"tc-1","content":[{"type":"text","text":"error"}]}]}}'
+printf '%s\\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"recovered"}],"api":"fake","provider":"fake","model":"fake","usage":{"input":1,"output":1,"cacheRead":0,"cacheWrite":0,"totalTokens":2,"cost":{"total":0}},"stopReason":"stop","timestamp":0}}'
+printf '%s\\n' '{"type":"agent_end","messages":[]}'
+exit 0
+`,
+      });
+      const agent = {
+        name: "hang",
+        description: "Test agent",
+        source: "user" as const,
+        thinking: "off" as const,
+        systemPrompt: "test",
+        filePath: "hang.md",
+      };
+      const result = await runSingleAgent(
+        cwd,
+        [agent],
+        "hang",
+        "task",
+        undefined,
+        undefined,
+        (r) => ({
+          mode: "single",
+          agentScope: "both",
+          projectAgentsDir: null,
+          results: r,
+        }),
+        undefined,
+        "off",
+      );
+      expect(result.errorMessage).toBeUndefined();
+    });
   });
 
   describe("helpers.ts waitFor timeout", () => {
