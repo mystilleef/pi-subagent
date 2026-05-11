@@ -1,3 +1,21 @@
+/**
+ * Subagent progress rendering and formatting.
+ *
+ * Aggregates progress-state management (re-exported from `progress-state.js`),
+ * elapsed/token formatters, and the live TUI progress component that renders
+ * subagent execution status inline in the parent agent's output stream.
+ *
+ * `renderSubagentProgress` hooks into the pi message pipeline. It produces a
+ * `DynamicSubagentProgressText` component that re-reads the progress store on
+ * each render tick, so updates from child process streaming appear instantly
+ * without explicit message-passing.
+ *
+ * All progress state lives in the store managed by `progress-state.js`.
+ * This module is purely presentational — it queries state and formats output.
+ *
+ * @module progress
+ */
+
 import type { ThemeColor } from "@earendil-works/pi-coding-agent";
 import type { Component } from "@earendil-works/pi-tui";
 import { Text } from "@earendil-works/pi-tui";
@@ -24,6 +42,11 @@ export {
   type SubagentProgressState,
 } from "./progress-state.js";
 
+/**
+ * Format a millisecond duration for compact display.
+ * Renders sub-minute durations as decimal seconds (`45.2s`),
+ * longer durations as minutes and whole seconds (`2m 15s`).
+ */
 export function formatElapsed(ms: number): string {
   if (ms < 60000) return `${(ms / 1000).toFixed(1)}s`;
   const mins = Math.floor(ms / 60000);
@@ -31,6 +54,11 @@ export function formatElapsed(ms: number): string {
   return `${mins}m ${secs}s`;
 }
 
+/**
+ * Format a raw token count for compact inline display.
+ * Values below 1000 rendered as-is. Larger counts use `k`
+ * or `M` suffixes with one decimal place, stripping trailing `.0`.
+ */
 export function formatTokenCount(count: number): string {
   if (count < 1000) return String(count);
   const unit = count >= 1_000_000 ? "M" : "k";
@@ -38,6 +66,14 @@ export function formatTokenCount(count: number): string {
   return `${trimTrailingZero((count / divisor).toFixed(1))}${unit}`;
 }
 
+/**
+ * Format the one-line statistics header for a subagent progress display.
+ * Includes tool count, context window usage, and elapsed time.
+ * When the subagent is still running (`durationMs` unset), elapsed is
+ * computed live from `startTime`.
+ *
+ * @returns Single line ending in `\n`, e.g. `"3 tools · 45% ctx · 12.3s\n"`
+ */
 export function formatHeaderStats(state: SubagentProgressState): string {
   const elapsedMs = state.durationMs ?? Date.now() - state.startTime;
   const toolLabel = state.toolCount === 1 ? "tool" : "tools";
@@ -66,6 +102,23 @@ function trimTrailingZero(value: string): string {
   return value.endsWith(".0") ? value.slice(0, -2) : value;
 }
 
+/**
+ * Create a live-updating TUI progress component from a pi message.
+ *
+ * Called by the pi message renderer for messages with a `requestId` in
+ * their `details`. Returns `undefined` when no progress state exists for
+ * the request (e.g. before streaming starts or after cleanup).
+ *
+ * The returned `DynamicSubagentProgressText` component re-reads the
+ * progress store on every render tick, so tool counts, context usage,
+ * and output update in real time as the child process streams.
+ *
+ * @param message  - A pi message object. Must carry `details.requestId`.
+ * @param options  - `expanded` controls whether the collapsed or full
+ *                    progress view is rendered.
+ * @param theme    - Subagent color theme for styling the output.
+ * @returns A dynamic TUI component, or `undefined` if no active state.
+ */
 export function renderSubagentProgress(
   message: {
     customType?: string;
