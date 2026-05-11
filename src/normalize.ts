@@ -79,7 +79,7 @@ export function normalizeTerminalSentence(
   );
   const normalizedOnce = normalizeSummaryValue(withoutLabel);
   const stripped = normalizedOnce.replace(/[\s.!,;:—–-]+$/g, "");
-  const collapsed = normalizeSummaryValue(stripped).replace(/\s+/g, " ").trim();
+  const collapsed = normalizeSummaryValue(stripped);
   return truncateText(collapsed, limit);
 }
 
