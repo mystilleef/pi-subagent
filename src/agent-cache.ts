@@ -1,5 +1,9 @@
 import path from "node:path";
-import { type AgentDiscoveryResult, type AgentScope, discoverAgents } from "./agents.js";
+import {
+  type AgentDiscoveryResult,
+  type AgentScope,
+  discoverAgents,
+} from "./agents.js";
 
 export type AgentDiscoveryCacheEntry = AgentDiscoveryResult & { ts: number };
 export type AgentDiscoveryCache = Map<string, AgentDiscoveryCacheEntry>;
