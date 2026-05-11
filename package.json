@@ -1,8 +1,25 @@
 {
-  "name": "pi-subagent",
+  "name": "@mystilleef/pi-subagent",
+  "version": "0.1.0",
+  "description": "Subagent orchestration extension for pi — delegates tasks to isolated child pi processes with separate context windows.",
+  "author": "Lateef Alabi-Oki <mystilleef@gmail.com>",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/mystilleef/pi-subagent.git"
+  },
+  "keywords": ["pi", "agent", "subagent", "orchestration", "ai", "llm"],
   "module": "src/index.ts",
+  "main": "src/index.ts",
+  "exports": {
+    ".": "./src/index.ts"
+  },
   "type": "module",
+  "engines": {
+    "bun": ">=1.3.13"
+  },
   "private": true,
+  "files": ["src", "README.md", "tsconfig.json"],
   "pi": {
     "extensions": [
       "./src/index.ts"
@@ -12,7 +29,8 @@
     "verify": "bun check && bun test",
     "coverage": "bun check && bun test --coverage",
     "check": "biome check --error-on-warnings --fix --unsafe . && tsc --noEmit",
-    "migrate": "biome migrate --write"
+    "migrate": "biome migrate --write",
+    "release": "npm version && git push --follow-tags && bun publish --access public"
   },
   "dependencies": {
     "@earendil-works/pi-agent-core": "^0.74.0",
