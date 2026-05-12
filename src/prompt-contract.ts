@@ -1,7 +1,5 @@
 export const SUBAGENT_RESULT_CONTRACT = `
-- Don't summarize tasks that have a standardized result output.
-- For tasks that don't have a standard result output,
-  use context to decide whether to summarize task result.
+- Always present raw result to main agent.
 - Use brief, precise, concise prose while maintaining clarity.
 - Optimize prose for token and context efficiency.
 - Add an empty line between paragraphs, headings and sections.

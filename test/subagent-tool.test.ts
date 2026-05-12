@@ -4,6 +4,7 @@ import path from "node:path";
 import type { TextContent } from "@earendil-works/pi-ai";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { getProgressState } from "../src/progress.js";
+import { SUBAGENT_RESULT_CONTRACT } from "../src/prompt-contract.js";
 import { listRunJobs } from "../src/run-registry.js";
 import type { SubagentDetails } from "../src/types.js";
 import {
@@ -167,31 +168,7 @@ exit 0
   await waitForRunJobsCleared();
   const argsText = await Bun.file(path.join(cwd, "args.txt")).text();
   expect(argsText).toContain("Task: ship it");
-  expect(argsText).toContain(
-    "Don't summarize tasks that have a standardized result output.",
-  );
-  expect(argsText).toContain(
-    "use context to decide whether to summarize task result.",
-  );
-  expect(argsText).toContain(
-    "Use brief, precise, concise prose while maintaining clarity.",
-  );
-  expect(argsText).toContain(
-    "Optimize prose for token and context efficiency.",
-  );
-  expect(argsText).toContain(
-    "Add an empty line between paragraphs, headings and sections.",
-  );
-  expect(argsText).toContain(
-    "Use elegant, well-structured, idiomatic markdown.",
-  );
-  expect(argsText).toContain("End your final response with exactly one line:");
-  expect(argsText).toContain(
-    "Outcome: <short, single, compact lower-case sentence>.",
-  );
-  expect(argsText).toContain(
-    "Outcome summarizes the result of your task in a single sentence.",
-  );
+  expect(argsText).toContain(SUBAGENT_RESULT_CONTRACT);
   expect(argsText).not.toContain("Changed:");
   expect(argsText).not.toContain("Cause:");
 });
