@@ -1,42 +1,45 @@
-# Project summary
+# Subagent
 
-`pi-subagent` extends `pi` with subagent orchestration. It adds a `subagent` tool and `/run` command that delegate tasks to isolated child `pi --json` processes with separate context windows.
+This `pi` extension provides a `subagent` tool designed for the
+`SPAE Framework`.
 
-## Core flow
+## Installation
 
-- Discovers user agents in `~/.pi/agents/*.md` and project agents in nearest `.pi/agents/*.md`.
-- Parses Markdown frontmatter: `name`, `description`, optional `tools`, `skills`, `thinking`.
-- Launches child Pi with generated prompt files, scoped tools/skills, depth tracking, streaming updates, usage capture, and structured failure handling.
-- Returns concise parent-facing output while preserving detailed metadata when `debug: true`.
+```sh
+pi install npm:@mystilleef/pi-subagent
+```
 
-## Main modules
+## Features
 
-- `src/index.ts`: extension registration, `subagent` tool, `/run`, autocomplete, UI confirmation, progress patching, result cleanup.
-- `src/agents.ts`: agent discovery, frontmatter parsing, scope resolution, list formatting.
-- `src/process.ts`: child process launch, prompt resolution, streaming JSON handling, usage/error propagation.
-- `src/progress.ts`: running/success/failure/cancelled progress state and rendering.
-- `src/summary.ts`: child output normalization and transcript-noise filtering.
-- `src/ui.ts`: tool/result cards, Markdown output, usage details.
-- `src/utils.ts`: Pi invocation, output truncation, temp prompt files, skill args, depth env.
-- `src/types.ts`: shared result/update/usage/detail types.
+- **Asynchronous:** Agents always run in background.
+- **Parallel:** Run more than one agents simultaneously.
+- **Simplicity:** No advanced orchestration workflows.
+- **Bloat-free:** No pre-installed agents.
 
-## Safeguards
+## Usage
 
-- Project-local agents require UI confirmation when UI context exists.
-- Nested subagent calls stop at depth `1` via `PI_SUBAGENT_DEPTH`.
-- Output truncation defaults: `50000` bytes and `500` lines.
-- Stderr capture stops after `10000` bytes.
-- Child tool failures, aborts, error stop reasons, and non-zero exits propagate to parent errors.
+Invoke an agent with:
 
-## Tooling
+```text
+/run agent [optional task]
+```
 
-- Runtime: Bun with TypeScript ES modules.
-- Extension entry: `package.json` → `pi.extensions: ["./src/index.ts"]`.
-- Commands:
-  - `bun verify`: type/check plus tests.
-  - `bun coverage`: coverage run.
-  - `bun check`: Biome fix plus `tsc --noEmit`.
+Stop running agents with:
 
-## Tests
+```text
+/cancel-subagent
+```
 
-Tests cover discovery, tool contract, `/run`, child process behavior, progress rendering, summaries, UI, utilities, safeguards, truncation, aborts, debug hygiene, and error handling.
+## Workflow
+
+The `SPAE Framework` emphasizes a structured workflow.
+
+| Phase | Agent                     | Purpose                                       |
+| ----- | ------------------------- | --------------------------------------------- |
+| 1     | `/run spec <requirement>` | Distill requirements into `SPEC.md`           |
+| 2     | `/run plan`               | Decompose `SPEC.md` into an atomic task graph |
+| 3     | `/run inspect`            | Perform gap analysis and optimize `PLAN.md`   |
+| 4     | `/run build`              | Carry out tasks from `PLAN.md`                |
+| 5     | `/run verify`             | Verify implementation against `SPEC.md`       |
+
+Visit the project for pre-packaged agents, and their associated skills.
