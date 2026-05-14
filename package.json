@@ -1,7 +1,7 @@
 {
   "name": "@mystilleef/pi-subagent",
   "version": "0.1.0",
-  "description": "Subagent orchestration extension for pi — delegates tasks to isolated child pi processes with separate context windows.",
+  "description": "Pi subagent for the SPAE Framework",
   "author": "Lateef Alabi-Oki <mystilleef@gmail.com>",
   "license": "MIT",
   "repository": {
@@ -25,7 +25,6 @@
   "engines": {
     "bun": ">=1.3.13"
   },
-  "private": true,
   "files": [
     "src",
     "README.md",
