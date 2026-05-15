@@ -40,7 +40,7 @@
     "coverage": "bun check && bun test --coverage",
     "check": "biome check --fix --unsafe . && tsc --noEmit",
     "migrate": "biome migrate --write",
-    "release": "npm version && git push --follow-tags && bun publish --access public"
+    "release": "sh -c 'npm version \"$1\" && git push --follow-tags && bun publish --access public' --"
   },
   "dependencies": {
     "@earendil-works/pi-agent-core": "^0.74.0",
