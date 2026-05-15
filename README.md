@@ -32,7 +32,11 @@ Stop running agents with:
 
 ## Workflow
 
-The [SPAE Framework](https://github.com/mystilleef/spae-framework) emphasizes a structured workflow.
+This project provides no agents. Visit the
+[SPAE Framework](https://github.com/mystilleef/spae-framework) for
+pre-packaged agents and their associated skills.
+
+The framework emphasizes a structured workflow.
 
 | Phase | Agent                     | Purpose                                       |
 | ----- | ------------------------- | --------------------------------------------- |
@@ -41,5 +45,3 @@ The [SPAE Framework](https://github.com/mystilleef/spae-framework) emphasizes a 
 | 3     | `/run inspect`            | Perform gap analysis and optimize `PLAN.md`   |
 | 4     | `/run build`              | Carry out tasks from `PLAN.md`                |
 | 5     | `/run verify`             | Verify implementation against `SPEC.md`       |
-
-Visit the [SPAE Framework](https://github.com/mystilleef/spae-framework) for pre-packaged agents and their associated skills.
