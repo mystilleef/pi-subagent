@@ -18,6 +18,9 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
       - name: Create GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
