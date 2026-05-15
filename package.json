@@ -6,7 +6,7 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/mystilleef/pi-subagent.git"
+    "url": "git+https://github.com/mystilleef/pi-subagent.git"
   },
   "keywords": [
     "pi",
@@ -40,7 +40,7 @@
     "coverage": "bun check && bun test --coverage",
     "check": "biome check --fix --unsafe . && tsc --noEmit",
     "migrate": "biome migrate --write",
-    "release": "sh -c 'npm version \"$1\" && git push --follow-tags && bun publish --access public' --"
+    "release": "sh -c 'npm version \"$1\" && npm publish --access public && git push --follow-tags' --"
   },
   "dependencies": {
     "@earendil-works/pi-agent-core": "^0.74.0",
