@@ -14,7 +14,7 @@ export type ProgressStatus = "running" | "success" | "error" | "cancelled";
 export interface SubagentProgressState {
   requestId: string;
   agent: string;
-  instanceName: string;
+  instanceName?: string;
   taskPreview: string;
   status: ProgressStatus;
   startTime: number;

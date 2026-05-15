@@ -28,6 +28,7 @@ export type FakeTheme = {
   fg: (color: ThemeColor | string, text: string) => string;
   bg: (color: string, text: string) => string;
   bold: (text: string) => string;
+  italic?: (text: string) => string;
 };
 
 export async function waitFor<T>(

@@ -741,6 +741,91 @@ test("renderSubagentProgress returns undefined for missing state", () => {
   expect(result).toBeUndefined();
 });
 
+test("renderSubagentProgress formats segmented agent and instance title", () => {
+  createProgressState("rend-1", "my-agent", "do the thing", "able-falcon");
+  const theme = {
+    fg: (color: ThemeColor, text: string) => `<${color}>${text}</${color}>`,
+    bg: (color: string, text: string) => `[${color}]${text}[/${color}]`,
+    bold: (text: string) => `<bold>${text}</bold>`,
+    italic: (text: string) => `<italic>${text}</italic>`,
+  };
+  const result = renderSubagentProgress(
+    {
+      customType: "subagent-progress",
+      content: "",
+      display: true,
+      details: { requestId: "rend-1" },
+    },
+    { expanded: false },
+    theme,
+  );
+  const text = renderText(result);
+  expect(text).toContain(
+    "<toolTitle><bold>my-agent</bold></toolTitle> <accent><italic>able-falcon</italic></accent>",
+  );
+  expect(text).toContain("<dim>[running]</dim>");
+  expect(text).toContain("<muted>0 tools · --% ctx ·");
+});
+
+test("renderSubagentProgress uses ANSI italic fallback for instance title", () => {
+  createProgressState("rend-2", "my-agent", "do the thing", "able-falcon");
+  const theme = makeMarkerTheme();
+  const result = renderSubagentProgress(
+    {
+      customType: "subagent-progress",
+      content: "",
+      display: true,
+      details: { requestId: "rend-2" },
+    },
+    { expanded: false },
+    theme,
+  );
+  const text = renderText(result);
+  expect(text).toContain(
+    "<toolTitle>my-agent</toolTitle> <accent>\x1b[3mable-falcon\x1b[23m</accent> <dim>[running]</dim>",
+  );
+  expect(text.indexOf("\x1b[23m</accent> <dim>[running]")).toBeGreaterThan(-1);
+});
+
+test("renderSubagentProgress keeps single title when instance is absent or empty", () => {
+  createProgressState("rend-1", "my-agent", "do the thing", "");
+  createProgressState("rend-2", "other-agent", "do the thing");
+  patchProgressState("rend-2", { instanceName: undefined });
+  const theme = makeMarkerTheme();
+  const first = renderSubagentProgress(
+    {
+      customType: "subagent-progress",
+      content: "",
+      display: true,
+      details: { requestId: "rend-1" },
+    },
+    { expanded: false },
+    theme,
+  );
+  const second = renderSubagentProgress(
+    {
+      customType: "subagent-progress",
+      content: "",
+      display: true,
+      details: { requestId: "rend-2" },
+    },
+    { expanded: false },
+    theme,
+  );
+  const firstText = renderText(first);
+  const secondText = renderText(second);
+  expect(firstText).toContain(
+    "<toolTitle>my-agent</toolTitle> <dim>[running]</dim>",
+  );
+  expect(firstText).not.toContain("my-agent  ");
+  expect(firstText).not.toContain("\x1b[3m");
+  expect(secondText).toContain(
+    "<toolTitle>other-agent</toolTitle> <dim>[running]</dim>",
+  );
+  expect(secondText).not.toContain("other-agent  ");
+  expect(secondText).not.toContain("\x1b[3m");
+});
+
 test("renderSubagentProgress collapsed running colors tool preview segments", () => {
   setDateNow(1000);
   createProgressState("rend-1", "my-agent", "do the thing");
@@ -767,9 +852,15 @@ test("renderSubagentProgress collapsed running colors tool preview segments", ()
   expect(result).toBeDefined();
   const text = renderText(result);
   const toolLine = renderLines(result).find((line) => line.includes("bash"));
-  expect(text).toContain("my-agent rend-1");
+  expect(text).toContain(
+    "my-agent</toolTitle> <accent>\x1b[3mrend-1\x1b[23m</accent>",
+  );
   expect(text).toContain("running");
-  expect(text).toContain("3 tools · 8% ctx ·");
+  expect(text).toContain("3 tools · 8%");
+  expect(text.indexOf("\x1b[23m</accent> <dim>[running]")).toBeLessThan(
+    text.indexOf("3 tools · 8%"),
+  );
+  expect(text).toContain("ctx · 2.5s");
   expect(text).not.toContain("1.2k in");
   expect(text).not.toContain("300 out");
   expect(text).not.toContain("1.2k in · 300 out · 8% ctx");
@@ -871,6 +962,9 @@ test("renderSubagentProgress expanded running includes truncated tool preview an
   expect(text).toContain("→ bash:");
   expect(text).toContain("…");
   expect(text).toContain(taskPreview);
+  expect(text.indexOf("\x1b[23m [running]")).toBeLessThan(
+    text.indexOf(taskPreview),
+  );
   expect(text).not.toContain(toolSentinel);
 });
 
@@ -999,7 +1093,7 @@ test("renderSubagentProgress error state shows error text", () => {
   );
   expect(result).toBeDefined();
   const text = renderText(result);
-  expect(text).toContain("err-agent rend-3");
+  expect(text).toContain("err-agent \x1b[3mrend-3\x1b[23m");
   expect(text).toContain("error");
   expect(text).toContain("something exploded");
   expect(text).not.toContain("FAILURE: something exploded");
@@ -1076,9 +1170,9 @@ test("renderSubagentProgress expanded success ignores patched raw multiline outp
 });
 
 test("renderSubagentProgress final success with output uses text fallback when no Markdown", () => {
-  createProgressState("rend-4", "ok-agent", "a task");
+  createProgressState("rend-4", "ok-agent", "a task", "able-falcon");
   finalizeProgressState("rend-4", "final result text");
-  const theme = makeTheme();
+  const theme = makeMarkerTheme();
   const result = renderSubagentProgress(
     {
       customType: "subagent-progress",
@@ -1092,6 +1186,9 @@ test("renderSubagentProgress final success with output uses text fallback when n
   expect(result).toBeDefined();
   const text = renderText(result);
   expect(text).toContain("final result text");
+  expect(text.indexOf("\x1b[23m</accent> <dim>[success]")).toBeLessThan(
+    text.indexOf("final result text"),
+  );
   expect(
     renderLines(result).every(
       (line) =>
@@ -1116,7 +1213,7 @@ test("renderSubagentProgress cancelled state shows cancelled", () => {
   );
   expect(result).toBeDefined();
   const text = renderText(result);
-  expect(text).toContain("some-agent rend-5");
+  expect(text).toContain("some-agent \x1b[3mrend-5\x1b[23m");
   expect(text).toContain("cancelled");
   expect(
     renderLines(result).every(

@@ -169,6 +169,8 @@ test("renderResult output aggregation and truncation", () => {
   );
   const text = renderToString(rendered);
   expect(text).toContain("[toolTitle]*test-agent*[/toolTitle]");
+  expect(text).not.toContain("[toolTitle]*test-agent *[/toolTitle]");
+  expect(text).not.toContain("\x1b[3m");
   expect(text).not.toContain("[success]✓[/success]");
   expect(text).not.toContain("[accent]");
   expect(text).toContain("[toolOutput]final text line 1[/toolOutput]");
@@ -848,6 +850,7 @@ test("subagent result markdown invokes theme callbacks", () => {
         results: [
           {
             agent: "builder",
+            instanceName: "able-falcon",
             agentSource: "project",
             task: "pass",
             exitCode: 0,
@@ -871,6 +874,12 @@ test("subagent result markdown invokes theme callbacks", () => {
   );
   const renderedText = renderToString(rendered);
   resetCapabilitiesCache();
+  expect(renderedText).toContain(
+    "[toolTitle]*builder*[/toolTitle] [accent]\x1b[3mable-falcon\x1b[23m[/accent]",
+  );
+  expect(renderedText.indexOf("\x1b[23m[/accent]")).toBeLessThan(
+    renderedText.indexOf("[mdHeading]"),
+  );
   expect(renderedText).toContain("[mdHeading]");
   expect(renderedText).toContain("[mdLink]");
   expect(renderedText).toContain(
@@ -992,7 +1001,10 @@ test("normal subagent tool rendering continues to use raw final output", () => {
     fakeTheme,
   ) as unknown as { render: (width: number) => string[] };
   const text = renderToString(rendered);
-  expect(text).toContain("[toolTitle]*tool clear-marten*[/toolTitle]");
+  expect(text).toContain(
+    "[toolTitle]*tool*[/toolTitle] [accent]\x1b[3mclear-marten\x1b[23m[/accent]",
+  );
+  expect(text).not.toContain("[toolTitle]*tool clear-marten*[/toolTitle]");
   expect(text).toContain(
     "[toolOutput]raw final output remains body[/toolOutput]",
   );

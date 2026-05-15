@@ -1419,7 +1419,9 @@ test("/run final result message renderer hides header and keeps success backgrou
   ) as unknown as { render: (width: number) => string[] };
   const renderedText = rendered.render(10000).join("\n");
   expect(renderedText).not.toContain("[success]✓[/success]");
-  expect(renderedText).not.toContain("[toolTitle]*hang*[/toolTitle]");
+  expect(renderedText).not.toContain(
+    "[success]✓[/success] [toolTitle]*hang*[/toolTitle]",
+  );
   expect(renderedText).toContain("[toolOutput]done");
   expect(renderedText).toContain("[/toolOutput]");
   expect(

@@ -24,7 +24,7 @@ import {
   type ProgressStatus,
   type SubagentProgressState,
 } from "./progress-state.js";
-import type { SubagentTheme, ThemeBg } from "./ui.js";
+import { formatSubagentTitle, type SubagentTheme, type ThemeBg } from "./ui.js";
 
 const STATUS_COLOR: Record<ProgressStatus, ThemeColor> = {
   success: "success",
@@ -156,7 +156,7 @@ class DynamicSubagentProgressText implements Component {
   render(width: number): string[] {
     const state = getProgressState(this.requestId);
     if (!state) return [];
-    const text = formatProgressText(this.requestId, this.options, this.theme);
+    const text = formatProgressText(state, this.options, this.theme);
     const bg = getProgressBackground(state.status);
     return text
       ? new Text(text, 1, 1, (line) => this.theme.bg(bg, line)).render(width)
@@ -169,15 +169,13 @@ function getProgressBackground(status: ProgressStatus): ThemeBg {
 }
 
 function formatProgressText(
-  requestId: string,
+  state: SubagentProgressState,
   options: { expanded: boolean },
   theme: SubagentTheme,
-): string | undefined {
-  const state = getProgressState(requestId);
-  if (!state) return undefined;
+): string {
   const status = state.status;
-  const title = `${state.agent} ${state.instanceName}`;
-  const header = `${theme.fg(STATUS_COLOR[status], STATUS_ICON[status])} ${theme.fg("toolTitle", theme.bold(title))} ${theme.fg("dim", `[${status}]`)} ${theme.fg("muted", formatHeaderStats(state))}`;
+  const title = formatSubagentTitle(state.agent, state.instanceName, theme);
+  const header = `${theme.fg(STATUS_COLOR[status], STATUS_ICON[status])} ${title} ${theme.fg("dim", `[${status}]`)} ${theme.fg("muted", formatHeaderStats(state))}`;
   if (status === "running") {
     const toolLine = state.lastToolPreview
       ? `\n  ${formatRunningToolPreview(state.lastToolPreview, theme)}`

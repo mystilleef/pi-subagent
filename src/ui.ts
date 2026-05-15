@@ -27,7 +27,34 @@ export type SubagentTheme = {
   fg: (color: ThemeColor, text: string) => string;
   bg: (color: ThemeBg, text: string) => string;
   bold: (text: string) => string;
+  italic?: (text: string) => string;
 };
+
+const ANSI_ITALIC_ON = "\x1b[3m";
+const ANSI_ITALIC_OFF = "\x1b[23m";
+const ANSI_STRIKETHROUGH_ON = "\x1b[9m";
+const ANSI_STRIKETHROUGH_OFF = "\x1b[29m";
+const ANSI_UNDERLINE_ON = "\x1b[4m";
+const ANSI_UNDERLINE_OFF = "\x1b[24m";
+
+function italicText(text: string, theme: SubagentTheme): string {
+  return theme.italic
+    ? theme.italic(text)
+    : `${ANSI_ITALIC_ON}${text}${ANSI_ITALIC_OFF}`;
+}
+
+/**
+ * Formats the shared subagent title from agent and optional instance name.
+ */
+export function formatSubagentTitle(
+  agent: string,
+  instanceName: string | undefined,
+  theme: SubagentTheme,
+): string {
+  const agentSegment = theme.fg("toolTitle", theme.bold(agent));
+  if (!instanceName) return agentSegment;
+  return `${agentSegment} ${theme.fg("accent", italicText(instanceName, theme))}`;
+}
 
 /**
  * Formats token counts into human-readable strings (e.g., "1.2k", "1.5M").
@@ -149,9 +176,10 @@ function makeMarkdownTheme(theme: SubagentTheme): MarkdownTheme {
     hr: fg("mdHr"),
     listBullet: fg("mdListBullet"),
     bold: (text) => theme.bold(text),
-    italic: (text) => `\x1b[3m${text}\x1b[23m`,
-    strikethrough: (text) => `\x1b[9m${text}\x1b[29m`,
-    underline: (text) => `\x1b[4m${text}\x1b[24m`,
+    italic: (text) => `${ANSI_ITALIC_ON}${text}${ANSI_ITALIC_OFF}`,
+    strikethrough: (text) =>
+      `${ANSI_STRIKETHROUGH_ON}${text}${ANSI_STRIKETHROUGH_OFF}`,
+    underline: (text) => `${ANSI_UNDERLINE_ON}${text}${ANSI_UNDERLINE_OFF}`,
   };
 }
 
@@ -202,8 +230,8 @@ export function renderSubagentResult(
   const finalOutput = r.finalOutput ?? getFinalOutput(r.messages ?? []);
   const bg = failed ? "toolErrorBg" : "toolSuccessBg";
   const box = new Box(1, 1, (line) => theme.bg(bg, line));
-  const title = r.instanceName ? `${r.agent} ${r.instanceName}` : r.agent;
-  box.addChild(new Text(theme.fg("toolTitle", theme.bold(title)), 0, 0));
+  const title = formatSubagentTitle(r.agent, r.instanceName, theme);
+  box.addChild(new Text(title, 0, 0));
   const bodyText = stripOutcomeLineForResultUi(bodyOverride ?? finalOutput);
   if (bodyText) {
     box.addChild(
