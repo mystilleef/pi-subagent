@@ -124,10 +124,13 @@ function sendTreeSignal(
     sendDirectSignal(proc, signal, state, options);
     return;
   }
-  if (options.killProcessTree) {
-    options.killProcessTree(proc, signal, platform);
+  const markTreeKilled = () => {
     state.metadata.target = "tree";
     state.metadata.processTreeKilled = true;
+  };
+  if (options.killProcessTree) {
+    options.killProcessTree(proc, signal, platform);
+    markTreeKilled();
     return;
   }
   if (platform !== "win32") {
@@ -137,8 +140,7 @@ function sendTreeSignal(
       options.killProcessGroup ??
       ((pid, nextSignal) => process.kill(pid, nextSignal))
     )(-pid, signal);
-    state.metadata.target = "tree";
-    state.metadata.processTreeKilled = true;
+    markTreeKilled();
     return;
   }
   if (signal === "SIGKILL") {
@@ -148,8 +150,7 @@ function sendTreeSignal(
       "/t",
       "/f",
     ]);
-    state.metadata.target = "tree";
-    state.metadata.processTreeKilled = true;
+    markTreeKilled();
     return;
   }
   throw new Error("unsupported tree termination platform");
