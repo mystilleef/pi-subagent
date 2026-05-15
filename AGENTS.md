@@ -19,25 +19,23 @@ with separate context windows.
 
 ## Architecture
 
-- `src/index.ts`: Registers the tool, `/run`, autocomplete, UI,
-  cancellation, project-agent confirmation, result cleanup, and progress
-  patching.
-- `src/agents.ts`: Discovers user and project agents, parses
-  `frontmatter`, resolves scope, and formats agent lists.
-- `src/process.ts`: Launches child `pi --json` processes, resolves
-  prompts, streams updates, tracks usage, captures messages, and reports
-  failures.
-- `src/progress.ts`: Tracks running, successful, failed, and cancelled
-  tool calls.
-- `src/summary.ts`: Normalizes child output and filters transcript
-  noise.
-- `src/ui.ts`: Formats tool calls, result cards, usage details, and
-  progress views.
-- `src/utils.ts`: Handles `pi` invocation, output truncation, temporary
-  prompt files, skill arguments, depth tracking, and message-error
-  detection.
-- `src/types.ts`: Defines shared result, usage, details, and update
-  callback types.
+- **Entry point:** `src/index.ts` registers the extension, renderers,
+  commands, and autocomplete.
+- **Agent discovery:** `src/agents.ts` and `src/agent-cache.ts` find,
+  parse, and cache user and project agent definitions.
+- **Orchestration:** `src/subagent-orchestrator.ts`, `src/run.ts`,
+  `src/run-command.ts`, `src/run-registry.ts`, and
+  `src/cancel-command.ts` handle tool dispatch, `/run`, job tracking,
+  and cancellation.
+- **Child process:** `src/process.ts`, `src/child-events.ts`,
+  `src/termination.ts`, and `src/prompt-contract.ts` launch and manage
+  child `pi --json` processes.
+- **Progress:** `src/progress.ts`, `src/progress-state.ts`, and
+  `src/result-details.ts` track and render tool call state.
+- **Output:** `src/summary.ts`, `src/ui.ts`, and `src/normalize.ts`
+  normalize, filter, and format child output.
+- **Shared:** `src/utils.ts` and `src/types.ts` provide invocation
+  helpers, truncation, depth tracking, and shared types.
 
 ## Commands
 
@@ -84,9 +82,10 @@ with separate context windows.
 
 ## Testing
 
-- Tests live under `test/` and cover discovery, process execution,
-  `/run`, tool contract, progress state, summaries, UI rendering,
-  utilities, safeguards, truncation, and error handling.
+- Tests live under `test/`: `child-events.test.ts`,
+  `coverage-gaps.test.ts`, `process.test.ts`, `progress.test.ts`,
+  `run-command.test.ts`, `subagent-tool.test.ts`, `summary.test.ts`,
+  `termination.test.ts`, `ui.test.ts`, and `utils.test.ts`.
 - Test support files: `test/helpers.ts` and `test/preload.ts`.
 
 ## Rules
