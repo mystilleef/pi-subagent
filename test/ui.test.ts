@@ -171,7 +171,7 @@ test("renderResult output aggregation and truncation", () => {
   expect(text).toContain("[toolTitle]*test-agent*[/toolTitle]");
   expect(text).not.toContain("[toolTitle]*test-agent *[/toolTitle]");
   expect(text).not.toContain("\x1b[3m");
-  expect(text).not.toContain("[success]✓[/success]");
+  expect(text).toContain("[success]✓[/success]");
   expect(text).not.toContain("[accent]");
   expect(text).toContain("[toolOutput]final text line 1[/toolOutput]");
   expect(text).toContain("[toolOutput]final text line 2[/toolOutput]");
@@ -249,7 +249,7 @@ test("renderResult expanded output", () => {
   );
   const text = renderToString(rendered);
   expect(text).toContain("[toolTitle]*test-agent*[/toolTitle]");
-  expect(text).not.toContain("[error]✗[/error]");
+  expect(text).toContain("[error]✗[/error]");
   expect(text).not.toContain("[error][error][/error]");
   expect(text).toContain("[toolOutput]final output line[/toolOutput]");
 });
@@ -439,7 +439,7 @@ test("renderResult with partial details after tool error does not show error ico
         {} as never,
       ),
     ),
-  ).not.toContain("[error]✗[/error]");
+  ).toContain("[error]✗[/error]");
   const afterLaterToolCall: AgentToolResult<SubagentDetails> = {
     content: [{ type: "text" as const, text: "read: later.txt" }],
     details: {
@@ -828,7 +828,7 @@ test("ui helpers format units, fallback output, and failed tool results", () => 
       ),
   ).toBe(true);
   const failedText = renderToString(failed);
-  expect(failedText).not.toContain("[error]✗[/error]");
+  expect(failedText).toContain("[error]✗[/error]");
   expect(failedText).toContain("[muted](no output)[/muted]");
 });
 
@@ -1105,7 +1105,7 @@ test("subagent result backgrounds cover representative success and failure cards
     fakeTheme,
   ) as unknown as { render: (width: number) => string[] };
   const successText = renderToString(success);
-  expect(successText).not.toContain("[success]✓[/success]");
+  expect(successText).toContain("[success]✓[/success]");
   expect(successText).not.toContain("[accent]bash[/accent]");
   expect(successText).not.toContain("Outcome: shipped");
   expect(successText).toContain("1 turn · $0.0100");
@@ -1121,7 +1121,7 @@ test("subagent result backgrounds cover representative success and failure cards
       ),
   ).toBe(true);
   const failureText = renderToString(failure);
-  expect(failureText).not.toContain("[error]✗[/error]");
+  expect(failureText).toContain("[error]✗[/error]");
   expect(failureText).not.toContain("[accent]read[/accent]");
   expect(failureText).toContain("[toolOutput]first failure line[/toolOutput]");
   expect(failureText).toContain("2 turns · $0.0200");
@@ -1133,6 +1133,60 @@ test("subagent result backgrounds cover representative success and failure cards
       .every(
         (line) =>
           line.startsWith("[toolErrorBg]") && line.endsWith("[/toolErrorBg]"),
+      ),
+  ).toBe(true);
+});
+
+test("subagent result renders cancelled result with appropriate icon and error background", () => {
+  const fakeTheme: FakeTheme = {
+    fg: (color, text) => `[${color}]${text}[/${color}]`,
+    bg: (color, text) => `[${color}]${text}[/${color}]`,
+    bold: (text) => `*${text}*`,
+  };
+  const rendered = renderSubagentResult(
+    {
+      content: [{ type: "text", text: "ignored" }],
+      details: {
+        mode: "single",
+        agentScope: "both",
+        projectAgentsDir: null,
+        results: [
+          {
+            agent: "runner",
+            agentSource: "user",
+            task: "abort",
+            exitCode: 0,
+            stopReason: "aborted",
+            finalOutput: "was doing work",
+            messages: [],
+            stderr: "",
+            usage: {
+              input: 0,
+              output: 0,
+              cacheRead: 0,
+              cacheWrite: 0,
+              cost: 0,
+              contextTokens: 0,
+              turns: 0,
+            },
+          },
+        ],
+      },
+    },
+    fakeTheme,
+  ) as unknown as { render: (width: number) => string[] };
+  const renderedText = renderToString(rendered);
+  expect(renderedText).toContain("[error]⊘[/error]");
+  expect(renderedText).not.toContain("[success]✓[/success]");
+  expect(renderedText).toContain("[toolTitle]*runner*[/toolTitle]");
+  expect(renderedText).toContain("[toolOutput]was doing work[/toolOutput]");
+  expect(
+    rendered
+      .render(120)
+      .every(
+        (line) =>
+          line.startsWith("[toolErrorBg]") &&
+          line.endsWith("[/toolErrorBg]"),
       ),
   ).toBe(true);
 });
@@ -1220,7 +1274,7 @@ test("subagent result renders compact structured success output", () => {
     fakeTheme,
   );
   const renderedText = renderToString(rendered);
-  expect(renderedText).not.toContain("[success]✓[/success]");
+  expect(renderedText).toContain("[success]✓[/success]");
   expect(renderedText).toContain("[toolTitle]*builder*[/toolTitle]");
   expect(renderedText).not.toContain("[muted]1.2s[/muted]");
   expect(renderedText).not.toContain("Outcome: shipped");
@@ -1436,7 +1490,7 @@ test("subagent result renders compact structured failure output", () => {
     fakeTheme,
   );
   const renderedText = renderToString(rendered);
-  expect(renderedText).not.toContain("[error]✗[/error]");
+  expect(renderedText).toContain("[error]✗[/error]");
   expect(renderedText).toContain(
     "[toolOutput]Cause: compile failed[/toolOutput]",
   );
@@ -1491,14 +1545,14 @@ test("subagent result derives failure cause only when output lacks parsed cause"
       "Outcome: failed at build\n### Cause\nactual compiler error\nVerification: tsc failed\nNext: fix types",
     ),
   );
-  expect(withHeadingCauseText).not.toContain("[error]✗[/error]");
+  expect(withHeadingCauseText).toContain("[error]✗[/error]");
   expect(withHeadingCauseText).not.toContain("Outcome: failed at build");
   const withoutCauseText = renderToString(
     render(
       "Outcome: failed at build\nVerification: tsc failed\nNext: fix types",
     ),
   );
-  expect(withoutCauseText).not.toContain("[error]✗[/error]");
+  expect(withoutCauseText).toContain("[error]✗[/error]");
   expect(withoutCauseText).not.toContain("Outcome: failed at build");
 });
 

@@ -1418,8 +1418,8 @@ test("/run final result message renderer hides header and keeps success backgrou
     fakeTheme as Parameters<RegisteredMessageRenderer>[2],
   ) as unknown as { render: (width: number) => string[] };
   const renderedText = rendered.render(10000).join("\n");
-  expect(renderedText).not.toContain("[success]✓[/success]");
-  expect(renderedText).not.toContain(
+  expect(renderedText).toContain("[success]✓[/success]");
+  expect(renderedText).toContain(
     "[success]✓[/success] [toolTitle]*hang*[/toolTitle]",
   );
   expect(renderedText).toContain("[toolOutput]done");

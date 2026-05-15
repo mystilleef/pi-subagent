@@ -20,6 +20,20 @@ import type { SubagentDetails, UsageStats } from "./types.js";
  */
 export type ThemeBg = "toolPendingBg" | "toolSuccessBg" | "toolErrorBg";
 
+type ResultStatus = "success" | "error" | "cancelled";
+
+const RESULT_STATUS_ICON: Record<ResultStatus, string> = {
+  success: "✓",
+  error: "✗",
+  cancelled: "⊘",
+};
+
+const RESULT_STATUS_COLOR: Record<ResultStatus, ThemeColor> = {
+  success: "success",
+  error: "error",
+  cancelled: "error",
+};
+
 /**
  * Abstraction for theme-aware text formatting.
  */
@@ -227,11 +241,21 @@ export function renderSubagentResult(
     );
   }
   const failed = hasSubagentFailed(r);
+  const cancelled = r.stopReason === "aborted";
+  const resultStatus: ResultStatus = cancelled
+    ? "cancelled"
+    : failed
+      ? "error"
+      : "success";
   const finalOutput = r.finalOutput ?? getFinalOutput(r.messages ?? []);
   const bg = failed ? "toolErrorBg" : "toolSuccessBg";
   const box = new Box(1, 1, (line) => theme.bg(bg, line));
   const title = formatSubagentTitle(r.agent, r.instanceName, theme);
-  box.addChild(new Text(title, 0, 0));
+  const icon = theme.fg(
+    RESULT_STATUS_COLOR[resultStatus],
+    RESULT_STATUS_ICON[resultStatus],
+  );
+  box.addChild(new Text(`${icon} ${title}`, 0, 0));
   const bodyText = stripOutcomeLineForResultUi(bodyOverride ?? finalOutput);
   if (bodyText) {
     box.addChild(
