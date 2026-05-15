@@ -15,7 +15,9 @@ export async function cancelSubagentCommandHandler(
       return;
     }
     const options = [
-      ...jobs.map((job) => `${job.agentName} (${job.requestId})`),
+      ...jobs.map(
+        (job) => `${job.agentName} ${job.instanceName} (${job.requestId})`,
+      ),
       "All running subagents",
     ];
     const selection = await ctx.ui.select("Cancel subagent", options);

@@ -14,6 +14,7 @@ export type ProgressStatus = "running" | "success" | "error" | "cancelled";
 export interface SubagentProgressState {
   requestId: string;
   agent: string;
+  instanceName: string;
   taskPreview: string;
   status: ProgressStatus;
   startTime: number;
@@ -34,10 +35,12 @@ export function createProgressState(
   requestId: string,
   agent: string,
   task: string,
+  instanceName = requestId,
 ): void {
   store.set(requestId, {
     requestId,
     agent,
+    instanceName,
     taskPreview: makeTaskPreview(task),
     status: "running",
     startTime: Date.now(),

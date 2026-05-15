@@ -11,6 +11,7 @@ import {
   discoverAgents,
   type ThinkingLevel,
 } from "./agents.js";
+import { generateSubagentInstanceName } from "./instance-name.js";
 import { runSingleAgent } from "./process.js";
 import {
   cancelProgressState,
@@ -256,7 +257,12 @@ async function runSubagentWorker(
 }
 
 export type StartJobResult =
-  | { kind: "started"; requestId: string; makeDetails: DetailsBuilder }
+  | {
+      kind: "started";
+      requestId: string;
+      instanceName: string;
+      makeDetails: DetailsBuilder;
+    }
   | { kind: "cancelled"; makeDetails: DetailsBuilder }
   | { kind: "not_found"; makeDetails: DetailsBuilder };
 
@@ -266,7 +272,7 @@ export function formatStartJobStatus(
 ): string {
   if (result.kind === "not_found") return `Unknown agent: "${agentName}"`;
   if (result.kind === "cancelled") return "Canceled";
-  return `Subagent ${agentName} started (job: ${result.requestId})`;
+  return `Subagent ${agentName} ${result.instanceName} started (job: ${result.requestId})`;
 }
 
 function needsProjectAgentConfirmation(
@@ -305,6 +311,16 @@ export async function startSubagentJob(
   );
   const requested = agents.find((a) => a.name === params.agent);
   if (!requested) return { kind: "not_found", makeDetails };
+  if (hostSignal?.aborted) return { kind: "cancelled", makeDetails };
+  const task = params.task?.trim() ?? "";
+  if (needsProjectAgentConfirmation(ctx, requested)) {
+    const confirmed = await confirmProjectAgentRun(
+      ctx,
+      requested,
+      discovery.projectAgentsDir,
+    );
+    if (!confirmed) return { kind: "cancelled", makeDetails };
+  }
   if (requested.source === "project") {
     const userAgents = discoverAgents(ctx.cwd, "user");
     const hasUserCollision = userAgents.agents.some(
@@ -319,36 +335,34 @@ export async function startSubagentJob(
       });
     }
   }
-  const task = params.task?.trim() ?? "";
-  if (needsProjectAgentConfirmation(ctx, requested)) {
-    const confirmed = await confirmProjectAgentRun(
-      ctx,
-      requested,
-      discovery.projectAgentsDir,
-    );
-    if (!confirmed) return { kind: "cancelled", makeDetails };
-  }
   const parentModel = ctx.model
     ? { provider: ctx.model.provider, id: ctx.model.id }
     : undefined;
   const parentThinking = pi.getThinkingLevel() as ThinkingLevel;
   const requestId = crypto.randomUUID();
+  const instanceName = generateSubagentInstanceName();
   const controller = new AbortController();
   const job: RunJob = registerRunJob({
     requestId,
     agentName: params.agent,
+    instanceName,
     controller,
     startedAt: Date.now(),
   });
   const mergedSignal = hostSignal
     ? AbortSignal.any([hostSignal, job.controller.signal])
     : job.controller.signal;
-  createProgressState(requestId, params.agent, task);
+  const makeStartedDetails: DetailsBuilder = (results, options) =>
+    makeDetails(
+      results.map((result) => ({ ...result, instanceName })),
+      options,
+    );
+  createProgressState(requestId, params.agent, task, instanceName);
   pi.sendMessage({
     customType: "subagent-progress",
     content: "",
     display: true,
-    details: { requestId },
+    details: { agent: params.agent, instanceName, requestId },
   });
   const requestProgressRender = createProgressRenderRequester(ctx, requestId);
   setImmediate(() => {
@@ -366,12 +380,17 @@ export async function startSubagentJob(
       debug,
       parentModel,
       parentThinking,
-      makeDetails,
+      makeStartedDetails,
       requestId,
       job,
       mergedSignal,
     );
   });
   if (mergedSignal.aborted) return { kind: "cancelled", makeDetails };
-  return { kind: "started", requestId, makeDetails };
+  return {
+    kind: "started",
+    requestId,
+    instanceName,
+    makeDetails: makeStartedDetails,
+  };
 }

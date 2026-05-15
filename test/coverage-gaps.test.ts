@@ -309,12 +309,14 @@ exit 0
       registerRunJob({
         requestId: "j1",
         agentName: "a",
+        instanceName: "able-falcon",
         controller: new AbortController(),
         startedAt: Date.now(),
       });
       registerRunJob({
         requestId: "j2",
         agentName: "b",
+        instanceName: "brave-otter",
         controller: new AbortController(),
         startedAt: Date.now(),
       });
@@ -330,12 +332,14 @@ exit 0
       registerRunJob({
         requestId: "concurrent-1",
         agentName: "a",
+        instanceName: "calm-heron",
         controller: c1,
         startedAt: Date.now(),
       });
       registerRunJob({
         requestId: "concurrent-2",
         agentName: "b",
+        instanceName: "daring-lynx",
         controller: c2,
         startedAt: Date.now(),
       });

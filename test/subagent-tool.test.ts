@@ -38,8 +38,8 @@ wait $!
     undefined,
     { cwd, hasUI: false } as unknown as ExtensionContext,
   );
-  expect((result.content[0] as TextContent).text).toContain(
-    "Subagent hang started (job:",
+  expect((result.content[0] as TextContent).text).toMatch(
+    /^Subagent hang [a-z]+-[a-z]+ started \(job: /,
   );
   expect(sentMessages).toHaveLength(1);
   expect(sentMessages[0]?.customType).toBe("subagent-progress");
@@ -101,7 +101,12 @@ test("subagent tool result appears in sent messages after child exits", async ()
   await waitForSentMessageCount(sentMessages, 2);
   expect(sentMessages[0]?.customType).toBe("subagent-progress");
   expect(sentMessages.at(-1)?.customType).toBe("subagent-result");
+  const startDetails = sentMessages[0]?.details as { instanceName?: string };
+  const resultDetails = sentMessages.at(-1)?.details as SubagentDetails;
   expect(sentMessages.at(-1)?.content).toBe("done");
+  expect(resultDetails.results[0]?.instanceName).toBe(
+    startDetails.instanceName,
+  );
 });
 
 test("subagent tool finishes when child exits with inherited open streams", async () => {
@@ -417,9 +422,16 @@ exit 0
   );
   await waitForSentMessageCount(sentMessages, 2);
   expect(sentMessages.at(-1)?.customType).toBe("subagent-result");
-  const requestId = (sentMessages[0]?.details as { requestId?: string })
-    ?.requestId;
+  const failureStartDetails = sentMessages[0]?.details as {
+    instanceName?: string;
+    requestId?: string;
+  };
+  const failureDetails = sentMessages.at(-1)?.details as SubagentDetails;
+  const requestId = failureStartDetails.requestId;
   if (!requestId) throw new Error("requestId missing");
+  expect(failureDetails.results[0]?.instanceName).toBe(
+    failureStartDetails.instanceName,
+  );
   expect(getProgressState(requestId)?.status).toBe("error");
 });
 
@@ -494,8 +506,11 @@ test("subagent tool spawn error sends error result via sent messages", async () 
 });
 
 test("subagent tool handles unknown agent synchronously", async () => {
+  const sentMessages: SendMessageArg[] = [];
   const { cwd } = await setupFakePi();
-  const tool = getSubagentTool();
+  const tool = getSubagentTool({
+    sendMessage: (msg) => sentMessages.push(msg),
+  });
   const result = await tool.execute(
     "test-tool-call",
     { agent: "non-existent", task: "whatever" },
@@ -506,6 +521,8 @@ test("subagent tool handles unknown agent synchronously", async () => {
   expect((result.content[0] as TextContent).text).toContain(
     'Unknown agent: "non-existent"',
   );
+  expect(sentMessages).toHaveLength(0);
+  expect(listRunJobs()).toHaveLength(0);
 });
 
 test("subagent tool respects agentScope", async () => {
@@ -551,6 +568,7 @@ System prompt`,
 });
 
 test("subagent tool requires confirmation for project agents with UI", async () => {
+  const sentMessages: SendMessageArg[] = [];
   const { cwd } = await setupFakePi();
   const projectAgentsDir = path.join(cwd, ".pi", "agents");
   await Bun.$`mkdir -p ${projectAgentsDir}`;
@@ -562,7 +580,9 @@ description: Project agent
 ---
 System prompt`,
   );
-  const tool = getSubagentTool();
+  const tool = getSubagentTool({
+    sendMessage: (msg) => sentMessages.push(msg),
+  });
   let confirmed = false;
   const fakeUI = {
     confirm: async () => {
@@ -579,6 +599,8 @@ System prompt`,
   );
   expect(confirmed).toBe(true);
   expect((result.content[0] as TextContent).text).toContain("Canceled");
+  expect(sentMessages).toHaveLength(0);
+  expect(listRunJobs()).toHaveLength(0);
 });
 
 test("subagent tool abort cancels the background job", async () => {
@@ -642,6 +664,7 @@ exit 0
   expect(details.results[0]?.usage.input).toBe(10);
   expect(details.results[0]?.finalOutput).toBe("Outcome: hello");
   expect(details.results[0]?.messages).toBeUndefined();
+  expect(details.results[0]?.instanceName).toMatch(/^[a-z]+-[a-z]+$/);
   expect(details.results[0]?.usage.contextWindowTokens).toBe(128000);
   if (details.results[0]?.model !== "gpt-4o-mini")
     expect(details.results[0]?.model).toBe("thinking:off");
@@ -659,6 +682,7 @@ exit 0
   await waitForSentMessageCount(sentMessages2, 2);
   const debugDetails = sentMessages2.at(-1)?.details as SubagentDetails;
   expect(debugDetails.results[0]?.messages).toHaveLength(1);
+  expect(debugDetails.results[0]?.instanceName).toMatch(/^[a-z]+-[a-z]+$/);
 });
 
 test("subagent tool leaves context window unknown for unknown metadata", async () => {

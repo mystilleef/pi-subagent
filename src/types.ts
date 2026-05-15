@@ -26,6 +26,7 @@ export interface StreamingProgress {
 
 export interface SingleResult {
   agent: string;
+  instanceName?: string;
   agentSource: "user" | "project" | "unknown";
   task: string;
   exitCode: number;

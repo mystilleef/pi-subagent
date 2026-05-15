@@ -202,6 +202,8 @@ export function renderSubagentResult(
   const finalOutput = r.finalOutput ?? getFinalOutput(r.messages ?? []);
   const bg = failed ? "toolErrorBg" : "toolSuccessBg";
   const box = new Box(1, 1, (line) => theme.bg(bg, line));
+  const title = r.instanceName ? `${r.agent} ${r.instanceName}` : r.agent;
+  box.addChild(new Text(theme.fg("toolTitle", theme.bold(title)), 0, 0));
   const bodyText = stripOutcomeLineForResultUi(bodyOverride ?? finalOutput);
   if (bodyText) {
     box.addChild(

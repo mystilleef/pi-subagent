@@ -181,12 +181,15 @@ wait $!
   await waitForRunJobCount(1);
   const requestId = listRunJobs()[0]?.requestId;
   if (!requestId) throw new Error("requestId missing");
+  const job = getRunJob(requestId);
   await cancelCommand?.handler("", {
     cwd,
     ui: {
       notify: (message: string) => notices.push(message),
-      select: async (_title: string, _options: string[]) =>
-        `hang (${requestId})`,
+      select: async (_title: string, options: string[]) => {
+        expect(options[0]).toBe(`hang ${job?.instanceName} (${requestId})`);
+        return options[0];
+      },
     },
   } as unknown as ExtensionCommandContext);
   expect(notices).toEqual([`Cancelled /run job ${requestId}.`]);
@@ -462,12 +465,7 @@ exit 0
     ui: { notify: (message: string) => notices.push(message) },
   } as unknown as ExtensionCommandContext);
   await waitForRunJobsCleared();
-  expect(sentMessages).toHaveLength(1);
-  const requestId = (sentMessages[0]?.details as { requestId?: string })
-    ?.requestId;
-  if (!requestId) throw new Error("requestId missing");
-  expect(getProgressState(requestId)?.status).toBe("cancelled");
-  expect(getProgressState(requestId)?.errorText).toBe("Aborted");
+  expect(sentMessages).toHaveLength(0);
   expect(await Bun.file(path.join(cwd, "worker-ran.txt")).exists()).toBe(false);
   expect(notices).toEqual(["Cancelled"]);
   expect(listRunJobs()).toHaveLength(0);
@@ -519,12 +517,14 @@ test("run slash command sends one subagent-progress message and one final result
   expect(sentMessages).toHaveLength(2);
   expect(sentMessages[0]?.customType).toBe("subagent-progress");
   const details = sentMessages[0]?.details as
-    | { requestId?: unknown }
+    | { agent?: unknown; instanceName?: unknown; requestId?: unknown }
     | undefined;
   if (typeof details?.requestId !== "string")
     throw new Error("progress request id missing");
   expect(details.requestId.length).toBeGreaterThan(0);
-  expect(Object.keys(details)).toEqual(["requestId"]);
+  expect(details.agent).toBe("hang");
+  expect(details.instanceName).toMatch(/^[a-z]+-[a-z]+$/);
+  expect(Object.keys(details)).toEqual(["agent", "instanceName", "requestId"]);
   expect(messagesSentBeforeChildExit).toBe(1);
 });
 
@@ -617,7 +617,7 @@ exit 0
     expect(message.content).toBe("");
     expect(
       Object.keys((message.details as Record<string, unknown>) ?? {}),
-    ).toEqual(["requestId"]);
+    ).toEqual(["agent", "instanceName", "requestId"]);
   }
   expect(sentMessages.at(-1)?.customType).toBe("subagent-result");
   const countAfterCompletion = sentMessages.length;
@@ -740,7 +740,11 @@ exit 0
   } as unknown as ExtensionCommandContext);
   await waitForSentMessageCount(sentMessages, 2);
   const progressDetails = sentMessages[0]?.details as { requestId?: string };
-  expect(Object.keys(progressDetails)).toEqual(["requestId"]);
+  expect(Object.keys(progressDetails)).toEqual([
+    "agent",
+    "instanceName",
+    "requestId",
+  ]);
   const requestId = progressDetails.requestId;
   if (!requestId) throw new Error("requestId missing");
   const state = getProgressState(requestId);
@@ -1135,7 +1139,9 @@ exit 0
     expect(content).not.toContain("requestId");
   }
   expect(sentMessages[0]?.content).toBe("");
-  expect(sentMessages[0]?.details).toEqual({
+  expect(sentMessages[0]?.details).toMatchObject({
+    agent: "hang",
+    instanceName: expect.stringMatching(/^[a-z]+-[a-z]+$/),
     requestId: (sentMessages[0]?.details as { requestId?: string }).requestId,
   });
   expect(sentMessages.at(-1)?.content).toBe("done");
@@ -1167,7 +1173,11 @@ exit 0
   await waitForSentMessageCount(sentMessages, 2);
   expect(sentMessages).toHaveLength(2);
   const msgDetails = sentMessages[0]?.details as Record<string, unknown>;
-  expect(Object.keys(msgDetails)).toEqual(["requestId"]);
+  expect(Object.keys(msgDetails)).toEqual([
+    "agent",
+    "instanceName",
+    "requestId",
+  ]);
   const requestId = msgDetails.requestId as string;
   const state = getProgressState(requestId);
   expect(state).toBeDefined();

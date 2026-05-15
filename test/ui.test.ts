@@ -168,7 +168,7 @@ test("renderResult output aggregation and truncation", () => {
     fakeContext as never,
   );
   const text = renderToString(rendered);
-  expect(text).not.toContain("test-agent");
+  expect(text).toContain("[toolTitle]*test-agent*[/toolTitle]");
   expect(text).not.toContain("[success]✓[/success]");
   expect(text).not.toContain("[accent]");
   expect(text).toContain("[toolOutput]final text line 1[/toolOutput]");
@@ -246,7 +246,7 @@ test("renderResult expanded output", () => {
     fakeContext as never,
   );
   const text = renderToString(rendered);
-  expect(text).not.toContain("test-agent");
+  expect(text).toContain("[toolTitle]*test-agent*[/toolTitle]");
   expect(text).not.toContain("[error]✗[/error]");
   expect(text).not.toContain("[error][error][/error]");
   expect(text).toContain("[toolOutput]final output line[/toolOutput]");
@@ -969,6 +969,7 @@ test("normal subagent tool rendering continues to use raw final output", () => {
         results: [
           {
             agent: "tool",
+            instanceName: "clear-marten",
             agentSource: "user",
             task: "pass",
             exitCode: 0,
@@ -991,6 +992,7 @@ test("normal subagent tool rendering continues to use raw final output", () => {
     fakeTheme,
   ) as unknown as { render: (width: number) => string[] };
   const text = renderToString(rendered);
+  expect(text).toContain("[toolTitle]*tool clear-marten*[/toolTitle]");
   expect(text).toContain(
     "[toolOutput]raw final output remains body[/toolOutput]",
   );
@@ -1207,7 +1209,7 @@ test("subagent result renders compact structured success output", () => {
   );
   const renderedText = renderToString(rendered);
   expect(renderedText).not.toContain("[success]✓[/success]");
-  expect(renderedText).not.toContain("builder");
+  expect(renderedText).toContain("[toolTitle]*builder*[/toolTitle]");
   expect(renderedText).not.toContain("[muted]1.2s[/muted]");
   expect(renderedText).not.toContain("Outcome: shipped");
   expect(renderedText).toContain("[toolOutput]Changed: src/ui.ts[/toolOutput]");

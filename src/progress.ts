@@ -176,7 +176,8 @@ function formatProgressText(
   const state = getProgressState(requestId);
   if (!state) return undefined;
   const status = state.status;
-  const header = `${theme.fg(STATUS_COLOR[status], STATUS_ICON[status])} ${theme.fg("toolTitle", theme.bold(state.agent))} ${theme.fg("dim", `[${status}]`)} ${theme.fg("muted", formatHeaderStats(state))}`;
+  const title = `${state.agent} ${state.instanceName}`;
+  const header = `${theme.fg(STATUS_COLOR[status], STATUS_ICON[status])} ${theme.fg("toolTitle", theme.bold(title))} ${theme.fg("dim", `[${status}]`)} ${theme.fg("muted", formatHeaderStats(state))}`;
   if (status === "running") {
     const toolLine = state.lastToolPreview
       ? `\n  ${formatRunningToolPreview(state.lastToolPreview, theme)}`

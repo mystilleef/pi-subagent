@@ -767,7 +767,7 @@ test("renderSubagentProgress collapsed running colors tool preview segments", ()
   expect(result).toBeDefined();
   const text = renderText(result);
   const toolLine = renderLines(result).find((line) => line.includes("bash"));
-  expect(text).toContain("my-agent");
+  expect(text).toContain("my-agent rend-1");
   expect(text).toContain("running");
   expect(text).toContain("3 tools · 8% ctx ·");
   expect(text).not.toContain("1.2k in");
@@ -912,6 +912,7 @@ test("format header stats renders tool count context percent and elapsed", () =>
   const stats = formatHeaderStats({
     requestId: "req-1",
     agent: "agent-a",
+    instanceName: "able-falcon",
     taskPreview: "task a",
     status: "running",
     startTime: 0,
@@ -931,6 +932,7 @@ test("format header stats pluralizes zero singular and plural tool counts", () =
   const base = {
     requestId: "req-1",
     agent: "agent-a",
+    instanceName: "able-falcon",
     taskPreview: "task a",
     status: "running" as const,
     startTime: 0,
@@ -952,6 +954,7 @@ test("format header stats handles zero usage and context fallbacks", () => {
   const base = {
     requestId: "req-1",
     agent: "agent-a",
+    instanceName: "able-falcon",
     taskPreview: "task a",
     status: "running" as const,
     startTime: 1000,
@@ -996,6 +999,7 @@ test("renderSubagentProgress error state shows error text", () => {
   );
   expect(result).toBeDefined();
   const text = renderText(result);
+  expect(text).toContain("err-agent rend-3");
   expect(text).toContain("error");
   expect(text).toContain("something exploded");
   expect(text).not.toContain("FAILURE: something exploded");
@@ -1112,6 +1116,7 @@ test("renderSubagentProgress cancelled state shows cancelled", () => {
   );
   expect(result).toBeDefined();
   const text = renderText(result);
+  expect(text).toContain("some-agent rend-5");
   expect(text).toContain("cancelled");
   expect(
     renderLines(result).every(

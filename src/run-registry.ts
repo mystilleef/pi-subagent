@@ -1,6 +1,7 @@
 export type RunJob = {
   requestId: string;
   agentName: string;
+  instanceName: string;
   controller: AbortController;
   startedAt: number;
   cancelReason?: string;
