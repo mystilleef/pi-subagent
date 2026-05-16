@@ -119,7 +119,7 @@ test("/jobs uses component render width for board layout", async () => {
   expect(output.match(/─+/)?.[0]?.length).toBe(13);
 });
 
-test("/jobs shows completed jobs after active ones", async () => {
+test("/jobs shows status sections after active jobs", async () => {
   const doneRid = "runs-done-test";
   createProgressState(doneRid, "done-agent", "finished task", "done-inst");
   finalizeProgressState(doneRid, "completed task");
@@ -159,6 +159,9 @@ test("/jobs shows completed jobs after active ones", async () => {
   expect(activeIdx).toBeGreaterThan(-1);
   expect(doneIdx).toBeGreaterThan(-1);
   expect(activeIdx).toBeLessThan(doneIdx);
+  expect(output).toContain("ACTIVE (1)");
+  expect(output).toContain("SUCCEEDED (1)");
+  expect(output).not.toContain("COMPLETED");
 });
 
 test("/jobs shows cancelled and error jobs", async () => {
@@ -182,10 +185,13 @@ test("/jobs shows cancelled and error jobs", async () => {
   );
   expect(notices).toHaveLength(1);
   const output = notices[0] ?? "";
+  expect(output).toContain("FAILED (1)");
+  expect(output).toContain("CANCELLED (1)");
   expect(output).toContain("[error]");
   expect(output).toContain("[cancelled]");
   expect(output).toContain("something broke");
   expect(output).toContain("user aborted");
+  expect(output).not.toContain("COMPLETED");
 });
 
 test("/jobs ignores arguments", async () => {
@@ -321,7 +327,7 @@ test("/jobs uses plural 'tools' label when toolCount is not 1", async () => {
   finalizeProgressState(rid, "done");
   const notices: string[] = [];
   await jobsCommandHandler(
-    makeCtx((msg) => notices.push(msg)),
+    makeCtx((msg) => notices.push(msg), 200),
     "",
   );
   const output = notices[0] ?? "";
@@ -349,7 +355,7 @@ test("/jobs does not truncate body text at exactly 120 chars", async () => {
   finalizeProgressState(rid, exactText);
   const notices: string[] = [];
   await jobsCommandHandler(
-    makeCtx((msg) => notices.push(msg)),
+    makeCtx((msg) => notices.push(msg), 200),
     "",
   );
   const output = notices[0] ?? "";

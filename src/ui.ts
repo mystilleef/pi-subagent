@@ -241,26 +241,68 @@ export function renderSubagentResult(
       ? "error"
       : "success";
   const finalOutput = r.finalOutput ?? getFinalOutput(r.messages ?? []);
-  const bg = failed ? "toolErrorBg" : "toolSuccessBg";
-  const box = new Box(1, 1, (line) => theme.bg(bg, line));
   const title = formatSubagentTitle(r.agent, r.instanceName, theme);
-  const icon = theme.fg(STATUS_COLOR[resultStatus], STATUS_ICON[resultStatus]);
-  box.addChild(new Text(`${icon} ${title}`, 0, 0));
   const bodyText = stripOutcomeLineForResultUi(bodyOverride ?? finalOutput);
-  box.addChild(makeResultBody(bodyText, theme));
   const usageStr = formatResultFooter(r.usage, r.model, r.durationMs);
-  if (usageStr) box.addChild(new Text(theme.fg("dim", usageStr), 0, 0));
+  return renderStatusCard(
+    {
+      status: resultStatus,
+      title,
+      variant: "full",
+      body: bodyText,
+      footer: usageStr,
+    },
+    theme,
+  );
+}
+
+type StatusCardVariant = "full" | "abridged";
+
+type StatusCardOptions = {
+  status: ProgressStatus;
+  title: string;
+  variant: StatusCardVariant;
+  metadata?: string;
+  body?: string;
+  footer?: string;
+};
+
+function renderStatusCard(
+  options: StatusCardOptions,
+  theme: SubagentTheme,
+): Box {
+  const box = new Box(1, 1, (line) =>
+    theme.bg(STATUS_BG[options.status], line),
+  );
+  const icon = theme.fg(
+    STATUS_COLOR[options.status],
+    STATUS_ICON[options.status],
+  );
+  const status = theme.fg("dim", `[${options.status}]`);
+  const metadata = options.metadata
+    ? ` ${theme.fg("muted", options.metadata)}`
+    : "";
+  box.addChild(new Text(`${icon} ${options.title} ${status}${metadata}`, 0, 0));
+  box.addChild(makeStatusCardBody(options, theme));
+  if (options.variant === "full" && options.footer)
+    box.addChild(new Text(theme.fg("dim", options.footer), 0, 0));
   return box;
 }
 
-function makeResultBody(bodyText: string, theme: SubagentTheme): Box {
-  const body = new Box(2, 1);
-  if (bodyText) {
+function makeStatusCardBody(
+  options: StatusCardOptions,
+  theme: SubagentTheme,
+): Box {
+  const body = new Box(2, options.variant === "full" ? 1 : 0);
+  const bodyText = options.body ?? "";
+  if (bodyText && options.variant === "full") {
     body.addChild(
       new Markdown(bodyText, 0, 0, makeMarkdownTheme(theme), {
         color: (text) => theme.fg("toolOutput", text),
       }),
     );
+  } else if (bodyText) {
+    body.addChild(new Text(theme.fg("toolOutput", bodyText), 0, 0));
   } else {
     body.addChild(new Text(theme.fg("muted", "(no output)"), 0, 0));
   }
@@ -281,40 +323,33 @@ function renderJobCard(
   state: SubagentProgressState,
   theme: SubagentTheme,
 ): Box {
-  const icon =
-    state.status === "running"
-      ? "●"
-      : state.status === "cancelled"
-        ? "✗"
-        : STATUS_ICON[state.status];
-  const color = STATUS_COLOR[state.status];
   const title = formatSubagentTitle(state.agent, state.instanceName, theme);
   const elapsed = formatElapsed(
     state.durationMs ?? Date.now() - state.startTime,
   );
   const ctxPercent = formatContextPercent(state);
   const toolLabel = state.toolCount === 1 ? "tool" : "tools";
-  const headerLine = `${theme.fg(color, icon)} ${title} ${theme.fg("dim", `[${state.status}]`)} ${theme.fg("muted", `${state.toolCount} ${toolLabel} · ${ctxPercent} ctx · ${elapsed}`)}`;
-  const jobBox = new Box(0, 0, (line) =>
-    theme.bg(STATUS_BG[state.status], line),
-  );
-  jobBox.addChild(new Text(headerLine, 0, 0));
+  const metadata = `${state.toolCount} ${toolLabel} · ${ctxPercent} ctx · ${elapsed}`;
   const bodyText = selectRunsBoardBody(state);
-  if (bodyText) {
-    const preview =
-      bodyText.length > BODY_PREVIEW_MAX
-        ? `${bodyText.slice(0, BODY_PREVIEW_MAX - 1)}…`
-        : bodyText;
-    jobBox.addChild(new Text(theme.fg("toolOutput", preview), 2, 0));
-  } else {
-    jobBox.addChild(new Text(theme.fg("muted", "(no output)"), 2, 0));
-  }
-  return jobBox;
+  const preview =
+    bodyText.length > BODY_PREVIEW_MAX
+      ? `${bodyText.slice(0, BODY_PREVIEW_MAX - 1)}…`
+      : bodyText;
+  return renderStatusCard(
+    {
+      status: state.status,
+      title,
+      variant: "abridged",
+      metadata,
+      body: preview,
+    },
+    theme,
+  );
 }
 
 /**
  * Renders a unified job board for the `/jobs` command.
- * Active (running) jobs render first, then completed; both groups sorted by `startTime` descending.
+ * Jobs render in status-specific sections, each sorted by `startTime` descending.
  * Status icons preserve the existing /jobs contract for running and cancelled jobs.
  */
 export function renderRunsBoard(
@@ -325,12 +360,16 @@ export function renderRunsBoard(
   if (states.length === 0) {
     return new Text(theme.fg("muted", "No /run jobs in this session."), 0, 0);
   }
-  const active = states
-    .filter((s) => s.status === "running")
-    .sort((a, b) => b.startTime - a.startTime);
-  const completed = states
-    .filter((s) => s.status !== "running")
-    .sort((a, b) => b.startTime - a.startTime);
+  const sortNewest = (a: SubagentProgressState, b: SubagentProgressState) =>
+    b.startTime - a.startTime;
+  const active = states.filter((s) => s.status === "running").sort(sortNewest);
+  const failed = states.filter((s) => s.status === "error").sort(sortNewest);
+  const cancelled = states
+    .filter((s) => s.status === "cancelled")
+    .sort(sortNewest);
+  const succeeded = states
+    .filter((s) => s.status === "success")
+    .sort(sortNewest);
   const box = new Box(0, 0);
   const addSection = (
     label: string,
@@ -344,6 +383,8 @@ export function renderRunsBoard(
       box.addChild(renderJobCard(state, theme));
   };
   addSection("ACTIVE", active);
-  addSection("COMPLETED", completed);
+  addSection("FAILED", failed);
+  addSection("CANCELLED", cancelled);
+  addSection("SUCCEEDED", succeeded);
   return box;
 }

@@ -639,7 +639,7 @@ test("renderCall formats tool execution correctly", () => {
   );
 });
 
-test("ui helpers format units, fallback output, and failed tool results", () => {
+test("renderSubagentResult formats units, fallback output, and failed tool results", () => {
   const fakeTheme: FakeTheme = {
     fg: (color, text) => `[${color}]${text}[/${color}]`,
     bg: (color, text) => `[${color}]${text}[/${color}]`,
@@ -834,6 +834,29 @@ test("ui helpers format units, fallback output, and failed tool results", () => 
   expect(failedText).toContain("[muted](no output)[/muted]");
 });
 
+test("subagent result keeps subagent call chrome unchanged", () => {
+  const fakeTheme: FakeTheme = {
+    fg: (color, text) => `[${color}]${text}[/${color}]`,
+    bg: (color, text) => `[${color}]${text}[/${color}]`,
+    bold: (text) => `*${text}*`,
+  };
+  const call = renderSubagentCall({}, fakeTheme) as unknown as {
+    text: string;
+    render: (width: number) => string[];
+  };
+  expect(call.text).toContain(
+    "[accent]...[/accent][muted] [both][/muted]\n  [dim]{}[/dim]",
+  );
+  expect(
+    call
+      .render(120)
+      .every(
+        (line) =>
+          line.startsWith("[toolPendingBg]") &&
+          line.endsWith("[/toolPendingBg]"),
+      ),
+  ).toBe(true);
+});
 test("subagent result markdown invokes theme callbacks", () => {
   const fakeTheme: FakeTheme = {
     fg: (color, text) => `[${color}]${text}[/${color}]`,
@@ -1752,7 +1775,7 @@ test("renderRunsBoard renders empty board", () => {
   expect(text).toContain("No /run jobs in this session.");
   expect(text).toContain("[muted]");
 });
-test("renderRunsBoard renders mixed states with active before completed", () => {
+test("renderRunsBoard renders status sections in fixed order", () => {
   const now = Date.now();
   const states: SubagentProgressState[] = [
     {
@@ -1813,11 +1836,17 @@ test("renderRunsBoard renders mixed states with active before completed", () => 
   const lines = text.split("\n");
   expect(lines).toBeArray();
   expect(text).toContain("[dim]ACTIVE (1) ─────────────────────[/dim]");
-  expect(text).toContain("[dim]COMPLETED (3) ──────────────────[/dim]");
+  expect(text).toContain("[dim]FAILED (1) ─────────────────────[/dim]");
+  expect(text).toContain("[dim]CANCELLED (1) ──────────────────[/dim]");
+  expect(text).toContain("[dim]SUCCEEDED (1) ──────────────────[/dim]");
   expect(text).not.toContain("ACTIVE (0)");
-  expect(text).not.toContain("COMPLETED (0)");
-  expect(text.indexOf("ACTIVE (1)")).toBeLessThan(
-    text.indexOf("COMPLETED (3)"),
+  expect(text).not.toContain("COMPLETED");
+  expect(text.indexOf("ACTIVE (1)")).toBeLessThan(text.indexOf("FAILED (1)"));
+  expect(text.indexOf("FAILED (1)")).toBeLessThan(
+    text.indexOf("CANCELLED (1)"),
+  );
+  expect(text.indexOf("CANCELLED (1)")).toBeLessThan(
+    text.indexOf("SUCCEEDED (1)"),
   );
   const headerLines = lines.filter(
     (l) =>
@@ -1836,28 +1865,40 @@ test("renderRunsBoard renders mixed states with active before completed", () => 
       /\[\/tool(?:Pending|Error|Success)Bg\]$/.test(line),
     ),
   ).toBe(true);
-  expect(headerLines[0]).toContain("reviewer");
-  expect(headerLines[0]).toContain("●");
-  expect(headerLines[0]).toContain("[running]");
-  expect(headerLines[1]).toContain("scanner");
-  expect(headerLines[1]).toContain("✗");
-  expect(headerLines[1]).toContain("[cancelled]");
-  expect(headerLines[2]).toContain("test-runner");
-  expect(headerLines[2]).toContain("✗");
-  expect(headerLines[2]).toContain("[error]");
-  expect(headerLines[3]).toContain("builder");
-  expect(headerLines[3]).toContain("✓");
-  expect(headerLines[3]).toContain("[success]");
-  expect(headerLines[3]).toContain("5 tools");
-  expect(text).toContain(
-    "[toolSuccessBg]  [toolOutput]Built all the things successfully[/toolOutput]",
+  const cardLines = lines.filter((line) =>
+    /^\[tool(?:Pending|Error|Success)Bg\]/.test(line),
+  );
+  expect(cardLines).toHaveLength(16);
+  expect(
+    cardLines.every((line) =>
+      /^\[tool(?:Pending|Error|Success)Bg\].*\[\/tool(?:Pending|Error|Success)Bg\]$/.test(
+        line,
+      ),
+    ),
+  ).toBe(true);
+  expect(headerLines[0]).toContain(
+    "[accent]⟳[/accent] [toolTitle]*reviewer*[/toolTitle] [dim][running][/dim] [muted]2 tools · 16% ctx ·",
+  );
+  expect(headerLines[1]).toContain(
+    "[error]✗[/error] [toolTitle]*test-runner*[/toolTitle] [dim][error][/dim] [muted]3 tools · 24% ctx · 2m 30s[/muted]",
+  );
+  expect(headerLines[2]).toContain(
+    "[error]⊘[/error] [toolTitle]*scanner*[/toolTitle] [dim][cancelled][/dim] [muted]1 tool · --% ctx · 5.0s[/muted]",
+  );
+  expect(headerLines[3]).toContain(
+    "[success]✓[/success] [toolTitle]*builder*[/toolTitle] [accent]\x1b[3mable-falcon\x1b[23m[/accent] [dim][success][/dim] [muted]5 tools · 40% ctx · 4m 40s[/muted]",
   );
   expect(text).toContain(
-    "[toolErrorBg]  [toolOutput]bun test failed with exit code 1[/toolOutput]",
+    "[toolSuccessBg]   [toolOutput]Built all the things successfully[/toolOutput]",
   );
-  expect(text).toContain("[toolErrorBg]  [toolOutput]scanning...[/toolOutput]");
+  expect(text).toContain(
+    "[toolErrorBg]   [toolOutput]bun test failed with exit code 1[/toolOutput]",
+  );
+  expect(text).toContain(
+    "[toolErrorBg]   [toolOutput]scanning...[/toolOutput]",
+  );
 });
-test("renderRunsBoard omits empty completed section", () => {
+test("renderRunsBoard omits empty status sections", () => {
   const state: SubagentProgressState = {
     requestId: "r1",
     agent: "builder",
@@ -1875,7 +1916,10 @@ test("renderRunsBoard omits empty completed section", () => {
   const rendered = renderRunsBoard([state], fakeTheme as never);
   const text = renderToString(rendered);
   expect(text).toContain("ACTIVE (1)");
-  expect(text).not.toContain("COMPLETED (0)");
+  expect(text).not.toContain("FAILED (0)");
+  expect(text).not.toContain("CANCELLED (0)");
+  expect(text).not.toContain("SUCCEEDED (0)");
+  expect(text).not.toContain("COMPLETED");
 });
 test("renderRunsBoard truncates body preview after 120 chars", () => {
   const exactOutput = "A".repeat(120);

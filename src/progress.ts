@@ -112,7 +112,9 @@ function renderProgressBox(
   const status = state.status;
   const title = formatSubagentTitle(state.agent, state.instanceName, theme);
   const header = `${theme.fg(STATUS_COLOR[status], STATUS_ICON[status])} ${title} ${theme.fg("dim", `[${status}]`)} ${theme.fg("muted", formatHeaderStats(state))}`;
-  const box = new Box(1, 1, (line) => theme.bg(getProgressBackground(status), line));
+  const box = new Box(1, 1, (line) =>
+    theme.bg(getProgressBackground(status), line),
+  );
   box.addChild(new Text(header, 0, 0));
   addProgressBody(box, state, options, theme);
   return box;
@@ -134,11 +136,13 @@ function makeProgressBody(
   options: { expanded: boolean },
   theme: SubagentTheme,
 ): Text[] {
-  if (state.status === "running") return makeRunningProgressBody(state, options, theme);
+  if (state.status === "running")
+    return makeRunningProgressBody(state, options, theme);
   if (state.status === "error" || state.status === "cancelled") {
     return makeStoppedProgressBody(state, options, theme);
   }
-  if (state.status === "success") return makeSuccessProgressBody(state, options, theme);
+  if (state.status === "success")
+    return makeSuccessProgressBody(state, options, theme);
   return [];
 }
 
@@ -149,9 +153,12 @@ function makeRunningProgressBody(
 ): Text[] {
   const body: Text[] = [];
   if (state.lastToolPreview) {
-    body.push(new Text(formatRunningToolPreview(state.lastToolPreview, theme), 2, 0));
+    body.push(
+      new Text(formatRunningToolPreview(state.lastToolPreview, theme), 2, 0),
+    );
   }
-  if (options.expanded) body.push(new Text(theme.fg("dim", state.taskPreview), 2, 0));
+  if (options.expanded)
+    body.push(new Text(theme.fg("dim", state.taskPreview), 2, 0));
   return body;
 }
 
@@ -161,8 +168,10 @@ function makeStoppedProgressBody(
   theme: SubagentTheme,
 ): Text[] {
   const body: Text[] = [];
-  if (state.errorText) body.push(new Text(theme.fg("error", state.errorText), 2, 0));
-  if (options.expanded) body.push(new Text(theme.fg("dim", state.taskPreview), 2, 0));
+  if (state.errorText)
+    body.push(new Text(theme.fg("error", state.errorText), 2, 0));
+  if (options.expanded)
+    body.push(new Text(theme.fg("dim", state.taskPreview), 2, 0));
   return body;
 }
 
@@ -178,7 +187,11 @@ function makeSuccessProgressBody(
   const body = [new Text(theme.fg("dim", state.taskPreview), 2, 0)];
   body.push(
     output
-      ? new Text(`${theme.fg("muted", "─── Output ───")}\n${theme.fg("toolOutput", output)}`, 0, 0)
+      ? new Text(
+          `${theme.fg("muted", "─── Output ───")}\n${theme.fg("toolOutput", output)}`,
+          0,
+          0,
+        )
       : new Text(theme.fg("muted", "(no output)"), 0, 0),
   );
   return body;
