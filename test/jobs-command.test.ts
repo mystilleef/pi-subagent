@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
 import type { ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
+import { jobsCommandHandler } from "../src/jobs-command.js";
 import {
   cancelProgressState,
   clearProgressState,
@@ -9,7 +10,6 @@ import {
   patchProgressState,
 } from "../src/progress.js";
 import { clearRunJobsForTests, registerRunJob } from "../src/run-registry.js";
-import { runsCommandHandler } from "../src/runs-command.js";
 import { setupHooks } from "./helpers.js";
 
 setupHooks();
@@ -21,17 +21,17 @@ function makeCtx(notify: (msg: string) => void): ExtensionCommandContext {
   } as ExtensionCommandContext;
 }
 
-test("/runs empty board shows no-jobs message", async () => {
+test("/jobs empty board shows no-jobs message", async () => {
   clearRunJobsForTests();
   const notices: string[] = [];
-  await runsCommandHandler(
+  await jobsCommandHandler(
     makeCtx((msg) => notices.push(msg)),
     "",
   );
   expect(notices).toEqual(["No /run jobs in this session."]);
 });
 
-test("/runs shows active running jobs", async () => {
+test("/jobs shows active running jobs", async () => {
   clearRunJobsForTests();
   const rid = "runs-active-test";
   createProgressState(rid, "test-agent", "do something", "test-instance");
@@ -48,7 +48,7 @@ test("/runs shows active running jobs", async () => {
     startedAt: Date.now(),
   });
   const notices: string[] = [];
-  await runsCommandHandler(
+  await jobsCommandHandler(
     makeCtx((msg) => notices.push(msg)),
     "",
   );
@@ -61,7 +61,7 @@ test("/runs shows active running jobs", async () => {
   clearProgressState(rid);
 });
 
-test("/runs shows completed jobs after active ones", async () => {
+test("/jobs shows completed jobs after active ones", async () => {
   clearRunJobsForTests();
   const doneRid = "runs-done-test";
   createProgressState(doneRid, "done-agent", "finished task", "done-inst");
@@ -91,7 +91,7 @@ test("/runs shows completed jobs after active ones", async () => {
     startedAt: Date.now(),
   });
   const notices: string[] = [];
-  await runsCommandHandler(
+  await jobsCommandHandler(
     makeCtx((msg) => notices.push(msg)),
     "",
   );
@@ -106,7 +106,7 @@ test("/runs shows completed jobs after active ones", async () => {
   clearProgressState(activeRid);
 });
 
-test("/runs shows cancelled and error jobs", async () => {
+test("/jobs shows cancelled and error jobs", async () => {
   clearRunJobsForTests();
   const errRid = "runs-error-test";
   createProgressState(errRid, "err-agent", "failed task", "err-inst");
@@ -122,7 +122,7 @@ test("/runs shows cancelled and error jobs", async () => {
   cancelProgressState(cancelRid, "user aborted");
   patchProgressState(cancelRid, { toolCount: 0 });
   const notices: string[] = [];
-  await runsCommandHandler(
+  await jobsCommandHandler(
     makeCtx((msg) => notices.push(msg)),
     "",
   );
@@ -136,17 +136,17 @@ test("/runs shows cancelled and error jobs", async () => {
   clearProgressState(cancelRid);
 });
 
-test("/runs ignores arguments", async () => {
+test("/jobs ignores arguments", async () => {
   clearRunJobsForTests();
   const notices: string[] = [];
-  await runsCommandHandler(
+  await jobsCommandHandler(
     makeCtx((msg) => notices.push(msg)),
     "some garbage args",
   );
   expect(notices).toEqual(["No /run jobs in this session."]);
 });
 
-test("/runs active job not in progress store is skipped", async () => {
+test("/jobs active job not in progress store is skipped", async () => {
   clearRunJobsForTests();
   registerRunJob({
     requestId: "orphan-job",
@@ -156,7 +156,7 @@ test("/runs active job not in progress store is skipped", async () => {
     startedAt: Date.now(),
   });
   const notices: string[] = [];
-  await runsCommandHandler(
+  await jobsCommandHandler(
     makeCtx((msg) => notices.push(msg)),
     "",
   );
@@ -164,7 +164,7 @@ test("/runs active job not in progress store is skipped", async () => {
   expect(notices).toEqual(["No /run jobs in this session."]);
 });
 
-test("/runs completed job also in active registry excluded from completed list", async () => {
+test("/jobs completed job also in active registry excluded from completed list", async () => {
   clearRunJobsForTests();
   const rid = "dual-state-job";
   createProgressState(rid, "dual-agent", "task", "dual-inst");
@@ -177,7 +177,7 @@ test("/runs completed job also in active registry excluded from completed list",
     startedAt: Date.now(),
   });
   const notices: string[] = [];
-  await runsCommandHandler(
+  await jobsCommandHandler(
     makeCtx((msg) => notices.push(msg)),
     "",
   );
@@ -191,7 +191,7 @@ test("/runs completed job also in active registry excluded from completed list",
   clearProgressState(rid);
 });
 
-test("/runs sorts jobs within same category by startTime descending", async () => {
+test("/jobs sorts jobs within same category by startTime descending", async () => {
   clearRunJobsForTests();
   const rid1 = "job-old";
   const rid2 = "job-new";
@@ -215,7 +215,7 @@ test("/runs sorts jobs within same category by startTime descending", async () =
     startedAt: now,
   });
   const notices: string[] = [];
-  await runsCommandHandler(
+  await jobsCommandHandler(
     makeCtx((msg) => notices.push(msg)),
     "",
   );
@@ -227,14 +227,14 @@ test("/runs sorts jobs within same category by startTime descending", async () =
   clearProgressState(rid2);
 });
 
-test("/runs truncates long final output in board", async () => {
+test("/jobs truncates long final output in board", async () => {
   clearRunJobsForTests();
   const rid = "long-output-job";
   createProgressState(rid, "long-agent", "task", "inst");
   const longText = "A".repeat(90);
   finalizeProgressState(rid, longText);
   const notices: string[] = [];
-  await runsCommandHandler(
+  await jobsCommandHandler(
     makeCtx((msg) => notices.push(msg)),
     "",
   );
@@ -245,13 +245,13 @@ test("/runs truncates long final output in board", async () => {
   clearProgressState(rid);
 });
 
-test("/runs skips zombie running jobs not in active registry", async () => {
+test("/jobs skips zombie running jobs not in active registry", async () => {
   clearRunJobsForTests();
   const rid = "zombie-job";
   createProgressState(rid, "zombie-agent", "task", "zombie-inst");
   // State is running but NOT in the active job registry — handler must skip it
   const notices: string[] = [];
-  await runsCommandHandler(
+  await jobsCommandHandler(
     makeCtx((msg) => notices.push(msg)),
     "",
   );
@@ -259,14 +259,14 @@ test("/runs skips zombie running jobs not in active registry", async () => {
   clearProgressState(rid);
 });
 
-test("/runs uses singular 'tool' label when toolCount is 1", async () => {
+test("/jobs uses singular 'tool' label when toolCount is 1", async () => {
   clearRunJobsForTests();
   const rid = "singular-tool-job";
   createProgressState(rid, "agent-one", "task", "inst");
   patchProgressState(rid, { toolCount: 1 });
   finalizeProgressState(rid, "done");
   const notices: string[] = [];
-  await runsCommandHandler(
+  await jobsCommandHandler(
     makeCtx((msg) => notices.push(msg)),
     "",
   );
@@ -276,14 +276,14 @@ test("/runs uses singular 'tool' label when toolCount is 1", async () => {
   clearProgressState(rid);
 });
 
-test("/runs uses plural 'tools' label when toolCount is not 1", async () => {
+test("/jobs uses plural 'tools' label when toolCount is not 1", async () => {
   clearRunJobsForTests();
   const rid = "plural-tools-job";
   createProgressState(rid, "agent-many", "task", "inst");
   patchProgressState(rid, { toolCount: 0 });
   finalizeProgressState(rid, "done");
   const notices: string[] = [];
-  await runsCommandHandler(
+  await jobsCommandHandler(
     makeCtx((msg) => notices.push(msg)),
     "",
   );
@@ -292,14 +292,14 @@ test("/runs uses plural 'tools' label when toolCount is not 1", async () => {
   clearProgressState(rid);
 });
 
-test("/runs shows errorText body for error state when no finalOutput", async () => {
+test("/jobs shows errorText body for error state when no finalOutput", async () => {
   clearRunJobsForTests();
   const rid = "error-body-job";
   createProgressState(rid, "err-agent", "task", "inst");
   failProgressState(rid, "disk full");
   patchProgressState(rid, { toolCount: 0 });
   const notices: string[] = [];
-  await runsCommandHandler(
+  await jobsCommandHandler(
     makeCtx((msg) => notices.push(msg)),
     "",
   );
@@ -308,14 +308,14 @@ test("/runs shows errorText body for error state when no finalOutput", async () 
   clearProgressState(rid);
 });
 
-test("/runs does not truncate body text at exactly 80 chars", async () => {
+test("/jobs does not truncate body text at exactly 80 chars", async () => {
   clearRunJobsForTests();
   const rid = "exact-80-job";
   createProgressState(rid, "agent-80", "task", "inst");
   const exactText = "B".repeat(80);
   finalizeProgressState(rid, exactText);
   const notices: string[] = [];
-  await runsCommandHandler(
+  await jobsCommandHandler(
     makeCtx((msg) => notices.push(msg)),
     "",
   );
@@ -324,14 +324,14 @@ test("/runs does not truncate body text at exactly 80 chars", async () => {
   clearProgressState(rid);
 });
 
-test("/runs truncates body text at 81 chars", async () => {
+test("/jobs truncates body text at 81 chars", async () => {
   clearRunJobsForTests();
   const rid = "81-char-job";
   createProgressState(rid, "agent-81", "task", "inst");
   const text81 = "C".repeat(81);
   finalizeProgressState(rid, text81);
   const notices: string[] = [];
-  await runsCommandHandler(
+  await jobsCommandHandler(
     makeCtx((msg) => notices.push(msg)),
     "",
   );

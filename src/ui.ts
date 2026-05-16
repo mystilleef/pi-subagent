@@ -260,7 +260,7 @@ export function renderSubagentResult(
   return box;
 }
 /**
- * Renders a unified job board for the `/runs` command.
+ * Renders a unified job board for the `/jobs` command.
  * Active (running) jobs render first, then completed; both groups sorted by `startTime` descending.
  * Status icons are overridden locally: running → ●, cancelled → ✗.
  */

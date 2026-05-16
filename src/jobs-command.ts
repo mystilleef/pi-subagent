@@ -14,7 +14,7 @@ function makePlainTheme(): SubagentTheme {
   };
 }
 
-export async function runsCommandHandler(
+export async function jobsCommandHandler(
   ctx: ExtensionCommandContext,
   _args: string,
 ): Promise<void> {
