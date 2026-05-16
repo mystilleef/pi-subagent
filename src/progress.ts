@@ -17,7 +17,7 @@
  */
 
 import type { Component } from "@earendil-works/pi-tui";
-import { Text } from "@earendil-works/pi-tui";
+import { Box, Text } from "@earendil-works/pi-tui";
 import {
   formatHeaderStats,
   getProgressState,
@@ -96,11 +96,7 @@ class DynamicSubagentProgressText implements Component {
   render(width: number): string[] {
     const state = getProgressState(this.requestId);
     if (!state) return [];
-    const text = formatProgressText(state, this.options, this.theme);
-    const bg = getProgressBackground(state.status);
-    return text
-      ? new Text(text, 1, 1, (line) => this.theme.bg(bg, line)).render(width)
-      : [];
+    return renderProgressBox(state, this.options, this.theme).render(width);
   }
 }
 
@@ -108,43 +104,84 @@ function getProgressBackground(status: ProgressStatus): ThemeBg {
   return STATUS_BG[status];
 }
 
-function formatProgressText(
+function renderProgressBox(
   state: SubagentProgressState,
   options: { expanded: boolean },
   theme: SubagentTheme,
-): string {
+): Box {
   const status = state.status;
   const title = formatSubagentTitle(state.agent, state.instanceName, theme);
   const header = `${theme.fg(STATUS_COLOR[status], STATUS_ICON[status])} ${title} ${theme.fg("dim", `[${status}]`)} ${theme.fg("muted", formatHeaderStats(state))}`;
-  if (status === "running") {
-    const toolLine = state.lastToolPreview
-      ? `\n  ${formatRunningToolPreview(state.lastToolPreview, theme)}`
-      : "";
-    const taskLine = options.expanded
-      ? `\n  ${theme.fg("dim", state.taskPreview)}`
-      : "";
-    return header + toolLine + taskLine;
+  const box = new Box(1, 1, (line) => theme.bg(getProgressBackground(status), line));
+  box.addChild(new Text(header, 0, 0));
+  addProgressBody(box, state, options, theme);
+  return box;
+}
+
+function addProgressBody(
+  box: Box,
+  state: SubagentProgressState,
+  options: { expanded: boolean },
+  theme: SubagentTheme,
+): void {
+  const body = makeProgressBody(state, options, theme);
+  if (body.length === 0) return;
+  for (const line of body) box.addChild(line);
+}
+
+function makeProgressBody(
+  state: SubagentProgressState,
+  options: { expanded: boolean },
+  theme: SubagentTheme,
+): Text[] {
+  if (state.status === "running") return makeRunningProgressBody(state, options, theme);
+  if (state.status === "error" || state.status === "cancelled") {
+    return makeStoppedProgressBody(state, options, theme);
   }
-  if (status === "error" || status === "cancelled") {
-    const errorLine = state.errorText
-      ? `\n  ${theme.fg("error", state.errorText)}`
-      : "";
-    const taskLine = options.expanded
-      ? `\n  ${theme.fg("dim", state.taskPreview)}`
-      : "";
-    return header + errorLine + taskLine;
+  if (state.status === "success") return makeSuccessProgressBody(state, options, theme);
+  return [];
+}
+
+function makeRunningProgressBody(
+  state: SubagentProgressState,
+  options: { expanded: boolean },
+  theme: SubagentTheme,
+): Text[] {
+  const body: Text[] = [];
+  if (state.lastToolPreview) {
+    body.push(new Text(formatRunningToolPreview(state.lastToolPreview, theme), 2, 0));
   }
-  if (status === "success") {
-    const output = state.finalOutput?.trim().split("\n")[0] ?? "";
-    if (!options.expanded) {
-      return output ? `${header}\n  ${theme.fg("toolOutput", output)}` : header;
-    }
-    const outputSection = output
-      ? `\n${theme.fg("muted", "─── Output ───")}\n${theme.fg("toolOutput", output)}`
-      : `\n${theme.fg("muted", "(no output)")}`;
-    return `${header}\n  ${theme.fg("dim", state.taskPreview)}${outputSection}`;
+  if (options.expanded) body.push(new Text(theme.fg("dim", state.taskPreview), 2, 0));
+  return body;
+}
+
+function makeStoppedProgressBody(
+  state: SubagentProgressState,
+  options: { expanded: boolean },
+  theme: SubagentTheme,
+): Text[] {
+  const body: Text[] = [];
+  if (state.errorText) body.push(new Text(theme.fg("error", state.errorText), 2, 0));
+  if (options.expanded) body.push(new Text(theme.fg("dim", state.taskPreview), 2, 0));
+  return body;
+}
+
+function makeSuccessProgressBody(
+  state: SubagentProgressState,
+  options: { expanded: boolean },
+  theme: SubagentTheme,
+): Text[] {
+  const output = state.finalOutput?.trim().split("\n")[0] ?? "";
+  if (!options.expanded) {
+    return output ? [new Text(theme.fg("toolOutput", output), 2, 0)] : [];
   }
-  return header;
+  const body = [new Text(theme.fg("dim", state.taskPreview), 2, 0)];
+  body.push(
+    output
+      ? new Text(`${theme.fg("muted", "─── Output ───")}\n${theme.fg("toolOutput", output)}`, 0, 0)
+      : new Text(theme.fg("muted", "(no output)"), 0, 0),
+  );
+  return body;
 }
 
 function formatRunningToolPreview(
