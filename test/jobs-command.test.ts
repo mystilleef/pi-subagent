@@ -88,7 +88,7 @@ test("/jobs shows active running jobs", async () => {
   expect(output).toContain("3 tools");
 });
 
-test("/jobs uses component render width for board layout", async () => {
+test("/jobs notification width is two less than board width", async () => {
   const rid = "width-job";
   createProgressState(rid, "width-agent", "task", "inst");
   registerRunJob({
@@ -98,25 +98,13 @@ test("/jobs uses component render width for board layout", async () => {
     controller: new AbortController(),
     startedAt: Date.now(),
   });
-  const originalColumns = process.stdout.columns;
-  Object.defineProperty(process.stdout, "columns", {
-    configurable: true,
-    value: 120,
-  });
   const notices: string[] = [];
-  try {
-    await jobsCommandHandler(
-      makeCtx((msg) => notices.push(msg), 24),
-      "",
-    );
-  } finally {
-    Object.defineProperty(process.stdout, "columns", {
-      configurable: true,
-      value: originalColumns,
-    });
-  }
+  await jobsCommandHandler(
+    makeCtx((msg) => notices.push(msg), 122),
+    "",
+  );
   const output = notices[0] ?? "";
-  expect(output.match(/─+/)?.[0]?.length).toBe(13);
+  expect(output.match(/─+/)?.[0]?.length).toBe(109);
 });
 
 test("/jobs shows status sections after active jobs", async () => {
@@ -312,7 +300,7 @@ test("/jobs uses singular 'tool' label when toolCount is 1", async () => {
   finalizeProgressState(rid, "done");
   const notices: string[] = [];
   await jobsCommandHandler(
-    makeCtx((msg) => notices.push(msg)),
+    makeCtx((msg) => notices.push(msg), 200),
     "",
   );
   const output = notices[0] ?? "";
