@@ -16,6 +16,7 @@ import {
   formatContextPercent,
   formatElapsed,
   type ProgressStatus,
+  STATUS_BG,
   STATUS_COLOR,
   STATUS_ICON,
   type SubagentProgressState,
@@ -259,49 +260,84 @@ export function renderSubagentResult(
   if (usageStr) box.addChild(new Text(theme.fg("dim", usageStr), 0, 0));
   return box;
 }
+
+const BODY_PREVIEW_MAX = 120;
+
+function selectRunsBoardBody(state: SubagentProgressState): string {
+  return (
+    [state.finalOutput, state.errorText, state.taskPreview].find(
+      (c): c is string => typeof c === "string" && c.trim().length > 0,
+    ) ?? ""
+  );
+}
+
+function renderJobCard(
+  state: SubagentProgressState,
+  theme: SubagentTheme,
+): Box {
+  const icon =
+    state.status === "running"
+      ? "●"
+      : state.status === "cancelled"
+        ? "✗"
+        : STATUS_ICON[state.status];
+  const color = STATUS_COLOR[state.status];
+  const title = formatSubagentTitle(state.agent, state.instanceName, theme);
+  const elapsed = formatElapsed(
+    state.durationMs ?? Date.now() - state.startTime,
+  );
+  const ctxPercent = formatContextPercent(state);
+  const toolLabel = state.toolCount === 1 ? "tool" : "tools";
+  const headerLine = `${theme.fg(color, icon)} ${title} ${theme.fg("dim", `[${state.status}]`)} ${theme.fg("muted", `${state.toolCount} ${toolLabel} · ${ctxPercent} ctx · ${elapsed}`)}`;
+  const jobBox = new Box(0, 0, (line) =>
+    theme.bg(STATUS_BG[state.status], line),
+  );
+  jobBox.addChild(new Text(headerLine, 0, 0));
+  const bodyText = selectRunsBoardBody(state);
+  if (bodyText) {
+    const preview =
+      bodyText.length > BODY_PREVIEW_MAX
+        ? `${bodyText.slice(0, BODY_PREVIEW_MAX - 1)}…`
+        : bodyText;
+    jobBox.addChild(new Text(theme.fg("toolOutput", preview), 2, 0));
+  } else {
+    jobBox.addChild(new Text(theme.fg("muted", "(no output)"), 2, 0));
+  }
+  return jobBox;
+}
+
 /**
  * Renders a unified job board for the `/jobs` command.
  * Active (running) jobs render first, then completed; both groups sorted by `startTime` descending.
- * Status icons are overridden locally: running → ●, cancelled → ✗.
+ * Status icons preserve the existing /jobs contract for running and cancelled jobs.
  */
 export function renderRunsBoard(
   states: SubagentProgressState[],
   theme: SubagentTheme,
+  width = 80,
 ): Component {
   if (states.length === 0) {
     return new Text(theme.fg("muted", "No /run jobs in this session."), 0, 0);
   }
-  const active = states.filter((s) => s.status === "running");
-  const completed = states.filter((s) => s.status !== "running");
-  active.sort((a, b) => b.startTime - a.startTime);
-  completed.sort((a, b) => b.startTime - a.startTime);
-  const ordered = [...active, ...completed];
+  const active = states
+    .filter((s) => s.status === "running")
+    .sort((a, b) => b.startTime - a.startTime);
+  const completed = states
+    .filter((s) => s.status !== "running")
+    .sort((a, b) => b.startTime - a.startTime);
   const box = new Box(0, 0);
-  for (const state of ordered) {
-    const icon =
-      state.status === "running"
-        ? "●"
-        : state.status === "cancelled"
-          ? "✗"
-          : STATUS_ICON[state.status];
-    const color = STATUS_COLOR[state.status];
-    const title = formatSubagentTitle(state.agent, state.instanceName, theme);
-    const elapsed = formatElapsed(
-      state.durationMs ?? Date.now() - state.startTime,
-    );
-    const ctxPercent = formatContextPercent(state);
-    const toolLabel = state.toolCount === 1 ? "tool" : "tools";
-    const header = `${theme.fg(color, icon)} ${title} ${theme.fg("dim", `[${state.status}]`)} ${theme.fg("muted", `${state.toolCount} ${toolLabel} · ${ctxPercent} ctx · ${elapsed}`)}`;
-    box.addChild(new Text(header, 0, 0));
-    let bodyText =
-      state.status === "success" || state.status === "running"
-        ? (state.finalOutput ?? "")
-        : (state.errorText ?? state.finalOutput ?? "");
-    if (bodyText) {
-      bodyText =
-        bodyText.length > 80 ? `${bodyText.slice(0, 77)}...` : bodyText;
-      box.addChild(new Text(theme.fg("toolOutput", bodyText), 2, 0));
-    }
-  }
+  const addSection = (
+    label: string,
+    sectionStates: SubagentProgressState[],
+  ) => {
+    if (sectionStates.length === 0) return;
+    const sectionHeader = `${label} (${sectionStates.length})`;
+    const ruler = "─".repeat(Math.max(0, width - sectionHeader.length - 1));
+    box.addChild(new Text(theme.fg("dim", `${sectionHeader} ${ruler}`), 0, 0));
+    for (const state of sectionStates)
+      box.addChild(renderJobCard(state, theme));
+  };
+  addSection("ACTIVE", active);
+  addSection("COMPLETED", completed);
   return box;
 }

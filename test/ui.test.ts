@@ -1808,10 +1808,17 @@ test("renderRunsBoard renders mixed states with active before completed", () => 
     bg: (color, text) => `[${color}]${text}[/${color}]`,
     bold: (text) => `*${text}*`,
   };
-  const rendered = renderRunsBoard(states, fakeTheme as never);
+  const rendered = renderRunsBoard(states, fakeTheme as never, 32);
   const text = renderToString(rendered);
   const lines = text.split("\n");
   expect(lines).toBeArray();
+  expect(text).toContain("[dim]ACTIVE (1) ─────────────────────[/dim]");
+  expect(text).toContain("[dim]COMPLETED (3) ──────────────────[/dim]");
+  expect(text).not.toContain("ACTIVE (0)");
+  expect(text).not.toContain("COMPLETED (0)");
+  expect(text.indexOf("ACTIVE (1)")).toBeLessThan(
+    text.indexOf("COMPLETED (3)"),
+  );
   const headerLines = lines.filter(
     (l) =>
       l.includes("[running]") ||
@@ -1820,6 +1827,15 @@ test("renderRunsBoard renders mixed states with active before completed", () => 
       l.includes("[cancelled]"),
   );
   expect(headerLines).toHaveLength(4);
+  expect(headerLines[0]).toStartWith("[toolPendingBg]");
+  expect(headerLines[1]).toStartWith("[toolErrorBg]");
+  expect(headerLines[2]).toStartWith("[toolErrorBg]");
+  expect(headerLines[3]).toStartWith("[toolSuccessBg]");
+  expect(
+    headerLines.every((line) =>
+      /\[\/tool(?:Pending|Error|Success)Bg\]$/.test(line),
+    ),
+  ).toBe(true);
   expect(headerLines[0]).toContain("reviewer");
   expect(headerLines[0]).toContain("●");
   expect(headerLines[0]).toContain("[running]");
@@ -1833,33 +1849,15 @@ test("renderRunsBoard renders mixed states with active before completed", () => 
   expect(headerLines[3]).toContain("✓");
   expect(headerLines[3]).toContain("[success]");
   expect(headerLines[3]).toContain("5 tools");
-  expect(text).toContain("Built all the things successfully");
-  expect(text).toContain("bun test failed with exit code 1");
-  expect(text).toContain("Cancelled by user");
+  expect(text).toContain(
+    "[toolSuccessBg]  [toolOutput]Built all the things successfully[/toolOutput]",
+  );
+  expect(text).toContain(
+    "[toolErrorBg]  [toolOutput]bun test failed with exit code 1[/toolOutput]",
+  );
+  expect(text).toContain("[toolErrorBg]  [toolOutput]scanning...[/toolOutput]");
 });
-test("renderRunsBoard truncates body preview to 80 chars", () => {
-  const longOutput = "A".repeat(200);
-  const state: SubagentProgressState = {
-    requestId: "r1",
-    agent: "builder",
-    taskPreview: "do work",
-    status: "success",
-    startTime: Date.now() - 10000,
-    durationMs: 5000,
-    toolCount: 1,
-    finalOutput: longOutput,
-  };
-  const fakeTheme: FakeTheme = {
-    fg: (color, text) => `[${color}]${text}[/${color}]`,
-    bg: (color, text) => `[${color}]${text}[/${color}]`,
-    bold: (text) => `*${text}*`,
-  };
-  const rendered = renderRunsBoard([state], fakeTheme as never);
-  const text = renderToString(rendered);
-  expect(text).toContain(`${longOutput.slice(0, 77)}...`);
-  expect(text).not.toContain(longOutput);
-});
-test("renderRunsBoard uses runningOutput for active job body", () => {
+test("renderRunsBoard omits empty completed section", () => {
   const state: SubagentProgressState = {
     requestId: "r1",
     agent: "builder",
@@ -1867,8 +1865,7 @@ test("renderRunsBoard uses runningOutput for active job body", () => {
     status: "running",
     startTime: Date.now() - 10000,
     toolCount: 1,
-    finalOutput: "working on step 3 of 10",
-    lastToolPreview: "bash: npm test",
+    finalOutput: "working",
   };
   const fakeTheme: FakeTheme = {
     fg: (color, text) => `[${color}]${text}[/${color}]`,
@@ -1877,6 +1874,102 @@ test("renderRunsBoard uses runningOutput for active job body", () => {
   };
   const rendered = renderRunsBoard([state], fakeTheme as never);
   const text = renderToString(rendered);
-  expect(text).toContain("●");
-  expect(text).toContain("working on step 3 of 10");
+  expect(text).toContain("ACTIVE (1)");
+  expect(text).not.toContain("COMPLETED (0)");
+});
+test("renderRunsBoard truncates body preview after 120 chars", () => {
+  const exactOutput = "A".repeat(120);
+  const longOutput = "B".repeat(121);
+  const states: SubagentProgressState[] = [
+    {
+      requestId: "r1",
+      agent: "builder",
+      taskPreview: "do work",
+      status: "success",
+      startTime: Date.now() - 10000,
+      durationMs: 5000,
+      toolCount: 1,
+      finalOutput: exactOutput,
+    },
+    {
+      requestId: "r2",
+      agent: "reviewer",
+      taskPreview: "review work",
+      status: "success",
+      startTime: Date.now() - 9000,
+      durationMs: 4000,
+      toolCount: 1,
+      finalOutput: longOutput,
+    },
+  ];
+  const fakeTheme: FakeTheme = {
+    fg: (color, text) => `[${color}]${text}[/${color}]`,
+    bg: (color, text) => `[${color}]${text}[/${color}]`,
+    bold: (text) => `*${text}*`,
+  };
+  const rendered = renderRunsBoard(states, fakeTheme as never);
+  const text = renderToString(rendered);
+  expect(text).toContain(exactOutput);
+  expect(text).toContain(`${longOutput.slice(0, 119)}…`);
+  expect(text).not.toContain(longOutput);
+});
+test("renderRunsBoard uses body source priority and fallback", () => {
+  const now = Date.now();
+  const states: SubagentProgressState[] = [
+    {
+      requestId: "r1",
+      agent: "builder",
+      taskPreview: "task preview",
+      status: "error",
+      startTime: now - 10000,
+      durationMs: 5000,
+      toolCount: 1,
+      finalOutput: "final output",
+      errorText: "error text",
+    },
+    {
+      requestId: "r2",
+      agent: "reviewer",
+      taskPreview: "fallback preview",
+      status: "error",
+      startTime: now - 9000,
+      durationMs: 4000,
+      toolCount: 1,
+      finalOutput: " ",
+      errorText: "error only",
+    },
+    {
+      requestId: "r3",
+      agent: "planner",
+      taskPreview: "preview only",
+      status: "running",
+      startTime: now - 8000,
+      toolCount: 1,
+      finalOutput: "",
+      errorText: "",
+    },
+    {
+      requestId: "r4",
+      agent: "empty",
+      taskPreview: "",
+      status: "success",
+      startTime: now - 7000,
+      durationMs: 3000,
+      toolCount: 1,
+      finalOutput: "",
+      errorText: " ",
+    },
+  ];
+  const fakeTheme: FakeTheme = {
+    fg: (color, text) => `[${color}]${text}[/${color}]`,
+    bg: (color, text) => `[${color}]${text}[/${color}]`,
+    bold: (text) => `*${text}*`,
+  };
+  const rendered = renderRunsBoard(states, fakeTheme as never);
+  const text = renderToString(rendered);
+  expect(text).toContain("[toolOutput]final output[/toolOutput]");
+  expect(text).not.toContain("[toolOutput]error text[/toolOutput]");
+  expect(text).toContain("[toolOutput]error only[/toolOutput]");
+  expect(text).toContain("[toolOutput]preview only[/toolOutput]");
+  expect(text).toContain("[muted](no output)[/muted]");
 });
