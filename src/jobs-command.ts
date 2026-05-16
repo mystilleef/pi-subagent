@@ -1,18 +1,8 @@
-import type {
-  ExtensionCommandContext,
-  ThemeColor,
-} from "@earendil-works/pi-coding-agent";
+import type { ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
+
 import { getAllProgressStates, getProgressState } from "./progress-state.js";
 import { listRunJobs } from "./run-registry.js";
-import { renderRunsBoard, type SubagentTheme, type ThemeBg } from "./ui.js";
-
-function makePlainTheme(): SubagentTheme {
-  return {
-    fg: (_c: ThemeColor, t: string) => t,
-    bg: (_c: ThemeBg, t: string) => t,
-    bold: (text: string) => text,
-  };
-}
+import { renderRunsBoard } from "./ui.js";
 
 export async function jobsCommandHandler(
   ctx: ExtensionCommandContext,
@@ -32,8 +22,15 @@ export async function jobsCommandHandler(
     ctx.ui.notify("No /run jobs in this session.");
     return;
   }
-  const board = renderRunsBoard(all, makePlainTheme());
-  const width = process.stdout.columns ?? 80;
-  const output = board.render(width).join("\n");
+  const output = await ctx.ui.custom<string>(
+    (_tui, theme, _keybindings, done) => ({
+      invalidate() {},
+      render(width) {
+        const lines = renderRunsBoard(all, theme, width).render(width);
+        done(lines.join("\n"));
+        return lines;
+      },
+    }),
+  );
   ctx.ui.notify(output);
 }

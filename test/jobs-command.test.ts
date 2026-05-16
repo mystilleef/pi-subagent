@@ -1,28 +1,57 @@
-import { expect, test } from "bun:test";
+import { beforeEach, expect, test } from "bun:test";
 import type { ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import { jobsCommandHandler } from "../src/jobs-command.js";
 import {
   cancelProgressState,
-  clearProgressState,
   createProgressState,
   failProgressState,
   finalizeProgressState,
   patchProgressState,
+  resetProgressStore,
 } from "../src/progress.js";
 import { clearRunJobsForTests, registerRunJob } from "../src/run-registry.js";
-import { setupHooks } from "./helpers.js";
+import { type FakeTheme, setupHooks } from "./helpers.js";
 
 setupHooks();
 
-function makeCtx(notify: (msg: string) => void): ExtensionCommandContext {
+beforeEach(() => {
+  clearRunJobsForTests();
+  resetProgressStore();
+});
+
+const commandTheme: FakeTheme = {
+  fg: (color, text) => `<fg:${color}>${text}</fg:${color}>`,
+  bg: (color, text) => `<bg:${color}>${text}</bg:${color}>`,
+  bold: (text) => `<b>${text}</b>`,
+  italic: (text) => `<i>${text}</i>`,
+};
+
+function makeCtx(
+  notify: (msg: string) => void,
+  renderWidth = 80,
+): ExtensionCommandContext {
   return {
     cwd: "/tmp",
-    ui: { notify } as ExtensionCommandContext["ui"],
+    ui: {
+      notify,
+      custom: async (factory) => {
+        let result = "";
+        const component = await factory(
+          undefined as never,
+          commandTheme as never,
+          undefined as never,
+          (value) => {
+            result = value as string;
+          },
+        );
+        component.render(renderWidth);
+        return result;
+      },
+    } as ExtensionCommandContext["ui"],
   } as ExtensionCommandContext;
 }
 
 test("/jobs empty board shows no-jobs message", async () => {
-  clearRunJobsForTests();
   const notices: string[] = [];
   await jobsCommandHandler(
     makeCtx((msg) => notices.push(msg)),
@@ -32,7 +61,6 @@ test("/jobs empty board shows no-jobs message", async () => {
 });
 
 test("/jobs shows active running jobs", async () => {
-  clearRunJobsForTests();
   const rid = "runs-active-test";
   createProgressState(rid, "test-agent", "do something", "test-instance");
   patchProgressState(rid, {
@@ -58,11 +86,40 @@ test("/jobs shows active running jobs", async () => {
   expect(output).toContain("test-instance");
   expect(output).toContain("[running]");
   expect(output).toContain("3 tools");
-  clearProgressState(rid);
+});
+
+test("/jobs uses component render width for board layout", async () => {
+  const rid = "width-job";
+  createProgressState(rid, "width-agent", "task", "inst");
+  registerRunJob({
+    requestId: rid,
+    agentName: "width-agent",
+    instanceName: "inst",
+    controller: new AbortController(),
+    startedAt: Date.now(),
+  });
+  const originalColumns = process.stdout.columns;
+  Object.defineProperty(process.stdout, "columns", {
+    configurable: true,
+    value: 120,
+  });
+  const notices: string[] = [];
+  try {
+    await jobsCommandHandler(
+      makeCtx((msg) => notices.push(msg), 24),
+      "",
+    );
+  } finally {
+    Object.defineProperty(process.stdout, "columns", {
+      configurable: true,
+      value: originalColumns,
+    });
+  }
+  const output = notices[0] ?? "";
+  expect(output.match(/─+/)?.[0]?.length).toBe(13);
 });
 
 test("/jobs shows completed jobs after active ones", async () => {
-  clearRunJobsForTests();
   const doneRid = "runs-done-test";
   createProgressState(doneRid, "done-agent", "finished task", "done-inst");
   finalizeProgressState(doneRid, "completed task");
@@ -102,12 +159,9 @@ test("/jobs shows completed jobs after active ones", async () => {
   expect(activeIdx).toBeGreaterThan(-1);
   expect(doneIdx).toBeGreaterThan(-1);
   expect(activeIdx).toBeLessThan(doneIdx);
-  clearProgressState(doneRid);
-  clearProgressState(activeRid);
 });
 
 test("/jobs shows cancelled and error jobs", async () => {
-  clearRunJobsForTests();
   const errRid = "runs-error-test";
   createProgressState(errRid, "err-agent", "failed task", "err-inst");
   failProgressState(errRid, "something broke");
@@ -132,12 +186,9 @@ test("/jobs shows cancelled and error jobs", async () => {
   expect(output).toContain("[cancelled]");
   expect(output).toContain("something broke");
   expect(output).toContain("user aborted");
-  clearProgressState(errRid);
-  clearProgressState(cancelRid);
 });
 
 test("/jobs ignores arguments", async () => {
-  clearRunJobsForTests();
   const notices: string[] = [];
   await jobsCommandHandler(
     makeCtx((msg) => notices.push(msg)),
@@ -147,7 +198,6 @@ test("/jobs ignores arguments", async () => {
 });
 
 test("/jobs active job not in progress store is skipped", async () => {
-  clearRunJobsForTests();
   registerRunJob({
     requestId: "orphan-job",
     agentName: "orphan-agent",
@@ -165,7 +215,6 @@ test("/jobs active job not in progress store is skipped", async () => {
 });
 
 test("/jobs completed job also in active registry excluded from completed list", async () => {
-  clearRunJobsForTests();
   const rid = "dual-state-job";
   createProgressState(rid, "dual-agent", "task", "dual-inst");
   finalizeProgressState(rid, "done output");
@@ -188,11 +237,9 @@ test("/jobs completed job also in active registry excluded from completed list",
   const firstIdx = output.indexOf("dual-agent");
   const lastIdx = output.lastIndexOf("dual-agent");
   expect(firstIdx).toBe(lastIdx);
-  clearProgressState(rid);
 });
 
 test("/jobs sorts jobs within same category by startTime descending", async () => {
-  clearRunJobsForTests();
   const rid1 = "job-old";
   const rid2 = "job-new";
   const now = Date.now();
@@ -223,15 +270,12 @@ test("/jobs sorts jobs within same category by startTime descending", async () =
   const oldIdx = output.indexOf("old-agent");
   const newIdx = output.indexOf("new-agent");
   expect(newIdx).toBeLessThan(oldIdx);
-  clearProgressState(rid1);
-  clearProgressState(rid2);
 });
 
 test("/jobs truncates long final output in board", async () => {
-  clearRunJobsForTests();
   const rid = "long-output-job";
   createProgressState(rid, "long-agent", "task", "inst");
-  const longText = "A".repeat(90);
+  const longText = "A".repeat(121);
   finalizeProgressState(rid, longText);
   const notices: string[] = [];
   await jobsCommandHandler(
@@ -239,14 +283,11 @@ test("/jobs truncates long final output in board", async () => {
     "",
   );
   const output = notices[0] ?? "";
-  // Full 90-char string must not appear; truncation marker must be present
-  expect(output).not.toContain("A".repeat(90));
-  expect(output).toContain("A...");
-  clearProgressState(rid);
+  expect(output).not.toContain(longText);
+  expect(output).toContain("…");
 });
 
 test("/jobs skips zombie running jobs not in active registry", async () => {
-  clearRunJobsForTests();
   const rid = "zombie-job";
   createProgressState(rid, "zombie-agent", "task", "zombie-inst");
   // State is running but NOT in the active job registry — handler must skip it
@@ -256,11 +297,9 @@ test("/jobs skips zombie running jobs not in active registry", async () => {
     "",
   );
   expect(notices).toEqual(["No /run jobs in this session."]);
-  clearProgressState(rid);
 });
 
 test("/jobs uses singular 'tool' label when toolCount is 1", async () => {
-  clearRunJobsForTests();
   const rid = "singular-tool-job";
   createProgressState(rid, "agent-one", "task", "inst");
   patchProgressState(rid, { toolCount: 1 });
@@ -273,11 +312,9 @@ test("/jobs uses singular 'tool' label when toolCount is 1", async () => {
   const output = notices[0] ?? "";
   expect(output).toContain("1 tool ");
   expect(output).not.toContain("1 tools");
-  clearProgressState(rid);
 });
 
 test("/jobs uses plural 'tools' label when toolCount is not 1", async () => {
-  clearRunJobsForTests();
   const rid = "plural-tools-job";
   createProgressState(rid, "agent-many", "task", "inst");
   patchProgressState(rid, { toolCount: 0 });
@@ -289,11 +326,9 @@ test("/jobs uses plural 'tools' label when toolCount is not 1", async () => {
   );
   const output = notices[0] ?? "";
   expect(output).toContain("0 tools");
-  clearProgressState(rid);
 });
 
 test("/jobs shows errorText body for error state when no finalOutput", async () => {
-  clearRunJobsForTests();
   const rid = "error-body-job";
   createProgressState(rid, "err-agent", "task", "inst");
   failProgressState(rid, "disk full");
@@ -305,14 +340,12 @@ test("/jobs shows errorText body for error state when no finalOutput", async () 
   );
   const output = notices[0] ?? "";
   expect(output).toContain("disk full");
-  clearProgressState(rid);
 });
 
-test("/jobs does not truncate body text at exactly 80 chars", async () => {
-  clearRunJobsForTests();
-  const rid = "exact-80-job";
-  createProgressState(rid, "agent-80", "task", "inst");
-  const exactText = "B".repeat(80);
+test("/jobs does not truncate body text at exactly 120 chars", async () => {
+  const rid = "exact-120-job";
+  createProgressState(rid, "agent-120", "task", "inst");
+  const exactText = "B".repeat(120);
   finalizeProgressState(rid, exactText);
   const notices: string[] = [];
   await jobsCommandHandler(
@@ -320,23 +353,20 @@ test("/jobs does not truncate body text at exactly 80 chars", async () => {
     "",
   );
   const output = notices[0] ?? "";
-  expect(output).not.toContain("B...");
-  clearProgressState(rid);
+  expect(output).toContain("B".repeat(60));
 });
 
-test("/jobs truncates body text at 81 chars", async () => {
-  clearRunJobsForTests();
-  const rid = "81-char-job";
-  createProgressState(rid, "agent-81", "task", "inst");
-  const text81 = "C".repeat(81);
-  finalizeProgressState(rid, text81);
+test("/jobs truncates body text at 121 chars", async () => {
+  const rid = "121-char-job";
+  createProgressState(rid, "agent-121", "task", "inst");
+  const text121 = "C".repeat(121);
+  finalizeProgressState(rid, text121);
   const notices: string[] = [];
   await jobsCommandHandler(
     makeCtx((msg) => notices.push(msg)),
     "",
   );
   const output = notices[0] ?? "";
-  expect(output).not.toContain("C".repeat(81));
-  expect(output).toContain("C...");
-  clearProgressState(rid);
+  expect(output).not.toContain(text121);
+  expect(output).toContain("…");
 });
