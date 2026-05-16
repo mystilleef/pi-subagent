@@ -16,7 +16,9 @@ import {
   makeToolPreview,
   patchProgressState,
   renderSubagentProgress,
+  resetProgressStore,
 } from "../src/progress.js";
+import { getAllProgressStates } from "../src/progress-state.js";
 import type { SubagentDetails } from "../src/types.js";
 
 const realDateNow = Date.now;
@@ -1364,4 +1366,31 @@ test("renderSubagentProgress keeps running elapsed live", () => {
   expect(renderText(result)).toContain("1.5s");
   setDateNow(5200);
   expect(renderText(result)).toContain("4.2s");
+});
+test("getAllProgressStates returns empty array for empty store", () => {
+  resetProgressStore();
+  expect(getAllProgressStates()).toEqual([]);
+});
+test("getAllProgressStates returns all states sorted by startTime desc", () => {
+  resetProgressStore();
+  createProgressState("sort-a", "agent-a", "task-a");
+  createProgressState("sort-b", "agent-b", "task-b");
+  createProgressState("sort-c", "agent-c", "task-c");
+  const states = getAllProgressStates();
+  expect(states).toHaveLength(3);
+  const requestIds = states.map((s) => s.requestId);
+  // Creation order is a, b, c but startTime may vary slightly.
+  // Verify sort is descending: startTime[i] >= startTime[i+1].
+  for (let i = 0; i < states.length - 1; i++) {
+    const a = states[i];
+    const b = states[i + 1];
+    if (a && b) {
+      expect(a.startTime).toBeGreaterThanOrEqual(b.startTime);
+    }
+  }
+  // All expected request ids are present.
+  expect(requestIds).toContain("sort-a");
+  expect(requestIds).toContain("sort-b");
+  expect(requestIds).toContain("sort-c");
+  resetProgressStore();
 });
