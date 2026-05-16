@@ -130,7 +130,7 @@ export function formatResultFooter(
     parts.push(`${usage.turns} turn${usage.turns > 1 ? "s" : ""}`);
   if (typeof durationMs === "number") parts.push(formatDuration(durationMs));
   if (usage.cost) parts.push(`$${usage.cost.toFixed(4)}`);
-  return `\n${parts.join(" · ")}`;
+  return parts.join(" · ");
 }
 
 /**
@@ -247,18 +247,24 @@ export function renderSubagentResult(
   const icon = theme.fg(STATUS_COLOR[resultStatus], STATUS_ICON[resultStatus]);
   box.addChild(new Text(`${icon} ${title}`, 0, 0));
   const bodyText = stripOutcomeLineForResultUi(bodyOverride ?? finalOutput);
+  box.addChild(makeResultBody(bodyText, theme));
+  const usageStr = formatResultFooter(r.usage, r.model, r.durationMs);
+  if (usageStr) box.addChild(new Text(theme.fg("dim", usageStr), 0, 0));
+  return box;
+}
+
+function makeResultBody(bodyText: string, theme: SubagentTheme): Box {
+  const body = new Box(2, 1);
   if (bodyText) {
-    box.addChild(
+    body.addChild(
       new Markdown(bodyText, 0, 0, makeMarkdownTheme(theme), {
         color: (text) => theme.fg("toolOutput", text),
       }),
     );
   } else {
-    box.addChild(new Text(theme.fg("muted", "(no output)"), 0, 0));
+    body.addChild(new Text(theme.fg("muted", "(no output)"), 0, 0));
   }
-  const usageStr = formatResultFooter(r.usage, r.model, r.durationMs);
-  if (usageStr) box.addChild(new Text(theme.fg("dim", usageStr), 0, 0));
-  return box;
+  return body;
 }
 
 const BODY_PREVIEW_MAX = 120;
