@@ -8,6 +8,7 @@ import {
   resetCapabilitiesCache,
   setCapabilities,
 } from "@earendil-works/pi-tui/dist/terminal-image.js";
+import type { SubagentProgressState } from "../src/progress.js";
 import { getProgressState } from "../src/progress.js";
 import type { SubagentDetails } from "../src/types.js";
 import {
@@ -16,6 +17,7 @@ import {
   formatTokens,
   formatToolCall,
   formatUsageStats,
+  renderRunsBoard,
   renderSubagentCall,
   renderSubagentResult,
 } from "../src/ui.js";
@@ -1185,8 +1187,7 @@ test("subagent result renders cancelled result with appropriate icon and error b
       .render(120)
       .every(
         (line) =>
-          line.startsWith("[toolErrorBg]") &&
-          line.endsWith("[/toolErrorBg]"),
+          line.startsWith("[toolErrorBg]") && line.endsWith("[/toolErrorBg]"),
       ),
   ).toBe(true);
 });
@@ -1739,4 +1740,143 @@ test("/run final result message renderer hides header and keeps success backgrou
           line.endsWith("[/toolSuccessBg]"),
       ),
   ).toBe(true);
+});
+test("renderRunsBoard renders empty board", () => {
+  const fakeTheme: FakeTheme = {
+    fg: (color, text) => `[${color}]${text}[/${color}]`,
+    bg: (color, text) => `[${color}]${text}[/${color}]`,
+    bold: (text) => `*${text}*`,
+  };
+  const rendered = renderRunsBoard([], fakeTheme as never);
+  const text = renderToString(rendered);
+  expect(text).toContain("No /run jobs in this session.");
+  expect(text).toContain("[muted]");
+});
+test("renderRunsBoard renders mixed states with active before completed", () => {
+  const now = Date.now();
+  const states: SubagentProgressState[] = [
+    {
+      requestId: "r1",
+      agent: "builder",
+      instanceName: "able-falcon",
+      taskPreview: "build stuff",
+      status: "success",
+      startTime: now - 300000,
+      durationMs: 280000,
+      toolCount: 5,
+      contextTokens: 20000,
+      contextWindowTokens: 50000,
+      finalOutput: "Built all the things successfully",
+    },
+    {
+      requestId: "r2",
+      agent: "reviewer",
+      taskPreview: "review code",
+      status: "running",
+      startTime: now - 60000,
+      toolCount: 2,
+      contextTokens: 8000,
+      contextWindowTokens: 50000,
+      lastToolPreview: "read: src/ui.ts",
+    },
+    {
+      requestId: "r3",
+      agent: "test-runner",
+      taskPreview: "run tests",
+      status: "error",
+      startTime: now - 200000,
+      durationMs: 150000,
+      toolCount: 3,
+      contextTokens: 12000,
+      contextWindowTokens: 50000,
+      errorText: "bun test failed with exit code 1",
+    },
+    {
+      requestId: "r4",
+      agent: "scanner",
+      taskPreview: "scan files",
+      status: "cancelled",
+      startTime: now - 100000,
+      durationMs: 5000,
+      toolCount: 1,
+      finalOutput: "scanning...",
+      errorText: "Cancelled by user",
+    },
+  ];
+  const fakeTheme: FakeTheme = {
+    fg: (color, text) => `[${color}]${text}[/${color}]`,
+    bg: (color, text) => `[${color}]${text}[/${color}]`,
+    bold: (text) => `*${text}*`,
+  };
+  const rendered = renderRunsBoard(states, fakeTheme as never);
+  const text = renderToString(rendered);
+  const lines = text.split("\n");
+  expect(lines).toBeArray();
+  const headerLines = lines.filter(
+    (l) =>
+      l.includes("[running]") ||
+      l.includes("[success]") ||
+      l.includes("[error]") ||
+      l.includes("[cancelled]"),
+  );
+  expect(headerLines).toHaveLength(4);
+  expect(headerLines[0]).toContain("reviewer");
+  expect(headerLines[0]).toContain("●");
+  expect(headerLines[0]).toContain("[running]");
+  expect(headerLines[1]).toContain("scanner");
+  expect(headerLines[1]).toContain("✗");
+  expect(headerLines[1]).toContain("[cancelled]");
+  expect(headerLines[2]).toContain("test-runner");
+  expect(headerLines[2]).toContain("✗");
+  expect(headerLines[2]).toContain("[error]");
+  expect(headerLines[3]).toContain("builder");
+  expect(headerLines[3]).toContain("✓");
+  expect(headerLines[3]).toContain("[success]");
+  expect(headerLines[3]).toContain("5 tools");
+  expect(text).toContain("Built all the things successfully");
+  expect(text).toContain("bun test failed with exit code 1");
+  expect(text).toContain("Cancelled by user");
+});
+test("renderRunsBoard truncates body preview to 80 chars", () => {
+  const longOutput = "A".repeat(200);
+  const state: SubagentProgressState = {
+    requestId: "r1",
+    agent: "builder",
+    taskPreview: "do work",
+    status: "success",
+    startTime: Date.now() - 10000,
+    durationMs: 5000,
+    toolCount: 1,
+    finalOutput: longOutput,
+  };
+  const fakeTheme: FakeTheme = {
+    fg: (color, text) => `[${color}]${text}[/${color}]`,
+    bg: (color, text) => `[${color}]${text}[/${color}]`,
+    bold: (text) => `*${text}*`,
+  };
+  const rendered = renderRunsBoard([state], fakeTheme as never);
+  const text = renderToString(rendered);
+  expect(text).toContain(`${longOutput.slice(0, 77)}...`);
+  expect(text).not.toContain(longOutput);
+});
+test("renderRunsBoard uses runningOutput for active job body", () => {
+  const state: SubagentProgressState = {
+    requestId: "r1",
+    agent: "builder",
+    taskPreview: "do work",
+    status: "running",
+    startTime: Date.now() - 10000,
+    toolCount: 1,
+    finalOutput: "working on step 3 of 10",
+    lastToolPreview: "bash: npm test",
+  };
+  const fakeTheme: FakeTheme = {
+    fg: (color, text) => `[${color}]${text}[/${color}]`,
+    bg: (color, text) => `[${color}]${text}[/${color}]`,
+    bold: (text) => `*${text}*`,
+  };
+  const rendered = renderRunsBoard([state], fakeTheme as never);
+  const text = renderToString(rendered);
+  expect(text).toContain("●");
+  expect(text).toContain("working on step 3 of 10");
 });

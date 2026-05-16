@@ -12,27 +12,19 @@ import {
   extractSemanticToolTarget,
   normalizeSummaryValue,
 } from "./normalize.js";
+import {
+  formatContextPercent,
+  formatElapsed,
+  type ProgressStatus,
+  STATUS_COLOR,
+  STATUS_ICON,
+  type SubagentProgressState,
+  type ThemeBg,
+} from "./progress-state.js";
 import { hasSubagentFailed } from "./result-details.js";
 import type { SubagentDetails, UsageStats } from "./types.js";
 
-/**
- * Background theme keys for subagent tool status.
- */
-export type ThemeBg = "toolPendingBg" | "toolSuccessBg" | "toolErrorBg";
-
-type ResultStatus = "success" | "error" | "cancelled";
-
-const RESULT_STATUS_ICON: Record<ResultStatus, string> = {
-  success: "✓",
-  error: "✗",
-  cancelled: "⊘",
-};
-
-const RESULT_STATUS_COLOR: Record<ResultStatus, ThemeColor> = {
-  success: "success",
-  error: "error",
-  cancelled: "error",
-};
+export type { ThemeBg };
 
 /**
  * Abstraction for theme-aware text formatting.
@@ -242,7 +234,7 @@ export function renderSubagentResult(
   }
   const failed = hasSubagentFailed(r);
   const cancelled = r.stopReason === "aborted";
-  const resultStatus: ResultStatus = cancelled
+  const resultStatus: ProgressStatus = cancelled
     ? "cancelled"
     : failed
       ? "error"
@@ -251,10 +243,7 @@ export function renderSubagentResult(
   const bg = failed ? "toolErrorBg" : "toolSuccessBg";
   const box = new Box(1, 1, (line) => theme.bg(bg, line));
   const title = formatSubagentTitle(r.agent, r.instanceName, theme);
-  const icon = theme.fg(
-    RESULT_STATUS_COLOR[resultStatus],
-    RESULT_STATUS_ICON[resultStatus],
-  );
+  const icon = theme.fg(STATUS_COLOR[resultStatus], STATUS_ICON[resultStatus]);
   box.addChild(new Text(`${icon} ${title}`, 0, 0));
   const bodyText = stripOutcomeLineForResultUi(bodyOverride ?? finalOutput);
   if (bodyText) {
@@ -268,5 +257,51 @@ export function renderSubagentResult(
   }
   const usageStr = formatResultFooter(r.usage, r.model, r.durationMs);
   if (usageStr) box.addChild(new Text(theme.fg("dim", usageStr), 0, 0));
+  return box;
+}
+/**
+ * Renders a unified job board for the `/runs` command.
+ * Active (running) jobs render first, then completed; both groups sorted by `startTime` descending.
+ * Status icons are overridden locally: running → ●, cancelled → ✗.
+ */
+export function renderRunsBoard(
+  states: SubagentProgressState[],
+  theme: SubagentTheme,
+): Component {
+  if (states.length === 0) {
+    return new Text(theme.fg("muted", "No /run jobs in this session."), 0, 0);
+  }
+  const active = states.filter((s) => s.status === "running");
+  const completed = states.filter((s) => s.status !== "running");
+  active.sort((a, b) => b.startTime - a.startTime);
+  completed.sort((a, b) => b.startTime - a.startTime);
+  const ordered = [...active, ...completed];
+  const box = new Box(0, 0);
+  for (const state of ordered) {
+    const icon =
+      state.status === "running"
+        ? "●"
+        : state.status === "cancelled"
+          ? "✗"
+          : STATUS_ICON[state.status];
+    const color = STATUS_COLOR[state.status];
+    const title = formatSubagentTitle(state.agent, state.instanceName, theme);
+    const elapsed = formatElapsed(
+      state.durationMs ?? Date.now() - state.startTime,
+    );
+    const ctxPercent = formatContextPercent(state);
+    const toolLabel = state.toolCount === 1 ? "tool" : "tools";
+    const header = `${theme.fg(color, icon)} ${title} ${theme.fg("dim", `[${state.status}]`)} ${theme.fg("muted", `${state.toolCount} ${toolLabel} · ${ctxPercent} ctx · ${elapsed}`)}`;
+    box.addChild(new Text(header, 0, 0));
+    let bodyText =
+      state.status === "success" || state.status === "running"
+        ? (state.finalOutput ?? "")
+        : (state.errorText ?? state.finalOutput ?? "");
+    if (bodyText) {
+      bodyText =
+        bodyText.length > 80 ? `${bodyText.slice(0, 77)}...` : bodyText;
+      box.addChild(new Text(theme.fg("toolOutput", bodyText), 2, 0));
+    }
+  }
   return box;
 }
