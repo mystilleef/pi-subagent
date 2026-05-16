@@ -1,11 +1,19 @@
-import { expect, test } from "bun:test";
+import { afterEach, expect, test } from "bun:test";
 import { chmod, writeFile } from "node:fs/promises";
 import path from "node:path";
 import type { TextContent } from "@earendil-works/pi-ai";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { getProgressState } from "../src/progress.js";
+import {
+  cancelProgressState,
+  createProgressState,
+  failProgressState,
+  finalizeProgressState,
+  getProgressState,
+  resetProgressStore,
+} from "../src/progress.js";
 import { SUBAGENT_RESULT_CONTRACT } from "../src/prompt-contract.js";
-import { listRunJobs } from "../src/run-registry.js";
+import { listRunJobs, resetRunRegistry } from "../src/run-registry.js";
+import { emitCompletionNotification } from "../src/subagent-orchestrator.js";
 import type { SubagentDetails } from "../src/types.js";
 import {
   getSubagentTool,
@@ -978,4 +986,255 @@ exit 0
     "SECRET_DEBUG",
   );
   expect(sentMessages2.at(-1)?.content).not.toContain("SECRET_DEBUG");
+});
+
+// --- emitCompletionNotification tests ---
+
+function makeProgressState(overrides: {
+  requestId?: string;
+  agent?: string;
+  task?: string;
+  status?: string;
+  durationMs?: number;
+  instanceName?: string;
+  finalOutput?: string;
+  errorText?: string;
+}) {
+  const requestId = overrides.requestId ?? crypto.randomUUID();
+  createProgressState(
+    requestId,
+    overrides.agent ?? "test-agent",
+    overrides.task ?? "test task",
+    overrides.instanceName ?? "adj-word",
+  );
+  if (overrides.status === "success" || overrides.finalOutput !== undefined) {
+    finalizeProgressState(requestId, overrides.finalOutput ?? "task completed");
+  }
+  if (overrides.status === "error" || overrides.errorText !== undefined) {
+    failProgressState(requestId, overrides.errorText ?? "something failed");
+  }
+  if (overrides.status === "cancelled") {
+    cancelProgressState(requestId, "cancelled");
+  }
+  if (overrides.durationMs !== undefined) {
+    const state = getProgressState(requestId);
+    if (state) {
+      (state as { durationMs?: number }).durationMs = overrides.durationMs;
+    }
+  }
+  return getProgressState(requestId);
+}
+
+afterEach(() => {
+  resetProgressStore();
+  resetRunRegistry();
+});
+
+test("emitCompletionNotification emits bell + success toast on TTY", () => {
+  const notifyCalls: Array<{ message: string; severity: string }> = [];
+  const ctx = {
+    ui: {
+      notify: (msg: string, severity: string) => {
+        notifyCalls.push({ message: msg, severity });
+      },
+    },
+  } as unknown as ExtensionContext;
+  const writeCalls: string[] = [];
+  const origWrite = process.stdout.write;
+  const origIsTTY = Object.getOwnPropertyDescriptor(process.stdout, "isTTY");
+  Object.defineProperty(process.stdout, "isTTY", {
+    value: true,
+    configurable: true,
+  });
+  try {
+    (process.stdout as unknown as { write: (s: string) => boolean }).write = (
+      s: string,
+    ) => {
+      writeCalls.push(s);
+      return true;
+    };
+    const state = makeProgressState({
+      status: "success",
+      finalOutput: "all tests pass",
+    });
+    emitCompletionNotification(ctx, state);
+    expect(notifyCalls.length).toBe(1);
+    expect(notifyCalls[0]?.severity).toBe("info");
+    expect(notifyCalls[0]?.message).toContain("✓");
+    expect(notifyCalls[0]?.message).toContain('"all tests pass"');
+    expect(notifyCalls[0]?.message).toContain("test-agent");
+    expect(notifyCalls[0]?.message).toContain("adj-word");
+    expect(writeCalls).toContain("\x07");
+  } finally {
+    process.stdout.write = origWrite;
+    if (origIsTTY) {
+      Object.defineProperty(process.stdout, "isTTY", origIsTTY);
+    }
+  }
+});
+
+test("emitCompletionNotification skips on non-TTY", () => {
+  const notifyCalls: Array<{ message: string; severity: string }> = [];
+  const ctx = {
+    ui: {
+      notify: (msg: string, severity: string) => {
+        notifyCalls.push({ message: msg, severity });
+      },
+    },
+  } as unknown as ExtensionContext;
+  const origIsTTY = Object.getOwnPropertyDescriptor(process.stdout, "isTTY");
+  Object.defineProperty(process.stdout, "isTTY", {
+    value: false,
+    configurable: true,
+  });
+  try {
+    const state = makeProgressState({
+      status: "success",
+      finalOutput: "all tests pass",
+    });
+    emitCompletionNotification(ctx, state);
+    expect(notifyCalls.length).toBe(0);
+  } finally {
+    if (origIsTTY) {
+      Object.defineProperty(process.stdout, "isTTY", origIsTTY);
+    }
+  }
+});
+
+test("emitCompletionNotification skips for cancelled jobs", () => {
+  const notifyCalls: Array<{ message: string; severity: string }> = [];
+  const ctx = {
+    ui: {
+      notify: (msg: string, severity: string) => {
+        notifyCalls.push({ message: msg, severity });
+      },
+    },
+  } as unknown as ExtensionContext;
+  const origIsTTY = Object.getOwnPropertyDescriptor(process.stdout, "isTTY");
+  Object.defineProperty(process.stdout, "isTTY", {
+    value: true,
+    configurable: true,
+  });
+  try {
+    const state = makeProgressState({ status: "cancelled" });
+    emitCompletionNotification(ctx, state);
+    expect(notifyCalls.length).toBe(0);
+  } finally {
+    if (origIsTTY) {
+      Object.defineProperty(process.stdout, "isTTY", origIsTTY);
+    }
+  }
+});
+
+test("emitCompletionNotification emits error toast with correct format", () => {
+  const notifyCalls: Array<{ message: string; severity: string }> = [];
+  const ctx = {
+    ui: {
+      notify: (msg: string, severity: string) => {
+        notifyCalls.push({ message: msg, severity });
+      },
+    },
+  } as unknown as ExtensionContext;
+  const origIsTTY = Object.getOwnPropertyDescriptor(process.stdout, "isTTY");
+  Object.defineProperty(process.stdout, "isTTY", {
+    value: true,
+    configurable: true,
+  });
+  try {
+    const state = makeProgressState({
+      status: "error",
+      errorText: "child process crashed",
+    });
+    emitCompletionNotification(ctx, state);
+    expect(notifyCalls.length).toBe(1);
+    expect(notifyCalls[0]?.severity).toBe("error");
+    expect(notifyCalls[0]?.message).toContain("✗");
+    expect(notifyCalls[0]?.message).toContain('"child process crashed"');
+  } finally {
+    if (origIsTTY) {
+      Object.defineProperty(process.stdout, "isTTY", origIsTTY);
+    }
+  }
+});
+
+test("emitCompletionNotification truncates preview to 80 chars", () => {
+  const notifyCalls: Array<{ message: string; severity: string }> = [];
+  const ctx = {
+    ui: {
+      notify: (msg: string, severity: string) => {
+        notifyCalls.push({ message: msg, severity });
+      },
+    },
+  } as unknown as ExtensionContext;
+  const origIsTTY = Object.getOwnPropertyDescriptor(process.stdout, "isTTY");
+  Object.defineProperty(process.stdout, "isTTY", {
+    value: true,
+    configurable: true,
+  });
+  try {
+    const longOutput = "a".repeat(200);
+    const state = makeProgressState({
+      status: "success",
+      finalOutput: longOutput,
+    });
+    emitCompletionNotification(ctx, state);
+    expect(notifyCalls.length).toBe(1);
+    const msg = notifyCalls[0]?.message ?? "";
+    const previewMatch = msg.match(/"(.+)"/);
+    expect(previewMatch).not.toBeNull();
+    const captured = previewMatch?.[1];
+    if (captured) {
+      expect(captured.length).toBeLessThanOrEqual(80);
+    }
+  } finally {
+    if (origIsTTY) {
+      Object.defineProperty(process.stdout, "isTTY", origIsTTY);
+    }
+  }
+});
+test("emitCompletionNotification skips when ctx.ui.notify is absent", () => {
+  const ctx = { ui: {} } as unknown as ExtensionContext;
+  const origIsTTY = Object.getOwnPropertyDescriptor(process.stdout, "isTTY");
+  Object.defineProperty(process.stdout, "isTTY", {
+    value: true,
+    configurable: true,
+  });
+  try {
+    const state = makeProgressState({ status: "success", finalOutput: "done" });
+    expect(() => emitCompletionNotification(ctx, state)).not.toThrow();
+  } finally {
+    if (origIsTTY) {
+      Object.defineProperty(process.stdout, "isTTY", origIsTTY);
+    }
+  }
+});
+test("emitCompletionNotification formats without instanceName", () => {
+  const notifyCalls: Array<{ message: string; severity: string }> = [];
+  const ctx = {
+    ui: {
+      notify: (msg: string, severity: string) => {
+        notifyCalls.push({ message: msg, severity });
+      },
+    },
+  } as unknown as ExtensionContext;
+  const origIsTTY = Object.getOwnPropertyDescriptor(process.stdout, "isTTY");
+  Object.defineProperty(process.stdout, "isTTY", {
+    value: true,
+    configurable: true,
+  });
+  try {
+    const state = makeProgressState({
+      status: "success",
+      finalOutput: "ok",
+      instanceName: "",
+    });
+    emitCompletionNotification(ctx, state);
+    expect(notifyCalls.length).toBe(1);
+    expect(notifyCalls[0]?.message).toContain("test-agent ✓");
+    expect(notifyCalls[0]?.message).not.toContain("adj-word");
+  } finally {
+    if (origIsTTY) {
+      Object.defineProperty(process.stdout, "isTTY", origIsTTY);
+    }
+  }
 });

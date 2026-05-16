@@ -18,6 +18,8 @@ import {
   createProgressState,
   failProgressState,
   finalizeProgressState,
+  formatElapsed,
+  getProgressState,
 } from "./progress.js";
 import {
   createSubagentError,
@@ -27,7 +29,12 @@ import {
   patchProgressFromDetails,
   sanitizeDetailsForDisplay,
 } from "./result-details.js";
-import { type RunJob, registerRunJob, removeRunJob } from "./run-registry.js";
+import {
+  listRunJobs,
+  type RunJob,
+  registerRunJob,
+  removeRunJob,
+} from "./run-registry.js";
 import { formatSubagentResultForParent } from "./summary.js";
 import type {
   OnUpdateCallback,
@@ -168,6 +175,32 @@ function sendSubagentResultMessage(
   });
 }
 
+export function emitCompletionNotification(
+  ctx: ExtensionContext,
+  state: ReturnType<typeof getProgressState>,
+): void {
+  if (!state) return;
+  if (state.status === "cancelled") return;
+  if (!ctx.ui?.notify) return;
+  const tty = (process.stdout as { isTTY?: boolean }).isTTY;
+  if (!tty) return;
+  const icon = state.status === "error" ? "✗" : "✓";
+  const severity =
+    state.status === "error" ? ("error" as const) : ("info" as const);
+  const elapsed = formatElapsed(
+    state.durationMs ?? Date.now() - state.startTime,
+  );
+  const raw = state.errorText ?? state.finalOutput ?? "";
+  const preview = raw.trim().slice(0, 80);
+  const namePart = state.instanceName
+    ? `${state.agent} ${state.instanceName}`
+    : state.agent;
+  const toast = `${namePart} ${icon}  ${elapsed} — "${preview}"`;
+  // Terminal bell to draw attention when all jobs complete
+  process.stdout.write("\x07");
+  ctx.ui.notify(toast, severity);
+}
+
 async function runSubagentWorker(
   pi: ExtensionAPI,
   ctx: ExtensionContext,
@@ -253,6 +286,12 @@ async function runSubagentWorker(
   } finally {
     requestProgressRender();
     removeRunJob(requestId);
+    if (listRunJobs().length === 0) {
+      const state = getProgressState(requestId);
+      if (state) {
+        emitCompletionNotification(ctx, state);
+      }
+    }
   }
 }
 
