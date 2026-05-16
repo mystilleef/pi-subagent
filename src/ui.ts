@@ -347,6 +347,22 @@ function renderJobCard(
   );
 }
 
+/** Sort states by startTime descending (newest first). */
+function sortByStartTimeDesc(
+  a: SubagentProgressState,
+  b: SubagentProgressState,
+): number {
+  return b.startTime - a.startTime;
+}
+
+/** Ordered section definitions: label → status filter for the runs board. */
+const BOARD_SECTIONS: [string, ProgressStatus][] = [
+  ["ACTIVE", "running"],
+  ["FAILED", "error"],
+  ["CANCELLED", "cancelled"],
+  ["SUCCEEDED", "success"],
+];
+
 /**
  * Renders a unified job board for the `/jobs` command.
  * Jobs render in status-specific sections, each sorted by `startTime` descending.
@@ -360,16 +376,13 @@ export function renderRunsBoard(
   if (states.length === 0) {
     return new Text(theme.fg("muted", "No /run jobs in this session."), 0, 0);
   }
-  const sortNewest = (a: SubagentProgressState, b: SubagentProgressState) =>
-    b.startTime - a.startTime;
-  const active = states.filter((s) => s.status === "running").sort(sortNewest);
-  const failed = states.filter((s) => s.status === "error").sort(sortNewest);
-  const cancelled = states
-    .filter((s) => s.status === "cancelled")
-    .sort(sortNewest);
-  const succeeded = states
-    .filter((s) => s.status === "success")
-    .sort(sortNewest);
+  const grouped = new Map<ProgressStatus, SubagentProgressState[]>();
+  for (const s of states) {
+    const bucket = grouped.get(s.status);
+    if (bucket) bucket.push(s);
+    else grouped.set(s.status, [s]);
+  }
+  for (const bucket of grouped.values()) bucket.sort(sortByStartTimeDesc);
   const box = new Box(0, 0);
   const addSection = (
     label: string,
@@ -382,9 +395,7 @@ export function renderRunsBoard(
     for (const state of sectionStates)
       box.addChild(renderJobCard(state, theme));
   };
-  addSection("ACTIVE", active);
-  addSection("FAILED", failed);
-  addSection("CANCELLED", cancelled);
-  addSection("SUCCEEDED", succeeded);
+  for (const [label, status] of BOARD_SECTIONS)
+    addSection(label, grouped.get(status) ?? []);
   return box;
 }
