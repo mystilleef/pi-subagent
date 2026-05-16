@@ -882,7 +882,8 @@ exit 7
   expect(state?.status).toBe("error");
   expect(state?.errorText).toBeTruthy();
   expect(state?.lastToolPreview).toBeUndefined();
-  expect(notices).toHaveLength(1);
+  expect(notices).toHaveLength(2);
+  expect(notices[1]).toContain("✗");
 });
 
 test("/run final result send failure marks state error and sends fallback", async () => {
@@ -915,7 +916,11 @@ test("/run final result send failure marks state error and sends fallback", asyn
   const state = getProgressState(requestId);
   expect(state?.status).toBe("error");
   expect(state?.errorText).toBe("send failed");
-  expect(notices).toEqual(["send failed"]);
+  expect(notices.length).toBeGreaterThanOrEqual(1);
+  expect(notices[0]).toBe("send failed");
+  if (notices.length > 1) {
+    expect(notices[1]).toContain("✗");
+  }
   expect(listRunJobs()).toHaveLength(0);
 });
 

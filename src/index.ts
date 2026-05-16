@@ -10,6 +10,7 @@ import { cancelSubagentCommandHandler } from "./cancel-command.js";
 import { renderSubagentProgress } from "./progress.js";
 import { renderSubagentResultMessage } from "./run.js";
 import { runCommandHandler } from "./run-command.js";
+import { runsCommandHandler } from "./runs-command.js";
 import {
   formatStartJobStatus,
   SubagentParams,
@@ -37,6 +38,10 @@ export default function registerSubagentExtension(pi: ExtensionAPI) {
     description:
       "Cancel active /run subagents: /cancel-subagent [requestId|all]",
     handler: async (args, ctx) => cancelSubagentCommandHandler(ctx, args),
+  });
+  pi.registerCommand("runs", {
+    description: "List all /run jobs and their statuses: /runs",
+    handler: async (args, ctx) => runsCommandHandler(ctx, args),
   });
   pi.registerTool({
     name: "subagent",
