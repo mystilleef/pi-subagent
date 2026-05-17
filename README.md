@@ -3,7 +3,8 @@
 `pi-subagent` adds isolated subagent orchestration to
 [Pi](https://github.com/earendil-works/pi). It provides a `subagent`
 tool and `/run` command for delegating work to specialized agents in
-separate child Pi processes.
+separate child Pi processes. Designed especially for the `SPAE`
+framework, but doesn't require it.
 
 ## Action
 
@@ -12,13 +13,13 @@ Agents in
 
 ## Installation
 
-Install from `npm`:
+**Install from `npm`:**
 
 ```sh
 pi install npm:@mystilleef/pi-subagent
 ```
 
-Try temporarily without installing:
+**Try temporarily without installing:**
 
 ```sh
 pi -e npm:@mystilleef/pi-subagent
@@ -69,19 +70,20 @@ commits; use the query agent to summarize the project.
 /cancel-subagent
 ```
 
-## Tool
+## _SPAE_ Workflow
 
-The extension also registers a `subagent` tool for model-driven
-delegation.
+`pi-subagent` supports the
+[`SPAE` Framework](https://github.com/mystilleef/spae-framework), but
+doesn't require it. `SPAE` provides pre-built agents and skills for a
+structured workflow.
 
-**Inputs:**
-
-- `agent`: agent name.
-- `task`: task prompt for the child agent.
-- `agentScope`: optional lookup scope, one of `user`, `project`, or
-  `both`.
-- `debug`: optional flag that includes full child messages in result
-  details.
+| Phase | Agent                     | Purpose                                       |
+| ----- | ------------------------- | --------------------------------------------- |
+| 1     | `/run spec <requirement>` | Distill requirements into `SPEC.md`           |
+| 2     | `/run plan`               | Decompose `SPEC.md` into an atomic task graph |
+| 3     | `/run inspect`            | Perform gap analysis and optimize `PLAN.md`   |
+| 4     | `/run build`              | Carry out tasks from `PLAN.md`                |
+| 5     | `/run verify`             | Verify implementation against `SPEC.md`       |
 
 ## Agent definitions
 
@@ -117,6 +119,20 @@ thinking: medium
 - `high`
 - `xhigh`
 
+## Tool
+
+The extension also registers a `subagent` tool for model-driven
+delegation.
+
+**Inputs:**
+
+- `agent`: agent name.
+- `task`: task prompt for the child agent.
+- `agentScope`: optional lookup scope, one of `user`, `project`, or
+  `both`.
+- `debug`: optional flag that includes full child messages in result
+  details.
+
 ## Security
 
 `Subagents` launch child `pi --json` processes. Agents, tools, and
@@ -132,7 +148,7 @@ executable automation.
 
 ## Configuration and limits
 
-Environment variables:
+**Environment variables:**
 
 - `PI_SUBAGENT_DEPTH`: nested subagent depth guard. Nested calls stop at
   depth `1`.
@@ -166,36 +182,21 @@ Environment variables:
   `PI_SUBAGENT_MAX_OUTPUT_LINES`.
 - Ask the child agent for a shorter summary.
 
-## _SPAE_ Workflow
-
-`pi-subagent` supports the
-[`SPAE` Framework](https://github.com/mystilleef/spae-framework), but
-doesn't require it. `SPAE` provides pre-built agents and skills for a
-structured workflow.
-
-| Phase | Agent                     | Purpose                                       |
-| ----- | ------------------------- | --------------------------------------------- |
-| 1     | `/run spec <requirement>` | Distill requirements into `SPEC.md`           |
-| 2     | `/run plan`               | Decompose `SPEC.md` into an atomic task graph |
-| 3     | `/run inspect`            | Perform gap analysis and optimize `PLAN.md`   |
-| 4     | `/run build`              | Carry out tasks from `PLAN.md`                |
-| 5     | `/run verify`             | Verify implementation against `SPEC.md`       |
-
 ## Development
 
-Install dependencies:
+**Install dependencies:**
 
 ```sh
 bun install
 ```
 
-Run full verification:
+**Run full verification:**
 
 ```sh
 bun verify
 ```
 
-Check npm package contents:
+**Check npm package contents:**
 
 ```sh
 bun pack:smoke
