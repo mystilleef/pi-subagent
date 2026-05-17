@@ -1,3 +1,0 @@
-# Ideas
-
-- Notifications inbox system
