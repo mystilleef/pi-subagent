@@ -47,8 +47,8 @@
     "access": "public"
   },
   "scripts": {
-    "verify": "bun check && bun test",
-    "coverage": "bun check && bun test --coverage",
+    "verify": "bun fix && bun check && bun test",
+    "coverage": "bun fix && bun check && bun test --coverage",
     "check": "biome check . && tsc --noEmit",
     "fix": "biome check --write --unsafe .",
     "pack:smoke": "bun scripts/pack-smoke.ts",
