@@ -4,17 +4,22 @@
   "workspaces": {
     "": {
       "name": "pi-subagent",
-      "dependencies": {
+      "peerDependencies": {
+        "@earendil-works/pi-agent-core": "*",
+        "@earendil-works/pi-ai": "*",
+        "@earendil-works/pi-coding-agent": "*",
+        "@earendil-works/pi-tui": "*",
+        "typebox": "*",
+      },
+      "devDependencies": {
+        "@biomejs/biome": "latest",
         "@earendil-works/pi-agent-core": "latest",
         "@earendil-works/pi-ai": "latest",
         "@earendil-works/pi-coding-agent": "latest",
         "@earendil-works/pi-tui": "latest",
-        "typebox": "latest",
-      },
-      "devDependencies": {
-        "@biomejs/biome": "latest",
         "@types/bun": "latest",
         "@types/node": "latest",
+        "typebox": "latest",
         "typescript": "latest",
       },
     },
