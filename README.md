@@ -200,14 +200,3 @@ Check npm package contents:
 ```sh
 bun pack:smoke
 ```
-
-## Release notes
-
-The release workflow publishes on version tags with `npm` Trusted
-Publishing and provenance. Local releases use:
-
-```sh
-bun run release -- patch
-bun run release -- minor
-bun run release -- major
-```
