@@ -24,6 +24,19 @@ Invoke an agent with:
 /run agent [optional task]
 ```
 
+Use natural language to run agents in parallel:
+
+```text
+use the work agent to write a poem about linux; use the commit agent to make
+commits; use the query agent to summarize the project.
+```
+
+Show the state of agents in the session with:
+
+```text
+/jobs
+```
+
 Stop running agents with:
 
 ```text
