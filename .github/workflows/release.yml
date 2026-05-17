@@ -30,8 +30,14 @@ jobs:
       - name: Install dependencies
         run: bun install --frozen-lockfile
 
-      - name: Verify
-        run: bun verify
+      - name: Check
+        run: bun check
+
+      - name: Test
+        run: bun test
+
+      - name: Check npm package contents
+        run: bun pack:smoke
 
       - name: Setup Node
         uses: actions/setup-node@v5
