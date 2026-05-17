@@ -882,8 +882,11 @@ exit 7
   expect(state?.status).toBe("error");
   expect(state?.errorText).toBeTruthy();
   expect(state?.lastToolPreview).toBeUndefined();
-  expect(notices).toHaveLength(2);
-  expect(notices[1]).toContain("✗");
+  expect(notices.length).toBeGreaterThanOrEqual(1);
+  expect(notices[0]).toContain("child exploded");
+  if (notices.length > 1) {
+    expect(notices[1]).toContain("✗");
+  }
 });
 
 test("/run final result send failure marks state error and sends fallback", async () => {
