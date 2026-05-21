@@ -49,7 +49,7 @@
   "scripts": {
     "verify": "bun fix && bun check && bun test",
     "coverage": "bun fix && bun check && bun test --coverage",
-    "check": "biome check . && tsc --noEmit",
+    "check": "biome check --error-on-warnings . && tsc --noEmit",
     "fix": "biome check --write --unsafe .",
     "pack:smoke": "bun scripts/pack-smoke.ts",
     "migrate": "biome migrate --write",
