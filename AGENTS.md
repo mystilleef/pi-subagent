@@ -25,8 +25,8 @@ with separate context windows.
   find, parse, and cache user and project agent definitions.
 - **Orchestration** (`src/orchestration/`): `subagent-orchestrator.ts`,
   `run.ts`, `run-command.ts`, `run-registry.ts`, `cancel-command.ts`,
-  and `jobs-command.ts` handle tool dispatch, `/run`, job tracking,
-  and cancellation.
+  and `jobs-command.ts` handle tool dispatch, `/run`, job tracking, and
+  cancellation.
 - **Child process** (`src/child/`): `process.ts`, `child-events.ts`,
   `termination.ts`, and `prompt-contract.ts` launch and manage child
   `pi --json` processes.
@@ -40,13 +40,12 @@ with separate context windows.
 
 ## Commands
 
-- Run full verification (migration, lint and formatting fixes, typecheck, coverage): `bun verify` or `make verify` (or just `make`)
-- Run lint and typecheck checks: `bun check` or `make check`
-- Run test suite with coverage reporting: `bun coverage` or `make coverage`
-- Apply lint and formatting fixes: `bun fix` or `make fix`
-- Run Biome configuration migration: `bun run migrate` or `make migrate`
-- Install project dependencies: `bun install`
-- Update project dependencies: `bun update`
+- Full verification: `bun verify`
+- Lint checks: `bun check`
+- Test coverage: `bun coverage`
+- Biome migration: `bun migrate`
+- Install dependencies: `bun install`
+- Update dependencies: `bun update`
 
 ## Agent definitions
 
