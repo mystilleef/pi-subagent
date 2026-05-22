@@ -40,11 +40,13 @@ with separate context windows.
 
 ## Commands
 
-- Install dependencies: `bun install`
-- Update dependencies: `bun update`
-- Verify checks and tests: `bun verify` or `make verify`
-- Check coverage: `bun coverage` or `make coverage`
-- Run Biome migration: `bun run migrate` or `make migrate`
+- Run full verification (migration, lint and formatting fixes, typecheck, coverage): `bun verify` or `make verify` (or just `make`)
+- Run lint and typecheck checks: `bun check` or `make check`
+- Run test suite with coverage reporting: `bun coverage` or `make coverage`
+- Apply lint and formatting fixes: `bun fix` or `make fix`
+- Run Biome configuration migration: `bun run migrate` or `make migrate`
+- Install project dependencies: `bun install`
+- Update project dependencies: `bun update`
 
 ## Agent definitions
 
