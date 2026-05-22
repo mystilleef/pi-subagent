@@ -47,12 +47,14 @@
     "access": "public"
   },
   "scripts": {
-    "verify": "bun fix && bun check && bun test",
-    "coverage": "bun fix && bun check && bun test --coverage",
-    "check": "biome check --error-on-warnings . && tsc --noEmit",
+    "typecheck": "tsc --noEmit",
+    "lint": "biome check --error-on-warnings .",
     "fix": "biome check --write --unsafe .",
-    "pack:smoke": "bun scripts/pack-smoke.ts",
     "migrate": "biome migrate --write",
+    "coverage": "bun test --coverage",
+    "check": "bun lint && bun typecheck",
+    "verify": "bun migrate && bun fix && bun typecheck && bun coverage",
+    "pack:smoke": "bun scripts/pack-smoke.ts",
     "release": "sh -c 'npm version \"$1\" -m \"chore(release): %s\" && git push --follow-tags' --"
   },
   "peerDependencies": {
