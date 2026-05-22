@@ -1,11 +1,11 @@
 import { expect, test } from "bun:test";
-import type { AgentConfig } from "../src/agents.js";
-import { runSingleAgent } from "../src/process.js";
+import type { AgentConfig } from "../src/agent/agents.js";
+import { runSingleAgent } from "../src/child/process.js";
 import {
   appendSubagentResultContract,
   SUBAGENT_RESULT_CONTRACT,
-} from "../src/prompt-contract.js";
-import type { SubagentDetails } from "../src/types.js";
+} from "../src/child/prompt-contract.js";
+import type { SubagentDetails } from "../src/shared/types.js";
 import { setupHooks, setupTest } from "./helpers.js";
 
 setupHooks();

@@ -14,8 +14,8 @@ import registerSubagentExtension, {
   resetAgentCache,
   type SubagentParams,
 } from "../src/index.js";
-import { listRunJobs } from "../src/run-registry.js";
-import type { SubagentDetails } from "../src/types.js";
+import { listRunJobs } from "../src/orchestration/run-registry.js";
+import type { SubagentDetails } from "../src/shared/types.js";
 
 const ORIGINAL_ARGV_1 = process.argv[1] ?? "";
 const ORIGINAL_PATH = process.env.PATH;

@@ -1,5 +1,5 @@
-import type { SubagentDetails } from "./types.js";
-import { renderSubagentResult, type SubagentTheme } from "./ui.js";
+import { renderSubagentResult, type SubagentTheme } from "../output/ui.js";
+import type { SubagentDetails } from "../shared/types.js";
 
 /**
  * Pi message renderer adapter for `"subagent-result"` messages.

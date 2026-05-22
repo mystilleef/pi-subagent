@@ -4,13 +4,13 @@ import {
   filterOutputLines,
   isFailureDiagnosticLine,
   isTranscriptNoiseLine,
-} from "../src/normalize.js";
+} from "../src/output/normalize.js";
 import {
   FEEDBACK_UI_SUMMARY_MAX_CHARS,
   formatSubagentResultForParent,
   summarizeFeedbackUiFinalOutput,
-} from "../src/summary.js";
-import type { SingleResult } from "../src/types.js";
+} from "../src/output/summary.js";
+import type { SingleResult } from "../src/shared/types.js";
 
 function result(overrides: Partial<SingleResult>): SingleResult {
   return {

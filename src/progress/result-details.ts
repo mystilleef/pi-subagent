@@ -1,19 +1,19 @@
-import { TOOL_RESULT_FAILED_MESSAGE } from "./process.js";
+import { TOOL_RESULT_FAILED_MESSAGE } from "../child/process.js";
+import {
+  formatSubagentResultForParent,
+  summarizeFeedbackUiFinalOutput,
+} from "../output/summary.js";
+import type {
+  SingleResult,
+  SubagentDetails,
+  SubagentToolResult,
+} from "../shared/types.js";
+import { detectMessageError } from "../shared/utils.js";
 import {
   extractProgressFromDetails,
   getProgressState,
   patchProgressState,
 } from "./progress.js";
-import {
-  formatSubagentResultForParent,
-  summarizeFeedbackUiFinalOutput,
-} from "./summary.js";
-import type {
-  SingleResult,
-  SubagentDetails,
-  SubagentToolResult,
-} from "./types.js";
-import { detectMessageError } from "./utils.js";
 
 export function hasSubagentFailed(result: SingleResult): boolean {
   return (

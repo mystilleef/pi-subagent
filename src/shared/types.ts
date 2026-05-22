@@ -1,6 +1,6 @@
 import type { Message } from "@earendil-works/pi-ai";
-import type { AgentScope } from "./agents.js";
-import type { TerminationMetadata } from "./termination.js";
+import type { AgentScope } from "../agent/agents.js";
+import type { TerminationMetadata } from "../child/termination.js";
 
 export interface UsageStats {
   input: number;

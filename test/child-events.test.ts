@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { parseChildEventLine } from "../src/child-events.js";
+import { parseChildEventLine } from "../src/child/child-events.js";
 
 function known(line: string) {
   const r = parseChildEventLine(line);

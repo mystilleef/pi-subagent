@@ -7,17 +7,17 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { resetAgentCache } from "../src/index.js";
 import {
-  clearProgressState,
-  createProgressState,
-  getProgressState,
-  patchProgressState,
-} from "../src/progress.js";
-import {
   cancelRunJob,
   clearRunJobsForTests,
   getRunJob,
   listRunJobs,
-} from "../src/run-registry.js";
+} from "../src/orchestration/run-registry.js";
+import {
+  clearProgressState,
+  createProgressState,
+  getProgressState,
+  patchProgressState,
+} from "../src/progress/progress.js";
 import {
   type FakeTheme,
   type RegisteredMessageRenderer,

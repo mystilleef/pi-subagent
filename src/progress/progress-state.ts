@@ -7,8 +7,8 @@ import {
   normalizeTerminalSentence,
   TOOL_PREVIEW_MAX_CHARS,
   truncateText,
-} from "./normalize.js";
-import type { SubagentDetails } from "./types.js";
+} from "../output/normalize.js";
+import type { SubagentDetails } from "../shared/types.js";
 
 export type ThemeBg = "toolPendingBg" | "toolSuccessBg" | "toolErrorBg";
 

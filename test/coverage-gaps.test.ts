@@ -4,8 +4,14 @@ import { EventEmitter } from "node:events";
 import {
   getCachedAgentDiscovery,
   resetAgentDiscoveryCache,
-} from "../src/agent-cache.js";
-import { runSingleAgent } from "../src/process.js";
+} from "../src/agent/agent-cache.js";
+import { runSingleAgent } from "../src/child/process.js";
+import { terminateChildProcess } from "../src/child/termination.js";
+import {
+  listRunJobs,
+  registerRunJob,
+  resetRunRegistry,
+} from "../src/orchestration/run-registry.js";
 import {
   cancelProgressState,
   clearProgressState,
@@ -17,13 +23,7 @@ import {
   patchProgressState,
   resetProgressStore,
   type SubagentProgressState,
-} from "../src/progress.js";
-import {
-  listRunJobs,
-  registerRunJob,
-  resetRunRegistry,
-} from "../src/run-registry.js";
-import { terminateChildProcess } from "../src/termination.js";
+} from "../src/progress/progress.js";
 import { setupHooks, setupTest, waitFor } from "./helpers.js";
 
 setupHooks();

@@ -5,18 +5,18 @@ import type {
 import {
   getCachedAgentCompletions,
   resetAgentDiscoveryCache,
-} from "./agent-cache.js";
-import { cancelSubagentCommandHandler } from "./cancel-command.js";
-import { jobsCommandHandler } from "./jobs-command.js";
-import { renderSubagentProgress } from "./progress.js";
-import { renderSubagentResultMessage } from "./run.js";
-import { runCommandHandler } from "./run-command.js";
+} from "./agent/agent-cache.js";
+import { cancelSubagentCommandHandler } from "./orchestration/cancel-command.js";
+import { jobsCommandHandler } from "./orchestration/jobs-command.js";
+import { renderSubagentResultMessage } from "./orchestration/run.js";
+import { runCommandHandler } from "./orchestration/run-command.js";
 import {
   formatStartJobStatus,
   SubagentParams,
   startSubagentJob,
-} from "./subagent-orchestrator.js";
-import { renderSubagentCall, renderSubagentResult } from "./ui.js";
+} from "./orchestration/subagent-orchestrator.js";
+import { renderSubagentCall, renderSubagentResult } from "./output/ui.js";
+import { renderSubagentProgress } from "./progress/progress.js";
 
 export { SubagentParams };
 

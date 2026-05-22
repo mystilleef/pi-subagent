@@ -3,6 +3,12 @@ import { chmod, writeFile } from "node:fs/promises";
 import path from "node:path";
 import type { TextContent } from "@earendil-works/pi-ai";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { SUBAGENT_RESULT_CONTRACT } from "../src/child/prompt-contract.js";
+import {
+  listRunJobs,
+  resetRunRegistry,
+} from "../src/orchestration/run-registry.js";
+import { emitCompletionAlert } from "../src/orchestration/subagent-orchestrator.js";
 import {
   cancelProgressState,
   createProgressState,
@@ -10,11 +16,8 @@ import {
   finalizeProgressState,
   getProgressState,
   resetProgressStore,
-} from "../src/progress.js";
-import { SUBAGENT_RESULT_CONTRACT } from "../src/prompt-contract.js";
-import { listRunJobs, resetRunRegistry } from "../src/run-registry.js";
-import { emitCompletionAlert } from "../src/subagent-orchestrator.js";
-import type { SubagentDetails } from "../src/types.js";
+} from "../src/progress/progress.js";
+import type { SubagentDetails } from "../src/shared/types.js";
 import {
   getSubagentTool,
   type SendMessageArg,

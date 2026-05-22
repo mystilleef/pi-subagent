@@ -1,11 +1,10 @@
 import type { ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
-
+import { renderRunsBoard } from "../output/ui.js";
 import {
   getAllProgressStates,
   type SubagentProgressState,
-} from "./progress-state.js";
+} from "../progress/progress-state.js";
 import { listRunJobs } from "./run-registry.js";
-import { renderRunsBoard } from "./ui.js";
 
 export async function jobsCommandHandler(
   ctx: ExtensionCommandContext,

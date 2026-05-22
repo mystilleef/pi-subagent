@@ -4,22 +4,22 @@ import type {
   ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
 import { type Static, Type } from "typebox";
-import { getCachedAgentDiscovery } from "./agent-cache.js";
+import { getCachedAgentDiscovery } from "../agent/agent-cache.js";
 import {
   type AgentConfig,
   type AgentScope,
   discoverAgents,
   type ThinkingLevel,
-} from "./agents.js";
-import { generateSubagentInstanceName } from "./instance-name.js";
-import { runSingleAgent } from "./process.js";
+} from "../agent/agents.js";
+import { runSingleAgent } from "../child/process.js";
+import { formatSubagentResultForParent } from "../output/summary.js";
 import {
   cancelProgressState,
   createProgressState,
   failProgressState,
   finalizeProgressState,
   getProgressState,
-} from "./progress.js";
+} from "../progress/progress.js";
 import {
   createSubagentError,
   getFeedbackSummaryText,
@@ -27,20 +27,20 @@ import {
   hasSubagentFailed,
   patchProgressFromDetails,
   sanitizeDetailsForDisplay,
-} from "./result-details.js";
+} from "../progress/result-details.js";
+import { generateSubagentInstanceName } from "../shared/instance-name.js";
+import type {
+  OnUpdateCallback,
+  SingleResult,
+  SubagentDetails,
+  SubagentToolResult,
+} from "../shared/types.js";
 import {
   listRunJobs,
   type RunJob,
   registerRunJob,
   removeRunJob,
 } from "./run-registry.js";
-import { formatSubagentResultForParent } from "./summary.js";
-import type {
-  OnUpdateCallback,
-  SingleResult,
-  SubagentDetails,
-  SubagentToolResult,
-} from "./types.js";
 
 const AgentScopeSchema = StringEnum(["user", "project", "both"] as const, {
   description:

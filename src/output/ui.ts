@@ -7,11 +7,7 @@ import {
   type MarkdownTheme,
   Text,
 } from "@earendil-works/pi-tui";
-import type { AgentScope } from "./agents.js";
-import {
-  extractSemanticToolTarget,
-  normalizeSummaryValue,
-} from "./normalize.js";
+import type { AgentScope } from "../agent/agents.js";
 import {
   formatContextPercent,
   formatElapsed,
@@ -21,9 +17,13 @@ import {
   STATUS_ICON,
   type SubagentProgressState,
   type ThemeBg,
-} from "./progress-state.js";
-import { hasSubagentFailed } from "./result-details.js";
-import type { SubagentDetails, UsageStats } from "./types.js";
+} from "../progress/progress-state.js";
+import { hasSubagentFailed } from "../progress/result-details.js";
+import type { SubagentDetails, UsageStats } from "../shared/types.js";
+import {
+  extractSemanticToolTarget,
+  normalizeSummaryValue,
+} from "./normalize.js";
 
 export type { ThemeBg };
 

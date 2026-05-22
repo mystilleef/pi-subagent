@@ -8,9 +8,6 @@ import {
   resetCapabilitiesCache,
   setCapabilities,
 } from "@earendil-works/pi-tui/dist/terminal-image.js";
-import type { SubagentProgressState } from "../src/progress.js";
-import { getProgressState } from "../src/progress.js";
-import type { SubagentDetails } from "../src/types.js";
 import {
   formatDuration,
   formatResultFooter,
@@ -20,7 +17,10 @@ import {
   renderRunsBoard,
   renderSubagentCall,
   renderSubagentResult,
-} from "../src/ui.js";
+} from "../src/output/ui.js";
+import type { SubagentProgressState } from "../src/progress/progress.js";
+import { getProgressState } from "../src/progress/progress.js";
+import type { SubagentDetails } from "../src/shared/types.js";
 import {
   type FakeTheme,
   getSubagentTool,

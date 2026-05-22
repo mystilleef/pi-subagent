@@ -8,9 +8,9 @@ import {
   type AgentDiscoveryCache,
   getCachedAgentCompletions,
   getCachedAgentDiscovery,
-} from "../src/agent-cache.js";
-import type { AgentConfig } from "../src/agents.js";
-import { discoverAgents, formatAgentList } from "../src/agents.js";
+} from "../src/agent/agent-cache.js";
+import type { AgentConfig } from "../src/agent/agents.js";
+import { discoverAgents, formatAgentList } from "../src/agent/agents.js";
 import {
   DEFAULT_MAX_OUTPUT_BYTES,
   DEFAULT_MAX_OUTPUT_LINES,
@@ -22,7 +22,7 @@ import {
   subagentDepthEnv,
   truncateOutput,
   writePromptToTempFile,
-} from "../src/utils.js";
+} from "../src/shared/utils.js";
 import { makeTempDir, setupHooks } from "./helpers.js";
 
 setupHooks();

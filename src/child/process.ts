@@ -8,22 +8,16 @@ import { type ChildProcess, spawn } from "node:child_process";
 import * as fs from "node:fs";
 import readline from "node:readline";
 import { getModel, type Message } from "@earendil-works/pi-ai";
-import type { AgentConfig, ThinkingLevel } from "./agents.js";
-import { parseChildEventLine } from "./child-events.js";
-import { makeToolPreview } from "./progress.js";
-import { isToolCallPart } from "./progress-state.js";
-import { appendSubagentResultContract } from "./prompt-contract.js";
-import {
-  getProcessTreeSpawnOptions,
-  terminateChildProcess,
-} from "./termination.js";
+import type { AgentConfig, ThinkingLevel } from "../agent/agents.js";
+import { getFinalOutput } from "../output/ui.js";
+import { makeToolPreview } from "../progress/progress.js";
+import { isToolCallPart } from "../progress/progress-state.js";
 import type {
   OnUpdateCallback,
   SingleResult,
   StreamingProgress,
   SubagentDetails,
-} from "./types.js";
-import { getFinalOutput } from "./ui.js";
+} from "../shared/types.js";
 import {
   detectMessageError,
   getPiInvocation,
@@ -32,7 +26,13 @@ import {
   subagentDepthEnv,
   truncateOutput,
   writePromptToTempFile,
-} from "./utils.js";
+} from "../shared/utils.js";
+import { parseChildEventLine } from "./child-events.js";
+import { appendSubagentResultContract } from "./prompt-contract.js";
+import {
+  getProcessTreeSpawnOptions,
+  terminateChildProcess,
+} from "./termination.js";
 
 const MAX_STDERR_BYTES = 10_000;
 const AGENT_END_GRACE_MS = 250;

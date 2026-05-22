@@ -21,21 +21,22 @@ with separate context windows.
 
 - **Entry point:** `src/index.ts` registers the extension, renderers,
   commands, and autocomplete.
-- **Agent discovery:** `src/agents.ts` and `src/agent-cache.ts` find,
-  parse, and cache user and project agent definitions.
-- **Orchestration:** `src/subagent-orchestrator.ts`, `src/run.ts`,
-  `src/run-command.ts`, `src/run-registry.ts`, and
-  `src/cancel-command.ts` handle tool dispatch, `/run`, job tracking,
+- **Agent discovery** (`src/agent/`): `agents.ts` and `agent-cache.ts`
+  find, parse, and cache user and project agent definitions.
+- **Orchestration** (`src/orchestration/`): `subagent-orchestrator.ts`,
+  `run.ts`, `run-command.ts`, `run-registry.ts`, `cancel-command.ts`,
+  and `jobs-command.ts` handle tool dispatch, `/run`, job tracking,
   and cancellation.
-- **Child process:** `src/process.ts`, `src/child-events.ts`,
-  `src/termination.ts`, and `src/prompt-contract.ts` launch and manage
-  child `pi --json` processes.
-- **Progress:** `src/progress.ts`, `src/progress-state.ts`, and
-  `src/result-details.ts` track and render tool call state.
-- **Output:** `src/summary.ts`, `src/ui.ts`, and `src/normalize.ts`
+- **Child process** (`src/child/`): `process.ts`, `child-events.ts`,
+  `termination.ts`, and `prompt-contract.ts` launch and manage child
+  `pi --json` processes.
+- **Progress** (`src/progress/`): `progress.ts`, `progress-state.ts`,
+  and `result-details.ts` track and render tool call state.
+- **Output** (`src/output/`): `summary.ts`, `ui.ts`, and `normalize.ts`
   normalize, filter, and format child output.
-- **Shared:** `src/utils.ts` and `src/types.ts` provide invocation
-  helpers, truncation, depth tracking, and shared types.
+- **Shared** (`src/shared/`): `utils.ts`, `types.ts`, and
+  `instance-name.ts` provide invocation helpers, truncation, depth
+  tracking, and shared types.
 
 ## Commands
 

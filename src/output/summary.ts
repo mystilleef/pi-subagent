@@ -1,5 +1,5 @@
+import type { SingleResult } from "../shared/types.js";
 import { normalizeTerminalSentence } from "./normalize.js";
-import type { SingleResult } from "./types.js";
 
 export const FEEDBACK_UI_SUMMARY_MAX_CHARS = 120;
 

@@ -5,7 +5,7 @@ import {
   getProcessTreeSpawnOptions,
   type TerminationSignal,
   terminateChildProcess,
-} from "../src/termination.js";
+} from "../src/child/termination.js";
 
 type FakeChild = EventEmitter & {
   pid?: number;

@@ -17,9 +17,9 @@ import {
   patchProgressState,
   renderSubagentProgress,
   resetProgressStore,
-} from "../src/progress.js";
-import { getAllProgressStates } from "../src/progress-state.js";
-import type { SubagentDetails } from "../src/types.js";
+} from "../src/progress/progress.js";
+import { getAllProgressStates } from "../src/progress/progress-state.js";
+import type { SubagentDetails } from "../src/shared/types.js";
 
 const realDateNow = Date.now;
 

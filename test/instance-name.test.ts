@@ -3,7 +3,7 @@ import {
   configureSubagentInstanceNamesForTest,
   generateSubagentInstanceName,
   resetSubagentInstanceNamesForTest,
-} from "../src/instance-name.js";
+} from "../src/shared/instance-name.js";
 
 afterEach(() => {
   resetSubagentInstanceNamesForTest();

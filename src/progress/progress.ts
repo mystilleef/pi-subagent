@@ -18,6 +18,7 @@
 
 import type { Component } from "@earendil-works/pi-tui";
 import { Box, Text } from "@earendil-works/pi-tui";
+import { formatSubagentTitle, type SubagentTheme } from "../output/ui.js";
 import {
   formatHeaderStats,
   getProgressState,
@@ -28,9 +29,8 @@ import {
   type SubagentProgressState,
   type ThemeBg,
 } from "./progress-state.js";
-import { formatSubagentTitle, type SubagentTheme } from "./ui.js";
 
-export { makeToolPreview } from "./normalize.js";
+export { makeToolPreview } from "../output/normalize.js";
 export {
   cancelProgressState,
   clearProgressState,
