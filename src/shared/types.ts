@@ -40,6 +40,7 @@ export interface SingleResult {
   progress?: StreamingProgress;
   messages?: Message[];
   termination?: TerminationMetadata;
+  thinkingWarning?: string;
 }
 
 export interface SubagentDetails {

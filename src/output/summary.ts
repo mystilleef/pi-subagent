@@ -20,7 +20,9 @@ const FEEDBACK_UI_LABEL_PATTERN =
   /^\s*(outcome|project summary|result|summary|status|output|message|error|check):\s*/i;
 
 export function formatSubagentResultForParent(result: SingleResult): string {
-  return result.finalOutput;
+  return result.thinkingWarning
+    ? `[thinking] ${result.thinkingWarning}\n\n${result.finalOutput}`
+    : result.finalOutput;
 }
 
 export function summarizeFeedbackUiFinalOutput(finalOutput: string): string {

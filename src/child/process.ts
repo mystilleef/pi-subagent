@@ -7,7 +7,13 @@
 import { type ChildProcess, spawn } from "node:child_process";
 import * as fs from "node:fs";
 import readline from "node:readline";
-import { getModel, type Message } from "@earendil-works/pi-ai";
+import {
+  clampThinkingLevel,
+  getModel,
+  getSupportedThinkingLevels,
+  type Message,
+  type ModelThinkingLevel,
+} from "@earendil-works/pi-ai";
 import type { AgentConfig, ThinkingLevel } from "../agent/agents.js";
 import { getFinalOutput } from "../output/ui.js";
 import { makeToolPreview } from "../progress/progress.js";
@@ -36,6 +42,42 @@ import {
 
 const MAX_STDERR_BYTES = 10_000;
 const AGENT_END_GRACE_MS = 250;
+
+function thinkingWarningFor(
+  requested: ThinkingLevel,
+  effective: ThinkingLevel,
+  provider: string,
+  modelId: string,
+): string {
+  return `Thinking level "${requested}" not supported by model "${provider}/${modelId}"; using "${effective}" instead`;
+}
+
+export function resolveThinkingLevel(
+  requested: ThinkingLevel,
+  provider: string,
+  modelId: string,
+): { level: ThinkingLevel; warning?: string } {
+  const model = getModel(provider as never, modelId as never);
+  if (!model) return { level: requested };
+  if (model.reasoning === false) {
+    return {
+      level: "off",
+      warning: thinkingWarningFor(requested, "off", provider, modelId),
+    };
+  }
+  if (!model.thinkingLevelMap) return { level: requested };
+  const supported = getSupportedThinkingLevels(model);
+  if (supported.length === 0) return { level: requested };
+  const clamped = clampThinkingLevel(
+    model,
+    requested as ModelThinkingLevel,
+  ) as ThinkingLevel;
+  if (clamped === requested) return { level: requested };
+  return {
+    level: clamped,
+    warning: thinkingWarningFor(requested, clamped, provider, modelId),
+  };
+}
 
 const MAX_SUBAGENT_DEPTH = 1;
 export const TOOL_RESULT_FAILED_MESSAGE = "Subagent tool result failed.";
@@ -585,7 +627,14 @@ export async function runSingleAgent(
     return errorForDepthLimit(agentName, agent.source, task, depth);
   }
 
-  const thinking = agent.thinking ?? parentThinking;
+  const requestedThinking = agent.thinking ?? parentThinking;
+  const { level: thinking, warning: thinkingWarning } = parentModel
+    ? resolveThinkingLevel(
+        requestedThinking,
+        parentModel.provider,
+        parentModel.id,
+      )
+    : { level: requestedThinking };
   const modelDisplay = buildModelDisplay(parentModel, thinking);
   const resolvedSkills = agent.skills
     ? await resolveAgentSkillArgs(defaultCwd, agent.skills)
@@ -605,6 +654,7 @@ export async function runSingleAgent(
     result: initRuntimeResult(agentName, agent.source, task, modelDisplay),
     wasAborted: false,
   };
+  if (thinkingWarning) state.result.thinkingWarning = thinkingWarning;
 
   let tmpPrompt: { dir: string; filePath: string } | null = null;
   try {
