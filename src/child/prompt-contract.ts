@@ -3,6 +3,8 @@ export const SUBAGENT_RESULT_CONTRACT = `
 - End your final response with exactly one line:
   - Outcome: <short, single, compact lower-case sentence>.
   - Outcome summarizes the result of your task in a single sentence.
+  - The outcome line is for internal use by the agent.
+  - Don't present outcome line in the main agent's response.
 `;
 
 export function appendSubagentResultContract(prompt: string): string {
