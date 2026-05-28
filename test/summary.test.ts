@@ -192,6 +192,64 @@ test("extractSemanticToolTarget hides unknown args unless forced", () => {
   );
 });
 
+test("parent formatter prepends thinking warning when present", () => {
+  expect(
+    formatSubagentResultForParent(
+      result({
+        finalOutput: "task completed",
+        thinkingWarning:
+          'Thinking level "xhigh" not supported by model "openai/gpt-4o"; using "high" instead',
+      }),
+    ),
+  ).toBe(
+    '[thinking] Thinking level "xhigh" not supported by model "openai/gpt-4o"; using "high" instead\n\ntask completed',
+  );
+});
+
+test("parent formatter returns output unchanged when no thinking warning", () => {
+  expect(
+    formatSubagentResultForParent(
+      result({ finalOutput: "task completed", thinkingWarning: undefined }),
+    ),
+  ).toBe("task completed");
+});
+
+test("parent formatter returns output unchanged when thinking warning is empty", () => {
+  expect(
+    formatSubagentResultForParent(
+      result({ finalOutput: "task completed", thinkingWarning: "" }),
+    ),
+  ).toBe("task completed");
+});
+
+test("parent formatter prepends warning even when finalOutput is empty", () => {
+  expect(
+    formatSubagentResultForParent(
+      result({
+        finalOutput: "",
+        thinkingWarning:
+          'Thinking level "xhigh" not supported by model "openai/gpt-4o"; using "high" instead',
+      }),
+    ),
+  ).toBe(
+    '[thinking] Thinking level "xhigh" not supported by model "openai/gpt-4o"; using "high" instead\n\n',
+  );
+});
+
+test("parent formatter prepends warning even when finalOutput is only whitespace", () => {
+  expect(
+    formatSubagentResultForParent(
+      result({
+        finalOutput: "  \n\n  ",
+        thinkingWarning:
+          'Thinking level "xhigh" not supported by model "openai/gpt-4o"; using "high" instead',
+      }),
+    ),
+  ).toBe(
+    '[thinking] Thinking level "xhigh" not supported by model "openai/gpt-4o"; using "high" instead\n\n  \n\n  ',
+  );
+});
+
 test("extractSemanticToolTarget keeps known safe targets", () => {
   expect(extractSemanticToolTarget("bash", { command: "bun test" })).toBe(
     "bun test",
