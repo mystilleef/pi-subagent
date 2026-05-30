@@ -84,6 +84,10 @@ export const TOOL_RESULT_FAILED_MESSAGE = "Subagent tool result failed.";
 
 type RuntimeResult = SingleResult & { messages: Message[] };
 
+type TempPrompt = { dir: string; filePath: string };
+
+type PromptSetupResult = { tmpPrompt: TempPrompt | null } | { error: unknown };
+
 interface SubagentState {
   result: RuntimeResult;
   spawnError?: Error;
@@ -114,7 +118,10 @@ function resolveContextWindowTokens(msg: Message): number | undefined {
   const m = msg as unknown as Record<string, unknown>;
   if (typeof m.provider !== "string" || typeof m.model !== "string") return;
   try {
-    const { contextWindow } = getModel(m.provider as never, m.model as never);
+    const contextWindow = getModel(
+      m.provider as never,
+      m.model as never,
+    )?.contextWindow;
     return Number.isFinite(contextWindow) && contextWindow > 0
       ? contextWindow
       : undefined;
@@ -181,26 +188,22 @@ async function waitForSubagentProcess(
     let exited = false;
     let settled = false;
     let idleTimer: NodeJS.Timeout | undefined;
-
     const done = () => {
       if (settled) return;
       settled = true;
       if (idleTimer) clearTimeout(idleTimer);
       resolve(exitCode);
     };
-
     const destroyStreams = () => {
       proc.stdout?.destroy();
       proc.stderr?.destroy();
     };
-
     const armIdleTimer = () => {
       if (!exited) return;
       if (idleTimer) clearTimeout(idleTimer);
       idleTimer = setTimeout(destroyStreams, idleMs);
       idleTimer.unref?.();
     };
-
     proc.on("close", done);
     proc.on("error", () => {
       exitCode = 1;
@@ -259,16 +262,13 @@ function initRuntimeResult(
 function addMessageToResult(result: RuntimeResult, msg: Message): void {
   result.messages.push(msg);
   result.finalOutput = truncateOutput(getFinalOutput(result.messages));
-
   if (msg.role === "toolResult" && msg.isError) {
     result.errorMessage ||= TOOL_RESULT_FAILED_MESSAGE;
   } else if (result.errorMessage === TOOL_RESULT_FAILED_MESSAGE) {
     result.errorMessage = undefined;
   }
-
   if (msg.role !== "assistant") return;
   result.usage.turns++;
-
   const { usage } = msg;
   if (usage) {
     result.usage.input += usage.input || 0;
@@ -280,7 +280,6 @@ function addMessageToResult(result: RuntimeResult, msg: Message): void {
     result.usage.contextWindowTokens =
       resolveContextWindowTokens(msg) ?? result.usage.contextWindowTokens;
   }
-
   if (!result.model && msg.model) result.model = msg.model;
   if (msg.stopReason) result.stopReason = msg.stopReason;
   if (msg.errorMessage) result.errorMessage = msg.errorMessage;
@@ -346,15 +345,28 @@ function errorForDepthLimit(
   );
 }
 
-async function cleanupTempPrompt(tmpPrompt: {
-  dir: string;
-  filePath: string;
-}): Promise<void> {
+async function cleanupTempPrompt(tmpPrompt: TempPrompt): Promise<void> {
   try {
     await fs.promises.unlink(tmpPrompt.filePath);
     await fs.promises.rmdir(tmpPrompt.dir);
   } catch {
     /* ignore */
+  }
+}
+
+function beginPromptSetup(agent: AgentConfig): Promise<PromptSetupResult> {
+  if (!agent.systemPrompt.trim()) return Promise.resolve({ tmpPrompt: null });
+  return writePromptToTempFile(agent.name, agent.systemPrompt).then(
+    (tmpPrompt) => ({ tmpPrompt }),
+    (error: unknown) => ({ error }),
+  );
+}
+
+async function cleanupPromptSetupResult(
+  setup: PromptSetupResult,
+): Promise<void> {
+  if ("tmpPrompt" in setup && setup.tmpPrompt) {
+    await cleanupTempPrompt(setup.tmpPrompt);
   }
 }
 
@@ -465,7 +477,6 @@ function processEventLine(
   const parseResult = parseChildEventLine(line);
   if (parseResult.kind !== "known") return;
   const { event } = parseResult;
-
   if (
     (event.type === "message_end" || event.type === "tool_result_end") &&
     event.message
@@ -473,16 +484,13 @@ function processEventLine(
     addMessageToResult(state.result, event.message as Message);
     emitUpdate();
   }
-
   if (event.type !== "agent_end") return;
-
   if (state.result.messages.length === 0 && Array.isArray(event.messages)) {
     for (const msg of event.messages as Message[]) {
       addMessageToResult(state.result, msg);
     }
     emitUpdate();
   }
-
   if (state.agentEndGraceTimer || state.terminationPromise) return;
   state.agentEndGraceTimer = setTimeout(() => {
     state.agentEndGraceTimer = undefined;
@@ -621,12 +629,10 @@ export async function runSingleAgent(
 ): Promise<SingleResult> {
   const agent = agents.find((a) => a.name === agentName);
   if (!agent) return errorForUnknownAgent(agentName, agents, task);
-
   const depth = getSubagentDepth();
   if (depth >= MAX_SUBAGENT_DEPTH) {
     return errorForDepthLimit(agentName, agent.source, task, depth);
   }
-
   const requestedThinking = agent.thinking ?? parentThinking;
   const { level: thinking, warning: thinkingWarning } = parentModel
     ? resolveThinkingLevel(
@@ -636,10 +642,15 @@ export async function runSingleAgent(
       )
     : { level: requestedThinking };
   const modelDisplay = buildModelDisplay(parentModel, thinking);
-  const resolvedSkills = agent.skills
-    ? await resolveAgentSkillArgs(defaultCwd, agent.skills)
-    : { args: [] };
+  const resolvedSkillsPromise: Promise<{ args: string[] } | { error: string }> =
+    agent.skills
+      ? resolveAgentSkillArgs(defaultCwd, agent.skills)
+      : Promise.resolve({ args: [] });
+  const promptSetupPromise = beginPromptSetup(agent);
+  const resolvedSkills = await resolvedSkillsPromise;
   if ("error" in resolvedSkills) {
+    const promptSetup = await promptSetupPromise;
+    await cleanupPromptSetupResult(promptSetup);
     return createErrorResult(
       agentName,
       agent.source,
@@ -648,19 +659,16 @@ export async function runSingleAgent(
       modelDisplay,
     );
   }
-
+  const promptSetup = await promptSetupPromise;
+  if ("error" in promptSetup) throw promptSetup.error;
   const startedAt = Date.now();
   const state: SubagentState = {
     result: initRuntimeResult(agentName, agent.source, task, modelDisplay),
     wasAborted: false,
   };
   if (thinkingWarning) state.result.thinkingWarning = thinkingWarning;
-
-  let tmpPrompt: { dir: string; filePath: string } | null = null;
+  const tmpPrompt = promptSetup.tmpPrompt;
   try {
-    tmpPrompt = agent.systemPrompt.trim()
-      ? await writePromptToTempFile(agent.name, agent.systemPrompt)
-      : null;
     const args = buildPiArgs(
       agent,
       task,
@@ -682,7 +690,6 @@ export async function runSingleAgent(
       env: { ...process.env, ...subagentDepthEnv() },
       ...getProcessTreeSpawnOptions(terminateOptions.tree),
     });
-
     const processDone = waitForSubagentProcess(proc);
     const emitUpdate = makeEmitUpdate(state.result, onUpdate, makeDetails);
     const requestTermination = makeRequestTerminator(
@@ -691,7 +698,6 @@ export async function runSingleAgent(
       state,
     );
     setupChildProcess(proc, state, emitUpdate, requestTermination);
-
     const onAbort = setupAbortHandler(
       signal,
       state,

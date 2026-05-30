@@ -5,11 +5,10 @@ import type {
 } from "@earendil-works/pi-coding-agent";
 import { type Static, Type } from "typebox";
 import { getCachedAgentDiscovery } from "../agent/agent-cache.js";
-import {
-  type AgentConfig,
-  type AgentScope,
-  discoverAgents,
-  type ThinkingLevel,
+import type {
+  AgentConfig,
+  AgentScope,
+  ThinkingLevel,
 } from "../agent/agents.js";
 import { runSingleAgent } from "../child/process.js";
 import { formatSubagentResultForParent } from "../output/summary.js";
@@ -99,18 +98,15 @@ function sanitizeResultDetails(
     includeDebugMessages && (options?.includeMessages ?? true);
   const { messages, termination, progress, stderr, usage, ...core } = result;
   const { contextWindowTokens, ...usageBase } = usage;
-
   const sanitized: Record<string, unknown> = {
     ...core,
     stderr: includeDebugMessages ? stderr : "",
     usage: { ...usageBase },
   };
-
   if (contextWindowTokens !== undefined) {
     (sanitized.usage as Record<string, unknown>).contextWindowTokens =
       contextWindowTokens;
   }
-
   if (progress !== undefined) {
     const { activityText, lastToolPreview, ...progBase } = progress;
     sanitized.progress = {
@@ -122,14 +118,12 @@ function sanitizeResultDetails(
       ...(lastToolPreview !== undefined && { lastToolPreview }),
     };
   }
-
   if (includeMessages) {
     sanitized.messages = options?.recentMessages
       ? [...options.recentMessages]
       : messages !== undefined
         ? [...messages]
         : undefined;
-
     if (includeDebugMessages && termination !== undefined) {
       const { cancelReason, terminationSignal, fallbackCause, ...termBase } =
         termination;
@@ -141,7 +135,6 @@ function sanitizeResultDetails(
       };
     }
   }
-
   return sanitized as unknown as SingleResult;
 }
 
@@ -323,7 +316,7 @@ export async function startSubagentJob(
   hostSignal: AbortSignal | undefined,
 ): Promise<StartJobResult> {
   const agentScope: AgentScope = params.agentScope ?? "both";
-  const discovery = getCachedAgentDiscovery(ctx.cwd, agentScope);
+  const discovery = await getCachedAgentDiscovery(ctx.cwd, agentScope);
   const agents = discovery.agents;
   const debug = params.debug === true;
   const makeDetails = createDetailsBuilder(
@@ -344,7 +337,7 @@ export async function startSubagentJob(
     if (!confirmed) return { kind: "cancelled", makeDetails };
   }
   if (requested.source === "project") {
-    const userAgents = discoverAgents(ctx.cwd, "user");
+    const userAgents = await getCachedAgentDiscovery(ctx.cwd, "user");
     const hasUserCollision = userAgents.agents.some(
       (a) => a.name === requested.name,
     );
