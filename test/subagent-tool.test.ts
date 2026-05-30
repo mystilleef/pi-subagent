@@ -1,8 +1,9 @@
 import { afterEach, expect, test } from "bun:test";
-import { chmod, writeFile } from "node:fs/promises";
+import { chmod, mkdir, symlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import type { TextContent } from "@earendil-works/pi-ai";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { discoverAgentsAsync } from "../src/agent/agents.js";
 import { SUBAGENT_RESULT_CONTRACT } from "../src/child/prompt-contract.js";
 import {
   listRunJobs,
@@ -576,6 +577,156 @@ System prompt`,
   expect((resultBoth.content[0] as TextContent).text).toContain("started");
   await waitForSentMessageCount(sentMessages, 2);
   expect(sentMessages.at(-1)?.content).toBe("done");
+});
+
+test("discoverAgentsAsync preserves scope filtering and project override precedence", async () => {
+  const { agentDir, cwd } = await setupFakePi();
+  const userDir = path.join(agentDir, "agents");
+  const projectAgentsDir = path.join(cwd, ".pi", "agents");
+  await mkdir(projectAgentsDir, { recursive: true });
+  await writeFile(
+    path.join(userDir, "same.md"),
+    `---
+name: same
+description: User same
+---
+User prompt`,
+  );
+  await writeFile(
+    path.join(userDir, "user-only.md"),
+    `---
+name: user-only
+description: User only
+---
+User prompt`,
+  );
+  await writeFile(
+    path.join(projectAgentsDir, "same.md"),
+    `---
+name: same
+description: Project same
+---
+Project prompt`,
+  );
+  await writeFile(
+    path.join(projectAgentsDir, "project-only.md"),
+    `---
+name: project-only
+description: Project only
+---
+Project prompt`,
+  );
+  const userAgents = await discoverAgentsAsync(cwd, "user");
+  const projectAgents = await discoverAgentsAsync(cwd, "project");
+  const bothAgents = await discoverAgentsAsync(cwd, "both");
+  expect(userAgents.projectAgentsDir).toBe(projectAgentsDir);
+  expect(projectAgents.projectAgentsDir).toBe(projectAgentsDir);
+  expect(bothAgents.projectAgentsDir).toBe(projectAgentsDir);
+  expect(userAgents.agents.find((a) => a.name === "same")?.source).toBe("user");
+  expect(userAgents.agents.some((a) => a.name === "project-only")).toBe(false);
+  expect(projectAgents.agents.find((a) => a.name === "same")?.source).toBe(
+    "project",
+  );
+  expect(projectAgents.agents.some((a) => a.name === "user-only")).toBe(false);
+  expect(bothAgents.agents.find((a) => a.name === "same")?.source).toBe(
+    "project",
+  );
+  expect(bothAgents.agents.some((a) => a.name === "user-only")).toBe(true);
+  expect(bothAgents.agents.some((a) => a.name === "project-only")).toBe(true);
+});
+
+test("discoverAgentsAsync ignores unreadable agent directories", async () => {
+  const { agentDir, cwd } = await setupFakePi();
+  const root = path.dirname(agentDir);
+  const unreadableRoot = path.join(root, "agent-with-unreadable-agents");
+  const unreadableAgentsDir = path.join(unreadableRoot, "agents");
+  await mkdir(unreadableAgentsDir, { recursive: true });
+  await writeFile(
+    path.join(unreadableAgentsDir, "hidden.md"),
+    `---
+name: hidden
+description: Hidden
+---
+Hidden prompt`,
+  );
+  await chmod(unreadableAgentsDir, 0);
+  process.env.PI_CODING_AGENT_DIR = unreadableRoot;
+  try {
+    expect((await discoverAgentsAsync(cwd, "user")).agents).toEqual([]);
+  } finally {
+    await chmod(unreadableAgentsDir, 0o700);
+  }
+});
+
+test("discoverAgentsAsync tolerates missing malformed and symlinked agent files", async () => {
+  const { agentDir, cwd } = await setupFakePi();
+  const root = path.dirname(agentDir);
+  process.env.PI_CODING_AGENT_DIR = path.join(root, "agent-without-agents");
+  expect((await discoverAgentsAsync(cwd, "user")).agents).toEqual([]);
+  const fileRoot = path.join(root, "agent-with-file");
+  await mkdir(fileRoot, { recursive: true });
+  await writeFile(path.join(fileRoot, "agents"), "not a directory");
+  process.env.PI_CODING_AGENT_DIR = fileRoot;
+  expect((await discoverAgentsAsync(cwd, "user")).agents).toEqual([]);
+  const badRoot = path.join(root, "agent-with-bad-files");
+  const agentsDir = path.join(badRoot, "agents");
+  await mkdir(agentsDir, { recursive: true });
+  await symlink(
+    path.join(agentsDir, "missing.md"),
+    path.join(agentsDir, "broken.md"),
+  );
+  await writeFile(
+    path.join(agentsDir, "missing-description.md"),
+    `---
+name: invalid
+---
+Prompt`,
+  );
+  await writeFile(
+    path.join(agentsDir, "invalid-yaml.md"),
+    `---
+name: [unterminated
+---
+Prompt`,
+  );
+  await writeFile(
+    path.join(agentsDir, "non-string-tools.md"),
+    `---
+name: bad-tools
+description: Bad tools
+tools:
+  - bash
+---
+Prompt`,
+  );
+  await writeFile(
+    path.join(agentsDir, "target.txt"),
+    `---
+name: linked
+description: Linked agent
+tools: bash, read
+skills: helper, reviewer
+thinking: HIGH
+---
+Linked prompt`,
+  );
+  await symlink(
+    path.join(agentsDir, "target.txt"),
+    path.join(agentsDir, "linked.md"),
+  );
+  process.env.PI_CODING_AGENT_DIR = badRoot;
+  const agents = (await discoverAgentsAsync(cwd, "user")).agents;
+  expect(agents).toHaveLength(1);
+  expect(agents[0]).toMatchObject({
+    name: "linked",
+    description: "Linked agent",
+    tools: ["bash", "read"],
+    skills: ["helper", "reviewer"],
+    thinking: "high",
+    systemPrompt: "Linked prompt",
+    source: "user",
+    filePath: path.join(agentsDir, "linked.md"),
+  });
 });
 
 test("subagent tool requires confirmation for project agents with UI", async () => {

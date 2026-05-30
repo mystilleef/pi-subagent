@@ -5,6 +5,7 @@ import {
   DefaultResourceLoader,
   type ExtensionCommandContext,
 } from "@earendil-works/pi-coding-agent";
+import { getCachedAgentDiscovery } from "../src/agent/agent-cache.js";
 import { resetAgentCache } from "../src/index.js";
 import {
   cancelRunJob,
@@ -504,6 +505,12 @@ test("run slash command sends one subagent-progress message and one final result
   const sentMessages: SendMessageArg[] = [];
   const { tool, cwd } = await setupTest({
     sendMessage: (msg) => sentMessages.push(msg),
+    piScript: `#!/bin/sh
+while [ ! -f release-child ]; do sleep 0.01; done
+printf '%s\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"done"}],"api":"fake","provider":"fake","model":"fake","usage":{"input":1,"output":1,"cacheRead":0,"cacheWrite":0,"totalTokens":2,"cost":{"total":0}},"stopReason":"stop","timestamp":0}}'
+printf '%s\n' '{"type":"agent_end","messages":[]}'
+exit 0
+`,
   });
   const runCommand = tool.registeredCommands.get("run");
   expect(runCommand).toBeDefined();
@@ -511,7 +518,9 @@ test("run slash command sends one subagent-progress message and one final result
     cwd,
     ui: { notify: () => {} },
   } as unknown as ExtensionCommandContext);
+  await waitForSentMessageCount(sentMessages, 1);
   const messagesSentBeforeChildExit = sentMessages.length;
+  await Bun.write(path.join(cwd, "release-child"), "");
   await handlerPromise;
   await waitForSentMessageCount(sentMessages, 2);
   expect(sentMessages).toHaveLength(2);
@@ -1479,6 +1488,50 @@ test("/run collision: project agent with same-named user agent emits warning", a
   expect(sentMessages.some((msg) => msg.customType === "subagent-result")).toBe(
     true,
   );
+});
+
+test("/run collision uses cached user discovery", async () => {
+  clearRunJobsForTests();
+  const sentMessages: SendMessageArg[] = [];
+  const { tool, agentDir, cwd } = await setupTest({
+    sendMessage: (msg) => sentMessages.push(msg),
+  });
+  const projectAgentsDir = path.join(cwd, ".pi", "agents");
+  const userAgentPath = path.join(agentDir, "agents", "cached-reviewer.md");
+  await Bun.$`mkdir -p ${projectAgentsDir}`;
+  await Bun.write(
+    path.join(projectAgentsDir, "cached-reviewer.md"),
+    `---\nname: cached-reviewer\ndescription: Project reviewer\n---\nProject prompt.`,
+  );
+  await Bun.write(
+    userAgentPath,
+    `---\nname: cached-reviewer\ndescription: User reviewer\n---\nUser prompt.`,
+  );
+  resetAgentCache();
+  const cachedUserDiscovery = await getCachedAgentDiscovery(cwd, "user");
+  expect(
+    cachedUserDiscovery.agents.some((a) => a.name === "cached-reviewer"),
+  ).toBe(true);
+  await Bun.write(
+    userAgentPath,
+    `---\nname: renamed-reviewer\ndescription: User reviewer\n---\nUser prompt.`,
+  );
+  const runCommand = tool.registeredCommands.get("run");
+  await runCommand?.handler("cached-reviewer task", {
+    cwd,
+    ui: { notify: () => {} },
+  } as unknown as ExtensionCommandContext);
+  await waitForRunJobsCleared();
+  const collisionMsg = sentMessages.find(
+    (msg) =>
+      msg.customType === "subagent-progress" &&
+      typeof msg.content === "string" &&
+      msg.content.includes("Using project agent"),
+  );
+  expect(collisionMsg?.content).toBe(
+    'Using project agent "cached-reviewer"; user agent with same name also exists.',
+  );
+  expect(sentMessages.indexOf(collisionMsg as SendMessageArg)).toBe(0);
 });
 
 test("/run no collision when only project agent exists", async () => {

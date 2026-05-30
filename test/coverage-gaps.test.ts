@@ -1,7 +1,9 @@
 import { describe, expect, test, vi } from "bun:test";
 import type { ChildProcess } from "node:child_process";
 import { EventEmitter } from "node:events";
+import path from "node:path";
 import {
+  AGENT_DISCOVERY_CACHE_TTL_MS,
   getCachedAgentDiscovery,
   resetAgentDiscoveryCache,
 } from "../src/agent/agent-cache.js";
@@ -38,20 +40,16 @@ describe("Coverage Gaps", () => {
       (child as any).kill = vi.fn();
       // biome-ignore lint/suspicious/noExplicitAny: mocking complex child process
       (child as any).exitCode = null;
-
       const promise = terminateChildProcess(child);
       // biome-ignore lint/suspicious/noExplicitAny: mocking complex child process
       expect((child as any).kill).toHaveBeenCalledWith("SIGTERM");
-
       child.emit("exit", 0);
       await promise;
     });
-
     test("uses default runTaskkill on Windows", async () => {
       const originalSpawnSync = Bun.spawnSync;
       // biome-ignore lint/suspicious/noExplicitAny: mocking global Bun
       (Bun as any).spawnSync = vi.fn(() => ({ success: true }));
-
       const child = new EventEmitter() as unknown as ChildProcess;
       // biome-ignore lint/suspicious/noExplicitAny: mocking complex child process
       (child as any).pid = 888;
@@ -59,7 +57,6 @@ describe("Coverage Gaps", () => {
       (child as any).kill = vi.fn();
       // biome-ignore lint/suspicious/noExplicitAny: mocking complex child process
       (child as any).exitCode = null;
-
       const timers: (() => void)[] = [];
       const promise2 = terminateChildProcess(child, {
         tree: true,
@@ -71,9 +68,7 @@ describe("Coverage Gaps", () => {
           return 123 as any;
         },
       });
-
       timers[0]?.();
-
       expect(Bun.spawnSync).toHaveBeenCalled();
       // biome-ignore lint/suspicious/noExplicitAny: mocking global Bun
       (Bun as any).spawnSync = originalSpawnSync;
@@ -81,14 +76,12 @@ describe("Coverage Gaps", () => {
       await promise2;
     });
   });
-
   describe("progress.ts helpers and defaults", () => {
     test("formatTokenCount with Millions", () => {
       expect(formatTokenCount(1_000_000)).toBe("1M");
       expect(formatTokenCount(1_500_000)).toBe("1.5M");
       expect(formatTokenCount(2_000_000)).toBe("2M");
     });
-
     test("formatHeaderStats edges", () => {
       expect(
         formatHeaderStats({
@@ -113,12 +106,10 @@ describe("Coverage Gaps", () => {
         } as SubagentProgressState),
       ).toContain("50% ctx");
     });
-
     test("patchProgressState for non-running status", () => {
       const id = "test-id";
       createProgressState(id, "agent", "task");
       finalizeProgressState(id, "done");
-
       patchProgressState(id, {
         lastToolPreview: "should-be-ignored",
         toolCount: 10,
@@ -128,7 +119,6 @@ describe("Coverage Gaps", () => {
       expect(state?.toolCount).toBe(10);
       clearProgressState(id);
     });
-
     test("cancelProgressState with reason", () => {
       const id = "cancel-id";
       createProgressState(id, "agent", "task");
@@ -139,7 +129,6 @@ describe("Coverage Gaps", () => {
       clearProgressState(id);
     });
   });
-
   describe("process.ts gaps", () => {
     test("spawn failure handler", async () => {
       const { cwd } = await setupTest();
@@ -147,7 +136,6 @@ describe("Coverage Gaps", () => {
       const originalExecPath = process.execPath;
       process.argv[1] = "/non/existent/pi";
       process.execPath = "/non/existent/pi_exec";
-
       try {
         // biome-ignore lint/suspicious/noExplicitAny: mocking agent config
         const agent: any = {
@@ -180,7 +168,6 @@ describe("Coverage Gaps", () => {
         process.execPath = originalExecPath;
       }
     });
-
     test("cancellation with Error reason", async () => {
       const { cwd } = await setupTest({
         piScript: `#!/bin/sh
@@ -206,12 +193,10 @@ wait $!
         undefined,
         "off",
       );
-
       // Wait for it to detect unknown agent
       const result = await promise;
       expect(result.exitCode).toBe(1);
     });
-
     test("runSingleAgent with parentModel sets model display", async () => {
       const { cwd } = await setupTest();
       const agent = {
@@ -240,7 +225,6 @@ wait $!
       );
       expect(result.model).toBe("test-provider/test-model:off");
     });
-
     test("runSingleAgent clears transient tool result error on assistant message", async () => {
       const { cwd } = await setupTest({
         piScript: `#!/bin/sh
@@ -277,13 +261,11 @@ exit 0
       expect(result.errorMessage).toBeUndefined();
     });
   });
-
   describe("helpers.ts waitFor timeout", () => {
     test("waitFor throws on timeout", async () => {
       const originalNow = Date.now;
       let now = 1000;
       Date.now = () => now;
-
       try {
         const promise = waitFor(() => false, "never");
         now += 3000;
@@ -293,7 +275,6 @@ exit 0
       }
     });
   });
-
   describe("global state reset helpers", () => {
     test("resetProgressStore clears all progress state", () => {
       createProgressState("a", "agent-a", "task-a");
@@ -304,7 +285,6 @@ exit 0
       expect(getProgressState("a")).toBeUndefined();
       expect(getProgressState("b")).toBeUndefined();
     });
-
     test("resetRunRegistry clears all jobs", () => {
       registerRunJob({
         requestId: "j1",
@@ -324,7 +304,6 @@ exit 0
       resetRunRegistry();
       expect(listRunJobs().length).toBe(0);
     });
-
     test("concurrent job IDs do not collide", () => {
       resetRunRegistry();
       const c1 = new AbortController();
@@ -349,13 +328,12 @@ exit 0
       expect(jobs.find((j) => j.requestId === "concurrent-2")).toBeDefined();
       resetRunRegistry();
     });
-
     test("cache isolation: different scopes do not cross-contaminate", async () => {
       const { cwd } = await setupTest();
       resetAgentDiscoveryCache();
-      const both = getCachedAgentDiscovery(cwd, "both");
-      const user = getCachedAgentDiscovery(cwd, "user");
-      const project = getCachedAgentDiscovery(cwd, "project");
+      const both = await getCachedAgentDiscovery(cwd, "both");
+      const user = await getCachedAgentDiscovery(cwd, "user");
+      const project = await getCachedAgentDiscovery(cwd, "project");
       expect(both.agents.length).toBeGreaterThanOrEqual(0);
       expect(user.agents.length).toBeGreaterThanOrEqual(0);
       expect(project.agents.length).toBeGreaterThanOrEqual(0);
@@ -363,6 +341,86 @@ exit 0
       expect(both.ts).toBeGreaterThan(0);
       expect(user.ts).toBeGreaterThan(0);
       resetAgentDiscoveryCache();
+    });
+    test("cache ttl and reset refresh shared async discovery", async () => {
+      const { cwd, agentDir } = await setupTest();
+      const userAgentsDir = path.join(agentDir, "agents");
+      const originalNow = Date.now;
+      let now = 1_000;
+      Date.now = () => now;
+      resetAgentDiscoveryCache();
+      try {
+        expect(AGENT_DISCOVERY_CACHE_TTL_MS).toBe(300_000);
+        const first = await getCachedAgentDiscovery(cwd, "user");
+        await Bun.write(
+          path.join(userAgentsDir, "ttl-fresh.md"),
+          `---
+name: ttl-fresh
+description: TTL fresh
+---
+TTL prompt`,
+        );
+        now += 299_999;
+        expect(await getCachedAgentDiscovery(cwd, "user")).toBe(first);
+        now += 2;
+        const expired = await getCachedAgentDiscovery(cwd, "user");
+        expect(expired).not.toBe(first);
+        expect(expired.agents.some((agent) => agent.name === "ttl-fresh")).toBe(
+          true,
+        );
+        await Bun.write(
+          path.join(userAgentsDir, "reset-fresh.md"),
+          `---
+name: reset-fresh
+description: Reset fresh
+---
+Reset prompt`,
+        );
+        expect(await getCachedAgentDiscovery(cwd, "user")).toBe(expired);
+        resetAgentDiscoveryCache();
+        const reset = await getCachedAgentDiscovery(cwd, "user");
+        expect(reset).not.toBe(expired);
+        expect(reset.agents.some((agent) => agent.name === "reset-fresh")).toBe(
+          true,
+        );
+      } finally {
+        Date.now = originalNow;
+        resetAgentDiscoveryCache();
+      }
+    });
+    test("async discovery cache paths avoid sync filesystem helpers", async () => {
+      const agentsSource = await Bun.file(
+        new URL("../src/agent/agents.ts", import.meta.url),
+      ).text();
+      const cacheSource = await Bun.file(
+        new URL("../src/agent/agent-cache.ts", import.meta.url),
+      ).text();
+      const asyncSections = [
+        /async function loadAgentsFromDirAsync[\s\S]*?function isDirectory/.exec(
+          agentsSource,
+        )?.[0] ?? "",
+        /async function isDirectoryAsync[\s\S]*?function findNearestProjectAgentsDir/.exec(
+          agentsSource,
+        )?.[0] ?? "",
+        /async function findNearestProjectAgentsDirAsync[\s\S]*?export function discoverAgents/.exec(
+          agentsSource,
+        )?.[0] ?? "",
+        /export async function discoverAgentsAsync[\s\S]*?export function formatAgentList/.exec(
+          agentsSource,
+        )?.[0] ?? "",
+        cacheSource,
+      ].join("\n");
+      expect(asyncSections).toContain("discoverAgentsAsync");
+      expect(asyncSections).toContain("fsPromises");
+      for (const syncName of [
+        "existsSync",
+        "readdirSync",
+        "readFileSync",
+        "statSync",
+        "discoverAgents(cwd",
+      ]) {
+        expect(asyncSections).not.toContain(syncName);
+      }
     });
   });
 });

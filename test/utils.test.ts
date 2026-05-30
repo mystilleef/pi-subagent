@@ -5,9 +5,11 @@ import path from "node:path";
 import type { Message } from "@earendil-works/pi-ai";
 import { DefaultResourceLoader } from "@earendil-works/pi-coding-agent";
 import {
+  AGENT_DISCOVERY_CACHE_TTL_MS,
   type AgentDiscoveryCache,
   getCachedAgentCompletions,
   getCachedAgentDiscovery,
+  resetAgentDiscoveryCache,
 } from "../src/agent/agent-cache.js";
 import type { AgentConfig } from "../src/agent/agents.js";
 import { discoverAgents, formatAgentList } from "../src/agent/agents.js";
@@ -264,9 +266,15 @@ Project B prompt`,
   const originalNow = Date.now;
   Date.now = () => now;
   try {
-    const bothA = getCachedAgentDiscovery(cwdA, "both", cache, 3000);
-    const projectA = getCachedAgentDiscovery(cwdA, "project", cache, 3000);
-    const bothB = getCachedAgentDiscovery(cwdB, "both", cache, 3000);
+    expect(AGENT_DISCOVERY_CACHE_TTL_MS).toBe(300_000);
+    const bothA = await getCachedAgentDiscovery(cwdA, "both", cache, 3000);
+    const projectA = await getCachedAgentDiscovery(
+      cwdA,
+      "project",
+      cache,
+      3000,
+    );
+    const bothB = await getCachedAgentDiscovery(cwdB, "both", cache, 3000);
     expect(bothA.agents.map((agent) => agent.name).sort()).toEqual([
       "project-a",
       "user",
@@ -277,9 +285,9 @@ Project B prompt`,
       "user",
     ]);
     expect(cache.size).toBe(3);
-    expect(getCachedAgentCompletions("project", cwdA, cache, 3000)).toEqual([
-      { value: "project-a", label: "project-a" },
-    ]);
+    expect(
+      await getCachedAgentCompletions("project", cwdA, cache, 3000),
+    ).toEqual([{ value: "project-a", label: "project-a" }]);
     await writeFile(
       path.join(projectDirA, "project-c.md"),
       `---
@@ -288,16 +296,57 @@ description: Project C
 ---
 Project C prompt`,
     );
-    expect(getCachedAgentDiscovery(cwdA, "both", cache, 3000)).toBe(bothA);
+    expect(await getCachedAgentDiscovery(cwdA, "both", cache, 3000)).toBe(
+      bothA,
+    );
     now += 3001;
     expect(
-      getCachedAgentDiscovery(cwdA, "both", cache, 3000).agents.some(
+      (await getCachedAgentDiscovery(cwdA, "both", cache, 3000)).agents.some(
         (agent) => agent.name === "project-c",
       ),
     ).toBe(true);
   } finally {
     Date.now = originalNow;
   }
+});
+
+test("agent discovery cache reset clears shared async completions", async () => {
+  const root = await makeTempDir("pi-subagent-cache-reset-");
+  const agentDir = path.join(root, "agent");
+  const userDir = path.join(agentDir, "agents");
+  const cwd = path.join(root, "work");
+  await mkdir(userDir, { recursive: true });
+  await mkdir(cwd, { recursive: true });
+  await writeFile(
+    path.join(userDir, "first.md"),
+    `---
+name: first
+description: First
+---
+First prompt`,
+  );
+  process.env.PI_CODING_AGENT_DIR = agentDir;
+  resetAgentDiscoveryCache();
+  const first = await getCachedAgentDiscovery(cwd, "user");
+  expect(await getCachedAgentCompletions("second", cwd)).toEqual([]);
+  await writeFile(
+    path.join(userDir, "second.md"),
+    `---
+name: second
+description: Second
+---
+Second prompt`,
+  );
+  expect(await getCachedAgentDiscovery(cwd, "user")).toBe(first);
+  expect(await getCachedAgentCompletions("second", cwd)).toEqual([]);
+  resetAgentDiscoveryCache();
+  const second = await getCachedAgentDiscovery(cwd, "user");
+  expect(second).not.toBe(first);
+  expect(second.agents.some((agent) => agent.name === "second")).toBe(true);
+  resetAgentDiscoveryCache();
+  expect(await getCachedAgentCompletions("second", cwd)).toEqual([
+    { value: "second", label: "second" },
+  ]);
 });
 
 test("discoverAgents tolerates missing, invalid, and unreadable entries", async () => {
