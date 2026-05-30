@@ -2,7 +2,7 @@
  * Agent discovery and configuration
  */
 
-import * as fs from "node:fs";
+import type { Dirent } from "node:fs";
 import * as fsPromises from "node:fs/promises";
 import * as path from "node:path";
 import { getAgentDir, parseFrontmatter } from "@earendil-works/pi-coding-agent";
@@ -116,43 +116,13 @@ function parseAgentConfig(
   };
 }
 
-function loadAgentsFromDir(
-  dir: string,
-  source: "user" | "project",
-): AgentConfig[] {
-  const agents: AgentConfig[] = [];
-  if (!fs.existsSync(dir)) {
-    return agents;
-  }
-  let entries: fs.Dirent[];
-  try {
-    entries = fs.readdirSync(dir, { withFileTypes: true });
-  } catch {
-    return agents;
-  }
-  for (const entry of entries) {
-    if (!entry.name.endsWith(".md")) continue;
-    if (!entry.isFile() && !entry.isSymbolicLink()) continue;
-    const filePath = path.join(dir, entry.name);
-    let content: string;
-    try {
-      content = fs.readFileSync(filePath, "utf-8");
-    } catch {
-      continue;
-    }
-    const agent = parseAgentConfig(content, source, filePath);
-    if (agent) agents.push(agent);
-  }
-  return agents;
-}
-
 async function loadAgentsFromDirAsync(
   dir: string,
   source: "user" | "project",
 ): Promise<AgentConfig[]> {
   const agents: AgentConfig[] = [];
   if (!(await isDirectoryAsync(dir))) return agents;
-  let entries: fs.Dirent[];
+  let entries: Dirent[];
   try {
     entries = await fsPromises.readdir(dir, { withFileTypes: true });
   } catch {
@@ -174,30 +144,11 @@ async function loadAgentsFromDirAsync(
   return agents;
 }
 
-function isDirectory(p: string): boolean {
-  try {
-    return fs.statSync(p).isDirectory();
-  } catch {
-    return false;
-  }
-}
-
 async function isDirectoryAsync(p: string): Promise<boolean> {
   try {
     return (await fsPromises.stat(p)).isDirectory();
   } catch {
     return false;
-  }
-}
-
-function findNearestProjectAgentsDir(cwd: string): string | null {
-  let currentDir = cwd;
-  while (true) {
-    const candidate = path.join(currentDir, ".pi", "agents");
-    if (isDirectory(candidate)) return candidate;
-    const parentDir = path.dirname(currentDir);
-    if (parentDir === currentDir) return null;
-    currentDir = parentDir;
   }
 }
 
@@ -212,21 +163,6 @@ async function findNearestProjectAgentsDirAsync(
     if (parentDir === currentDir) return null;
     currentDir = parentDir;
   }
-}
-
-export function discoverAgents(
-  cwd: string,
-  scope: AgentScope,
-): AgentDiscoveryResult {
-  const userDir = path.join(getAgentDir(), "agents");
-  const projectAgentsDir = findNearestProjectAgentsDir(cwd);
-  const userAgents =
-    scope === "project" ? [] : loadAgentsFromDir(userDir, "user");
-  const projectAgents =
-    scope === "user" || !projectAgentsDir
-      ? []
-      : loadAgentsFromDir(projectAgentsDir, "project");
-  return mergeAgentLists(userAgents, projectAgents, projectAgentsDir);
 }
 
 export async function discoverAgentsAsync(

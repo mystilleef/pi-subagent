@@ -12,7 +12,7 @@ import {
   resetAgentDiscoveryCache,
 } from "../src/agent/agent-cache.js";
 import type { AgentConfig } from "../src/agent/agents.js";
-import { discoverAgents, formatAgentList } from "../src/agent/agents.js";
+import { discoverAgentsAsync, formatAgentList } from "../src/agent/agents.js";
 import {
   DEFAULT_MAX_OUTPUT_BYTES,
   DEFAULT_MAX_OUTPUT_LINES,
@@ -213,9 +213,9 @@ description: Project only
 Project prompt`,
   );
   process.env.PI_CODING_AGENT_DIR = agentDir;
-  const userAgents = discoverAgents(cwd, "user").agents;
-  const projectAgents = discoverAgents(cwd, "project").agents;
-  const bothAgents = discoverAgents(cwd, "both").agents;
+  const userAgents = (await discoverAgentsAsync(cwd, "user")).agents;
+  const projectAgents = (await discoverAgentsAsync(cwd, "project")).agents;
+  const bothAgents = (await discoverAgentsAsync(cwd, "both")).agents;
   expect(userAgents.find((a) => a.name === "same")?.source).toBe("user");
   expect(userAgents.some((a) => a.name === "project-only")).toBe(false);
   expect(projectAgents.find((a) => a.name === "same")?.source).toBe("project");
@@ -354,12 +354,12 @@ test("discoverAgents tolerates missing, invalid, and unreadable entries", async 
   const cwd = path.join(root, "work");
   await mkdir(cwd, { recursive: true });
   process.env.PI_CODING_AGENT_DIR = path.join(root, "agent-without-agents");
-  expect(discoverAgents(cwd, "user").agents).toEqual([]);
+  expect((await discoverAgentsAsync(cwd, "user")).agents).toEqual([]);
   const agentDirWithFile = path.join(root, "agent-with-file");
   await mkdir(agentDirWithFile, { recursive: true });
   await writeFile(path.join(agentDirWithFile, "agents"), "not a directory");
   process.env.PI_CODING_AGENT_DIR = agentDirWithFile;
-  expect(discoverAgents(cwd, "user").agents).toEqual([]);
+  expect((await discoverAgentsAsync(cwd, "user")).agents).toEqual([]);
   const agentDirWithBrokenLink = path.join(root, "agent-with-broken-link");
   const agentsDir = path.join(agentDirWithBrokenLink, "agents");
   await mkdir(agentsDir, { recursive: true });
@@ -445,7 +445,7 @@ thinking: louder
 Prompt`,
   );
   process.env.PI_CODING_AGENT_DIR = agentDirWithBrokenLink;
-  const agents = discoverAgents(cwd, "user").agents;
+  const agents = (await discoverAgentsAsync(cwd, "user")).agents;
   expect(agents).toHaveLength(1);
   expect(agents[0]).toMatchObject({
     name: "empty-options",
