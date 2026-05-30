@@ -5,7 +5,6 @@ import type { Message } from "@earendil-works/pi-ai";
 import {
   DefaultResourceLoader,
   getAgentDir,
-  withFileMutationQueue,
 } from "@earendil-works/pi-coding-agent";
 
 export const DEFAULT_MAX_OUTPUT_BYTES = 50_000;
@@ -66,11 +65,10 @@ export async function writePromptToTempFile(
   );
   const safeName = agentName.replace(/[^\w.-]+/g, "_");
   const filePath = path.join(tmpDir, `prompt-${safeName}.md`);
-  await withFileMutationQueue(filePath, async () => {
-    await fs.promises.writeFile(filePath, prompt, {
-      encoding: "utf-8",
-      mode: 0o600,
-    });
+  // mkdtemp guarantees a unique directory per call; no concurrent writer can hold this path.
+  await fs.promises.writeFile(filePath, prompt, {
+    encoding: "utf-8",
+    mode: 0o600,
   });
   return { dir: tmpDir, filePath };
 }
