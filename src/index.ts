@@ -29,7 +29,7 @@ export default function registerSubagentExtension(pi: ExtensionAPI) {
   pi.registerMessageRenderer("subagent-result", renderSubagentResultMessage);
   pi.registerCommand("run", {
     description: "Run a subagent directly: /run <agent> [task]",
-    getArgumentCompletions: async (prefix: string) =>
+    getArgumentCompletions: (prefix: string) =>
       getCachedAgentCompletions(prefix),
     handler: async (args, ctx) =>
       runCommandHandler(pi, ctx as ExtensionContext, args),

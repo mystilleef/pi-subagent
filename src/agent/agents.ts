@@ -3,6 +3,7 @@
  */
 
 import * as fs from "node:fs";
+import * as fsPromises from "node:fs/promises";
 import * as path from "node:path";
 import { getAgentDir, parseFrontmatter } from "@earendil-works/pi-coding-agent";
 
@@ -41,6 +42,17 @@ export interface AgentDiscoveryResult {
   projectAgentsDir: string | null;
 }
 
+function mergeAgentLists(
+  userAgents: AgentConfig[],
+  projectAgents: AgentConfig[],
+  projectAgentsDir: string | null,
+): AgentDiscoveryResult {
+  const agentMap = new Map<string, AgentConfig>();
+  for (const agent of userAgents) agentMap.set(agent.name, agent);
+  for (const agent of projectAgents) agentMap.set(agent.name, agent);
+  return { agents: Array.from(agentMap.values()), projectAgentsDir };
+}
+
 function parseCommaList(raw: unknown): string[] | undefined {
   if (typeof raw !== "string") return undefined;
   const items = raw
@@ -56,6 +68,52 @@ function parseThinkingLevel(raw: unknown): ThinkingLevel | undefined {
   return (THINKING_LEVELS as readonly string[]).includes(normalized)
     ? (normalized as ThinkingLevel)
     : undefined;
+}
+
+function parseAgentConfig(
+  content: string,
+  source: "user" | "project",
+  filePath: string,
+): AgentConfig | null {
+  let parsed: ReturnType<typeof parseFrontmatter<Record<string, unknown>>>;
+  try {
+    parsed = parseFrontmatter<Record<string, unknown>>(content);
+  } catch {
+    return null;
+  }
+  const { frontmatter, body } = parsed;
+  if (
+    typeof frontmatter !== "object" ||
+    frontmatter === null ||
+    Array.isArray(frontmatter)
+  )
+    return null;
+  const {
+    name,
+    description,
+    tools: rawTools,
+    skills: rawSkills,
+    thinking: rawThinking,
+  } = frontmatter;
+  if (typeof name !== "string" || typeof description !== "string") return null;
+  if (rawTools != null && typeof rawTools !== "string") return null;
+  if (rawSkills != null && typeof rawSkills !== "string") return null;
+  if (rawThinking != null && typeof rawThinking !== "string") return null;
+  const tools = parseCommaList(rawTools);
+  const skills = Object.hasOwn(frontmatter, "skills")
+    ? (parseCommaList(rawSkills) ?? [])
+    : undefined;
+  const thinking = parseThinkingLevel(rawThinking);
+  return {
+    name,
+    description,
+    tools,
+    skills,
+    thinking,
+    systemPrompt: body,
+    source,
+    filePath,
+  };
 }
 
 function loadAgentsFromDir(
@@ -82,45 +140,36 @@ function loadAgentsFromDir(
     } catch {
       continue;
     }
-    let parsed: ReturnType<typeof parseFrontmatter<Record<string, unknown>>>;
+    const agent = parseAgentConfig(content, source, filePath);
+    if (agent) agents.push(agent);
+  }
+  return agents;
+}
+
+async function loadAgentsFromDirAsync(
+  dir: string,
+  source: "user" | "project",
+): Promise<AgentConfig[]> {
+  const agents: AgentConfig[] = [];
+  if (!(await isDirectoryAsync(dir))) return agents;
+  let entries: fs.Dirent[];
+  try {
+    entries = await fsPromises.readdir(dir, { withFileTypes: true });
+  } catch {
+    return agents;
+  }
+  for (const entry of entries) {
+    if (!entry.name.endsWith(".md")) continue;
+    if (!entry.isFile() && !entry.isSymbolicLink()) continue;
+    const filePath = path.join(dir, entry.name);
+    let content: string;
     try {
-      parsed = parseFrontmatter<Record<string, unknown>>(content);
+      content = await fsPromises.readFile(filePath, "utf-8");
     } catch {
       continue;
     }
-    const { frontmatter, body } = parsed;
-    if (
-      typeof frontmatter !== "object" ||
-      frontmatter === null ||
-      Array.isArray(frontmatter)
-    )
-      continue;
-    const {
-      name,
-      description,
-      tools: rawTools,
-      skills: rawSkills,
-      thinking: rawThinking,
-    } = frontmatter;
-    if (typeof name !== "string" || typeof description !== "string") continue;
-    if (rawTools != null && typeof rawTools !== "string") continue;
-    if (rawSkills != null && typeof rawSkills !== "string") continue;
-    if (rawThinking != null && typeof rawThinking !== "string") continue;
-    const tools = parseCommaList(rawTools);
-    const skills = Object.hasOwn(frontmatter, "skills")
-      ? (parseCommaList(rawSkills) ?? [])
-      : undefined;
-    const thinking = parseThinkingLevel(rawThinking);
-    agents.push({
-      name,
-      description,
-      tools,
-      skills,
-      thinking,
-      systemPrompt: body,
-      source,
-      filePath,
-    });
+    const agent = parseAgentConfig(content, source, filePath);
+    if (agent) agents.push(agent);
   }
   return agents;
 }
@@ -133,11 +182,32 @@ function isDirectory(p: string): boolean {
   }
 }
 
+async function isDirectoryAsync(p: string): Promise<boolean> {
+  try {
+    return (await fsPromises.stat(p)).isDirectory();
+  } catch {
+    return false;
+  }
+}
+
 function findNearestProjectAgentsDir(cwd: string): string | null {
   let currentDir = cwd;
   while (true) {
     const candidate = path.join(currentDir, ".pi", "agents");
     if (isDirectory(candidate)) return candidate;
+    const parentDir = path.dirname(currentDir);
+    if (parentDir === currentDir) return null;
+    currentDir = parentDir;
+  }
+}
+
+async function findNearestProjectAgentsDirAsync(
+  cwd: string,
+): Promise<string | null> {
+  let currentDir = cwd;
+  while (true) {
+    const candidate = path.join(currentDir, ".pi", "agents");
+    if (await isDirectoryAsync(candidate)) return candidate;
     const parentDir = path.dirname(currentDir);
     if (parentDir === currentDir) return null;
     currentDir = parentDir;
@@ -156,10 +226,22 @@ export function discoverAgents(
     scope === "user" || !projectAgentsDir
       ? []
       : loadAgentsFromDir(projectAgentsDir, "project");
-  const agentMap = new Map<string, AgentConfig>();
-  for (const agent of userAgents) agentMap.set(agent.name, agent);
-  for (const agent of projectAgents) agentMap.set(agent.name, agent);
-  return { agents: Array.from(agentMap.values()), projectAgentsDir };
+  return mergeAgentLists(userAgents, projectAgents, projectAgentsDir);
+}
+
+export async function discoverAgentsAsync(
+  cwd: string,
+  scope: AgentScope,
+): Promise<AgentDiscoveryResult> {
+  const userDir = path.join(getAgentDir(), "agents");
+  const projectAgentsDir = await findNearestProjectAgentsDirAsync(cwd);
+  const [userAgents, projectAgents] = await Promise.all([
+    scope === "project" ? [] : loadAgentsFromDirAsync(userDir, "user"),
+    scope === "user" || !projectAgentsDir
+      ? []
+      : loadAgentsFromDirAsync(projectAgentsDir, "project"),
+  ]);
+  return mergeAgentLists(userAgents, projectAgents, projectAgentsDir);
 }
 
 export function formatAgentList(
