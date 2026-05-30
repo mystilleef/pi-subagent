@@ -1,10 +1,5 @@
 import { expect, test } from "bun:test";
-import {
-  extractSemanticToolTarget,
-  filterOutputLines,
-  isFailureDiagnosticLine,
-  isTranscriptNoiseLine,
-} from "../src/output/normalize.js";
+import { extractSemanticToolTarget } from "../src/output/normalize.js";
 import {
   FEEDBACK_UI_SUMMARY_MAX_CHARS,
   formatSubagentResultForParent,
@@ -140,44 +135,6 @@ test("parent formatter remains raw formatted content", () => {
       result({ finalOutput: "Outcome: Shipped fix.\nVerification: bun test" }),
     ),
   ).toBe("Outcome: Shipped fix.\nVerification: bun test");
-});
-
-test("isTranscriptNoiseLine identifies noise correctly", () => {
-  expect(isTranscriptNoiseLine("Hello! I can help.")).toBe(true);
-  expect(isTranscriptNoiseLine("Hi there")).toBe(true);
-  expect(isTranscriptNoiseLine("Hi, there")).toBe(true);
-  expect(isTranscriptNoiseLine("Reasoning: I checked the repo")).toBe(true);
-  expect(isTranscriptNoiseLine("Raw log: child output")).toBe(true);
-  expect(isTranscriptNoiseLine("Apologies for the issue")).toBe(true);
-  expect(isTranscriptNoiseLine("Sorry for the issue")).toBe(true);
-  expect(isTranscriptNoiseLine("High severity issue")).toBe(false);
-  expect(isTranscriptNoiseLine("history matters")).toBe(false);
-  expect(isTranscriptNoiseLine("hiatus planned")).toBe(false);
-  expect(isTranscriptNoiseLine("Migration applied successfully.")).toBe(false);
-});
-
-test("isFailureDiagnosticLine identifies diagnostics correctly", () => {
-  expect(isFailureDiagnosticLine("Error: bad import")).toBe(true);
-  expect(isFailureDiagnosticLine("at Object.<anonymous> (/tmp/x.ts:1:1)")).toBe(
-    true,
-  );
-  expect(isFailureDiagnosticLine("Migration applied.")).toBe(false);
-});
-
-test("filterOutputLines keeps UI-only filtering behavior", () => {
-  expect(
-    filterOutputLines(
-      "Hello! I can help.\nApologies for the delay.\nActual result here.",
-    ),
-  ).toEqual(["Actual result here."]);
-  expect(
-    filterOutputLines(
-      "at Object.<anonymous> (/tmp/test.ts:1:1)\nError: bad import\nMigration applied successfully.",
-    ),
-  ).toEqual(["Migration applied successfully."]);
-  expect(
-    filterOutputLines("Hi there\nHigh severity issue\nhistory\nhiatus"),
-  ).toEqual(["High severity issue", "history", "hiatus"]);
 });
 
 test("extractSemanticToolTarget hides unknown args unless forced", () => {

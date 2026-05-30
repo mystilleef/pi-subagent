@@ -32,27 +32,6 @@ export function extractSemanticToolTarget(
   return "";
 }
 
-export function isTranscriptNoiseLine(line: string): boolean {
-  return /^(?:(?:hello|hi|hey)(?:[!,.?:;]+|\s|$)|reasoning:|raw log:|apolog(?:y|ies)|sorry\b)/i.test(
-    line,
-  );
-}
-
-export function isFailureDiagnosticLine(line: string): boolean {
-  return /^(?:at\s+|error:|failed:|failure:|exception:|traceback\b|caused by:)/i.test(
-    line,
-  );
-}
-
-export function filterOutputLines(output: string): string[] {
-  return output
-    .split(/\r?\n/)
-    .map((l) => l.trim())
-    .filter(
-      (l) => l && !isTranscriptNoiseLine(l) && !isFailureDiagnosticLine(l),
-    );
-}
-
 export function stripTerminalStatusPrefixes(value: string): string {
   return value.replace(/^(?:(?:success|failure):\s*)+/i, "");
 }
