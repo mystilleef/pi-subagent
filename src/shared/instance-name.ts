@@ -109,56 +109,9 @@ const DEFAULT_NOUNS = [
   "zephyr",
 ] as const;
 
-const usedInstanceNames = new Set<string>();
-
-let adjectives: readonly string[] = DEFAULT_ADJECTIVES;
-let nouns: readonly string[] = DEFAULT_NOUNS;
-let randomSource: () => number = Math.random;
-
-function normalizeRandomIndex(limit: number): number {
-  const value = randomSource();
-  if (!Number.isFinite(value)) return 0;
-  return Math.min(limit - 1, Math.max(0, Math.floor(value * limit)));
-}
-
-function nameAt(index: number): string {
-  const adjective = adjectives[Math.floor(index / nouns.length)];
-  const noun = nouns[index % nouns.length];
-  return `${adjective}-${noun}`;
-}
-
 export function generateSubagentInstanceName(): string {
-  const capacity = adjectives.length * nouns.length;
-  if (usedInstanceNames.size >= capacity) {
-    throw new Error(
-      "No unused subagent instance names remain for this session.",
-    );
-  }
-  const start = normalizeRandomIndex(capacity);
-  for (let offset = 0; offset < capacity; offset += 1) {
-    const candidate = nameAt((start + offset) % capacity);
-    if (!usedInstanceNames.has(candidate)) {
-      usedInstanceNames.add(candidate);
-      return candidate;
-    }
-  }
-  throw new Error("No unused subagent instance names remain for this session.");
-}
-
-export function resetSubagentInstanceNamesForTest() {
-  usedInstanceNames.clear();
-  adjectives = DEFAULT_ADJECTIVES;
-  nouns = DEFAULT_NOUNS;
-  randomSource = Math.random;
-}
-
-export function configureSubagentInstanceNamesForTest(options: {
-  adjectives?: readonly string[];
-  nouns?: readonly string[];
-  randomSource?: () => number;
-}) {
-  usedInstanceNames.clear();
-  adjectives = options.adjectives ?? DEFAULT_ADJECTIVES;
-  nouns = options.nouns ?? DEFAULT_NOUNS;
-  randomSource = options.randomSource ?? Math.random;
+  const adj =
+    DEFAULT_ADJECTIVES[Math.floor(Math.random() * DEFAULT_ADJECTIVES.length)];
+  const noun = DEFAULT_NOUNS[Math.floor(Math.random() * DEFAULT_NOUNS.length)];
+  return `${adj}-${noun}`;
 }
