@@ -43,15 +43,6 @@ import {
 const MAX_STDERR_BYTES = 10_000;
 const AGENT_END_GRACE_MS = 250;
 
-function thinkingWarningFor(
-  requested: ThinkingLevel,
-  effective: ThinkingLevel,
-  provider: string,
-  modelId: string,
-): string {
-  return `Thinking level "${requested}" not supported by model "${provider}/${modelId}"; using "${effective}" instead`;
-}
-
 export function resolveThinkingLevel(
   requested: ThinkingLevel,
   provider: string,
@@ -59,11 +50,10 @@ export function resolveThinkingLevel(
 ): { level: ThinkingLevel; warning?: string } {
   const model = getModel(provider as never, modelId as never);
   if (!model) return { level: requested };
+  const mkWarning = (effective: ThinkingLevel) =>
+    `Thinking level "${requested}" not supported by model "${provider}/${modelId}"; using "${effective}" instead`;
   if (model.reasoning === false) {
-    return {
-      level: "off",
-      warning: thinkingWarningFor(requested, "off", provider, modelId),
-    };
+    return { level: "off", warning: mkWarning("off") };
   }
   if (!model.thinkingLevelMap) return { level: requested };
   const supported = getSupportedThinkingLevels(model);
@@ -73,16 +63,20 @@ export function resolveThinkingLevel(
     requested as ModelThinkingLevel,
   ) as ThinkingLevel;
   if (clamped === requested) return { level: requested };
-  return {
-    level: clamped,
-    warning: thinkingWarningFor(requested, clamped, provider, modelId),
-  };
+  return { level: clamped, warning: mkWarning(clamped) };
 }
 
-const MAX_SUBAGENT_DEPTH = 1;
+const MAX_SUBAGENT_DEPTH = 3;
 export const TOOL_RESULT_FAILED_MESSAGE = "Subagent tool result failed.";
 
 type RuntimeResult = SingleResult & { messages: Message[] };
+
+export class SubagentAbortError extends Error {
+  constructor(public readonly result: SingleResult) {
+    super("Subagent was aborted");
+    this.name = "SubagentAbortError";
+  }
+}
 
 type TempPrompt = { dir: string; filePath: string };
 
@@ -96,10 +90,6 @@ interface SubagentState {
   terminationPromise?: Promise<unknown>;
 }
 
-/**
- * Appends data to a string while ensuring the result does not exceed a maximum byte limit.
- * Used to prevent memory exhaustion when capturing child process stderr.
- */
 function appendWithByteLimit(
   current: string,
   data: string,
@@ -130,9 +120,6 @@ function resolveContextWindowTokens(msg: Message): number | undefined {
   }
 }
 
-/**
- * Normalizes AbortSignal reasons into human-readable strings.
- */
 function getAbortReason(signal: AbortSignal): string {
   const { reason } = signal;
   if (reason instanceof Error && reason.message) return reason.message;
@@ -285,9 +272,6 @@ function addMessageToResult(result: RuntimeResult, msg: Message): void {
   if (msg.errorMessage) result.errorMessage = msg.errorMessage;
 }
 
-/**
- * Standardized error result generator.
- */
 function createErrorResult(
   agent: string,
   source: "user" | "project" | "unknown",
@@ -594,7 +578,7 @@ async function finalizeResult(
   if (agentEndTimeoutExitCode !== undefined) {
     state.result.exitCode = agentEndTimeoutExitCode;
   }
-  if (state.wasAborted) throw new Error("Subagent was aborted");
+  if (state.wasAborted) throw new SubagentAbortError(state.result);
   return state.result;
 }
 
@@ -606,7 +590,7 @@ async function finalizeResult(
  * the main conversation.
  *
  * Safety:
- * - Enforces a strict recursion limit (depth 1) via environment variables.
+ * - Enforces a strict recursion limit (depth 3) via environment variables.
  * - Uses temporary prompt files to pass large system prompts without shell limits.
  * - Streams JSON events from the child to provide real-time UI updates to the parent.
  * - Implements aggressive process tree termination to prevent orphan processes.
