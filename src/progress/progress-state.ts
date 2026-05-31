@@ -274,22 +274,6 @@ export function formatElapsed(ms: number): string {
   return `${mins}m ${secs}s`;
 }
 
-/**
- * Format a raw token count for compact inline display.
- * Values below 1000 rendered as-is. Larger counts use `k`
- * or `M` suffixes with one decimal place, stripping trailing `.0`.
- */
-export function formatTokenCount(count: number): string {
-  if (count < 1000) return String(count);
-  const unit = count >= 1_000_000 ? "M" : "k";
-  const divisor = count >= 1_000_000 ? 1_000_000 : 1000;
-  return `${trimTrailingZero((count / divisor).toFixed(1))}${unit}`;
-}
-
-function trimTrailingZero(value: string): string {
-  return value.endsWith(".0") ? value.slice(0, -2) : value;
-}
-
 export function formatContextPercent(state: SubagentProgressState): string {
   const d = state.contextWindowTokens;
   if (!d || d <= 0 || !Number.isFinite(d)) return "--%";

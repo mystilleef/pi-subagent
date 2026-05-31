@@ -32,7 +32,7 @@ export function extractSemanticToolTarget(
   return "";
 }
 
-export function stripTerminalStatusPrefixes(value: string): string {
+function stripTerminalStatusPrefixes(value: string): string {
   return value.replace(/^(?:(?:success|failure):\s*)+/i, "");
 }
 

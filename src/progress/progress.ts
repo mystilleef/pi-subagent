@@ -41,7 +41,6 @@ export {
   formatContextPercent,
   formatElapsed,
   formatHeaderStats,
-  formatTokenCount,
   getProgressState,
   makeTaskPreview,
   type ProgressStatus,

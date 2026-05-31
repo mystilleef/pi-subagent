@@ -20,7 +20,6 @@ import {
   createProgressState,
   finalizeProgressState,
   formatHeaderStats,
-  formatTokenCount,
   getProgressState,
   patchProgressState,
   resetProgressStore,
@@ -77,11 +76,6 @@ describe("Coverage Gaps", () => {
     });
   });
   describe("progress.ts helpers and defaults", () => {
-    test("formatTokenCount with Millions", () => {
-      expect(formatTokenCount(1_000_000)).toBe("1M");
-      expect(formatTokenCount(1_500_000)).toBe("1.5M");
-      expect(formatTokenCount(2_000_000)).toBe("2M");
-    });
     test("formatHeaderStats edges", () => {
       expect(
         formatHeaderStats({

@@ -10,7 +10,6 @@ import {
   finalizeProgressState,
   formatElapsed,
   formatHeaderStats,
-  formatTokenCount,
   getProgressState,
   makeTaskPreview,
   makeToolPreview,
@@ -1004,7 +1003,6 @@ test("renderSubagentProgress component reads patched state on later renders", ()
 });
 
 test("format header stats renders tool count context percent and elapsed", () => {
-  expect(formatTokenCount(12345)).toBe("12.3k");
   const stats = formatHeaderStats({
     requestId: "req-1",
     agent: "agent-a",
