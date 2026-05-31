@@ -162,6 +162,7 @@ export type RegisteredMessageRenderer = Parameters<
 
 export function getSubagentTool(overrides?: {
   sendMessage?: (msg: SendMessageArg) => void;
+  thinkingLevel?: string;
 }): CapturedSubagentTool & {
   registeredCommands: Map<string, RegisteredCommandOptions>;
   registeredMessageRenderers: Map<string, RegisteredMessageRenderer>;
@@ -181,7 +182,7 @@ export function getSubagentTool(overrides?: {
       registeredCommands.set(name, command);
     },
     getThinkingLevel() {
-      return "off";
+      return overrides?.thinkingLevel ?? "off";
     },
     registerMessageRenderer(name: string, renderer: RegisteredMessageRenderer) {
       registeredMessageRenderers.set(name, renderer);

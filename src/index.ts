@@ -11,11 +11,11 @@ import { jobsCommandHandler } from "./orchestration/jobs-command.js";
 import { renderSubagentResultMessage } from "./orchestration/run.js";
 import { runCommandHandler } from "./orchestration/run-command.js";
 import {
-  formatStartJobStatus,
+  formatSubagentToolResult,
   SubagentParams,
   startSubagentJob,
 } from "./orchestration/subagent-orchestrator.js";
-import { renderSubagentCall, renderSubagentResult } from "./output/ui.js";
+import { renderSubagentCall, renderSubagentToolResult } from "./output/ui.js";
 import { renderSubagentProgress } from "./progress/progress.js";
 
 export { SubagentParams };
@@ -55,21 +55,13 @@ export default function registerSubagentExtension(pi: ExtensionAPI) {
         params,
         signal ?? undefined,
       );
-      return {
-        content: [
-          {
-            type: "text" as const,
-            text: formatStartJobStatus(params.agent, result),
-          },
-        ],
-        details: result.makeDetails([]),
-      };
+      return formatSubagentToolResult(params.agent, result);
     },
     renderCall(args, theme, _context) {
       return renderSubagentCall(args, theme);
     },
     renderResult(result, display, theme, _context) {
-      return renderSubagentResult(result, theme, display);
+      return renderSubagentToolResult(result, theme, display);
     },
   });
 }

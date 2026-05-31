@@ -180,6 +180,54 @@ test("renderResult output aggregation and truncation", () => {
   expect(text).toContain("[toolOutput]final text line 4[/toolOutput]");
 });
 
+test("renderResult suppresses direct nested result when message rendered it", () => {
+  const tool = getSubagentTool();
+  const fakeTheme: FakeTheme = {
+    fg: (color, text) => `[${color}]${text}[/${color}]`,
+    bg: (color, text) => `[${color}]${text}[/${color}]`,
+    bold: (text) => `*${text}*`,
+  };
+  const fakeContext = {} as unknown as ExtensionContext;
+  const rendered = tool.renderResult?.(
+    {
+      content: [{ type: "text" as const, text: "done" }],
+      details: {
+        mode: "single" as const,
+        agentScope: "both" as const,
+        projectAgentsDir: null,
+        renderedByMessage: true as const,
+        results: [
+          {
+            agent: "nested-agent",
+            agentSource: "user" as const,
+            task: "nested",
+            exitCode: 0,
+            finalOutput: "done",
+            stderr: "",
+            usage: {
+              input: 0,
+              output: 0,
+              cacheRead: 0,
+              cacheWrite: 0,
+              cost: 0,
+              contextTokens: 0,
+              turns: 0,
+            },
+          },
+        ],
+      },
+    } as AgentToolResult<SubagentDetails>,
+    { expanded: false, isPartial: false },
+    fakeTheme as never,
+    fakeContext as never,
+  );
+  const text = renderToString(rendered);
+  expect(text).toBe("");
+  expect(text).not.toContain("nested-agent");
+  expect(text).not.toContain("done");
+  expect(text).not.toContain("[success]");
+});
+
 test("renderResult expanded output", () => {
   const tool = getSubagentTool();
   const fakeTheme: FakeTheme = {

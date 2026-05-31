@@ -48,6 +48,7 @@ export interface SubagentDetails {
   agentScope: AgentScope;
   projectAgentsDir: string | null;
   results: SingleResult[];
+  renderedByMessage?: true;
 }
 
 export interface SubagentToolResult {

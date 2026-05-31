@@ -25,8 +25,6 @@ import {
   normalizeSummaryValue,
 } from "./normalize.js";
 
-export type { ThemeBg };
-
 /**
  * Abstraction for theme-aware text formatting.
  */
@@ -190,6 +188,16 @@ export function renderSubagentCall(
     theme.fg("muted", ` [${scope}]`);
   text += `\n  ${theme.fg("dim", target)}`;
   return new Text(text, 0, 0, (line) => theme.bg("toolPendingBg", line));
+}
+
+export function renderSubagentToolResult(
+  result: { content: { type: string; text?: string }[]; details?: unknown },
+  theme: SubagentTheme,
+  display?: { isPartial?: boolean },
+): Component {
+  const details = result.details as SubagentDetails | undefined;
+  if (details?.renderedByMessage) return new Text("", 0, 0);
+  return renderSubagentResult(result, theme, display);
 }
 
 /**

@@ -6,10 +6,14 @@ import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { discoverAgentsAsync } from "../src/agent/agents.js";
 import { SUBAGENT_RESULT_CONTRACT } from "../src/child/prompt-contract.js";
 import {
+  cancelRunJob,
   listRunJobs,
   resetRunRegistry,
 } from "../src/orchestration/run-registry.js";
-import { emitCompletionAlert } from "../src/orchestration/subagent-orchestrator.js";
+import {
+  emitCompletionAlert,
+  formatSubagentToolResult,
+} from "../src/orchestration/subagent-orchestrator.js";
 import {
   cancelProgressState,
   createProgressState,
@@ -27,11 +31,29 @@ import {
   setupTest,
   shellQuote,
   waitFor,
+  waitForRunJobCount,
   waitForRunJobsCleared,
+  waitForSentMessage,
   waitForSentMessageCount,
 } from "./helpers.js";
 
 setupHooks();
+
+test("subagent tool result adapter passes through completed results", () => {
+  const completed = {
+    content: [{ type: "text" as const, text: "done" }],
+    details: {
+      mode: "single" as const,
+      agentScope: "both" as const,
+      projectAgentsDir: null,
+      renderedByMessage: true as const,
+      results: [],
+    },
+  };
+  expect(
+    formatSubagentToolResult("hang", { kind: "completed", result: completed }),
+  ).toBe(completed);
+});
 
 test("subagent tool returns job-started immediately without waiting for child", async () => {
   const sentMessages: SendMessageArg[] = [];
@@ -119,6 +141,363 @@ test("subagent tool result appears in sent messages after child exits", async ()
   expect(resultDetails.results[0]?.instanceName).toBe(
     startDetails.instanceName,
   );
+});
+
+test("positive-depth subagent tool waits for success and returns completed result", async () => {
+  const sentMessages: SendMessageArg[] = [];
+  const { tool, cwd } = await setupTest({
+    sendMessage: (msg) => sentMessages.push(msg),
+  });
+  process.env.PI_SUBAGENT_DEPTH = "1";
+  const result = await tool.execute(
+    "test-tool-call",
+    { agent: "hang", task: "nested" },
+    undefined,
+    undefined,
+    { cwd, hasUI: false } as unknown as ExtensionContext,
+  );
+  expect((result.content[0] as TextContent).text).toBe("done");
+  expect(sentMessages).toHaveLength(2);
+  expect(sentMessages[0]?.customType).toBe("subagent-progress");
+  expect(sentMessages[1]?.customType).toBe("subagent-result");
+  const startDetails = sentMessages[0]?.details as {
+    instanceName?: string;
+    requestId?: string;
+  };
+  const messageDetails = sentMessages[1]?.details as SubagentDetails;
+  const directDetails = result.details as SubagentDetails;
+  const requestId = startDetails.requestId;
+  if (!requestId) throw new Error("requestId missing");
+  expect(sentMessages[1]?.content).toBe("done");
+  expect(directDetails.renderedByMessage).toBe(true);
+  expect(directDetails.results[0]?.finalOutput).toBe("done");
+  expect(directDetails.results[0]?.stderr).toBe("");
+  expect(directDetails.results[0]?.messages).toBeUndefined();
+  expect(directDetails.results[0]?.instanceName).toBe(
+    startDetails.instanceName,
+  );
+  expect(messageDetails.results[0]?.instanceName).toBe(
+    startDetails.instanceName,
+  );
+  expect(messageDetails.results[0]?.finalOutput).toBe("done");
+  expect(getProgressState(requestId)?.status).toBe("success");
+  expect(listRunJobs()).toHaveLength(0);
+});
+
+test("positive-depth concurrent subagent calls keep independent jobs and progress", async () => {
+  const sentMessages: SendMessageArg[] = [];
+  const originalRandom = Math.random;
+  const randomValues = [0, 0, 0.5, 0.5];
+  Math.random = () => randomValues.shift() ?? originalRandom();
+  try {
+    const { tool, cwd } = await setupTest({
+      sendMessage: (msg) => sentMessages.push(msg),
+      piScript: `#!/bin/sh
+text=unknown
+case "$*" in
+  *"task one"*) text=one ;;
+  *"task two"*) text=two ;;
+esac
+sleep 0.1
+printf '%s\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"'"$text"'"}],"usage":{"input":1,"output":1,"totalTokens":2,"cost":{"total":0}}}}'
+printf '%s\n' '{"type":"agent_end"}'
+exit 0
+`,
+    });
+    process.env.PI_SUBAGENT_DEPTH = "1";
+    const ctx = { cwd, hasUI: false } as unknown as ExtensionContext;
+    const calls = [
+      tool.execute(
+        "nested-1",
+        { agent: "hang", task: "task one" },
+        undefined,
+        undefined,
+        ctx,
+      ),
+      tool.execute(
+        "nested-2",
+        { agent: "hang", task: "task two" },
+        undefined,
+        undefined,
+        ctx,
+      ),
+    ];
+    await waitForRunJobCount(2);
+    const runningJobs = listRunJobs();
+    expect(new Set(runningJobs.map((job) => job.requestId)).size).toBe(2);
+    expect(new Set(runningJobs.map((job) => job.instanceName)).size).toBe(2);
+    const results = await Promise.all(calls);
+    const starts = sentMessages.filter(
+      (msg) =>
+        msg.customType === "subagent-progress" &&
+        Boolean((msg.details as { requestId?: string } | undefined)?.requestId),
+    );
+    const terminals = sentMessages.filter(
+      (msg) => msg.customType === "subagent-result",
+    );
+    const startIds = starts.map(
+      (msg) => (msg.details as { requestId: string }).requestId,
+    );
+    const startInstances = starts.map(
+      (msg) => (msg.details as { instanceName: string }).instanceName,
+    );
+    const directDetails = results.map(
+      (result) => result.details as SubagentDetails,
+    );
+    const terminalDetails = terminals.map(
+      (msg) => msg.details as SubagentDetails,
+    );
+    expect(starts).toHaveLength(2);
+    expect(terminals).toHaveLength(2);
+    expect(new Set(startIds).size).toBe(2);
+    expect(new Set(startInstances).size).toBe(2);
+    expect(
+      results.map((result) => (result.content[0] as TextContent).text).sort(),
+    ).toEqual(["one", "two"]);
+    expect(terminals.map((msg) => msg.content).sort()).toEqual(["one", "two"]);
+    expect(directDetails.every((details) => details.renderedByMessage)).toBe(
+      true,
+    );
+    expect(
+      directDetails.map((details) => details.results[0]?.instanceName).sort(),
+    ).toEqual(startInstances.toSorted());
+    expect(
+      terminalDetails.map((details) => details.results[0]?.instanceName).sort(),
+    ).toEqual(startInstances.toSorted());
+    for (const [index, requestId] of startIds.entries()) {
+      const state = getProgressState(requestId);
+      expect(state?.status).toBe("success");
+      expect(state?.instanceName).toBe(startInstances[index]);
+    }
+    expect(listRunJobs()).toHaveLength(0);
+  } finally {
+    Math.random = originalRandom;
+  }
+});
+
+test("positive-depth subagent tool returns completed result for child failure", async () => {
+  const sentMessages: SendMessageArg[] = [];
+  const { binDir, cwd } = await setupFakePi();
+  const finalOutput =
+    "Outcome: failed at verify\nCause: parsed cause\nVerification: parsed verification\nNext: parsed next";
+  const messageEnd = JSON.stringify({
+    type: "message_end",
+    message: {
+      role: "assistant",
+      content: [{ type: "text", text: finalOutput }],
+    },
+  });
+  const toolResultEnd = JSON.stringify({
+    type: "message_end",
+    message: { role: "toolResult", content: [], isError: true },
+  });
+  await writeFile(
+    path.join(binDir, "pi"),
+    `#!/bin/sh
+printf '%s\n' ${shellQuote(messageEnd)}
+printf '%s\n' ${shellQuote(toolResultEnd)}
+printf '%s\n' '{"type":"agent_end"}'
+exit 0
+`,
+  );
+  await chmod(path.join(binDir, "pi"), 0o755);
+  const tool = getSubagentTool({
+    sendMessage: (msg) => sentMessages.push(msg),
+  });
+  process.env.PI_SUBAGENT_DEPTH = "1";
+  const result = await tool.execute(
+    "test-tool-call",
+    { agent: "hang", task: "nested failure" },
+    undefined,
+    undefined,
+    { cwd, hasUI: false } as unknown as ExtensionContext,
+  );
+  expect((result.content[0] as TextContent).text).toBe(finalOutput);
+  expect(sentMessages).toHaveLength(2);
+  const startDetails = sentMessages[0]?.details as {
+    instanceName?: string;
+    requestId?: string;
+  };
+  const requestId = startDetails.requestId;
+  if (!requestId) throw new Error("requestId missing");
+  const directDetails = result.details as SubagentDetails;
+  expect(directDetails.renderedByMessage).toBe(true);
+  expect(directDetails.results[0]?.instanceName).toBe(
+    startDetails.instanceName,
+  );
+  expect(directDetails.results[0]?.finalOutput).toBe(finalOutput);
+  expect(directDetails.results[0]?.stderr).toBe("");
+  expect(directDetails.results[0]?.messages).toBeUndefined();
+  expect(directDetails.results[0]?.termination).toBeUndefined();
+  expect(getProgressState(requestId)?.status).toBe("error");
+  expect(listRunJobs()).toHaveLength(0);
+});
+
+test("positive-depth subagent tool returns completed result for setup failure", async () => {
+  const sentMessages: SendMessageArg[] = [];
+  const { agentDir, cwd } = await setupFakePi();
+  await writeFile(
+    path.join(agentDir, "agents", "needs-skill.md"),
+    `---
+name: needs-skill
+description: Needs a skill
+skills: missing-skill
+---
+Prompt`,
+  );
+  const tool = getSubagentTool({
+    sendMessage: (msg) => sentMessages.push(msg),
+  });
+  process.env.PI_SUBAGENT_DEPTH = "1";
+  const result = await tool.execute(
+    "test-tool-call",
+    { agent: "needs-skill", task: "nested setup" },
+    undefined,
+    undefined,
+    { cwd, hasUI: false } as unknown as ExtensionContext,
+  );
+  expect((result.content[0] as TextContent).text).toBe("(failed)");
+  expect(sentMessages).toHaveLength(2);
+  const requestId = (sentMessages[0]?.details as { requestId?: string })
+    ?.requestId;
+  if (!requestId) throw new Error("requestId missing");
+  const directDetails = result.details as SubagentDetails;
+  expect(directDetails.renderedByMessage).toBe(true);
+  expect(directDetails.results[0]?.exitCode).toBe(1);
+  expect(directDetails.results[0]?.stderr).toBe("");
+  expect(directDetails.results[0]?.messages).toBeUndefined();
+  expect(directDetails.results[0]?.termination).toBeUndefined();
+  expect(getProgressState(requestId)?.status).toBe("error");
+  expect(getProgressState(requestId)?.errorText).toContain("missing-skill");
+  expect(listRunJobs()).toHaveLength(0);
+});
+
+test("positive-depth subagent tool exposes debug details for stderr exit", async () => {
+  const sentMessages: SendMessageArg[] = [];
+  const { binDir, cwd } = await setupFakePi();
+  await writeFile(
+    path.join(binDir, "pi"),
+    `#!/bin/sh
+printf '%s\n' 'boom from stderr' >&2
+exit 7
+`,
+  );
+  await chmod(path.join(binDir, "pi"), 0o755);
+  const tool = getSubagentTool({
+    sendMessage: (msg) => sentMessages.push(msg),
+  });
+  process.env.PI_SUBAGENT_DEPTH = "1";
+  const result = await tool.execute(
+    "test-tool-call",
+    { agent: "hang", task: "nested stderr", debug: true },
+    undefined,
+    undefined,
+    { cwd, hasUI: false } as unknown as ExtensionContext,
+  );
+  expect((result.content[0] as TextContent).text).toBe("(failed)");
+  expect(sentMessages).toHaveLength(2);
+  const requestId = (sentMessages[0]?.details as { requestId?: string })
+    ?.requestId;
+  if (!requestId) throw new Error("requestId missing");
+  const directDetails = result.details as SubagentDetails;
+  expect(directDetails.results[0]?.exitCode).toBe(7);
+  expect(directDetails.results[0]?.stderr).toContain("boom from stderr");
+  expect(directDetails.results[0]?.messages).toHaveLength(0);
+  expect(getProgressState(requestId)?.status).toBe("error");
+  expect(getProgressState(requestId)?.errorText).toContain("boom from stderr");
+  expect(listRunJobs()).toHaveLength(0);
+});
+
+test("positive-depth subagent tool cancels on host abort with debug termination", async () => {
+  const sentMessages: SendMessageArg[] = [];
+  const { binDir, cwd } = await setupFakePi();
+  await writeFile(
+    path.join(binDir, "pi"),
+    `#!/bin/sh
+trap 'exit 0' TERM
+printf '%s\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"partial"}],"usage":{"input":1,"output":1,"totalTokens":2,"cost":{"total":0}}}}'
+sleep 10 &
+wait $!
+`,
+  );
+  await chmod(path.join(binDir, "pi"), 0o755);
+  const tool = getSubagentTool({
+    sendMessage: (msg) => sentMessages.push(msg),
+  });
+  const controller = new AbortController();
+  process.env.PI_SUBAGENT_DEPTH = "1";
+  const promise = tool.execute(
+    "test-tool-call",
+    { agent: "hang", task: "nested abort", debug: true },
+    controller.signal,
+    undefined,
+    { cwd, hasUI: false } as unknown as ExtensionContext,
+  );
+  await waitForSentMessage(sentMessages);
+  const requestId = (sentMessages[0]?.details as { requestId?: string })
+    ?.requestId;
+  if (!requestId) throw new Error("requestId missing");
+  await waitFor(
+    () => (getProgressState(requestId)?.inputTokens === 1 ? true : undefined),
+    "partial nested output",
+  );
+  controller.abort("host stop");
+  const result = await promise;
+  expect((result.content[0] as TextContent).text).toBe("Canceled");
+  const directDetails = result.details as SubagentDetails;
+  expect(directDetails.results[0]?.messages).toHaveLength(1);
+  expect(directDetails.results[0]?.termination?.cancelReason).toBe("host stop");
+  expect(getProgressState(requestId)?.status).toBe("cancelled");
+  expect(listRunJobs()).toHaveLength(0);
+  const resultMessages = sentMessages.filter(
+    (msg) => msg.customType === "subagent-result",
+  );
+  expect(resultMessages).toHaveLength(1);
+  expect(resultMessages[0]?.content).toBe("Canceled");
+});
+
+test("positive-depth subagent tool cancels on registered job abort", async () => {
+  const sentMessages: SendMessageArg[] = [];
+  const { binDir, cwd } = await setupFakePi();
+  await writeFile(
+    path.join(binDir, "pi"),
+    `#!/bin/sh
+trap 'exit 0' TERM
+sleep 10 &
+wait $!
+`,
+  );
+  await chmod(path.join(binDir, "pi"), 0o755);
+  const tool = getSubagentTool({
+    sendMessage: (msg) => sentMessages.push(msg),
+  });
+  process.env.PI_SUBAGENT_DEPTH = "1";
+  const promise = tool.execute(
+    "test-tool-call",
+    { agent: "hang", task: "nested cancel", debug: true },
+    undefined,
+    undefined,
+    { cwd, hasUI: false } as unknown as ExtensionContext,
+  );
+  await waitForSentMessage(sentMessages);
+  const requestId = (sentMessages[0]?.details as { requestId?: string })
+    ?.requestId;
+  if (!requestId) throw new Error("requestId missing");
+  expect(cancelRunJob(requestId, "nested cancel")).toBe(true);
+  const result = await promise;
+  expect((result.content[0] as TextContent).text).toBe("Canceled");
+  const directDetails = result.details as SubagentDetails;
+  expect(directDetails.results[0]?.termination?.cancelReason).toBe(
+    "nested cancel",
+  );
+  expect(getProgressState(requestId)?.status).toBe("cancelled");
+  expect(getProgressState(requestId)?.errorText).toContain("nested cancel");
+  expect(listRunJobs()).toHaveLength(0);
+  const resultMessages = sentMessages.filter(
+    (msg) => msg.customType === "subagent-result",
+  );
+  expect(resultMessages).toHaveLength(1);
+  expect(resultMessages[0]?.content).toBe("Canceled");
 });
 
 test("subagent tool finishes when child exits with inherited open streams", async () => {
@@ -765,6 +1144,164 @@ System prompt`,
   expect(listRunJobs()).toHaveLength(0);
 });
 
+test("positive-depth subagent tool preserves scope confirmation and collision semantics", async () => {
+  const sentMessages: SendMessageArg[] = [];
+  const { agentDir, cwd } = await setupFakePi();
+  const userAgentsDir = path.join(agentDir, "agents");
+  const projectAgentsDir = path.join(cwd, ".pi", "agents");
+  await mkdir(projectAgentsDir, { recursive: true });
+  await writeFile(
+    path.join(projectAgentsDir, "project-only.md"),
+    `---
+name: project-only
+description: Project only
+---
+Project prompt`,
+  );
+  await writeFile(
+    path.join(userAgentsDir, "same.md"),
+    `---
+name: same
+description: User same
+---
+User prompt`,
+  );
+  await writeFile(
+    path.join(projectAgentsDir, "same.md"),
+    `---
+name: same
+description: Project same
+---
+Project prompt`,
+  );
+  const tool = getSubagentTool({
+    sendMessage: (msg) => sentMessages.push(msg),
+  });
+  process.env.PI_SUBAGENT_DEPTH = "1";
+  const resultUser = await tool.execute(
+    "test-tool-call",
+    { agent: "project-only", task: "test", agentScope: "user" },
+    undefined,
+    undefined,
+    { cwd, hasUI: false } as unknown as ExtensionContext,
+  );
+  expect((resultUser.content[0] as TextContent).text).toContain(
+    'Unknown agent: "project-only"',
+  );
+  expect(sentMessages).toHaveLength(0);
+  expect(listRunJobs()).toHaveLength(0);
+  let confirmSawNoJob = false;
+  const rejectingUI = {
+    confirm: async () => {
+      confirmSawNoJob = sentMessages.length === 0 && listRunJobs().length === 0;
+      return false;
+    },
+  };
+  const cancelled = await tool.execute(
+    "test-tool-call",
+    { agent: "project-only", task: "test", agentScope: "both" },
+    undefined,
+    undefined,
+    { cwd, hasUI: true, ui: rejectingUI } as unknown as ExtensionContext,
+  );
+  expect(confirmSawNoJob).toBe(true);
+  expect((cancelled.content[0] as TextContent).text).toBe("Canceled");
+  expect(sentMessages).toHaveLength(0);
+  expect(listRunJobs()).toHaveLength(0);
+  const acceptingUI = { confirm: async () => true };
+  const resultSame = await tool.execute(
+    "test-tool-call",
+    { agent: "same", task: "collision", agentScope: "both" },
+    undefined,
+    undefined,
+    { cwd, hasUI: true, ui: acceptingUI } as unknown as ExtensionContext,
+  );
+  expect((resultSame.content[0] as TextContent).text).toBe("done");
+  expect(sentMessages).toHaveLength(3);
+  expect(sentMessages[0]?.customType).toBe("subagent-progress");
+  expect(sentMessages[0]?.content).toBe(
+    'Using project agent "same"; user agent with same name also exists.',
+  );
+  expect(sentMessages[1]?.customType).toBe("subagent-progress");
+  expect(sentMessages[2]?.customType).toBe("subagent-result");
+  expect((resultSame.details as SubagentDetails).results[0]?.agentSource).toBe(
+    "project",
+  );
+  expect(listRunJobs()).toHaveLength(0);
+});
+
+test("positive-depth subagent tool preserves parent runtime setup semantics", async () => {
+  const sentMessages: SendMessageArg[] = [];
+  const { agentDir, binDir, cwd } = await setupFakePi();
+  const skillDir = path.join(agentDir, "skills", "helper");
+  await mkdir(skillDir, { recursive: true });
+  await writeFile(
+    path.join(skillDir, "SKILL.md"),
+    `---
+name: helper
+description: Helper skill
+---
+Use helper skill.`,
+  );
+  await writeFile(
+    path.join(agentDir, "agents", "runtime-agent.md"),
+    `---
+name: runtime-agent
+description: Runtime agent
+skills: helper
+---
+Runtime prompt`,
+  );
+  await writeFile(
+    path.join(binDir, "pi"),
+    `#!/bin/sh
+printf '%s\n' "$*" > args.txt
+while [ "$#" -gt 0 ]; do
+  if [ "$1" = "--append-system-prompt" ]; then
+    shift
+    cat "$1" > prompt.txt
+  fi
+  shift
+done
+printf '%s\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"done"}],"usage":{"input":1,"output":1,"totalTokens":2,"cost":{"total":0}}}}'
+printf '%s\n' '{"type":"agent_end"}'
+exit 0
+`,
+  );
+  await chmod(path.join(binDir, "pi"), 0o755);
+  const tool = getSubagentTool({
+    sendMessage: (msg) => sentMessages.push(msg),
+    thinkingLevel: "high",
+  });
+  process.env.PI_SUBAGENT_DEPTH = "1";
+  const result = await tool.execute(
+    "test-tool-call",
+    { agent: "runtime-agent", task: "runtime task" },
+    undefined,
+    undefined,
+    {
+      cwd,
+      hasUI: false,
+      model: { provider: "fake-provider", id: "fake-model" },
+    } as unknown as ExtensionContext,
+  );
+  const argsText = await Bun.file(path.join(cwd, "args.txt")).text();
+  const promptText = await Bun.file(path.join(cwd, "prompt.txt")).text();
+  expect((result.content[0] as TextContent).text).toBe("done");
+  expect(argsText).toContain("--provider fake-provider --model fake-model");
+  expect(argsText).toContain("--thinking high");
+  expect(argsText).toContain("--no-skills --skill");
+  expect(argsText).toContain(path.join(skillDir, "SKILL.md"));
+  expect(argsText).toContain("--append-system-prompt");
+  expect(argsText).toContain("Task: runtime task");
+  expect(argsText).toContain(SUBAGENT_RESULT_CONTRACT);
+  expect(promptText).toBe("Runtime prompt");
+  expect((result.details as SubagentDetails).results[0]?.model).toBe(
+    "fake-provider/fake-model:high",
+  );
+  expect(listRunJobs()).toHaveLength(0);
+});
+
 test("subagent tool abort cancels the background job", async () => {
   const sentMessages: SendMessageArg[] = [];
   const { binDir, cwd } = await setupFakePi();
@@ -794,6 +1331,61 @@ wait $!
   const requestId = (sentMessages[0]?.details as { requestId?: string })
     ?.requestId;
   if (!requestId) throw new Error("requestId missing");
+  controller.abort();
+  await waitForRunJobsCleared();
+  expect(getProgressState(requestId)?.status).toBe("cancelled");
+});
+
+test("prepareSubagentJob returns aborted when host signal fires during sendMessage", async () => {
+  const sentMessages: SendMessageArg[] = [];
+  const controller = new AbortController();
+  const { tool, cwd } = await setupTest({
+    sendMessage: (msg) => {
+      sentMessages.push(msg);
+      controller.abort();
+    },
+  });
+  const result = await tool.execute(
+    "test-tool-call",
+    { agent: "hang", task: "test" },
+    controller.signal,
+    undefined,
+    { cwd, hasUI: false } as unknown as ExtensionContext,
+  );
+  expect((result.content[0] as TextContent).text).toBe("Canceled");
+  const requestId = (sentMessages[0]?.details as { requestId?: string })
+    ?.requestId;
+  if (!requestId) throw new Error("requestId missing");
+  expect(getProgressState(requestId)?.status).toBe("cancelled");
+  expect(listRunJobs()).toHaveLength(0);
+});
+
+test("startSubagentJob depth 0 cancels in setImmediate when signal already aborted", async () => {
+  const sentMessages: SendMessageArg[] = [];
+  const { binDir, cwd } = await setupFakePi();
+  await writeFile(
+    path.join(binDir, "pi"),
+    `#!/bin/sh
+trap 'exit 0' TERM
+sleep 10 &
+wait $!
+`,
+  );
+  const tool = getSubagentTool({
+    sendMessage: (msg) => sentMessages.push(msg),
+  });
+  const controller = new AbortController();
+  await tool.execute(
+    "test-tool-call",
+    { agent: "hang", task: "test" },
+    controller.signal,
+    undefined,
+    { cwd, hasUI: false } as unknown as ExtensionContext,
+  );
+  const requestId = (sentMessages[0]?.details as { requestId?: string })
+    ?.requestId;
+  if (!requestId) throw new Error("requestId missing");
+  expect(listRunJobs()).toHaveLength(1);
   controller.abort();
   await waitForRunJobsCleared();
   expect(getProgressState(requestId)?.status).toBe("cancelled");
@@ -995,8 +1587,8 @@ test("subagent tool reports depth limit synchronously via sent messages", async 
   const tool = getSubagentTool({
     sendMessage: (msg) => sentMessages.push(msg),
   });
-  process.env.PI_SUBAGENT_DEPTH = "1";
-  await tool.execute(
+  process.env.PI_SUBAGENT_DEPTH = "3";
+  const result = await tool.execute(
     "test-tool-call",
     { agent: "hang", task: "nested" },
     undefined,
@@ -1013,8 +1605,43 @@ test("subagent tool reports depth limit synchronously via sent messages", async 
   const requestId = (sentMessages[0]?.details as { requestId?: string })
     ?.requestId;
   if (!requestId) throw new Error("requestId missing");
+  const directDetails = result.details as SubagentDetails;
+  expect((result.content[0] as TextContent).text).toBe("(failed)");
+  expect(directDetails.renderedByMessage).toBe(true);
+  expect(directDetails.results[0]?.exitCode).toBe(1);
+  expect(directDetails.results[0]?.stderr).toBe("");
+  expect(directDetails.results[0]?.messages).toBeUndefined();
+  expect(directDetails.results[0]?.termination).toBeUndefined();
   expect(getProgressState(requestId)?.status).toBe("error");
   expect(getProgressState(requestId)?.errorText).toContain("depth");
+  expect(listRunJobs()).toHaveLength(0);
+});
+
+test("positive-depth subagent tool completes successfully at depth 2 (max-depth-minus-one)", async () => {
+  const sentMessages: SendMessageArg[] = [];
+  const { tool, cwd } = await setupTest({
+    sendMessage: (msg) => sentMessages.push(msg),
+  });
+  process.env.PI_SUBAGENT_DEPTH = "2";
+  const result = await tool.execute(
+    "test-tool-call",
+    { agent: "hang", task: "depth-2" },
+    undefined,
+    undefined,
+    { cwd, hasUI: false } as unknown as ExtensionContext,
+  );
+  const requestId = (sentMessages[0]?.details as { requestId?: string })
+    ?.requestId;
+  if (!requestId) throw new Error("requestId missing");
+  const directDetails = result.details as SubagentDetails;
+  expect((result.content[0] as TextContent).text).toContain("done");
+  expect(directDetails.results[0]?.finalOutput).toBe("done");
+  expect(getProgressState(requestId)?.status).toBe("success");
+  expect(listRunJobs()).toHaveLength(0);
+  const resultMessages = sentMessages.filter(
+    (msg) => msg.customType === "subagent-result",
+  );
+  expect(resultMessages).toHaveLength(1);
 });
 
 test("subagent tool reports unknown skill via sent messages", async () => {
