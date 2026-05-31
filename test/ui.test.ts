@@ -9,7 +9,6 @@ import {
   setCapabilities,
 } from "@earendil-works/pi-tui/dist/terminal-image.js";
 import {
-  formatDuration,
   formatResultFooter,
   formatTokens,
   formatToolCall,
@@ -649,9 +648,6 @@ test("renderSubagentResult formats units, fallback output, and failed tool resul
   expect(formatTokens(1500)).toBe("1.5k");
   expect(formatTokens(15_000)).toBe("15k");
   expect(formatTokens(1_500_000)).toBe("1.5M");
-  expect(formatDuration(850)).toBe("850ms");
-  expect(formatDuration(1234)).toBe("1.2s");
-  expect(formatDuration(65000)).toBe("1m 05s");
   expect(
     formatResultFooter(
       {
@@ -664,9 +660,8 @@ test("renderSubagentResult formats units, fallback output, and failed tool resul
         contextTokens: 38_000,
       },
       "provider/model:high",
-      1234,
     ),
-  ).toBe("provider/model:high · ctx:38k · 3 turns · 1.2s · $0.0120");
+  ).toBe("provider/model:high · 3 turns · ctx:38k · $0.0120");
   expect(
     formatResultFooter(
       {
@@ -679,9 +674,8 @@ test("renderSubagentResult formats units, fallback output, and failed tool resul
         contextTokens: 0,
       },
       undefined,
-      0,
     ),
-  ).toBe("0ms");
+  ).toBe("");
   expect(
     formatUsageStats(
       {
@@ -1304,7 +1298,7 @@ test("subagent result renders compact structured success output", () => {
   expect(renderedText).not.toContain("Outcome: shipped");
   expect(renderedText).toContain("[toolOutput]Changed: src/ui.ts[/toolOutput]");
   expect(renderedText).toContain(
-    "provider/model:high · ctx:38k · 3 turns · 1.2s · $0.0120",
+    "provider/model:high · 3 turns · ctx:38k · $0.0120",
   );
   expect(renderedText).not.toContain("↑12k");
   expect(renderedText).not.toContain("↓1.1k");
@@ -1764,6 +1758,215 @@ test("/run final result message renderer hides header and keeps success backgrou
       ),
   ).toBe(true);
 });
+
+test("formatResultFooter excludes duration from output", () => {
+  const footer = formatResultFooter(
+    {
+      turns: 5,
+      input: 10000,
+      output: 2000,
+      cacheRead: 500,
+      cacheWrite: 1000,
+      cost: 0.05,
+      contextTokens: 50000,
+      contextWindowTokens: 200000,
+    },
+    "test-model",
+  );
+  expect(footer).toBe("test-model · 5 turns · ctx:50k · $0.0500");
+  expect(footer).not.toMatch(/\d+(\.\d+)?(ms|s|m \d+s)/);
+});
+
+test("renderSubagentResult includes metadata in header with tools, context, and elapsed time", () => {
+  const fakeTheme: FakeTheme = {
+    fg: (color, text) => `[${color}]${text}[/${color}]`,
+    bg: (color, text) => `[${color}]${text}[/${color}]`,
+    bold: (text) => `*${text}*`,
+  };
+  const result = renderSubagentResult(
+    {
+      content: [{ type: "text", text: "test" }],
+      details: {
+        mode: "single",
+        agentScope: "both",
+        projectAgentsDir: null,
+        results: [
+          {
+            agent: "test-agent",
+            agentSource: "project",
+            task: "test task",
+            exitCode: 0,
+            finalOutput: "done",
+            stderr: "",
+            usage: {
+              input: 10000,
+              output: 2000,
+              cacheRead: 500,
+              cacheWrite: 1000,
+              cost: 0.05,
+              contextTokens: 150000,
+              contextWindowTokens: 200000,
+              turns: 5,
+            },
+            model: "test-model",
+            durationMs: 45200,
+            progress: {
+              toolCalls: [
+                { name: "read", id: "1", args: {} },
+                { name: "write", id: "2", args: {} },
+                { name: "bash", id: "3", args: {} },
+              ],
+            },
+            messages: [],
+          },
+        ],
+      },
+    },
+    fakeTheme,
+  );
+  const text = renderToString(result);
+  expect(text).toMatch(/\d+ tools? · \d+% ctx · \d+(\.\d+)?(ms|s|m \d+s)/);
+  expect(text).toContain("3 tools");
+  expect(text).toContain("75% ctx");
+  expect(text).toContain("45.2s");
+});
+
+test("renderSubagentResult metadata handles undefined toolCalls", () => {
+  const fakeTheme: FakeTheme = {
+    fg: (color, text) => `[${color}]${text}[/${color}]`,
+    bg: (color, text) => `[${color}]${text}[/${color}]`,
+    bold: (text) => `*${text}*`,
+  };
+  const result = renderSubagentResult(
+    {
+      content: [{ type: "text", text: "test" }],
+      details: {
+        mode: "single",
+        agentScope: "both",
+        projectAgentsDir: null,
+        results: [
+          {
+            agent: "test-agent",
+            agentSource: "project",
+            task: "test task",
+            exitCode: 0,
+            finalOutput: "done",
+            stderr: "",
+            usage: {
+              input: 1000,
+              output: 500,
+              cacheRead: 0,
+              cacheWrite: 0,
+              cost: 0.01,
+              contextTokens: 5000,
+              contextWindowTokens: 200000,
+              turns: 1,
+            },
+            durationMs: 1500,
+            messages: [],
+          },
+        ],
+      },
+    },
+    fakeTheme,
+  );
+  const text = renderToString(result);
+  expect(text).toContain("0 tools");
+  expect(text).toMatch(/0 tools · \d+% ctx · \d+(\.\d+)?(ms|s|m \d+s)/);
+});
+
+test("renderSubagentResult metadata handles undefined contextWindowTokens", () => {
+  const fakeTheme: FakeTheme = {
+    fg: (color, text) => `[${color}]${text}[/${color}]`,
+    bg: (color, text) => `[${color}]${text}[/${color}]`,
+    bold: (text) => `*${text}*`,
+  };
+  const result = renderSubagentResult(
+    {
+      content: [{ type: "text", text: "test" }],
+      details: {
+        mode: "single",
+        agentScope: "both",
+        projectAgentsDir: null,
+        results: [
+          {
+            agent: "test-agent",
+            agentSource: "project",
+            task: "test task",
+            exitCode: 0,
+            finalOutput: "done",
+            stderr: "",
+            usage: {
+              input: 1000,
+              output: 500,
+              cacheRead: 0,
+              cacheWrite: 0,
+              cost: 0.01,
+              contextTokens: 5000,
+              turns: 1,
+            },
+            durationMs: 2000,
+            progress: {
+              toolCalls: [{ name: "read", id: "1", args: {} }],
+            },
+            messages: [],
+          },
+        ],
+      },
+    },
+    fakeTheme,
+  );
+  const text = renderToString(result);
+  expect(text).toContain("--% ctx");
+  expect(text).toMatch(/\d+ tools? · --% ctx · \d+(\.\d+)?(ms|s|m \d+s)/);
+});
+
+test("renderSubagentResult metadata handles undefined durationMs", () => {
+  const fakeTheme: FakeTheme = {
+    fg: (color, text) => `[${color}]${text}[/${color}]`,
+    bg: (color, text) => `[${color}]${text}[/${color}]`,
+    bold: (text) => `*${text}*`,
+  };
+  const result = renderSubagentResult(
+    {
+      content: [{ type: "text", text: "test" }],
+      details: {
+        mode: "single",
+        agentScope: "both",
+        projectAgentsDir: null,
+        results: [
+          {
+            agent: "test-agent",
+            agentSource: "project",
+            task: "test task",
+            exitCode: 0,
+            finalOutput: "done",
+            stderr: "",
+            usage: {
+              input: 1000,
+              output: 500,
+              cacheRead: 0,
+              cacheWrite: 0,
+              cost: 0.01,
+              contextTokens: 5000,
+              contextWindowTokens: 200000,
+              turns: 1,
+            },
+            progress: {
+              toolCalls: [{ name: "read", id: "1", args: {} }],
+            },
+            messages: [],
+          },
+        ],
+      },
+    },
+    fakeTheme,
+  );
+  const text = renderToString(result);
+  expect(text).toContain("0.0s");
+  expect(text).toMatch(/\d+ tools? · \d+% ctx · 0\.0s/);
+});
+
 test("renderRunsBoard renders empty board", () => {
   const fakeTheme: FakeTheme = {
     fg: (color, text) => `[${color}]${text}[/${color}]`,
@@ -1775,6 +1978,7 @@ test("renderRunsBoard renders empty board", () => {
   expect(text).toContain("No /run jobs in this session.");
   expect(text).toContain("[muted]");
 });
+
 test("renderRunsBoard renders status sections in fixed order", () => {
   const now = Date.now();
   const states: SubagentProgressState[] = [
@@ -1898,6 +2102,7 @@ test("renderRunsBoard renders status sections in fixed order", () => {
     "[toolErrorBg]   [toolOutput]scanning...[/toolOutput]",
   );
 });
+
 test("renderRunsBoard omits empty status sections", () => {
   const state: SubagentProgressState = {
     requestId: "r1",
@@ -1921,6 +2126,7 @@ test("renderRunsBoard omits empty status sections", () => {
   expect(text).not.toContain("SUCCEEDED (0)");
   expect(text).not.toContain("COMPLETED");
 });
+
 test("renderRunsBoard truncates body preview after 120 chars", () => {
   const exactOutput = "A".repeat(120);
   const longOutput = "B".repeat(121);
@@ -1957,6 +2163,7 @@ test("renderRunsBoard truncates body preview after 120 chars", () => {
   expect(text).toContain(`${longOutput.slice(0, 119)}…`);
   expect(text).not.toContain(longOutput);
 });
+
 test("renderRunsBoard uses body source priority and fallback", () => {
   const now = Date.now();
   const states: SubagentProgressState[] = [

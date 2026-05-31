@@ -104,31 +104,15 @@ export function formatUsageStats(
 }
 
 /**
- * Formats millisecond durations into human-readable time strings.
- */
-export function formatDuration(ms: number): string {
-  if (ms < 1000) return `${Math.floor(ms)}ms`;
-  if (ms < 60000) return `${(ms / 1000).toFixed(1)}s`;
-  const minutes = Math.floor(ms / 60000);
-  const seconds = Math.floor((ms % 60000) / 1000);
-  return `${minutes}m ${seconds.toString().padStart(2, "0")}s`;
-}
-
-/**
  * Formats the footer for subagent result cards, including model, context, turns, and cost.
  */
-export function formatResultFooter(
-  usage: UsageStats,
-  model?: string,
-  durationMs?: number,
-): string {
+export function formatResultFooter(usage: UsageStats, model?: string): string {
   const parts: string[] = [];
   if (model) parts.push(model);
-  if (usage.contextTokens && usage.contextTokens > 0)
-    parts.push(`ctx:${formatTokens(usage.contextTokens)}`);
   if (usage.turns)
     parts.push(`${usage.turns} turn${usage.turns > 1 ? "s" : ""}`);
-  if (typeof durationMs === "number") parts.push(formatDuration(durationMs));
+  if (usage.contextTokens && usage.contextTokens > 0)
+    parts.push(`ctx:${formatTokens(usage.contextTokens)}`);
   if (usage.cost) parts.push(`$${usage.cost.toFixed(4)}`);
   return parts.join(" · ");
 }
@@ -243,12 +227,20 @@ export function renderSubagentResult(
   const finalOutput = r.finalOutput ?? getFinalOutput(r.messages ?? []);
   const title = formatSubagentTitle(r.agent, r.instanceName, theme);
   const bodyText = stripOutcomeLineForResultUi(bodyOverride ?? finalOutput);
-  const usageStr = formatResultFooter(r.usage, r.model, r.durationMs);
+  const toolCount = r.progress?.toolCalls?.length ?? 0;
+  const toolLabel = `${toolCount} ${toolCount === 1 ? "tool" : "tools"}`;
+  const ctxPercent = formatContextPercent({
+    contextTokens: r.usage.contextTokens,
+    contextWindowTokens: r.usage.contextWindowTokens,
+  } as SubagentProgressState);
+  const metadata = `${toolLabel} · ${ctxPercent} ctx · ${formatElapsed(r.durationMs ?? 0)}`;
+  const usageStr = formatResultFooter(r.usage, r.model);
   return renderStatusCard(
     {
       status: resultStatus,
       title,
       variant: "full",
+      metadata,
       body: bodyText,
       footer: usageStr,
     },
