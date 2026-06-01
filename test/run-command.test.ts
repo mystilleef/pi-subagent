@@ -21,6 +21,7 @@ import {
 } from "../src/progress/progress.js";
 import {
   type FakeTheme,
+  type RegisteredEventHandler,
   type RegisteredMessageRenderer,
   type SendMessageArg,
   setupHooks,
@@ -33,6 +34,18 @@ import {
 } from "./helpers.js";
 
 setupHooks();
+
+async function emitSessionStart(
+  tool: { registeredEventHandlers: Map<string, RegisteredEventHandler[]> },
+  cwd: string,
+) {
+  for (const handler of tool.registeredEventHandlers.get("session_start") ??
+    []) {
+    await handler({ type: "session_start", reason: "startup" }, {
+      cwd,
+    } as ExtensionCommandContext);
+  }
+}
 
 test("/run handler resolves before child completion and cancel command reaches active job", async () => {
   clearRunJobsForTests();
@@ -74,29 +87,24 @@ test("/run startup reuses completion discovery cache", async () => {
   const notices: string[] = [];
   const { tool, cwd } = await setupTest();
   const runCommand = tool.registeredCommands.get("run");
-  const originalCwd = process.cwd();
-  process.chdir(cwd);
-  try {
-    expect(await runCommand?.getArgumentCompletions?.("hang")).toEqual([
-      { value: "hang", label: "hang" },
-    ]);
-    const projectAgentsDir = path.join(cwd, ".pi", "agents");
-    await Bun.$`mkdir -p ${projectAgentsDir}`;
-    await Bun.write(
-      path.join(projectAgentsDir, "fresh.md"),
-      `---
+  await emitSessionStart(tool, cwd);
+  expect(await runCommand?.getArgumentCompletions?.("hang")).toEqual([
+    { value: "hang", label: "hang" },
+  ]);
+  const projectAgentsDir = path.join(cwd, ".pi", "agents");
+  await Bun.$`mkdir -p ${projectAgentsDir}`;
+  await Bun.write(
+    path.join(projectAgentsDir, "fresh.md"),
+    `---
 name: fresh
 description: Fresh project agent
 ---
 Fresh prompt`,
-    );
-    await runCommand?.handler("fresh task", {
-      cwd,
-      ui: { notify: (message: string) => notices.push(message) },
-    } as unknown as ExtensionCommandContext);
-  } finally {
-    process.chdir(originalCwd);
-  }
+  );
+  await runCommand?.handler("fresh task", {
+    cwd,
+    ui: { notify: (message: string) => notices.push(message) },
+  } as unknown as ExtensionCommandContext);
   expect(notices).toEqual(["Unknown agent: fresh"]);
   expect(listRunJobs()).toEqual([]);
 });
@@ -674,9 +682,8 @@ exit 0
   expect(argsText).toContain("Task: explicit task");
 });
 
-test("getArgumentCompletions returns matching agent suggestions", async () => {
-  const { cwd } = await setupTest();
-  const { tool } = await setupTest();
+test("getArgumentCompletions returns matching active workspace suggestions", async () => {
+  const { tool, cwd } = await setupTest();
   const runCommand = tool.registeredCommands.get("run");
   expect(runCommand?.getArgumentCompletions).toBeDefined();
   const projectAgentsDir = path.join(cwd, ".pi", "agents");
@@ -686,8 +693,9 @@ test("getArgumentCompletions returns matching agent suggestions", async () => {
     `---\nname: test-agent\ndescription: test\n---\nPrompt`,
   );
   const originalCwd = process.cwd;
-  process.cwd = () => cwd;
+  process.cwd = () => path.dirname(cwd);
   try {
+    await emitSessionStart(tool, cwd);
     expect(await runCommand?.getArgumentCompletions?.("te")).toEqual([
       { value: "test-agent", label: "test-agent" },
     ]);
@@ -695,6 +703,14 @@ test("getArgumentCompletions returns matching agent suggestions", async () => {
   } finally {
     process.cwd = originalCwd;
   }
+});
+
+test("getArgumentCompletions returns empty without valid active workspace", async () => {
+  const { tool, cwd } = await setupTest();
+  const runCommand = tool.registeredCommands.get("run");
+  expect(await runCommand?.getArgumentCompletions?.("hang")).toEqual([]);
+  await emitSessionStart(tool, path.join(cwd, "missing"));
+  expect(await runCommand?.getArgumentCompletions?.("hang")).toEqual([]);
 });
 
 test("/run progress onUpdate mutates state without refresh messages", async () => {
@@ -1565,6 +1581,51 @@ test("/run no collision when only project agent exists", async () => {
   );
 });
 
+test("/run collision reuses derived user cache from completion", async () => {
+  clearRunJobsForTests();
+  const sentMessages: SendMessageArg[] = [];
+  const { tool, agentDir, cwd } = await setupTest({
+    sendMessage: (msg) => sentMessages.push(msg),
+  });
+  const projectAgentsDir = path.join(cwd, ".pi", "agents");
+  const userAgentPath = path.join(agentDir, "agents", "derived-reviewer.md");
+  await Bun.$`mkdir -p ${projectAgentsDir}`;
+  await Bun.write(
+    path.join(projectAgentsDir, "derived-reviewer.md"),
+    `---\nname: derived-reviewer\ndescription: Project reviewer\n---\nProject prompt.`,
+  );
+  await Bun.write(
+    userAgentPath,
+    `---\nname: derived-reviewer\ndescription: User reviewer\n---\nUser prompt.`,
+  );
+  resetAgentCache();
+  await emitSessionStart(tool, cwd);
+  const runCommand = tool.registeredCommands.get("run");
+  const completions = await runCommand?.getArgumentCompletions?.("derived");
+  expect(completions).toEqual([
+    { value: "derived-reviewer", label: "derived-reviewer" },
+  ]);
+  await Bun.write(
+    userAgentPath,
+    `---\nname: renamed-reviewer\ndescription: User reviewer\n---\nUser prompt.`,
+  );
+  await runCommand?.handler("derived-reviewer task", {
+    cwd,
+    ui: { notify: () => {} },
+  } as unknown as ExtensionCommandContext);
+  await waitForRunJobsCleared();
+  const collisionMsg = sentMessages.find(
+    (msg) =>
+      msg.customType === "subagent-progress" &&
+      typeof msg.content === "string" &&
+      msg.content.includes("Using project agent"),
+  );
+  expect(collisionMsg?.content).toBe(
+    'Using project agent "derived-reviewer"; user agent with same name also exists.',
+  );
+  expect(sentMessages.indexOf(collisionMsg as SendMessageArg)).toBe(0);
+});
+
 test("/run final result renders raw summary and feedback uses semantic content", async () => {
   const sentMessages: SendMessageArg[] = [];
   const finalOutput =
@@ -1606,4 +1667,82 @@ exit 0
   expect(getProgressState(requestId)?.finalOutput).toBe(
     "updated semantic summary",
   );
+});
+
+test("/run repeated completions reuse cached discovery without redundant scans", async () => {
+  clearRunJobsForTests();
+  const { tool, cwd } = await setupTest();
+  const projectAgentsDir = path.join(cwd, ".pi", "agents");
+  await Bun.$`mkdir -p ${projectAgentsDir}`;
+  await Bun.write(
+    path.join(projectAgentsDir, "agent-alpha.md"),
+    `---\nname: agent-alpha\ndescription: Alpha\n---\nAlpha prompt`,
+  );
+  await Bun.write(
+    path.join(projectAgentsDir, "agent-beta.md"),
+    `---\nname: agent-beta\ndescription: Beta\n---\nBeta prompt`,
+  );
+  resetAgentCache();
+  await emitSessionStart(tool, cwd);
+  const runCommand = tool.registeredCommands.get("run");
+  const result1 = await runCommand?.getArgumentCompletions?.("agent");
+  const result2 = await runCommand?.getArgumentCompletions?.("agent");
+  const result3 = await runCommand?.getArgumentCompletions?.("agent");
+  const sorted1 = result1?.sort((a, b) => a.value.localeCompare(b.value));
+  const sorted2 = result2?.sort((a, b) => a.value.localeCompare(b.value));
+  const sorted3 = result3?.sort((a, b) => a.value.localeCompare(b.value));
+  expect(sorted1).toEqual([
+    { value: "agent-alpha", label: "agent-alpha" },
+    { value: "agent-beta", label: "agent-beta" },
+  ]);
+  expect(sorted2).toEqual(sorted1);
+  expect(sorted3).toEqual(sorted1);
+});
+
+test("/run completion with different prefixes reuses same cache entry", async () => {
+  clearRunJobsForTests();
+  const { tool, cwd } = await setupTest();
+  const projectAgentsDir = path.join(cwd, ".pi", "agents");
+  await Bun.$`mkdir -p ${projectAgentsDir}`;
+  await Bun.write(
+    path.join(projectAgentsDir, "reviewer.md"),
+    `---\nname: reviewer\ndescription: Reviewer\n---\nReviewer prompt`,
+  );
+  await Bun.write(
+    path.join(projectAgentsDir, "builder.md"),
+    `---\nname: builder\ndescription: Builder\n---\nBuilder prompt`,
+  );
+  resetAgentCache();
+  await emitSessionStart(tool, cwd);
+  const runCommand = tool.registeredCommands.get("run");
+  const revResult = await runCommand?.getArgumentCompletions?.("rev");
+  const buildResult = await runCommand?.getArgumentCompletions?.("build");
+  const emptyResult = await runCommand?.getArgumentCompletions?.("xyz");
+  expect(revResult).toEqual([{ value: "reviewer", label: "reviewer" }]);
+  expect(buildResult).toEqual([{ value: "builder", label: "builder" }]);
+  expect(emptyResult).toEqual([]);
+});
+
+test("resources_discover event sets active workspace root for completion", async () => {
+  clearRunJobsForTests();
+  const { tool, cwd } = await setupTest();
+  const projectAgentsDir = path.join(cwd, ".pi", "agents");
+  await Bun.$`mkdir -p ${projectAgentsDir}`;
+  await Bun.write(
+    path.join(projectAgentsDir, "resource-agent.md"),
+    `---\nname: resource-agent\ndescription: Resource agent\n---\nResource prompt`,
+  );
+  resetAgentCache();
+  const resourcesHandlers =
+    tool.registeredEventHandlers.get("resources_discover") ?? [];
+  for (const handler of resourcesHandlers) {
+    await handler({ type: "resources_discover", cwd: undefined }, {
+      cwd,
+    } as ExtensionCommandContext);
+  }
+  const runCommand = tool.registeredCommands.get("run");
+  const completions = await runCommand?.getArgumentCompletions?.("resource");
+  expect(completions).toEqual([
+    { value: "resource-agent", label: "resource-agent" },
+  ]);
 });

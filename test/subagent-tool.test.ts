@@ -999,23 +999,55 @@ description: Project only
 ---
 Project prompt`,
   );
-  const userAgents = await discoverAgentsAsync(cwd, "user");
-  const projectAgents = await discoverAgentsAsync(cwd, "project");
-  const bothAgents = await discoverAgentsAsync(cwd, "both");
-  expect(userAgents.projectAgentsDir).toBe(projectAgentsDir);
-  expect(projectAgents.projectAgentsDir).toBe(projectAgentsDir);
-  expect(bothAgents.projectAgentsDir).toBe(projectAgentsDir);
-  expect(userAgents.agents.find((a) => a.name === "same")?.source).toBe("user");
-  expect(userAgents.agents.some((a) => a.name === "project-only")).toBe(false);
-  expect(projectAgents.agents.find((a) => a.name === "same")?.source).toBe(
+  const userDiscovery = await discoverAgentsAsync(cwd, "user");
+  const projectDiscovery = await discoverAgentsAsync(cwd, "project");
+  const bothDiscovery = await discoverAgentsAsync(cwd, "both");
+  expect(userDiscovery.projectAgentsDir).toBe(projectAgentsDir);
+  expect(projectDiscovery.projectAgentsDir).toBe(projectAgentsDir);
+  expect(bothDiscovery.projectAgentsDir).toBe(projectAgentsDir);
+  expect(userDiscovery.agents.find((a) => a.name === "same")?.source).toBe(
+    "user",
+  );
+  expect(userDiscovery.agents.some((a) => a.name === "project-only")).toBe(
+    false,
+  );
+  expect(projectDiscovery.agents.find((a) => a.name === "same")?.source).toBe(
     "project",
   );
-  expect(projectAgents.agents.some((a) => a.name === "user-only")).toBe(false);
-  expect(bothAgents.agents.find((a) => a.name === "same")?.source).toBe(
+  expect(projectDiscovery.agents.some((a) => a.name === "user-only")).toBe(
+    false,
+  );
+  expect(bothDiscovery.agents.find((a) => a.name === "same")?.source).toBe(
     "project",
   );
-  expect(bothAgents.agents.some((a) => a.name === "user-only")).toBe(true);
-  expect(bothAgents.agents.some((a) => a.name === "project-only")).toBe(true);
+  expect(bothDiscovery.agents.some((a) => a.name === "user-only")).toBe(true);
+  expect(bothDiscovery.agents.some((a) => a.name === "project-only")).toBe(
+    true,
+  );
+  expect(userDiscovery.scopes.project).toEqual({
+    agents: [],
+    markdownFiles: [],
+  });
+  expect(projectDiscovery.scopes.user).toEqual({
+    agents: [],
+    markdownFiles: [],
+  });
+  const scopedUserNames = bothDiscovery.scopes.user.agents.map(
+    (a) => `${a.name}:${a.source}`,
+  );
+  expect(scopedUserNames).toContain("same:user");
+  expect(scopedUserNames).toContain("user-only:user");
+  expect(
+    bothDiscovery.scopes.project.agents
+      .map((a) => `${a.name}:${a.source}`)
+      .sort(),
+  ).toEqual(["project-only:project", "same:project"]);
+  expect(bothDiscovery.scopes.user.markdownFiles).toContain("same.md");
+  expect(bothDiscovery.scopes.user.markdownFiles).toContain("user-only.md");
+  expect([...bothDiscovery.scopes.project.markdownFiles].sort()).toEqual([
+    "project-only.md",
+    "same.md",
+  ]);
 });
 
 test("discoverAgentsAsync ignores unreadable agent directories", async () => {
@@ -1098,8 +1130,18 @@ Linked prompt`,
     path.join(agentsDir, "linked.md"),
   );
   process.env.PI_CODING_AGENT_DIR = badRoot;
-  const agents = (await discoverAgentsAsync(cwd, "user")).agents;
+  const discovery = await discoverAgentsAsync(cwd, "user");
+  const agents = discovery.agents;
   expect(agents).toHaveLength(1);
+  expect(discovery.scopes.user.agents).toEqual(agents);
+  expect(discovery.scopes.project).toEqual({ agents: [], markdownFiles: [] });
+  expect([...discovery.scopes.user.markdownFiles].sort()).toEqual([
+    "broken.md",
+    "invalid-yaml.md",
+    "linked.md",
+    "missing-description.md",
+    "non-string-tools.md",
+  ]);
   expect(agents[0]).toMatchObject({
     name: "linked",
     description: "Linked agent",

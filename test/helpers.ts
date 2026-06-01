@@ -159,22 +159,32 @@ export type RegisteredCommandOptions = Parameters<
 export type RegisteredMessageRenderer = Parameters<
   ExtensionAPI["registerMessageRenderer"]
 >[1];
+export type RegisteredEventHandler = (
+  event: unknown,
+  ctx: ExtensionContext,
+) => unknown;
 
 export function getSubagentTool(overrides?: {
   sendMessage?: (msg: SendMessageArg) => void;
   thinkingLevel?: string;
 }): CapturedSubagentTool & {
   registeredCommands: Map<string, RegisteredCommandOptions>;
+  registeredEventHandlers: Map<string, RegisteredEventHandler[]>;
   registeredMessageRenderers: Map<string, RegisteredMessageRenderer>;
 } {
   let registeredTool: RegisteredTool | undefined;
   const registeredCommands = new Map<string, RegisteredCommandOptions>();
+  const registeredEventHandlers = new Map<string, RegisteredEventHandler[]>();
   const registeredMessageRenderers = new Map<
     string,
     RegisteredMessageRenderer
   >();
   const fakePi = {
-    on() {},
+    on(event: string, handler: RegisteredEventHandler) {
+      const handlers = registeredEventHandlers.get(event) ?? [];
+      handlers.push(handler);
+      registeredEventHandlers.set(event, handlers);
+    },
     registerTool(tool: RegisteredTool) {
       registeredTool = tool;
     },
@@ -193,6 +203,7 @@ export function getSubagentTool(overrides?: {
   if (!registeredTool) throw new Error("subagent tool was not registered");
   return Object.assign(registeredTool as CapturedSubagentTool, {
     registeredCommands,
+    registeredEventHandlers,
     registeredMessageRenderers,
   });
 }

@@ -1,21 +1,10 @@
-/**
- * Agent discovery and configuration
- */
-
 import type { Dirent } from "node:fs";
 import * as fsPromises from "node:fs/promises";
 import * as path from "node:path";
 import { getAgentDir, parseFrontmatter } from "@earendil-works/pi-coding-agent";
 
-export type AgentScope = "user" | "project" | "both";
-
-export type ThinkingLevel =
-  | "off"
-  | "minimal"
-  | "low"
-  | "medium"
-  | "high"
-  | "xhigh";
+export type AgentSource = "user" | "project";
+export type AgentScope = AgentSource | "both";
 
 const THINKING_LEVELS = [
   "off",
@@ -26,6 +15,8 @@ const THINKING_LEVELS = [
   "xhigh",
 ] as const;
 
+export type ThinkingLevel = (typeof THINKING_LEVELS)[number];
+
 export interface AgentConfig {
   name: string;
   description: string;
@@ -33,24 +24,37 @@ export interface AgentConfig {
   skills?: string[];
   thinking?: ThinkingLevel;
   systemPrompt: string;
-  source: "user" | "project";
+  source: AgentSource;
   filePath: string;
+}
+
+export interface AgentDiscoveryScopeResult {
+  agents: AgentConfig[];
+  markdownFiles: string[];
 }
 
 export interface AgentDiscoveryResult {
   agents: AgentConfig[];
   projectAgentsDir: string | null;
+  scopes: Record<AgentSource, AgentDiscoveryScopeResult>;
 }
 
 function mergeAgentLists(
-  userAgents: AgentConfig[],
-  projectAgents: AgentConfig[],
+  userResult: AgentDiscoveryScopeResult,
+  projectResult: AgentDiscoveryScopeResult,
   projectAgentsDir: string | null,
 ): AgentDiscoveryResult {
   const agentMap = new Map<string, AgentConfig>();
-  for (const agent of userAgents) agentMap.set(agent.name, agent);
-  for (const agent of projectAgents) agentMap.set(agent.name, agent);
-  return { agents: Array.from(agentMap.values()), projectAgentsDir };
+  for (const agent of userResult.agents) agentMap.set(agent.name, agent);
+  for (const agent of projectResult.agents) agentMap.set(agent.name, agent);
+  return {
+    agents: Array.from(agentMap.values()),
+    projectAgentsDir,
+    scopes: {
+      user: userResult,
+      project: projectResult,
+    },
+  };
 }
 
 function parseCommaList(raw: unknown): string[] | undefined {
@@ -72,7 +76,7 @@ function parseThinkingLevel(raw: unknown): ThinkingLevel | undefined {
 
 function parseAgentConfig(
   content: string,
-  source: "user" | "project",
+  source: AgentSource,
   filePath: string,
 ): AgentConfig | null {
   let parsed: ReturnType<typeof parseFrontmatter<Record<string, unknown>>>;
@@ -116,35 +120,65 @@ function parseAgentConfig(
   };
 }
 
-async function loadAgentsFromDirAsync(
+async function loadAgentEntryAsync(
   dir: string,
-  source: "user" | "project",
-): Promise<AgentConfig[]> {
-  const agents: AgentConfig[] = [];
-  if (!(await isDirectoryAsync(dir))) return agents;
-  let entries: Dirent[];
+  entryName: string,
+  source: AgentSource,
+): Promise<AgentConfig | null> {
+  const filePath = path.join(dir, entryName);
+  let content: string;
   try {
-    entries = await fsPromises.readdir(dir, { withFileTypes: true });
+    content = await fsPromises.readFile(filePath, "utf-8");
   } catch {
-    return agents;
+    return null;
   }
-  for (const entry of entries) {
-    if (!entry.name.endsWith(".md")) continue;
-    if (!entry.isFile() && !entry.isSymbolicLink()) continue;
-    const filePath = path.join(dir, entry.name);
-    let content: string;
-    try {
-      content = await fsPromises.readFile(filePath, "utf-8");
-    } catch {
-      continue;
-    }
-    const agent = parseAgentConfig(content, source, filePath);
-    if (agent) agents.push(agent);
-  }
-  return agents;
+  return parseAgentConfig(content, source, filePath);
 }
 
-async function isDirectoryAsync(p: string): Promise<boolean> {
+export function emptyScopeResult(): AgentDiscoveryScopeResult {
+  return { agents: [], markdownFiles: [] };
+}
+
+async function loadAgentsFromDirAsync(
+  dir: string,
+  source: AgentSource,
+): Promise<AgentDiscoveryScopeResult> {
+  const markdownEntries = await readMarkdownDirEntriesAsync(dir);
+  const markdownFiles = markdownEntries.map((entry) => entry.name);
+  const parsedAgents = await Promise.all(
+    markdownEntries.map((entry) =>
+      loadAgentEntryAsync(dir, entry.name, source),
+    ),
+  );
+  const agents = parsedAgents.filter(
+    (agent): agent is AgentConfig => agent !== null,
+  );
+  return { agents, markdownFiles };
+}
+
+export function isMarkdownDirent(entry: Dirent): boolean {
+  return (
+    entry.name.endsWith(".md") && (entry.isFile() || entry.isSymbolicLink())
+  );
+}
+
+export async function readMarkdownDirEntriesAsync(
+  dir: string | null,
+): Promise<Dirent[]> {
+  if (!dir) return [];
+  try {
+    const entries = await fsPromises.readdir(dir, { withFileTypes: true });
+    return entries.filter(isMarkdownDirent);
+  } catch {
+    return [];
+  }
+}
+
+export function getUserAgentsDir(): string {
+  return path.join(getAgentDir(), "agents");
+}
+
+export async function isDirectoryAsync(p: string): Promise<boolean> {
   try {
     return (await fsPromises.stat(p)).isDirectory();
   } catch {
@@ -169,15 +203,17 @@ export async function discoverAgentsAsync(
   cwd: string,
   scope: AgentScope,
 ): Promise<AgentDiscoveryResult> {
-  const userDir = path.join(getAgentDir(), "agents");
+  const userDir = getUserAgentsDir();
   const projectAgentsDir = await findNearestProjectAgentsDirAsync(cwd);
-  const [userAgents, projectAgents] = await Promise.all([
-    scope === "project" ? [] : loadAgentsFromDirAsync(userDir, "user"),
+  const [userDiscovery, projectDiscovery] = await Promise.all([
+    scope === "project"
+      ? emptyScopeResult()
+      : loadAgentsFromDirAsync(userDir, "user"),
     scope === "user" || !projectAgentsDir
-      ? []
+      ? emptyScopeResult()
       : loadAgentsFromDirAsync(projectAgentsDir, "project"),
   ]);
-  return mergeAgentLists(userAgents, projectAgents, projectAgentsDir);
+  return mergeAgentLists(userDiscovery, projectDiscovery, projectAgentsDir);
 }
 
 export function formatAgentList(

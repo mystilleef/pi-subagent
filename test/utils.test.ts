@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { mkdir, symlink, writeFile } from "node:fs/promises";
+import { chmod, mkdir, rename, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import type { Message } from "@earendil-works/pi-ai";
@@ -213,9 +213,12 @@ description: Project only
 Project prompt`,
   );
   process.env.PI_CODING_AGENT_DIR = agentDir;
-  const userAgents = (await discoverAgentsAsync(cwd, "user")).agents;
-  const projectAgents = (await discoverAgentsAsync(cwd, "project")).agents;
-  const bothAgents = (await discoverAgentsAsync(cwd, "both")).agents;
+  const userDiscovery = await discoverAgentsAsync(cwd, "user");
+  const projectDiscovery = await discoverAgentsAsync(cwd, "project");
+  const bothDiscovery = await discoverAgentsAsync(cwd, "both");
+  const userAgents = userDiscovery.agents;
+  const projectAgents = projectDiscovery.agents;
+  const bothAgents = bothDiscovery.agents;
   expect(userAgents.find((a) => a.name === "same")?.source).toBe("user");
   expect(userAgents.some((a) => a.name === "project-only")).toBe(false);
   expect(projectAgents.find((a) => a.name === "same")?.source).toBe("project");
@@ -223,6 +226,30 @@ Project prompt`,
   expect(bothAgents.find((a) => a.name === "same")?.source).toBe("project");
   expect(bothAgents.some((a) => a.name === "user-only")).toBe(true);
   expect(bothAgents.some((a) => a.name === "project-only")).toBe(true);
+  expect(userDiscovery.scopes.project).toEqual({
+    agents: [],
+    markdownFiles: [],
+  });
+  expect(projectDiscovery.scopes.user).toEqual({
+    agents: [],
+    markdownFiles: [],
+  });
+  expect(
+    bothDiscovery.scopes.user.agents.map((a) => `${a.name}:${a.source}`).sort(),
+  ).toEqual(["same:user", "user-only:user"]);
+  expect(
+    bothDiscovery.scopes.project.agents
+      .map((a) => `${a.name}:${a.source}`)
+      .sort(),
+  ).toEqual(["project-only:project", "same:project"]);
+  expect([...bothDiscovery.scopes.user.markdownFiles].sort()).toEqual([
+    "same.md",
+    "user-only.md",
+  ]);
+  expect([...bothDiscovery.scopes.project.markdownFiles].sort()).toEqual([
+    "project-only.md",
+    "same.md",
+  ]);
 });
 
 test("agent discovery cache separates cwd and scope, reuses completions, and expires", async () => {
@@ -284,7 +311,7 @@ Project B prompt`,
       "project-b",
       "user",
     ]);
-    expect(cache.size).toBe(3);
+    expect(cache.size).toBe(6);
     expect(
       await getCachedAgentCompletions("project", cwdA, cache, 3000),
     ).toEqual([{ value: "project-a", label: "project-a" }]);
@@ -305,6 +332,147 @@ Project C prompt`,
         (agent) => agent.name === "project-c",
       ),
     ).toBe(true);
+  } finally {
+    Date.now = originalNow;
+  }
+});
+
+test("agent discovery cache derives scoped entries from trusted both discovery", async () => {
+  const root = await makeTempDir("pi-subagent-derived-cache-");
+  const agentDir = path.join(root, "agent");
+  const cwd = path.join(root, "work");
+  const userDir = path.join(agentDir, "agents");
+  const projectDir = path.join(cwd, ".pi", "agents");
+  await mkdir(userDir, { recursive: true });
+  await mkdir(projectDir, { recursive: true });
+  await writeFile(
+    path.join(userDir, "same.md"),
+    `---
+name: same
+description: User same
+---
+User prompt`,
+  );
+  await writeFile(
+    path.join(userDir, "user-only.md"),
+    `---
+name: user-only
+description: User only
+---
+User prompt`,
+  );
+  await writeFile(
+    path.join(projectDir, "same.md"),
+    `---
+name: same
+description: Project same
+---
+Project prompt`,
+  );
+  await writeFile(
+    path.join(projectDir, "project-only.md"),
+    `---
+name: project-only
+description: Project only
+---
+Project prompt`,
+  );
+  process.env.PI_CODING_AGENT_DIR = agentDir;
+  const cache: AgentDiscoveryCache = new Map();
+  let now = 5000;
+  const originalNow = Date.now;
+  Date.now = () => now;
+  try {
+    const both = await getCachedAgentDiscovery(cwd, "both", cache, 3000);
+    expect(cache.size).toBe(3);
+    now += 1;
+    const user = await getCachedAgentDiscovery(cwd, "user", cache, 3000);
+    const project = await getCachedAgentDiscovery(cwd, "project", cache, 3000);
+    expect(user.ts).toBe(both.ts);
+    expect(project.ts).toBe(both.ts);
+    expect(both.agents.find((agent) => agent.name === "same")?.source).toBe(
+      "project",
+    );
+    expect(
+      user.agents.map((agent) => `${agent.name}:${agent.source}`).sort(),
+    ).toEqual(["same:user", "user-only:user"]);
+    expect(
+      project.agents.map((agent) => `${agent.name}:${agent.source}`).sort(),
+    ).toEqual(["project-only:project", "same:project"]);
+    expect(user.scopes.project).toEqual({ agents: [], markdownFiles: [] });
+    expect(project.scopes.user).toEqual({ agents: [], markdownFiles: [] });
+  } finally {
+    Date.now = originalNow;
+  }
+});
+
+test("agent discovery cache falls back when derived listing or content changes", async () => {
+  const root = await makeTempDir("pi-subagent-derived-cache-stale-");
+  const agentDir = path.join(root, "agent");
+  const cwd = path.join(root, "work");
+  const userDir = path.join(agentDir, "agents");
+  const userKey = `${path.resolve(cwd)}\0user`;
+  await mkdir(userDir, { recursive: true });
+  await mkdir(cwd, { recursive: true });
+  await writeFile(
+    path.join(userDir, "reviewer.md"),
+    `---
+name: reviewer
+description: Reviewer
+---
+Old prompt`,
+  );
+  process.env.PI_CODING_AGENT_DIR = agentDir;
+  const cache: AgentDiscoveryCache = new Map();
+  let now = 7000;
+  const originalNow = Date.now;
+  Date.now = () => now;
+  try {
+    await getCachedAgentDiscovery(cwd, "both", cache, 3000);
+    cache.delete(userKey);
+    await writeFile(
+      path.join(userDir, "reviewer.md"),
+      `---
+name: reviewer-new
+description: Reviewer new
+---
+New prompt`,
+    );
+    now += 1;
+    const contentChanged = await getCachedAgentDiscovery(
+      cwd,
+      "user",
+      cache,
+      3000,
+    );
+    expect(contentChanged.agents.map((agent) => agent.name)).toEqual([
+      "reviewer-new",
+    ]);
+    expect(contentChanged.ts).toBe(now);
+    cache.delete(userKey);
+    await rename(
+      path.join(userDir, "reviewer.md"),
+      path.join(userDir, "renamed.md"),
+    );
+    await writeFile(
+      path.join(userDir, "renamed.md"),
+      `---
+name: renamed-reviewer
+description: Renamed reviewer
+---
+Renamed prompt`,
+    );
+    now += 1;
+    const listingChanged = await getCachedAgentDiscovery(
+      cwd,
+      "user",
+      cache,
+      3000,
+    );
+    expect(listingChanged.agents.map((agent) => agent.name)).toEqual([
+      "renamed-reviewer",
+    ]);
+    expect(listingChanged.ts).toBe(now);
   } finally {
     Date.now = originalNow;
   }
@@ -445,14 +613,308 @@ thinking: louder
 Prompt`,
   );
   process.env.PI_CODING_AGENT_DIR = agentDirWithBrokenLink;
-  const agents = (await discoverAgentsAsync(cwd, "user")).agents;
+  const discovery = await discoverAgentsAsync(cwd, "user");
+  const agents = discovery.agents;
   expect(agents).toHaveLength(1);
+  expect(discovery.scopes.user.agents).toEqual(agents);
+  expect(discovery.scopes.project).toEqual({ agents: [], markdownFiles: [] });
+  expect([...discovery.scopes.user.markdownFiles].sort()).toEqual([
+    "broken.md",
+    "empty-options.md",
+    "invalid-yaml.md",
+    "missing-description.md",
+    "non-object.md",
+    "non-string-description.md",
+    "non-string-name.md",
+    "non-string-skills.md",
+    "non-string-thinking.md",
+    "non-string-tools.md",
+  ]);
   expect(agents[0]).toMatchObject({
     name: "empty-options",
     tools: undefined,
     skills: [],
     thinking: undefined,
   });
+});
+
+test("repeated completion calls reuse cached both-scope discovery without redundant scans", async () => {
+  const root = await makeTempDir("pi-subagent-scan-count-");
+  const agentDir = path.join(root, "agent");
+  const userDir = path.join(agentDir, "agents");
+  const cwd = path.join(root, "work");
+  const projectDir = path.join(cwd, ".pi", "agents");
+  await mkdir(userDir, { recursive: true });
+  await mkdir(projectDir, { recursive: true });
+  await mkdir(cwd, { recursive: true });
+  await writeFile(
+    path.join(userDir, "alpha.md"),
+    `---
+name: alpha
+description: Alpha agent
+---
+Alpha prompt`,
+  );
+  await writeFile(
+    path.join(projectDir, "beta.md"),
+    `---
+name: beta
+description: Beta agent
+---
+Beta prompt`,
+  );
+  process.env.PI_CODING_AGENT_DIR = agentDir;
+  const cache: AgentDiscoveryCache = new Map();
+  const now = 10000;
+  const originalNow = Date.now;
+  Date.now = () => now;
+  try {
+    const result1 = await getCachedAgentCompletions("a", cwd, cache, 3000);
+    const result2 = await getCachedAgentCompletions("a", cwd, cache, 3000);
+    const result3 = await getCachedAgentCompletions("a", cwd, cache, 3000);
+    expect(result1).toEqual([{ value: "alpha", label: "alpha" }]);
+    expect(result2).toEqual(result1);
+    expect(result3).toEqual(result1);
+    expect(cache.size).toBe(3);
+    const bothKey = `${path.resolve(cwd)}\0both`;
+    const bothEntry = cache.get(bothKey);
+    expect(bothEntry?.ts).toBe(10000);
+  } finally {
+    Date.now = originalNow;
+  }
+});
+
+test("completion with different prefixes reuses same both-scope cache entry", async () => {
+  const root = await makeTempDir("pi-subagent-multi-prefix-");
+  const agentDir = path.join(root, "agent");
+  const userDir = path.join(agentDir, "agents");
+  const cwd = path.join(root, "work");
+  await mkdir(userDir, { recursive: true });
+  await mkdir(cwd, { recursive: true });
+  await writeFile(
+    path.join(userDir, "alpha.md"),
+    `---
+name: alpha
+description: Alpha
+---
+Alpha prompt`,
+  );
+  await writeFile(
+    path.join(userDir, "beta.md"),
+    `---
+name: beta
+description: Beta
+---
+Beta prompt`,
+  );
+  await writeFile(
+    path.join(userDir, "gamma.md"),
+    `---
+name: gamma
+description: Gamma
+---
+Gamma prompt`,
+  );
+  process.env.PI_CODING_AGENT_DIR = agentDir;
+  const cache: AgentDiscoveryCache = new Map();
+  const alphaResult = await getCachedAgentCompletions("a", cwd, cache);
+  const betaResult = await getCachedAgentCompletions("b", cwd, cache);
+  const gammaResult = await getCachedAgentCompletions("g", cwd, cache);
+  const emptyResult = await getCachedAgentCompletions("x", cwd, cache);
+  expect(alphaResult).toEqual([{ value: "alpha", label: "alpha" }]);
+  expect(betaResult).toEqual([{ value: "beta", label: "beta" }]);
+  expect(gammaResult).toEqual([{ value: "gamma", label: "gamma" }]);
+  expect(emptyResult).toEqual([]);
+  expect(cache.size).toBe(3);
+});
+
+test("scoped derivation from both reuses discovery with matching timestamps", async () => {
+  const root = await makeTempDir("pi-subagent-derivation-ts-");
+  const agentDir = path.join(root, "agent");
+  const userDir = path.join(agentDir, "agents");
+  const cwd = path.join(root, "work");
+  const projectDir = path.join(cwd, ".pi", "agents");
+  await mkdir(userDir, { recursive: true });
+  await mkdir(projectDir, { recursive: true });
+  await mkdir(cwd, { recursive: true });
+  await writeFile(
+    path.join(userDir, "same.md"),
+    `---
+name: same
+description: User same
+---
+User prompt`,
+  );
+  await writeFile(
+    path.join(projectDir, "same.md"),
+    `---
+name: same
+description: Project same
+---
+Project prompt`,
+  );
+  process.env.PI_CODING_AGENT_DIR = agentDir;
+  const cache: AgentDiscoveryCache = new Map();
+  let now = 20000;
+  const originalNow = Date.now;
+  Date.now = () => now;
+  try {
+    const both = await getCachedAgentDiscovery(cwd, "both", cache, 3000);
+    expect(cache.size).toBe(3);
+    now += 100;
+    const user = await getCachedAgentDiscovery(cwd, "user", cache, 3000);
+    const project = await getCachedAgentDiscovery(cwd, "project", cache, 3000);
+    expect(user.ts).toBe(both.ts);
+    expect(project.ts).toBe(both.ts);
+    expect(cache.size).toBe(3);
+    expect(both.agents.find((a) => a.name === "same")?.source).toBe("project");
+    expect(user.agents.find((a) => a.name === "same")?.source).toBe("user");
+    expect(project.agents.find((a) => a.name === "same")?.source).toBe(
+      "project",
+    );
+  } finally {
+    Date.now = originalNow;
+  }
+});
+
+test("same-name hidden user agent derivation supports collision detection", async () => {
+  const root = await makeTempDir("pi-subagent-hidden-user-");
+  const agentDir = path.join(root, "agent");
+  const userDir = path.join(agentDir, "agents");
+  const cwd = path.join(root, "work");
+  const projectDir = path.join(cwd, ".pi", "agents");
+  await mkdir(userDir, { recursive: true });
+  await mkdir(projectDir, { recursive: true });
+  await mkdir(cwd, { recursive: true });
+  await writeFile(
+    path.join(userDir, "reviewer.md"),
+    `---
+name: reviewer
+description: User reviewer
+---
+User prompt`,
+  );
+  await writeFile(
+    path.join(userDir, "user-only.md"),
+    `---
+name: user-only
+description: User only
+---
+User prompt`,
+  );
+  await writeFile(
+    path.join(projectDir, "reviewer.md"),
+    `---
+name: reviewer
+description: Project reviewer
+---
+Project prompt`,
+  );
+  process.env.PI_CODING_AGENT_DIR = agentDir;
+  const cache: AgentDiscoveryCache = new Map();
+  const both = await getCachedAgentDiscovery(cwd, "both", cache);
+  expect(both.agents.find((a) => a.name === "reviewer")?.source).toBe(
+    "project",
+  );
+  expect(both.scopes.user.agents.some((a) => a.name === "reviewer")).toBe(true);
+  const user = await getCachedAgentDiscovery(cwd, "user", cache);
+  expect(user.agents.find((a) => a.name === "reviewer")?.source).toBe("user");
+  expect(user.agents.find((a) => a.name === "reviewer")?.description).toBe(
+    "User reviewer",
+  );
+  expect(user.agents.some((a) => a.name === "user-only")).toBe(true);
+  expect(cache.size).toBe(3);
+});
+
+test("agent discovery cache handles unreadable directories gracefully", async () => {
+  const root = await makeTempDir("pi-subagent-unreadable-dir-");
+  const agentDir = path.join(root, "agent");
+  const userDir = path.join(agentDir, "agents");
+  const cwd = path.join(root, "work");
+  await mkdir(userDir, { recursive: true });
+  await mkdir(cwd, { recursive: true });
+  await writeFile(
+    path.join(userDir, "valid.md"),
+    `---
+name: valid
+description: Valid agent
+---
+Prompt`,
+  );
+  process.env.PI_CODING_AGENT_DIR = agentDir;
+  const cache: AgentDiscoveryCache = new Map();
+  await chmod(userDir, 0o000);
+  try {
+    const result = await getCachedAgentDiscovery(cwd, "user", cache, 3000);
+    expect(result.agents).toEqual([]);
+    expect(result.scopes.user.agents).toEqual([]);
+    expect(result.scopes.user.markdownFiles).toEqual([]);
+  } finally {
+    await chmod(userDir, 0o755);
+  }
+});
+
+test("agent discovery cache handles unreadable files gracefully", async () => {
+  const root = await makeTempDir("pi-subagent-unreadable-file-");
+  const agentDir = path.join(root, "agent");
+  const userDir = path.join(agentDir, "agents");
+  const cwd = path.join(root, "work");
+  await mkdir(userDir, { recursive: true });
+  await mkdir(cwd, { recursive: true });
+  const agentFile = path.join(userDir, "test.md");
+  await writeFile(
+    agentFile,
+    `---
+name: test
+description: Test agent
+---
+Prompt`,
+  );
+  process.env.PI_CODING_AGENT_DIR = agentDir;
+  const cache: AgentDiscoveryCache = new Map();
+  await chmod(agentFile, 0o000);
+  try {
+    const result = await getCachedAgentDiscovery(cwd, "user", cache, 3000);
+    expect(result.agents).toEqual([]);
+    expect(result.scopes.user.agents).toEqual([]);
+    expect(result.scopes.user.markdownFiles).toEqual(["test.md"]);
+  } finally {
+    await chmod(agentFile, 0o644);
+  }
+});
+
+test("agent discovery cache with exact TTL boundary", async () => {
+  const root = await makeTempDir("pi-subagent-ttl-boundary-");
+  const agentDir = path.join(root, "agent");
+  const userDir = path.join(agentDir, "agents");
+  const cwd = path.join(root, "work");
+  await mkdir(userDir, { recursive: true });
+  await mkdir(cwd, { recursive: true });
+  await writeFile(
+    path.join(userDir, "test.md"),
+    `---
+name: test
+description: Test
+---
+Prompt`,
+  );
+  process.env.PI_CODING_AGENT_DIR = agentDir;
+  const cache: AgentDiscoveryCache = new Map();
+  let now = 10000;
+  const originalNow = Date.now;
+  Date.now = () => now;
+  try {
+    const first = await getCachedAgentDiscovery(cwd, "user", cache, 3000);
+    expect(first.ts).toBe(10000);
+    now = 13000;
+    const exact = await getCachedAgentDiscovery(cwd, "user", cache, 3000);
+    expect(exact.ts).toBe(10000);
+    now = 13001;
+    const expired = await getCachedAgentDiscovery(cwd, "user", cache, 3000);
+    expect(expired.ts).toBe(13001);
+  } finally {
+    Date.now = originalNow;
+  }
 });
 
 test("resolveAgentSkillArgs maps duplicate skill names to file paths", async () => {

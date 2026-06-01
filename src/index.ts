@@ -6,6 +6,7 @@ import {
   getCachedAgentCompletions,
   resetAgentDiscoveryCache,
 } from "./agent/agent-cache.js";
+import { isDirectoryAsync } from "./agent/agents.js";
 import { cancelSubagentCommandHandler } from "./orchestration/cancel-command.js";
 import { jobsCommandHandler } from "./orchestration/jobs-command.js";
 import { renderSubagentResultMessage } from "./orchestration/run.js";
@@ -24,15 +25,40 @@ export function resetAgentCache() {
   resetAgentDiscoveryCache();
 }
 
+function normalizeWorkspaceRoot(cwd: string | undefined): string | undefined {
+  if (typeof cwd !== "string") return undefined;
+  const root = cwd.trim();
+  return root.length > 0 ? root : undefined;
+}
+
 export default function registerSubagentExtension(pi: ExtensionAPI) {
+  let activeWorkspaceRoot: string | undefined;
+  const setActiveWorkspaceRoot = (
+    cwd: string | undefined,
+    fallback?: string,
+  ) => {
+    activeWorkspaceRoot = normalizeWorkspaceRoot(cwd ?? fallback);
+  };
+  const getRunArgumentCompletions = async (prefix: string) => {
+    if (!activeWorkspaceRoot) return [];
+    if (!(await isDirectoryAsync(activeWorkspaceRoot))) return [];
+    return getCachedAgentCompletions(prefix, activeWorkspaceRoot);
+  };
+  pi.on("resources_discover", (event, ctx) => {
+    setActiveWorkspaceRoot(ctx.cwd, event.cwd);
+  });
+  pi.on("session_start", (_event, ctx) => {
+    setActiveWorkspaceRoot(ctx.cwd);
+  });
   pi.registerMessageRenderer("subagent-progress", renderSubagentProgress);
   pi.registerMessageRenderer("subagent-result", renderSubagentResultMessage);
   pi.registerCommand("run", {
     description: "Run a subagent directly: /run <agent> [task]",
-    getArgumentCompletions: (prefix: string) =>
-      getCachedAgentCompletions(prefix),
-    handler: async (args, ctx) =>
-      runCommandHandler(pi, ctx as ExtensionContext, args),
+    getArgumentCompletions: getRunArgumentCompletions,
+    handler: async (args, ctx) => {
+      setActiveWorkspaceRoot(ctx.cwd);
+      return runCommandHandler(pi, ctx as ExtensionContext, args);
+    },
   });
   pi.registerCommand("cancel-subagent", {
     description:
