@@ -72,7 +72,7 @@ export function resolveThinkingLevel(
   return { level: clamped, warning: mkWarning(clamped) };
 }
 
-const MAX_SUBAGENT_DEPTH = 3;
+const MAX_SUBAGENT_DEPTH = 2;
 export const TOOL_RESULT_FAILED_MESSAGE = "Subagent tool result failed.";
 
 type RuntimeResult = SingleResult & { messages: Message[] };
@@ -639,7 +639,7 @@ async function finalizeResult(
  * the main conversation.
  *
  * Safety:
- * - Enforces a strict recursion limit (depth 3) via environment variables.
+ * - Enforces a strict recursion limit (depth 2) via environment variables.
  * - Uses temporary prompt files to pass large system prompts without shell limits.
  * - Streams JSON events from the child to provide real-time UI updates to the parent.
  * - Implements aggressive process tree termination to prevent orphan processes.
