@@ -77,7 +77,7 @@ with separate context windows.
 
 - Project-local agents require UI confirmation when UI context exists.
 - Nested subagent calls use `PI_SUBAGENT_DEPTH`; execution stops at
-  depth `3`.
+  depth `2`.
 - Output truncation uses `PI_SUBAGENT_MAX_OUTPUT_BYTES` with default
   `50000` and `PI_SUBAGENT_MAX_OUTPUT_LINES` with default `500`.
 - Failures propagate through structured details and filtered parent

@@ -151,7 +151,7 @@ executable automation.
 **Environment variables:**
 
 - `PI_SUBAGENT_DEPTH`: nested subagent depth guard. Nested calls stop at
-  depth `3`.
+  depth `2`.
 - `PI_SUBAGENT_MAX_OUTPUT_BYTES`: max returned output bytes. Default:
   `50000`.
 - `PI_SUBAGENT_MAX_OUTPUT_LINES`: max returned output lines. Default:
