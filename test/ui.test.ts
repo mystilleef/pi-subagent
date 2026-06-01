@@ -2272,3 +2272,62 @@ test("renderRunsBoard uses body source priority and fallback", () => {
   expect(text).toContain("[toolOutput]preview only[/toolOutput]");
   expect(text).toContain("[muted](no output)[/muted]");
 });
+
+test("result detail shape compatible with preserved nested activity progress", async () => {
+  const sentMessages: SendMessageArg[] = [];
+  const { tool, cwd } = await setupTest({
+    sendMessage: (msg) => sentMessages.push(msg),
+    piScript: `#!/bin/sh
+printf '%s\n' '{"type":"nested_activity","activityText":"Reading config.ts"}'
+printf '%s\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"toolCall","name":"bash","id":"tc-1","arguments":{"command":"ls"}}]}}'
+printf '%s\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"Outcome: completed"}],"usage":{"input":10,"output":20,"totalTokens":30,"cost":{"total":0.01}}}}'
+printf '%s\n' '{"type":"agent_end"}'
+exit 0
+`,
+  });
+  await tool.execute(
+    "test-tool-call",
+    { agent: "hang", task: "shape compat" },
+    undefined,
+    undefined,
+    { cwd, hasUI: false } as unknown as ExtensionContext,
+  );
+  await waitForSentMessageCount(sentMessages, 2);
+  const resultDetails = sentMessages.at(-1)?.details as SubagentDetails;
+  expect(resultDetails.results[0]).toBeDefined();
+  expect(resultDetails.results[0]?.exitCode).toBe(0);
+  expect(resultDetails.results[0]?.usage).toBeDefined();
+  expect(resultDetails.results[0]?.progress).toBeDefined();
+  expect(Array.isArray(resultDetails.results[0]?.progress?.toolCalls)).toBe(
+    true,
+  );
+});
+
+test("sanitized result details preserve progress tool calls without internal fields", async () => {
+  const sentMessages: SendMessageArg[] = [];
+  const { tool, cwd } = await setupTest({
+    sendMessage: (msg) => sentMessages.push(msg),
+    piScript: `#!/bin/sh
+printf '%s\n' '{"type":"nested_activity","activityText":"Scanning dependencies"}'
+printf '%s\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"toolCall","name":"read","id":"tc-read","arguments":{"path":"package.json"}}]}}'
+printf '%s\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"done"}],"usage":{"input":5,"output":10,"totalTokens":15,"cost":{"total":0.005}}}}'
+printf '%s\n' '{"type":"agent_end"}'
+exit 0
+`,
+  });
+  await tool.execute(
+    "test-tool-call",
+    { agent: "hang", task: "sanitized progress" },
+    undefined,
+    undefined,
+    { cwd, hasUI: false } as unknown as ExtensionContext,
+  );
+  await waitForSentMessageCount(sentMessages, 2);
+  const resultDetails = sentMessages.at(-1)?.details as SubagentDetails;
+  const progress = resultDetails.results[0]?.progress;
+  expect(progress).toBeDefined();
+  expect(progress?.toolCalls).toBeDefined();
+  expect(progress?.toolCalls.length).toBeGreaterThanOrEqual(1);
+  expect(progress?.toolCalls[0]?.id).toBe("tc-read");
+  expect(progress?.toolCalls[0]?.preview).toBe("read: package.json");
+});

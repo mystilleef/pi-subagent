@@ -13,6 +13,7 @@ import {
   extractProgressFromDetails,
   getProgressState,
   patchProgressState,
+  type SubagentProgressState,
 } from "./progress.js";
 
 export function hasSubagentFailed(result: SingleResult): boolean {
@@ -69,14 +70,48 @@ function isNestedOnlyActivityUpdate(
   return prevHadCustomActivity;
 }
 
+// After a grandchild finishes, the child synthesizes its result before
+// the next nested tool starts. During this window the child emits the
+// default subagent preview, which would overwrite the last meaningful
+// nested activity. This helper detects that fallback so the preserved
+// preview intentionally lags until a fresh child or nested tool arrives.
+function isDefaultFallbackUpdate(
+  current: {
+    activityText?: string;
+    lastToolPreview?: string;
+    progressLastToolPreview?: string;
+  },
+  stored: SubagentProgressState | undefined,
+  newToolCallIds: string[],
+): boolean {
+  const { activityText, lastToolPreview, progressLastToolPreview } = current;
+  if (
+    !lastToolPreview &&
+    progressLastToolPreview &&
+    activityText &&
+    activityText === progressLastToolPreview &&
+    newToolCallIds.length === 0
+  ) {
+    return (
+      stored?.lastToolPreview !== undefined &&
+      stored.lastToolPreview !== progressLastToolPreview
+    );
+  }
+  return false;
+}
+
 export function patchProgressFromDetails(
   requestId: string,
   details: SubagentDetails,
   seenToolCallIds: Set<string>,
 ): void {
   const latestResult = getLatestResult(details);
-  const { newToolCallIds, lastToolPreview, activityText } =
-    extractProgressFromDetails(details, seenToolCallIds);
+  const {
+    newToolCallIds,
+    lastToolPreview,
+    activityText,
+    progressLastToolPreview,
+  } = extractProgressFromDetails(details, seenToolCallIds);
   const current = getProgressState(requestId);
   if (!current) return;
   const patch: Record<string, unknown> = {
@@ -87,7 +122,14 @@ export function patchProgressFromDetails(
     { activityText, lastToolPreview },
     latestResult?.progress,
   );
-  if (effectivePreview) patch.lastToolPreview = effectivePreview;
+  const isDefaultFallback = isDefaultFallbackUpdate(
+    { activityText, lastToolPreview, progressLastToolPreview },
+    current,
+    newToolCallIds,
+  );
+  if (effectivePreview && !isDefaultFallback) {
+    patch.lastToolPreview = effectivePreview;
+  }
   if (latestResult?.usage && !isNestedOnlyUpdate) {
     patch.inputTokens = latestResult.usage.input;
     patch.outputTokens = latestResult.usage.output;

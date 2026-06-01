@@ -2114,3 +2114,134 @@ test("emitCompletionAlert emits bell for error jobs", () => {
 test("emitCompletionAlert skips absent state", () => {
   expect(() => emitCompletionAlert(undefined)).not.toThrow();
 });
+
+test("orchestrated path preserves nested activity across fallback child status updates", async () => {
+  const sentMessages: SendMessageArg[] = [];
+  const { binDir, cwd } = await setupFakePi();
+  await writeFile(
+    path.join(binDir, "pi"),
+    `#!/bin/sh
+printf '%s\n' '{"type":"nested_activity","activityText":"Reading config.ts"}'
+printf '%s\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"toolCall","name":"bash","id":"tc-1","arguments":{"command":"ls"}}]}}'
+printf '%s\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"done"}],"usage":{"input":1,"output":1,"totalTokens":2,"cost":{"total":0}}}}'
+printf '%s\n' '{"type":"agent_end"}'
+exit 0
+`,
+  );
+  await chmod(path.join(binDir, "pi"), 0o755);
+  const tool = getSubagentTool({
+    sendMessage: (msg) => sentMessages.push(msg),
+  });
+  await tool.execute(
+    "test-tool-call",
+    { agent: "hang", task: "preserve nested" },
+    undefined,
+    undefined,
+    { cwd, hasUI: false } as unknown as ExtensionContext,
+  );
+  await waitForSentMessageCount(sentMessages, 2);
+  const requestId = (sentMessages[0]?.details as { requestId?: string })
+    ?.requestId;
+  if (!requestId) throw new Error("requestId missing");
+  const state = getProgressState(requestId);
+  expect(state?.status).toBe("success");
+  expect(state?.toolCount).toBeGreaterThanOrEqual(1);
+});
+
+test("orchestrated path: fresh child tool call supersedes preserved nested activity", async () => {
+  const sentMessages: SendMessageArg[] = [];
+  const { binDir, cwd } = await setupFakePi();
+  await writeFile(
+    path.join(binDir, "pi"),
+    `#!/bin/sh
+printf '%s\n' '{"type":"nested_activity","activityText":"Scanning files"}'
+printf '%s\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"toolCall","name":"bash","id":"tc-fresh","arguments":{"command":"cat file.ts"}}]}}'
+printf '%s\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"done"}],"usage":{"input":1,"output":1,"totalTokens":2,"cost":{"total":0}}}}'
+printf '%s\n' '{"type":"agent_end"}'
+exit 0
+`,
+  );
+  await chmod(path.join(binDir, "pi"), 0o755);
+  const tool = getSubagentTool({
+    sendMessage: (msg) => sentMessages.push(msg),
+  });
+  await tool.execute(
+    "test-tool-call",
+    { agent: "hang", task: "fresh tool wins" },
+    undefined,
+    undefined,
+    { cwd, hasUI: false } as unknown as ExtensionContext,
+  );
+  await waitForSentMessageCount(sentMessages, 2);
+  const requestId = (sentMessages[0]?.details as { requestId?: string })
+    ?.requestId;
+  if (!requestId) throw new Error("requestId missing");
+  const state = getProgressState(requestId);
+  expect(state?.status).toBe("success");
+  expect(state?.toolCount).toBeGreaterThanOrEqual(1);
+});
+
+test("orchestrated path: terminal progress clears preserved nested activity", async () => {
+  const sentMessages: SendMessageArg[] = [];
+  const { binDir, cwd } = await setupFakePi();
+  await writeFile(
+    path.join(binDir, "pi"),
+    `#!/bin/sh
+printf '%s\n' '{"type":"nested_activity","activityText":"Reading config.ts"}'
+printf '%s\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"Outcome: completed"}],"usage":{"input":1,"output":1,"totalTokens":2,"cost":{"total":0}}}}'
+printf '%s\n' '{"type":"agent_end"}'
+exit 0
+`,
+  );
+  await chmod(path.join(binDir, "pi"), 0o755);
+  const tool = getSubagentTool({
+    sendMessage: (msg) => sentMessages.push(msg),
+  });
+  await tool.execute(
+    "test-tool-call",
+    { agent: "hang", task: "terminal clears" },
+    undefined,
+    undefined,
+    { cwd, hasUI: false } as unknown as ExtensionContext,
+  );
+  await waitForSentMessageCount(sentMessages, 2);
+  const requestId = (sentMessages[0]?.details as { requestId?: string })
+    ?.requestId;
+  if (!requestId) throw new Error("requestId missing");
+  const state = getProgressState(requestId);
+  expect(state?.status).toBe("success");
+  expect(state?.lastToolPreview).toBeUndefined();
+});
+
+test("orchestrated path: result detail shape remains compatible with preserved nested activity", async () => {
+  const sentMessages: SendMessageArg[] = [];
+  const { binDir, cwd } = await setupFakePi();
+  await writeFile(
+    path.join(binDir, "pi"),
+    `#!/bin/sh
+printf '%s\n' '{"type":"nested_activity","activityText":"Reading config.ts"}'
+printf '%s\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"toolCall","name":"bash","id":"tc-1","arguments":{"command":"ls"}}]}}'
+printf '%s\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"done"}],"usage":{"input":10,"output":20,"totalTokens":30,"cost":{"total":0.01}}}}'
+printf '%s\n' '{"type":"agent_end"}'
+exit 0
+`,
+  );
+  await chmod(path.join(binDir, "pi"), 0o755);
+  const tool = getSubagentTool({
+    sendMessage: (msg) => sentMessages.push(msg),
+  });
+  await tool.execute(
+    "test-tool-call",
+    { agent: "hang", task: "shape compat" },
+    undefined,
+    undefined,
+    { cwd, hasUI: false } as unknown as ExtensionContext,
+  );
+  await waitForSentMessageCount(sentMessages, 2);
+  const resultDetails = sentMessages.at(-1)?.details as SubagentDetails;
+  expect(resultDetails.results[0]).toBeDefined();
+  expect(resultDetails.results[0]?.exitCode).toBe(0);
+  expect(resultDetails.results[0]?.usage).toBeDefined();
+  expect(typeof resultDetails.results[0]?.usage?.input).toBe("number");
+  expect(typeof resultDetails.results[0]?.usage?.output).toBe("number");
+});

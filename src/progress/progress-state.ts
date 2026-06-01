@@ -198,6 +198,7 @@ function isMeaningfulProgressErrorLine(line: string): boolean {
 export interface DetailsProgress {
   lastToolPreview?: string;
   activityText?: string;
+  progressLastToolPreview?: string;
   newToolCallIds: string[];
 }
 
@@ -216,6 +217,7 @@ function trackNewToolCall(
 function extractProgressFromExistingProgress(
   progress: {
     activityText?: string;
+    lastToolPreview?: string;
     toolCalls: { id: string; preview: string }[];
   },
   seenToolCallIds: Set<string>,
@@ -226,6 +228,14 @@ function extractProgressFromExistingProgress(
     progress.activityText.trim()
   ) {
     state.activityText = normalizeAndTruncate(progress.activityText);
+  }
+  if (
+    typeof progress.lastToolPreview === "string" &&
+    progress.lastToolPreview.trim()
+  ) {
+    state.progressLastToolPreview = normalizeAndTruncate(
+      progress.lastToolPreview,
+    );
   }
   for (const toolCall of progress.toolCalls) {
     if (!isDerivedToolCall(toolCall)) continue;
