@@ -41,6 +41,7 @@ with separate context windows.
 ## Commands
 
 - Full verification: `bun verify`
+- Fix formatting: `bun fix`
 - Lint checks: `bun check`
 - Test coverage: `bun coverage`
 - Biome migration: `bun migrate`
