@@ -3,12 +3,11 @@ import {
   isStatusOnlyFailure,
   isStatusOnlySuccess,
   makeToolPreview,
+  normalizeAndTruncate,
   normalizeSummaryValue,
   normalizeTerminalSentence,
-  TOOL_PREVIEW_MAX_CHARS,
-  truncateText,
 } from "../output/normalize.js";
-import type { SubagentDetails } from "../shared/types.js";
+import type { SingleResult, SubagentDetails } from "../shared/types.js";
 
 export type ThemeBg = "toolPendingBg" | "toolSuccessBg" | "toolErrorBg";
 
@@ -198,53 +197,90 @@ function isMeaningfulProgressErrorLine(line: string): boolean {
 
 export interface DetailsProgress {
   lastToolPreview?: string;
+  activityText?: string;
   newToolCallIds: string[];
+}
+
+function trackNewToolCall(
+  id: string,
+  preview: string,
+  seenToolCallIds: Set<string>,
+  state: DetailsProgress,
+): void {
+  if (seenToolCallIds.has(id)) return;
+  seenToolCallIds.add(id);
+  state.newToolCallIds.push(id);
+  state.lastToolPreview = preview;
+}
+
+function extractProgressFromExistingProgress(
+  progress: {
+    activityText?: string;
+    toolCalls: { id: string; preview: string }[];
+  },
+  seenToolCallIds: Set<string>,
+  state: DetailsProgress,
+): void {
+  if (
+    typeof progress.activityText === "string" &&
+    progress.activityText.trim()
+  ) {
+    state.activityText = normalizeAndTruncate(progress.activityText);
+  }
+  for (const toolCall of progress.toolCalls) {
+    if (!isDerivedToolCall(toolCall)) continue;
+    const preview = normalizeAndTruncate(toolCall.preview);
+    trackNewToolCall(toolCall.id, preview, seenToolCallIds, state);
+  }
+}
+
+function extractProgressFromMessages(
+  messages: SingleResult["messages"] = [],
+  seenToolCallIds: Set<string>,
+  state: DetailsProgress,
+): void {
+  for (const msg of messages) {
+    if (msg.role !== "assistant" || !Array.isArray(msg.content)) continue;
+    for (const part of msg.content) {
+      if (isToolCallPart(part)) {
+        const preview = makeToolPreview(part.name, part.arguments);
+        trackNewToolCall(part.id, preview, seenToolCallIds, state);
+      }
+    }
+  }
 }
 
 export function extractProgressFromDetails(
   details: SubagentDetails,
   seenToolCallIds: Set<string>,
 ): DetailsProgress {
-  const newToolCallIds: string[] = [];
-  let lastToolPreview: string | undefined;
+  const state: DetailsProgress = { newToolCallIds: [] };
   const results = Array.isArray(details.results) ? details.results : [];
   for (const result of results) {
     if (result.progress) {
-      for (const toolCall of result.progress.toolCalls) {
-        if (!isDerivedToolCall(toolCall)) continue;
-        lastToolPreview = truncateText(
-          normalizeSummaryValue(toolCall.preview),
-          TOOL_PREVIEW_MAX_CHARS,
-        );
-        if (seenToolCallIds.has(toolCall.id)) continue;
-        seenToolCallIds.add(toolCall.id);
-        newToolCallIds.push(toolCall.id);
-      }
+      extractProgressFromExistingProgress(
+        result.progress,
+        seenToolCallIds,
+        state,
+      );
       continue;
     }
     const messages = Array.isArray(result.messages) ? result.messages : [];
-    for (const msg of messages) {
-      if (msg.role !== "assistant" || !Array.isArray(msg.content)) continue;
-      for (const part of msg.content) {
-        if (isToolCallPart(part)) {
-          lastToolPreview = makeToolPreview(part.name, part.arguments);
-          if (seenToolCallIds.has(part.id)) continue;
-          seenToolCallIds.add(part.id);
-          newToolCallIds.push(part.id);
-        }
-      }
-    }
+    extractProgressFromMessages(messages, seenToolCallIds, state);
   }
-  return { lastToolPreview, newToolCallIds };
+  return state;
+}
+
+function isObjectWith(part: unknown): part is Record<string, unknown> {
+  return typeof part === "object" && part !== null;
 }
 
 function isDerivedToolCall(part: unknown): part is {
   id: string;
   preview: string;
 } {
-  if (typeof part !== "object" || part === null) return false;
-  const maybe = part as { id?: unknown; preview?: unknown };
-  return typeof maybe.id === "string" && typeof maybe.preview === "string";
+  if (!isObjectWith(part)) return false;
+  return typeof part.id === "string" && typeof part.preview === "string";
 }
 
 export function isToolCallPart(part: unknown): part is {
@@ -253,12 +289,11 @@ export function isToolCallPart(part: unknown): part is {
   name: string;
   arguments?: Record<string, unknown>;
 } {
-  if (typeof part !== "object" || part === null) return false;
-  const maybe = part as { type?: unknown; id?: unknown; name?: unknown };
+  if (!isObjectWith(part)) return false;
   return (
-    maybe.type === "toolCall" &&
-    typeof maybe.id === "string" &&
-    typeof maybe.name === "string"
+    part.type === "toolCall" &&
+    typeof part.id === "string" &&
+    typeof part.name === "string"
   );
 }
 

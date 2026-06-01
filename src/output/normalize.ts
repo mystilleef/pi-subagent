@@ -64,6 +64,13 @@ export function normalizeTerminalSentence(
 
 export const TOOL_PREVIEW_MAX_CHARS = 120;
 
+export function normalizeAndTruncate(
+  text: string,
+  limit = TOOL_PREVIEW_MAX_CHARS,
+): string {
+  return truncateText(normalizeSummaryValue(text), limit);
+}
+
 export function makeToolPreview(
   toolName: string,
   args: Record<string, unknown> | undefined,
@@ -73,10 +80,7 @@ export function makeToolPreview(
     extractSemanticToolTarget(toolName, args),
   );
   if (!target) return toolName;
-  return truncateText(
-    normalizeSummaryValue(`${toolName}: ${target}`),
-    TOOL_PREVIEW_MAX_CHARS,
-  );
+  return normalizeAndTruncate(`${toolName}: ${target}`);
 }
 
 export function isStatusOnlySuccess(value: string): boolean {

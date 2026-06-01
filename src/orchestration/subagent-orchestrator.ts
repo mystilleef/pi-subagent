@@ -10,6 +10,7 @@ import type {
   AgentScope,
   ThinkingLevel,
 } from "../agent/agents.js";
+import { makeNestedActivityLine } from "../child/child-events.js";
 import { runSingleAgent, SubagentAbortError } from "../child/process.js";
 import { formatSubagentResultForParent } from "../output/summary.js";
 import {
@@ -22,6 +23,7 @@ import {
 import {
   createSubagentError,
   getFeedbackSummaryText,
+  getLatestResult,
   getResultDisplayText,
   hasSubagentFailed,
   patchProgressFromDetails,
@@ -218,8 +220,9 @@ function finishLifecycleFailure(
   }
   failProgressState(lc.requestId, errorMessage);
   lc.ctx.ui?.notify(errorMessage, "error");
-  const content = details.results[0]
-    ? formatSubagentResultForParent(details.results[0]) || "(failed)"
+  const latestResult = getLatestResult(details);
+  const content = latestResult
+    ? formatSubagentResultForParent(latestResult) || "(failed)"
     : errorMessage;
   sendSubagentResultMessage(lc.pi, content, displayDetails);
   return createCompletedToolResult(content, displayDetails);
@@ -249,6 +252,13 @@ function finishLifecycleResult(
   return toolResult;
 }
 
+function emitNestedActivity(details: SubagentDetails): void {
+  const activityText = getLatestResult(details)?.progress?.activityText;
+  if (activityText) {
+    process.stdout.write(`${makeNestedActivityLine(activityText)}\n`);
+  }
+}
+
 async function runSubagentLifecycle(
   lc: LifecycleContext,
 ): Promise<SubagentToolResult> {
@@ -257,10 +267,13 @@ async function runSubagentLifecycle(
     lc.ctx,
     lc.requestId,
   );
+  const isNested = getSubagentDepth() > 0;
   const onUpdate: OnUpdateCallback = (result) => {
     patchProgressFromDetails(lc.requestId, result.details, seenToolCallIds);
+    if (isNested) emitNestedActivity(result.details);
     requestProgressRender();
   };
+  const timerTick = setInterval(requestProgressRender, 500);
   try {
     const result = await runSingleAgent(
       lc.ctx.cwd,
@@ -283,6 +296,7 @@ async function runSubagentLifecycle(
       abortResult ? lc.makeDetails([abortResult]) : lc.makeDetails([]),
     );
   } finally {
+    clearInterval(timerTick);
     requestProgressRender();
     removeRunJob(lc.requestId);
     if (listRunJobs().length === 0) {

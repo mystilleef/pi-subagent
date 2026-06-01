@@ -53,23 +53,42 @@ export function sanitizeDetailsForDisplay(
   };
 }
 
+export function getLatestResult(
+  details: SubagentDetails,
+): SingleResult | undefined {
+  return details.results[0];
+}
+
+function isNestedOnlyActivityUpdate(
+  current: { activityText?: string; lastToolPreview?: string },
+  previous: { activityText?: string; lastToolPreview?: string } | undefined,
+): boolean {
+  if (!current.activityText || current.lastToolPreview) return false;
+  const prevHadCustomActivity =
+    previous?.activityText !== previous?.lastToolPreview;
+  return prevHadCustomActivity;
+}
+
 export function patchProgressFromDetails(
   requestId: string,
   details: SubagentDetails,
   seenToolCallIds: Set<string>,
 ): void {
-  const latestResult = details.results[0];
-  const { newToolCallIds, lastToolPreview } = extractProgressFromDetails(
-    details,
-    seenToolCallIds,
-  );
+  const latestResult = getLatestResult(details);
+  const { newToolCallIds, lastToolPreview, activityText } =
+    extractProgressFromDetails(details, seenToolCallIds);
   const current = getProgressState(requestId);
   if (!current) return;
   const patch: Record<string, unknown> = {
     toolCount: current.toolCount + newToolCallIds.length,
   };
-  if (lastToolPreview) patch.lastToolPreview = lastToolPreview;
-  if (latestResult?.usage) {
+  const effectivePreview = lastToolPreview ?? activityText;
+  const isNestedOnlyUpdate = isNestedOnlyActivityUpdate(
+    { activityText, lastToolPreview },
+    latestResult?.progress,
+  );
+  if (effectivePreview) patch.lastToolPreview = effectivePreview;
+  if (latestResult?.usage && !isNestedOnlyUpdate) {
     patch.inputTokens = latestResult.usage.input;
     patch.outputTokens = latestResult.usage.output;
     patch.contextTokens = latestResult.usage.contextTokens;
@@ -86,11 +105,13 @@ export function getSubagentText(result: SubagentToolResult): string {
 }
 
 export function getResultDisplayText(result: SubagentToolResult): string {
-  return result.details.results[0]?.finalOutput ?? getSubagentText(result);
+  return (
+    getLatestResult(result.details)?.finalOutput ?? getSubagentText(result)
+  );
 }
 
 export function getFeedbackSummaryText(result: SubagentToolResult): string {
-  const rawFinalOutput = result.details.results[0]?.finalOutput;
+  const rawFinalOutput = getLatestResult(result.details)?.finalOutput;
   if (rawFinalOutput?.trim())
     return summarizeFeedbackUiFinalOutput(rawFinalOutput);
   return getSubagentText(result).trim() || "(no output)";

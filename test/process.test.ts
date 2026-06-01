@@ -199,6 +199,125 @@ test("runSingleAgent cleans prompt temp file when skill resolution fails after p
   expect(fs.existsSync(tmpDir ?? "")).toBe(false);
 });
 
+test("subagent_nested_activity triggers onUpdate without appending messages", async () => {
+  const updates: { text: string; messageCount: number }[] = [];
+  const { cwd } = await setupTest({
+    piScript: `#!/bin/sh
+printf '%s\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"hello"}],"api":"fake","provider":"fake","model":"fake","usage":{"input":1,"output":1,"cacheRead":0,"cacheWrite":0,"totalTokens":2,"cost":{"total":0}},"stopReason":"stop","timestamp":0}}'
+printf '%s\n' '{"type":"subagent_nested_activity","activityText":"Reading file.ts"}'
+printf '%s\n' '{"type":"agent_end","messages":[]}'
+exit 0
+`,
+  });
+  const result = await runSingleAgent(
+    cwd,
+    [hangAgent],
+    "hang",
+    "task",
+    undefined,
+    (partial) => {
+      const text = partial.content[0]?.text ?? "";
+      const msgCount = partial.details.results[0]?.messages?.length ?? 0;
+      updates.push({ text, messageCount: msgCount });
+    },
+    makeDetails,
+    undefined,
+    "off",
+  );
+  expect(result.exitCode).toBe(0);
+  expect(result.messages).toHaveLength(1);
+  const nestedUpdate = updates.find((u) => u.text === "Reading file.ts");
+  expect(nestedUpdate).toBeDefined();
+  expect(nestedUpdate?.messageCount).toBe(1);
+});
+
+test("subagent_nested_activity with sensitive keywords is redacted", async () => {
+  let capturedText = "";
+  const { cwd } = await setupTest({
+    piScript: `#!/bin/sh
+printf '%s\n' '{"type":"subagent_nested_activity","activityText":"Reading secret-token.yaml"}'
+printf '%s\n' '{"type":"agent_end","messages":[]}'
+exit 0
+`,
+  });
+  await runSingleAgent(
+    cwd,
+    [hangAgent],
+    "hang",
+    "task",
+    undefined,
+    (partial) => {
+      capturedText = partial.content[0]?.text ?? "";
+    },
+    makeDetails,
+    undefined,
+    "off",
+  );
+  expect(capturedText).toBe("(running...)");
+});
+
+test("subagent_nested_activity handles no-message no-terminal child exit", async () => {
+  const updates: { text: string; messageCount: number }[] = [];
+  const { cwd } = await setupTest({
+    piScript: `#!/bin/sh
+printf '%s\n' '{"type":"subagent_nested_activity","activityText":"Grandchild running"}'
+exit 0
+`,
+  });
+  const result = await runSingleAgent(
+    cwd,
+    [hangAgent],
+    "hang",
+    "task",
+    undefined,
+    (partial) => {
+      const text = partial.content[0]?.text ?? "";
+      const msgCount = partial.details.results[0]?.messages?.length ?? 0;
+      updates.push({ text, messageCount: msgCount });
+    },
+    makeDetails,
+    undefined,
+    "off",
+  );
+  expect(result.exitCode).toBe(0);
+  expect(result.messages).toHaveLength(0);
+  expect(result.progress?.activityText).toBe("Grandchild running");
+  expect(updates).toContainEqual({
+    text: "Grandchild running",
+    messageCount: 0,
+  });
+});
+
+test("child tool events replace nested activity in subsequent updates", async () => {
+  const texts: string[] = [];
+  const { cwd } = await setupTest({
+    piScript: `#!/bin/sh
+printf '%s\n' '{"type":"subagent_nested_activity","activityText":"Grandchild working"}'
+printf '%s\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"toolCall","id":"tc-1","name":"bash","arguments":{"command":"ls"}}],"api":"fake","provider":"fake","model":"fake","usage":{"input":1,"output":1,"cacheRead":0,"cacheWrite":0,"totalTokens":2,"cost":{"total":0}},"stopReason":"stop","timestamp":0}}'
+printf '%s\n' '{"type":"agent_end","messages":[]}'
+exit 0
+`,
+  });
+  await runSingleAgent(
+    cwd,
+    [hangAgent],
+    "hang",
+    "task",
+    undefined,
+    (partial) => {
+      texts.push(partial.content[0]?.text ?? "");
+    },
+    makeDetails,
+    undefined,
+    "off",
+  );
+  expect(texts).toContain("Grandchild working");
+  expect(texts.some((t) => t.includes("bash"))).toBe(true);
+  const nestedIdx = texts.indexOf("Grandchild working");
+  const toolIdx = texts.findIndex((t) => t.includes("bash"));
+  expect(toolIdx).toBeGreaterThan(nestedIdx);
+});
+
 test("SUBAGENT_RESULT_CONTRACT preserves outcome-only result contract", () => {
   expect(SUBAGENT_RESULT_CONTRACT).toMatch(
     /End your final response with exactly one line:/,

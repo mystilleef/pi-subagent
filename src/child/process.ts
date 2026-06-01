@@ -15,6 +15,7 @@ import {
   type ModelThinkingLevel,
 } from "@earendil-works/pi-ai";
 import type { AgentConfig, ThinkingLevel } from "../agent/agents.js";
+import { normalizeAndTruncate } from "../output/normalize.js";
 import { getFinalOutput } from "../output/ui.js";
 import { makeToolPreview } from "../progress/progress.js";
 import { isToolCallPart } from "../progress/progress-state.js";
@@ -33,7 +34,11 @@ import {
   truncateOutput,
   writePromptToTempFile,
 } from "../shared/utils.js";
-import { parseChildEventLine } from "./child-events.js";
+import {
+  type ChildKnownEvent,
+  NESTED_ACTIVITY_EVENT,
+  parseChildEventLine,
+} from "./child-events.js";
 import { appendSubagentResultContract } from "./prompt-contract.js";
 import {
   getProcessTreeSpawnOptions,
@@ -42,6 +47,7 @@ import {
 
 const MAX_STDERR_BYTES = 10_000;
 const AGENT_END_GRACE_MS = 250;
+const SENSITIVE_PATTERN = /secret|token|password/i;
 
 export function resolveThinkingLevel(
   requested: ThinkingLevel,
@@ -165,6 +171,25 @@ function getAgentEndTimeoutExitCode(
  * Safety: Implements a dual-timer strategy (idle and hard) to ensure streams
  * are destroyed and promises settled even if the process or its pipes hang.
  */
+function createProcessCleanup(proc: ChildProcess, idleMs: number) {
+  let idleTimer: NodeJS.Timeout | undefined;
+  const destroyStreams = () => {
+    proc.stdout?.destroy();
+    proc.stderr?.destroy();
+  };
+  return {
+    armIdleTimer: () => {
+      if (idleTimer) clearTimeout(idleTimer);
+      idleTimer = setTimeout(destroyStreams, idleMs);
+      idleTimer.unref?.();
+    },
+    clearIdleTimer: () => {
+      if (idleTimer) clearTimeout(idleTimer);
+    },
+    destroyStreams,
+  };
+}
+
 async function waitForSubagentProcess(
   proc: ChildProcess,
   idleMs = 100,
@@ -174,22 +199,12 @@ async function waitForSubagentProcess(
     let exitCode: number | null = null;
     let exited = false;
     let settled = false;
-    let idleTimer: NodeJS.Timeout | undefined;
+    const cleanup = createProcessCleanup(proc, idleMs);
     const done = () => {
       if (settled) return;
       settled = true;
-      if (idleTimer) clearTimeout(idleTimer);
+      cleanup.clearIdleTimer();
       resolve(exitCode);
-    };
-    const destroyStreams = () => {
-      proc.stdout?.destroy();
-      proc.stderr?.destroy();
-    };
-    const armIdleTimer = () => {
-      if (!exited) return;
-      if (idleTimer) clearTimeout(idleTimer);
-      idleTimer = setTimeout(destroyStreams, idleMs);
-      idleTimer.unref?.();
     };
     proc.on("close", done);
     proc.on("error", () => {
@@ -200,12 +215,15 @@ async function waitForSubagentProcess(
     proc.on("exit", (code) => {
       exitCode = code;
       exited = true;
-      armIdleTimer();
-      const hardTimer = setTimeout(destroyStreams, hardMs);
+      cleanup.armIdleTimer();
+      const hardTimer = setTimeout(cleanup.destroyStreams, hardMs);
       hardTimer.unref?.();
     });
-    proc.stdout?.on("data", armIdleTimer);
-    proc.stderr?.on("data", armIdleTimer);
+    const onStreamData = () => {
+      if (exited) cleanup.armIdleTimer();
+    };
+    proc.stdout?.on("data", onStreamData);
+    proc.stderr?.on("data", onStreamData);
   });
 }
 
@@ -218,6 +236,16 @@ function buildModelDisplay(
   }
   return thinking ? `thinking:${thinking}` : undefined;
 }
+
+const EMPTY_USAGE = {
+  input: 0,
+  output: 0,
+  cacheRead: 0,
+  cacheWrite: 0,
+  cost: 0,
+  contextTokens: 0,
+  turns: 0,
+};
 
 function initRuntimeResult(
   agentName: string,
@@ -233,17 +261,24 @@ function initRuntimeResult(
     finalOutput: "",
     messages: [],
     stderr: "",
-    usage: {
-      input: 0,
-      output: 0,
-      cacheRead: 0,
-      cacheWrite: 0,
-      cost: 0,
-      contextTokens: 0,
-      turns: 0,
-    },
+    usage: { ...EMPTY_USAGE },
     model: modelDisplay,
   };
+}
+
+function accumulateUsage(result: RuntimeResult, msg: Message): void {
+  if (msg.role !== "assistant") return;
+  result.usage.turns++;
+  const { usage } = msg;
+  if (!usage) return;
+  result.usage.input += usage.input || 0;
+  result.usage.output += usage.output || 0;
+  result.usage.cacheRead += usage.cacheRead || 0;
+  result.usage.cacheWrite += usage.cacheWrite || 0;
+  result.usage.cost += usage.cost?.total || 0;
+  result.usage.contextTokens = usage.totalTokens || 0;
+  result.usage.contextWindowTokens =
+    resolveContextWindowTokens(msg) ?? result.usage.contextWindowTokens;
 }
 
 function addMessageToResult(result: RuntimeResult, msg: Message): void {
@@ -254,22 +289,12 @@ function addMessageToResult(result: RuntimeResult, msg: Message): void {
   } else if (result.errorMessage === TOOL_RESULT_FAILED_MESSAGE) {
     result.errorMessage = undefined;
   }
-  if (msg.role !== "assistant") return;
-  result.usage.turns++;
-  const { usage } = msg;
-  if (usage) {
-    result.usage.input += usage.input || 0;
-    result.usage.output += usage.output || 0;
-    result.usage.cacheRead += usage.cacheRead || 0;
-    result.usage.cacheWrite += usage.cacheWrite || 0;
-    result.usage.cost += usage.cost?.total || 0;
-    result.usage.contextTokens = usage.totalTokens || 0;
-    result.usage.contextWindowTokens =
-      resolveContextWindowTokens(msg) ?? result.usage.contextWindowTokens;
+  if (msg.role === "assistant") {
+    accumulateUsage(result, msg);
+    if (!result.model && msg.model) result.model = msg.model;
+    if (msg.stopReason) result.stopReason = msg.stopReason;
+    if (msg.errorMessage) result.errorMessage = msg.errorMessage;
   }
-  if (!result.model && msg.model) result.model = msg.model;
-  if (msg.stopReason) result.stopReason = msg.stopReason;
-  if (msg.errorMessage) result.errorMessage = msg.errorMessage;
 }
 
 function createErrorResult(
@@ -286,15 +311,7 @@ function createErrorResult(
     exitCode: 1,
     finalOutput: "",
     stderr: error,
-    usage: {
-      input: 0,
-      output: 0,
-      cacheRead: 0,
-      cacheWrite: 0,
-      cost: 0,
-      contextTokens: 0,
-      turns: 0,
-    },
+    usage: { ...EMPTY_USAGE },
     model,
   };
 }
@@ -396,7 +413,13 @@ function deriveStreamingProgress(messages: Message[]): StreamingProgress {
  * Redacts values if the preview contains sensitive keywords.
  */
 function sanitizeProgressPreview(preview: string, toolName: string): string {
-  return /secret|token|password/i.test(preview) ? toolName : preview;
+  return SENSITIVE_PATTERN.test(preview) ? toolName : preview;
+}
+
+function sanitizeNestedActivity(activityText: string): string {
+  const sanitized = normalizeAndTruncate(activityText);
+  if (SENSITIVE_PATTERN.test(sanitized)) return "(running...)";
+  return sanitized;
 }
 
 function makeEmitUpdate(
@@ -406,13 +429,15 @@ function makeEmitUpdate(
     results: RuntimeResult[],
     options?: { includeMessages?: boolean; recentMessages?: Message[] },
   ) => SubagentDetails,
-): () => void {
-  return () => {
+): (activityOverride?: string) => void {
+  return (activityOverride?: string) => {
     const msgs = result.messages;
     const anchorIdx = findRecentMessagesAnchor(msgs);
     const recentMessages =
       anchorIdx >= 0 ? msgs.slice(anchorIdx) : msgs.slice(-5);
     const progress = deriveStreamingProgress(msgs);
+    if (activityOverride !== undefined)
+      progress.activityText = activityOverride;
     result.progress = progress;
     onUpdate?.({
       content: [
@@ -452,22 +477,32 @@ function clearGraceTimer(state: SubagentState): void {
   state.agentEndGraceTimer = undefined;
 }
 
-function processEventLine(
-  line: string,
+function handleMessageEvent(
+  event: ChildKnownEvent,
   state: SubagentState,
-  emitUpdate: () => void,
-  requestTermination: (reason: string) => Promise<unknown>,
+  emitUpdate: (activityOverride?: string) => void,
 ): void {
-  const parseResult = parseChildEventLine(line);
-  if (parseResult.kind !== "known") return;
-  const { event } = parseResult;
-  if (
-    (event.type === "message_end" || event.type === "tool_result_end") &&
-    event.message
-  ) {
+  if (event.type !== "message_end" && event.type !== "tool_result_end") return;
+  if (event.message) {
     addMessageToResult(state.result, event.message as Message);
     emitUpdate();
   }
+}
+
+function handleNestedActivityEvent(
+  event: ChildKnownEvent,
+  emitUpdate: (activityOverride?: string) => void,
+): void {
+  if (event.type !== NESTED_ACTIVITY_EVENT) return;
+  emitUpdate(sanitizeNestedActivity(event.activityText));
+}
+
+function handleAgentEndEvent(
+  event: ChildKnownEvent,
+  state: SubagentState,
+  emitUpdate: (activityOverride?: string) => void,
+  requestTermination: (reason: string) => Promise<unknown>,
+): void {
   if (event.type !== "agent_end") return;
   if (state.result.messages.length === 0 && Array.isArray(event.messages)) {
     for (const msg of event.messages as Message[]) {
@@ -481,6 +516,20 @@ function processEventLine(
     void requestTermination("agent_end_timeout");
   }, AGENT_END_GRACE_MS);
   state.agentEndGraceTimer.unref?.();
+}
+
+function processEventLine(
+  line: string,
+  state: SubagentState,
+  emitUpdate: (activityOverride?: string) => void,
+  requestTermination: (reason: string) => Promise<unknown>,
+): void {
+  const parseResult = parseChildEventLine(line);
+  if (parseResult.kind !== "known") return;
+  const { event } = parseResult;
+  handleMessageEvent(event, state, emitUpdate);
+  handleNestedActivityEvent(event, emitUpdate);
+  handleAgentEndEvent(event, state, emitUpdate, requestTermination);
 }
 
 function setupAbortHandler(
@@ -531,7 +580,7 @@ function buildPiArgs(
 function setupChildProcess(
   proc: ChildProcess,
   state: SubagentState,
-  emitUpdate: () => void,
+  emitUpdate: (activityOverride?: string) => void,
   requestTermination: (reason: string) => Promise<unknown>,
 ): void {
   proc.once("error", (error) => {

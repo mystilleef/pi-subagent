@@ -255,6 +255,61 @@ exit 0
       expect(result.errorMessage).toBeUndefined();
     });
   });
+  describe("process.ts nested activity", () => {
+    async function runAgentWithNestedActivity(piScript: string) {
+      const texts: string[] = [];
+      const { cwd } = await setupTest({ piScript });
+      const agent = {
+        name: "hang",
+        description: "Test agent",
+        source: "user" as const,
+        thinking: "off" as const,
+        systemPrompt: "test",
+        filePath: "hang.md",
+      };
+      await runSingleAgent(
+        cwd,
+        [agent],
+        "hang",
+        "task",
+        undefined,
+        (partial) => {
+          texts.push(partial.content[0]?.text ?? "");
+        },
+        (r) => ({
+          mode: "single",
+          agentScope: "both",
+          projectAgentsDir: null,
+          results: r,
+        }),
+        undefined,
+        "off",
+      );
+      return texts;
+    }
+    test("nested activity truncates long text", async () => {
+      const longText = "A".repeat(200);
+      const texts = await runAgentWithNestedActivity(`#!/bin/sh
+printf '%s\n' '{"type":"subagent_nested_activity","activityText":"${longText}"}'
+printf '%s\n' '{"type":"agent_end","messages":[]}'
+exit 0
+`);
+      const nestedText = texts.find(
+        (t) => t.length > 1 && t !== "(running...)",
+      );
+      expect(nestedText).toBeDefined();
+      expect(nestedText?.length).toBeLessThanOrEqual(120);
+      expect(nestedText).toContain("…");
+    });
+    test("invalid nested activity payload does not trigger update", async () => {
+      const texts = await runAgentWithNestedActivity(`#!/bin/sh
+printf '%s\n' '{"type":"subagent_nested_activity"}'
+printf '%s\n' '{"type":"agent_end","messages":[]}'
+exit 0
+`);
+      expect(texts.every((t) => t === "(running...)" || t === "")).toBe(true);
+    });
+  });
   describe("helpers.ts waitFor timeout", () => {
     test("waitFor throws on timeout", async () => {
       const originalNow = Date.now;

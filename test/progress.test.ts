@@ -18,6 +18,7 @@ import {
   resetProgressStore,
 } from "../src/progress/progress.js";
 import { getAllProgressStates } from "../src/progress/progress-state.js";
+import { patchProgressFromDetails } from "../src/progress/result-details.js";
 import type { SubagentDetails } from "../src/shared/types.js";
 
 const realDateNow = Date.now;
@@ -555,6 +556,25 @@ test("extractProgressFromDetails skips already-seen tool call ids", () => {
   expect(result.newToolCallIds).toEqual(["tc-2"]);
 });
 
+test("extractProgressFromDetails returns undefined lastToolPreview but populated activityText when all derived progress tool calls are already seen", () => {
+  const details = makeDetails([]);
+  const firstResult = details.results[0];
+  if (!firstResult) throw new Error("missing result");
+  firstResult.progress = {
+    toolCalls: [
+      { id: "tc-1", preview: "bash: ls" },
+      { id: "tc-2", preview: "read: /tmp/file" },
+    ],
+    activityText: "read: /tmp/file",
+    lastToolPreview: "read: /tmp/file",
+  };
+  const seen = new Set(["tc-1", "tc-2"]);
+  const result = extractProgressFromDetails(details, seen);
+  expect(result.newToolCallIds).toEqual([]);
+  expect(result.lastToolPreview).toBeUndefined();
+  expect(result.activityText).toBe("read: /tmp/file");
+});
+
 test("extractProgressFromDetails mutates seen ids and reports count delta", () => {
   const details = makeDetails([
     {
@@ -684,6 +704,356 @@ test("extractProgressFromDetails handles empty output when no results", () => {
   const seen = new Set<string>();
   const result = extractProgressFromDetails(details, seen);
   expect(result.newToolCallIds).toEqual([]);
+});
+
+test("extractProgressFromDetails returns activityText from nested activity", () => {
+  const details = makeDetails([]);
+  const firstResult = details.results[0];
+  if (!firstResult) throw new Error("missing result");
+  firstResult.progress = {
+    toolCalls: [],
+    activityText: "Reading file.ts",
+  };
+  const seen = new Set<string>();
+  const result = extractProgressFromDetails(details, seen);
+  expect(result.activityText).toBe("Reading file.ts");
+  expect(result.newToolCallIds).toEqual([]);
+  expect(result.lastToolPreview).toBeUndefined();
+});
+
+test("extractProgressFromDetails prefers child tool preview over nested activity", () => {
+  const details = makeDetails([]);
+  const firstResult = details.results[0];
+  if (!firstResult) throw new Error("missing result");
+  firstResult.progress = {
+    toolCalls: [{ id: "tc-1", preview: "bash: ls" }],
+    activityText: "Reading file.ts",
+    lastToolPreview: "bash: ls",
+  };
+  const seen = new Set<string>();
+  const result = extractProgressFromDetails(details, seen);
+  expect(result.lastToolPreview).toBe("bash: ls");
+  expect(result.activityText).toBe("Reading file.ts");
+  expect(result.newToolCallIds).toEqual(["tc-1"]);
+});
+
+test("extractProgressFromDetails does not create tool-call IDs for nested activity", () => {
+  const details = makeDetails([]);
+  const firstResult = details.results[0];
+  if (!firstResult) throw new Error("missing result");
+  firstResult.progress = {
+    toolCalls: [],
+    activityText: "Scanning codebase",
+  };
+  const seen = new Set<string>();
+  const result = extractProgressFromDetails(details, seen);
+  expect(result.newToolCallIds).toEqual([]);
+  expect(seen.size).toBe(0);
+});
+
+test("extractProgressFromDetails normalizes and truncates nested activity text", () => {
+  const details = makeDetails([]);
+  const firstResult = details.results[0];
+  if (!firstResult) throw new Error("missing result");
+  const longActivity = `${"x".repeat(150)}`;
+  firstResult.progress = {
+    toolCalls: [],
+    activityText: `Reading ${longActivity}`,
+  };
+  const seen = new Set<string>();
+  const result = extractProgressFromDetails(details, seen);
+  expect(result.activityText).toBeDefined();
+  const chars = Array.from(result.activityText ?? "");
+  expect(chars.length).toBeLessThanOrEqual(120);
+  expect(result.activityText).toEndWith("…");
+});
+
+test("nested-only update changes running preview without changing toolCount", () => {
+  createProgressState("req-1", "agent-a", "task a");
+  const details = makeDetails([]);
+  const firstResult = details.results[0];
+  if (!firstResult) throw new Error("missing result");
+  firstResult.progress = {
+    toolCalls: [],
+    activityText: "Reading config.ts",
+    lastToolPreview: undefined,
+  };
+  const seen = new Set<string>();
+  patchProgressFromDetails("req-1", details, seen);
+  const state = getProgressState("req-1");
+  expect(state?.lastToolPreview).toBe("Reading config.ts");
+  expect(state?.toolCount).toBe(0);
+  expect([...seen]).toEqual([]);
+});
+
+test("child-owned tool updates regain preview precedence after nested activity", () => {
+  createProgressState("req-1", "agent-a", "task a");
+  patchProgressState("req-1", { lastToolPreview: "Nested: scanning files" });
+  expect(getProgressState("req-1")?.lastToolPreview).toBe(
+    "Nested: scanning files",
+  );
+  patchProgressState("req-1", {
+    lastToolPreview: "bash: ls -la",
+    toolCount: 1,
+  });
+  const state = getProgressState("req-1");
+  expect(state?.lastToolPreview).toBe("bash: ls -la");
+  expect(state?.toolCount).toBe(1);
+});
+
+test("terminal states clear nested activity preview", () => {
+  createProgressState("req-1", "agent-a", "task a");
+  patchProgressState("req-1", { lastToolPreview: "Nested: reading file.ts" });
+  expect(getProgressState("req-1")?.lastToolPreview).toBe(
+    "Nested: reading file.ts",
+  );
+  finalizeProgressState("req-1", "all done");
+  expect(getProgressState("req-1")?.lastToolPreview).toBeUndefined();
+  createProgressState("req-2", "agent-b", "task b");
+  patchProgressState("req-2", { lastToolPreview: "Nested: scanning" });
+  failProgressState("req-2", "child failed");
+  expect(getProgressState("req-2")?.lastToolPreview).toBeUndefined();
+  createProgressState("req-3", "agent-c", "task c");
+  patchProgressState("req-3", { lastToolPreview: "Nested: working" });
+  cancelProgressState("req-3", "user aborted");
+  expect(getProgressState("req-3")?.lastToolPreview).toBeUndefined();
+});
+
+test("extractProgressFromDetails ignores whitespace-only activityText", () => {
+  const details = makeDetails([]);
+  const firstResult = details.results[0];
+  if (!firstResult) throw new Error("missing result");
+  firstResult.progress = {
+    toolCalls: [],
+    activityText: "   ",
+  };
+  const seen = new Set<string>();
+  const result = extractProgressFromDetails(details, seen);
+  expect(result.activityText).toBeUndefined();
+});
+
+test("extractProgressFromDetails ignores empty activityText", () => {
+  const details = makeDetails([]);
+  const firstResult = details.results[0];
+  if (!firstResult) throw new Error("missing result");
+  firstResult.progress = {
+    toolCalls: [],
+    activityText: "",
+  };
+  const seen = new Set<string>();
+  const result = extractProgressFromDetails(details, seen);
+  expect(result.activityText).toBeUndefined();
+});
+
+test("extractProgressFromDetails ignores non-string activityText", () => {
+  const details = makeDetails([]);
+  const firstResult = details.results[0];
+  if (!firstResult) throw new Error("missing result");
+  firstResult.progress = {
+    toolCalls: [],
+    activityText: 42 as unknown as string,
+  };
+  const seen = new Set<string>();
+  const result = extractProgressFromDetails(details, seen);
+  expect(result.activityText).toBeUndefined();
+});
+
+test("extractProgressFromDetails normalizes nested activity whitespace", () => {
+  const details = makeDetails([]);
+  const firstResult = details.results[0];
+  if (!firstResult) throw new Error("missing result");
+  firstResult.progress = {
+    toolCalls: [],
+    activityText: "Reading file.ts\n\twith tabs",
+  };
+  const seen = new Set<string>();
+  const result = extractProgressFromDetails(details, seen);
+  expect(result.activityText).toBe("Reading file.ts with tabs");
+});
+
+test("extractProgressFromDetails redacts sensitive nested activity keywords", () => {
+  const details = makeDetails([]);
+  const firstResult = details.results[0];
+  if (!firstResult) throw new Error("missing result");
+  firstResult.progress = {
+    toolCalls: [],
+    activityText: "Reading secret-token.yaml",
+  };
+  const seen = new Set<string>();
+  const result = extractProgressFromDetails(details, seen);
+  expect(result.activityText).toBe("Reading secret-token.yaml");
+});
+
+test("extractProgressFromDetails updates seen set without tool-call drift from activity", () => {
+  const details = makeDetails([
+    {
+      role: "assistant",
+      content: [
+        {
+          type: "toolCall",
+          id: "tc-child",
+          name: "bash",
+          arguments: { command: "ls" },
+        },
+      ],
+    },
+  ]);
+  const firstResult = details.results[0];
+  if (!firstResult) throw new Error("missing result");
+  firstResult.progress = {
+    toolCalls: [{ id: "tc-child", preview: "bash: ls" }],
+    activityText: "Nested: reading file.ts",
+    lastToolPreview: "bash: ls",
+  };
+  const seen = new Set<string>();
+  const result = extractProgressFromDetails(details, seen);
+  expect(result.newToolCallIds).toEqual(["tc-child"]);
+  expect([...seen]).toEqual(["tc-child"]);
+  expect(result.activityText).toBe("Nested: reading file.ts");
+});
+
+test("extractProgressFromDetails ignores already-seen derived previews with activity", () => {
+  const details = makeDetails([]);
+  const firstResult = details.results[0];
+  if (!firstResult) throw new Error("missing result");
+  firstResult.progress = {
+    toolCalls: [{ id: "tc-child", preview: "bash: stale" }],
+    activityText: "Nested: reading fresh.ts",
+    lastToolPreview: "bash: stale",
+  };
+  const seen = new Set<string>(["tc-child"]);
+  const result = extractProgressFromDetails(details, seen);
+  expect(result.newToolCallIds).toEqual([]);
+  expect(result.lastToolPreview).toBeUndefined();
+  expect(result.activityText).toBe("Nested: reading fresh.ts");
+  expect([...seen]).toEqual(["tc-child"]);
+});
+
+test("extractProgressFromDetails keeps last fresh preview ahead of repeated IDs", () => {
+  const details = makeDetails([]);
+  const firstResult = details.results[0];
+  if (!firstResult) throw new Error("missing result");
+  firstResult.progress = {
+    toolCalls: [
+      { id: "tc-child", preview: "bash: fresh" },
+      { id: "tc-child", preview: "bash: stale" },
+    ],
+  };
+  const seen = new Set<string>();
+  const result = extractProgressFromDetails(details, seen);
+  expect(result.newToolCallIds).toEqual(["tc-child"]);
+  expect(result.lastToolPreview).toBe("bash: fresh");
+  expect([...seen]).toEqual(["tc-child"]);
+});
+
+test("patchProgressFromDetails uses nested activity when child tool id repeats", () => {
+  createProgressState("req-1", "agent-a", "task a");
+  patchProgressState("req-1", {
+    lastToolPreview: "bash: original",
+    toolCount: 1,
+  });
+  const details = makeDetails([]);
+  const firstResult = details.results[0];
+  if (!firstResult) throw new Error("missing result");
+  firstResult.progress = {
+    toolCalls: [{ id: "tc-child", preview: "bash: changed" }],
+    activityText: "Nested: reading fresh.ts",
+    lastToolPreview: "bash: changed",
+  };
+  const seen = new Set<string>(["tc-child"]);
+  patchProgressFromDetails("req-1", details, seen);
+  const state = getProgressState("req-1");
+  expect(state?.lastToolPreview).toBe("Nested: reading fresh.ts");
+  expect(state?.toolCount).toBe(1);
+  expect([...seen]).toEqual(["tc-child"]);
+});
+
+test("patchProgressFromDetails preserves parent fields during nested-only updates", () => {
+  createProgressState("req-1", "agent-a", "task a", "able-falcon");
+  patchProgressState("req-1", {
+    lastToolPreview: "bash: child-owned",
+    toolCount: 2,
+    inputTokens: 10,
+    outputTokens: 5,
+    contextTokens: 15,
+    contextWindowTokens: 100,
+  });
+  const details = makeDetails([]);
+  const firstResult = details.results[0];
+  if (!firstResult) throw new Error("missing result");
+  firstResult.agent = "other-agent";
+  firstResult.instanceName = "other-instance";
+  firstResult.task = "other task";
+  firstResult.exitCode = 1;
+  firstResult.finalOutput = "SHOULD_NOT_COPY";
+  firstResult.usage = {
+    ...firstResult.usage,
+    input: 99,
+    output: 88,
+    contextTokens: 77,
+    contextWindowTokens: 66,
+  };
+  firstResult.progress = {
+    toolCalls: [{ id: "tc-child", preview: "bash: child-owned" }],
+    activityText: "Nested: reading fresh.ts",
+    lastToolPreview: "bash: child-owned",
+  };
+  const seen = new Set<string>(["tc-child"]);
+  patchProgressFromDetails("req-1", details, seen);
+  const state = getProgressState("req-1");
+  expect(state?.lastToolPreview).toBe("Nested: reading fresh.ts");
+  expect(state?.requestId).toBe("req-1");
+  expect(state?.agent).toBe("agent-a");
+  expect(state?.instanceName).toBe("able-falcon");
+  expect(state?.taskPreview).toBe("task a");
+  expect(state?.status).toBe("running");
+  expect(state?.toolCount).toBe(2);
+  expect(state?.inputTokens).toBe(10);
+  expect(state?.outputTokens).toBe(5);
+  expect(state?.contextTokens).toBe(15);
+  expect(state?.contextWindowTokens).toBe(100);
+  expect(state?.finalOutput).toBeUndefined();
+  expect(state?.errorText).toBeUndefined();
+  expect(firstResult.progress.toolCalls).toEqual([
+    { id: "tc-child", preview: "bash: child-owned" },
+  ]);
+  expect([...seen]).toEqual(["tc-child"]);
+});
+
+test("patchProgressFromDetails gives fresh child tool preview precedence", () => {
+  createProgressState("req-1", "agent-a", "task a");
+  patchProgressState("req-1", { lastToolPreview: "Nested: scanning" });
+  const details = makeDetails([]);
+  const firstResult = details.results[0];
+  if (!firstResult) throw new Error("missing result");
+  firstResult.progress = {
+    toolCalls: [{ id: "tc-fresh", preview: "bash: ls -la" }],
+    activityText: "Nested: stale scan",
+    lastToolPreview: "bash: ls -la",
+  };
+  const seen = new Set<string>();
+  patchProgressFromDetails("req-1", details, seen);
+  const state = getProgressState("req-1");
+  expect(state?.lastToolPreview).toBe("bash: ls -la");
+  expect(state?.toolCount).toBe(1);
+  expect([...seen]).toEqual(["tc-fresh"]);
+});
+
+test("patchProgressFromDetails maintains lastToolPreview via activityText fallback on repeated update with no new tool calls", () => {
+  createProgressState("req-1", "agent-a", "task a");
+  const details = makeDetails([]);
+  const firstResult = details.results[0];
+  if (!firstResult) throw new Error("missing result");
+  firstResult.progress = {
+    toolCalls: [{ id: "tc-1", preview: "bash: ls" }],
+    activityText: "bash: ls",
+    lastToolPreview: "bash: ls",
+  };
+  const seen = new Set<string>();
+  patchProgressFromDetails("req-1", details, seen);
+  expect(getProgressState("req-1")?.lastToolPreview).toBe("bash: ls");
+  patchProgressFromDetails("req-1", details, seen);
+  expect(getProgressState("req-1")?.lastToolPreview).toBe("bash: ls");
 });
 
 function makeTheme() {

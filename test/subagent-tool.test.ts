@@ -4,6 +4,10 @@ import path from "node:path";
 import type { TextContent } from "@earendil-works/pi-ai";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { discoverAgentsAsync } from "../src/agent/agents.js";
+import {
+  makeNestedActivityLine,
+  NESTED_ACTIVITY_EVENT,
+} from "../src/child/child-events.js";
 import { SUBAGENT_RESULT_CONTRACT } from "../src/child/prompt-contract.js";
 import {
   cancelRunJob,
@@ -1767,6 +1771,147 @@ exit 0
     "SECRET_DEBUG",
   );
   expect(sentMessages2.at(-1)?.content).not.toContain("SECRET_DEBUG");
+});
+
+test("positive-depth subagent emits nested activity JSON lines to parent stdout", async () => {
+  const sentMessages: SendMessageArg[] = [];
+  const nestedActivityLine = makeNestedActivityLine("Reading file.ts");
+  const { tool, cwd } = await setupTest({
+    sendMessage: (msg) => sentMessages.push(msg),
+    piScript: `#!/bin/sh
+printf '%s\n' '${nestedActivityLine}'
+printf '%s\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"done"}],"usage":{"input":1,"output":1,"totalTokens":2,"cost":{"total":0}}}}'
+printf '%s\n' '{"type":"agent_end"}'
+exit 0
+`,
+  });
+  const origWrite = process.stdout.write;
+  const capturedLines: string[] = [];
+  process.stdout.write = ((data: unknown) => {
+    if (typeof data === "string") {
+      for (const line of data.split("\n")) {
+        if (line.includes(NESTED_ACTIVITY_EVENT)) capturedLines.push(line);
+      }
+    }
+    return true;
+  }) as typeof process.stdout.write;
+  try {
+    process.env.PI_SUBAGENT_DEPTH = "1";
+    await tool.execute(
+      "test-tool-call",
+      { agent: "hang", task: "nested emit" },
+      undefined,
+      undefined,
+      { cwd, hasUI: false } as unknown as ExtensionContext,
+    );
+    const activityLines = capturedLines.filter((line) => {
+      try {
+        const parsed = JSON.parse(line);
+        return parsed.type === NESTED_ACTIVITY_EVENT;
+      } catch {
+        return false;
+      }
+    });
+    expect(activityLines.length).toBeGreaterThan(0);
+    for (const line of activityLines) {
+      const parsed = JSON.parse(line);
+      expect(parsed.type).toBe(NESTED_ACTIVITY_EVENT);
+      expect(typeof parsed.activityText).toBe("string");
+      expect(parsed.activityText.length).toBeGreaterThan(0);
+    }
+  } finally {
+    process.stdout.write = origWrite;
+  }
+});
+
+test("root-depth subagent does NOT emit nested activity signals upstream", async () => {
+  const sentMessages: SendMessageArg[] = [];
+  const nestedActivityLine = makeNestedActivityLine("Reading file.ts");
+  const { binDir, cwd } = await setupFakePi();
+  const sentinel = path.join(cwd, "continue");
+  await writeFile(
+    path.join(binDir, "pi"),
+    `#!/bin/sh
+printf '%s\n' '${nestedActivityLine}'
+while [ ! -f ${shellQuote(sentinel)} ]; do sleep 0.05; done
+printf '%s\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"done"}],"usage":{"input":1,"output":1,"totalTokens":2,"cost":{"total":0}}}}'
+printf '%s\n' '{"type":"agent_end"}'
+exit 0
+`,
+  );
+  await chmod(path.join(binDir, "pi"), 0o755);
+  const tool = getSubagentTool({
+    sendMessage: (msg) => sentMessages.push(msg),
+  });
+  const origWrite = process.stdout.write;
+  const origSetInterval = globalThis.setInterval;
+  const statusCalls: { key: string; value: string | undefined }[] = [];
+  const capturedLines: string[] = [];
+  process.stdout.write = ((data: unknown) => {
+    if (typeof data === "string") {
+      for (const line of data.split("\n")) {
+        if (line.includes(NESTED_ACTIVITY_EVENT)) capturedLines.push(line);
+      }
+    }
+    return true;
+  }) as typeof process.stdout.write;
+  globalThis.setInterval = ((..._args: Parameters<typeof setInterval>) =>
+    origSetInterval(() => {}, 60_000)) as typeof setInterval;
+  try {
+    process.env.PI_SUBAGENT_DEPTH = "0";
+    await tool.execute(
+      "test-tool-call",
+      { agent: "hang", task: "root emit" },
+      undefined,
+      undefined,
+      {
+        cwd,
+        hasUI: false,
+        ui: {
+          setStatus: (key: string, value: string | undefined) =>
+            statusCalls.push({ key, value }),
+        },
+      } as unknown as ExtensionContext,
+    );
+    await waitFor(
+      () =>
+        statusCalls.find((call) => call.key.startsWith("subagent-progress:")),
+      "nested activity render refresh",
+    );
+    expect(sentMessages).toHaveLength(1);
+    await writeFile(sentinel, "continue");
+    await waitForSentMessageCount(sentMessages, 2);
+    const activityLines = capturedLines.filter((line) => {
+      try {
+        const parsed = JSON.parse(line);
+        return parsed.type === NESTED_ACTIVITY_EVENT;
+      } catch {
+        return false;
+      }
+    });
+    expect(activityLines).toHaveLength(0);
+  } finally {
+    process.stdout.write = origWrite;
+    globalThis.setInterval = origSetInterval;
+  }
+});
+
+test("nested activity JSON lines are distinguishable from renderer messages", () => {
+  const activityLine = makeNestedActivityLine("Reading file.ts");
+  const parsed = JSON.parse(activityLine);
+  expect(parsed.type).toBe(NESTED_ACTIVITY_EVENT);
+  expect(typeof parsed.activityText).toBe("string");
+  const rendererLine = JSON.stringify({
+    customType: "subagent-progress",
+    content: "",
+    display: true,
+    details: { agent: "hang", instanceName: "test", requestId: "abc" },
+  });
+  const rendererParsed = JSON.parse(rendererLine);
+  expect(rendererParsed.customType).toBe("subagent-progress");
+  expect(rendererParsed.type).toBeUndefined();
+  expect(activityLine).not.toContain("subagent-progress");
+  expect(rendererLine).not.toContain(NESTED_ACTIVITY_EVENT);
 });
 
 // --- emitCompletionAlert tests ---

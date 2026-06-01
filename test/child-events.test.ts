@@ -1,5 +1,9 @@
 import { describe, expect, test } from "bun:test";
-import { parseChildEventLine } from "../src/child/child-events.js";
+import {
+  makeNestedActivityLine,
+  NESTED_ACTIVITY_EVENT,
+  parseChildEventLine,
+} from "../src/child/child-events.js";
 
 function known(line: string) {
   const r = parseChildEventLine(line);
@@ -53,6 +57,59 @@ describe("parseChildEventLine", () => {
       );
       expect(r.event.type).toBe("agent_end");
       expect((r.event as { messages?: unknown }).messages).toBeUndefined();
+    });
+  });
+
+  describe("subagent_nested_activity", () => {
+    test("valid nested activity event parses as known", () => {
+      const line = makeNestedActivityLine("scanning files");
+      const r = known(line);
+      expect(r.event.type).toBe(NESTED_ACTIVITY_EVENT);
+      expect((r.event as { activityText: string }).activityText).toBe(
+        "scanning files",
+      );
+    });
+    test("event name matches constant", () => {
+      expect(NESTED_ACTIVITY_EVENT).toBe("subagent_nested_activity");
+    });
+    test("makeNestedActivityLine produces valid JSON", () => {
+      const line = makeNestedActivityLine("test activity");
+      const parsed = JSON.parse(line);
+      expect(parsed.type).toBe(NESTED_ACTIVITY_EVENT);
+      expect(parsed.activityText).toBe("test activity");
+    });
+    test("subagent-progress renderer messages stay unknown", () => {
+      const r = parseChildEventLine(
+        JSON.stringify({
+          customType: "subagent-progress",
+          data: { activityText: "scanning files" },
+        }),
+      );
+      expect(r.kind).toBe("unknown");
+    });
+    test("missing activityText is unknown", () => {
+      const r = parseChildEventLine(
+        JSON.stringify({ type: NESTED_ACTIVITY_EVENT }),
+      );
+      expect(r.kind).toBe("unknown");
+    });
+    test("non-string activityText is unknown", () => {
+      const r = parseChildEventLine(
+        JSON.stringify({ type: NESTED_ACTIVITY_EVENT, activityText: 42 }),
+      );
+      expect(r.kind).toBe("unknown");
+    });
+    test("null activityText is unknown", () => {
+      const r = parseChildEventLine(
+        JSON.stringify({ type: NESTED_ACTIVITY_EVENT, activityText: null }),
+      );
+      expect(r.kind).toBe("unknown");
+    });
+    test("empty string activityText is valid known", () => {
+      const r = known(
+        JSON.stringify({ type: NESTED_ACTIVITY_EVENT, activityText: "" }),
+      );
+      expect(r.event.type).toBe(NESTED_ACTIVITY_EVENT);
     });
   });
 
