@@ -234,7 +234,15 @@ export function renderSubagentResult(
       : "success";
   const finalOutput = r.finalOutput ?? getFinalOutput(r.messages ?? []);
   const title = formatSubagentTitle(r.agent, r.instanceName, theme);
-  const bodyText = stripOutcomeLineForResultUi(bodyOverride ?? finalOutput);
+  let effectiveBody = bodyOverride ?? finalOutput;
+  if (_display?.isPartial && !finalOutput?.trim() && !bodyOverride) {
+    effectiveBody =
+      result.content[0]?.text ||
+      r.progress?.activityText ||
+      r.progress?.lastToolPreview ||
+      "(running...)";
+  }
+  const bodyText = stripOutcomeLineForResultUi(effectiveBody);
   const toolCount = r.progress?.toolCalls?.length ?? 0;
   const toolLabel = `${toolCount} ${toolCount === 1 ? "tool" : "tools"}`;
   const ctxPercent = formatContextPercent({
