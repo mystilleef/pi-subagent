@@ -1,3 +1,4 @@
+import type { AgentToolUpdateCallback } from "@earendil-works/pi-agent-core";
 import { type Message, StringEnum } from "@earendil-works/pi-ai";
 import type {
   ExtensionAPI,
@@ -10,7 +11,6 @@ import type {
   AgentScope,
   ThinkingLevel,
 } from "../agent/agents.js";
-import { makeNestedActivityLine } from "../child/child-events.js";
 import { runSingleAgent, SubagentAbortError } from "../child/process.js";
 import { formatSubagentResultForParent } from "../output/summary.js";
 import {
@@ -90,6 +90,7 @@ interface LifecycleContext {
   task: string;
   parentModel: { provider: string; id: string } | undefined;
   parentThinking: ThinkingLevel;
+  hostOnUpdate?: AgentToolUpdateCallback<SubagentDetails>;
 }
 
 function createDetailsBuilder(
@@ -126,14 +127,22 @@ function sanitizeResultDetails(
       contextWindowTokens;
   }
   if (progress !== undefined) {
-    const { activityText, lastToolPreview, ...progBase } = progress;
+    const {
+      activityText,
+      activityStack,
+      lastToolPreview,
+      toolResultCompleted,
+      ...progBase
+    } = progress;
     sanitized.progress = {
       toolCalls: progBase.toolCalls.map((tc) => ({
         id: tc.id,
         preview: tc.preview,
       })),
       ...(activityText !== undefined && { activityText }),
+      ...(activityStack !== undefined && { activityStack }),
       ...(lastToolPreview !== undefined && { lastToolPreview }),
+      ...(toolResultCompleted !== undefined && { toolResultCompleted }),
     };
   }
   if (includeMessages) {
@@ -252,11 +261,20 @@ function finishLifecycleResult(
   return toolResult;
 }
 
-function emitNestedActivity(details: SubagentDetails): void {
-  const activityText = getLatestResult(details)?.progress?.activityText;
-  if (activityText) {
-    process.stdout.write(`${makeNestedActivityLine(activityText)}\n`);
-  }
+function createPayloadFingerprint(payload: {
+  content: { type: string; text?: string }[];
+  details: SubagentDetails;
+}): string {
+  const contentText = payload.content[0]?.text ?? "";
+  const latestResult = payload.details.results[0];
+  const activityText = latestResult?.progress?.activityText ?? "";
+  const toolCallIds =
+    [...new Set(latestResult?.progress?.toolCalls?.map((tc) => tc.id))]
+      .sort()
+      .join(",") ?? "";
+  const exitCode = latestResult?.exitCode ?? 0;
+  const stopReason = latestResult?.stopReason ?? "";
+  return `${contentText}|${activityText}|${toolCallIds}|${exitCode}|${stopReason}`;
 }
 
 async function runSubagentLifecycle(
@@ -267,11 +285,26 @@ async function runSubagentLifecycle(
     lc.ctx,
     lc.requestId,
   );
-  const isNested = getSubagentDepth() > 0;
+  let lastDeliveredFingerprint: string | undefined;
   const onUpdate: OnUpdateCallback = (result) => {
     patchProgressFromDetails(lc.requestId, result.details, seenToolCallIds);
-    if (isNested) emitNestedActivity(result.details);
     requestProgressRender();
+    if (lc.hostOnUpdate) {
+      const sanitizedDetails = sanitizeDetailsForDisplay(
+        result.details,
+        lc.debug,
+      );
+      const { renderedByMessage, ...partialDetails } = sanitizedDetails;
+      const payload = {
+        content: result.content,
+        details: partialDetails,
+      };
+      const fingerprint = createPayloadFingerprint(payload);
+      if (fingerprint !== lastDeliveredFingerprint) {
+        lastDeliveredFingerprint = fingerprint;
+        lc.hostOnUpdate(payload);
+      }
+    }
   };
   const timerTick = setInterval(requestProgressRender, 500);
   try {
@@ -325,6 +358,7 @@ type PrepareSubagentJobResult =
       lc: LifecycleContext;
       instanceName: string;
       requestProgressRender: () => void;
+      hostOnUpdate?: AgentToolUpdateCallback<SubagentDetails>;
     }
   | { kind: "not_found"; makeDetails: DetailsBuilder }
   | { kind: "cancelled"; makeDetails: DetailsBuilder }
@@ -370,6 +404,7 @@ async function prepareSubagentJob(
   ctx: ExtensionContext,
   params: Static<typeof SubagentParams>,
   hostSignal: AbortSignal | undefined,
+  hostOnUpdate?: AgentToolUpdateCallback<SubagentDetails>,
 ): Promise<PrepareSubagentJobResult> {
   const agentScope: AgentScope = params.agentScope ?? "both";
   const discovery = await getCachedAgentDiscovery(ctx.cwd, agentScope);
@@ -456,9 +491,11 @@ async function prepareSubagentJob(
       task,
       parentModel,
       parentThinking,
+      hostOnUpdate,
     },
     instanceName,
     requestProgressRender,
+    hostOnUpdate,
   };
 }
 
@@ -467,8 +504,15 @@ export async function startSubagentJob(
   ctx: ExtensionContext,
   params: Static<typeof SubagentParams>,
   hostSignal: AbortSignal | undefined,
+  hostOnUpdate?: AgentToolUpdateCallback<SubagentDetails>,
 ): Promise<StartJobResult> {
-  const prepared = await prepareSubagentJob(pi, ctx, params, hostSignal);
+  const prepared = await prepareSubagentJob(
+    pi,
+    ctx,
+    params,
+    hostSignal,
+    hostOnUpdate,
+  );
   if (prepared.kind !== "ready") {
     if (prepared.kind === "aborted")
       return { kind: "cancelled", makeDetails: prepared.makeDetails };
