@@ -74,12 +74,13 @@ export default function registerSubagentExtension(pi: ExtensionAPI) {
     label: "Subagent",
     description: "Delegate a task to a subagent with isolated context.",
     parameters: SubagentParams,
-    async execute(_toolCallId, params, signal, _onUpdate, ctx) {
+    async execute(_toolCallId, params, signal, onUpdate, ctx) {
       const result = await startSubagentJob(
         pi,
         ctx,
         params,
         signal ?? undefined,
+        onUpdate ?? undefined,
       );
       return formatSubagentToolResult(params.agent, result);
     },
