@@ -25,7 +25,13 @@ import {
   resetProgressStore,
   type SubagentProgressState,
 } from "../src/progress/progress.js";
-import { setupHooks, setupTest, waitFor } from "./helpers.js";
+import {
+  makeSubagentToolUpdateLine,
+  setupHooks,
+  setupTest,
+  shellQuote,
+  waitFor,
+} from "./helpers.js";
 
 setupHooks();
 
@@ -290,7 +296,7 @@ exit 0
     test("nested activity truncates long text", async () => {
       const longText = "A".repeat(200);
       const texts = await runAgentWithNestedActivity(`#!/bin/sh
-printf '%s\n' '{"type":"subagent_nested_activity","activityText":"${longText}"}'
+printf '%s\n' ${shellQuote(makeSubagentToolUpdateLine(longText))}
 printf '%s\n' '{"type":"agent_end","messages":[]}'
 exit 0
 `);
@@ -303,7 +309,7 @@ exit 0
     });
     test("invalid nested activity payload does not trigger update", async () => {
       const texts = await runAgentWithNestedActivity(`#!/bin/sh
-printf '%s\n' '{"type":"subagent_nested_activity"}'
+printf '%s\n' '{"type":"tool_execution_update","toolName":"subagent","partialResult":{"details":{"results":[{}]}}}'
 printf '%s\n' '{"type":"agent_end","messages":[]}'
 exit 0
 `);

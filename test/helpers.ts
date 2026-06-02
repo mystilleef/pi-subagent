@@ -82,6 +82,29 @@ export function shellQuote(value: string): string {
   return `'${value.replaceAll("'", "'\\''")}'`;
 }
 
+export function makeSubagentToolUpdateLine(
+  preview: string,
+  instanceName?: string,
+  toolName = "subagent",
+): string {
+  const result: Record<string, unknown> = {
+    progress: {
+      toolCalls: [],
+      lastToolPreview: preview,
+      activityText: preview,
+    },
+  };
+  if (instanceName !== undefined) result.instanceName = instanceName;
+  return JSON.stringify({
+    type: "tool_execution_update",
+    toolName,
+    partialResult: {
+      content: [{ type: "text", text: preview }],
+      details: { results: [result] },
+    },
+  });
+}
+
 export async function setupFakePi(): Promise<{
   agentDir: string;
   cwd: string;

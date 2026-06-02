@@ -1,8 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import {
-  makeNestedActivityLine,
-  NESTED_ACTIVITY_EVENT,
   parseChildEventLine,
+  TOOL_EXECUTION_UPDATE_EVENT,
 } from "../src/child/child-events.js";
 
 function known(line: string) {
@@ -60,56 +59,112 @@ describe("parseChildEventLine", () => {
     });
   });
 
-  describe("subagent_nested_activity", () => {
-    test("valid nested activity event parses as known", () => {
-      const line = makeNestedActivityLine("scanning files");
-      const r = known(line);
-      expect(r.event.type).toBe(NESTED_ACTIVITY_EVENT);
-      expect((r.event as { activityText: string }).activityText).toBe(
-        "scanning files",
+  describe("tool_execution_update", () => {
+    test("valid event with toolName and partialResult parses as known", () => {
+      const r = known(
+        JSON.stringify({
+          type: TOOL_EXECUTION_UPDATE_EVENT,
+          toolName: "subagent",
+          partialResult: { content: [], details: { results: [] } },
+        }),
       );
+      expect(r.event.type).toBe(TOOL_EXECUTION_UPDATE_EVENT);
+      expect((r.event as { toolName: string }).toolName).toBe("subagent");
     });
-    test("event name matches constant", () => {
-      expect(NESTED_ACTIVITY_EVENT).toBe("subagent_nested_activity");
+    test("non-subagent toolName still parses as known", () => {
+      const r = known(
+        JSON.stringify({
+          type: TOOL_EXECUTION_UPDATE_EVENT,
+          toolName: "bash",
+          partialResult: { content: [] },
+        }),
+      );
+      expect((r.event as { toolName: string }).toolName).toBe("bash");
     });
-    test("makeNestedActivityLine produces valid JSON", () => {
-      const line = makeNestedActivityLine("test activity");
-      const parsed = JSON.parse(line);
-      expect(parsed.type).toBe(NESTED_ACTIVITY_EVENT);
-      expect(parsed.activityText).toBe("test activity");
-    });
-    test("subagent-progress renderer messages stay unknown", () => {
+    test("missing toolName is unknown", () => {
       const r = parseChildEventLine(
         JSON.stringify({
-          customType: "subagent-progress",
-          data: { activityText: "scanning files" },
+          type: TOOL_EXECUTION_UPDATE_EVENT,
+          partialResult: {},
         }),
       );
       expect(r.kind).toBe("unknown");
     });
-    test("missing activityText is unknown", () => {
+    test("non-string toolName is unknown", () => {
       const r = parseChildEventLine(
-        JSON.stringify({ type: NESTED_ACTIVITY_EVENT }),
+        JSON.stringify({
+          type: TOOL_EXECUTION_UPDATE_EVENT,
+          toolName: 42,
+          partialResult: {},
+        }),
       );
       expect(r.kind).toBe("unknown");
     });
-    test("non-string activityText is unknown", () => {
+    test("missing partialResult is unknown", () => {
       const r = parseChildEventLine(
-        JSON.stringify({ type: NESTED_ACTIVITY_EVENT, activityText: 42 }),
+        JSON.stringify({
+          type: TOOL_EXECUTION_UPDATE_EVENT,
+          toolName: "subagent",
+        }),
       );
       expect(r.kind).toBe("unknown");
     });
-    test("null activityText is unknown", () => {
+    test("null partialResult is unknown", () => {
       const r = parseChildEventLine(
-        JSON.stringify({ type: NESTED_ACTIVITY_EVENT, activityText: null }),
+        JSON.stringify({
+          type: TOOL_EXECUTION_UPDATE_EVENT,
+          toolName: "subagent",
+          partialResult: null,
+        }),
       );
       expect(r.kind).toBe("unknown");
     });
-    test("empty string activityText is valid known", () => {
+  });
+
+  describe("tool_result_end completion shapes", () => {
+    test("tool_result_end with tool_use_id parses as known", () => {
       const r = known(
-        JSON.stringify({ type: NESTED_ACTIVITY_EVENT, activityText: "" }),
+        JSON.stringify({
+          type: "tool_result_end",
+          message: {
+            role: "user",
+            content: [
+              {
+                type: "tool_result",
+                tool_use_id: "toolu_abc123",
+                content: [{ type: "text", text: "result" }],
+              },
+            ],
+          },
+        }),
       );
-      expect(r.event.type).toBe(NESTED_ACTIVITY_EVENT);
+      expect(r.event.type).toBe("tool_result_end");
+      const msg = (r.event as { message: { role: string; content: unknown[] } })
+        .message;
+      expect(msg.role).toBe("user");
+    });
+    test("tool_result_end with error content parses as known", () => {
+      const r = known(
+        JSON.stringify({
+          type: "tool_result_end",
+          message: {
+            role: "toolResult",
+            content: [{ type: "text", text: "error output" }],
+            isError: true,
+          },
+        }),
+      );
+      expect(r.event.type).toBe("tool_result_end");
+    });
+    test("tool_result_end without message is unknown", () => {
+      const r = parseChildEventLine(
+        JSON.stringify({ type: "tool_result_end" }),
+      );
+      expect(r.kind).toBe("known");
+    });
+    test("tool_result_end with empty message parses as known", () => {
+      const r = known(JSON.stringify({ type: "tool_result_end", message: {} }));
+      expect(r.event.type).toBe("tool_result_end");
     });
   });
 

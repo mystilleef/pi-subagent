@@ -23,11 +23,13 @@ import type { SubagentDetails } from "../src/shared/types.js";
 import {
   type FakeTheme,
   getSubagentTool,
+  makeSubagentToolUpdateLine,
   type RegisteredMessageRenderer,
   type SendMessageArg,
   setupFakePi,
   setupHooks,
   setupTest,
+  shellQuote,
   waitForSentMessageCount,
 } from "./helpers.js";
 
@@ -2278,7 +2280,7 @@ test("result detail shape compatible with preserved nested activity progress", a
   const { tool, cwd } = await setupTest({
     sendMessage: (msg) => sentMessages.push(msg),
     piScript: `#!/bin/sh
-printf '%s\n' '{"type":"nested_activity","activityText":"Reading config.ts"}'
+printf '%s\n' ${shellQuote(makeSubagentToolUpdateLine("Reading config.ts"))}
 printf '%s\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"toolCall","name":"bash","id":"tc-1","arguments":{"command":"ls"}}]}}'
 printf '%s\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"Outcome: completed"}],"usage":{"input":10,"output":20,"totalTokens":30,"cost":{"total":0.01}}}}'
 printf '%s\n' '{"type":"agent_end"}'
@@ -2308,7 +2310,7 @@ test("sanitized result details preserve progress tool calls without internal fie
   const { tool, cwd } = await setupTest({
     sendMessage: (msg) => sentMessages.push(msg),
     piScript: `#!/bin/sh
-printf '%s\n' '{"type":"nested_activity","activityText":"Scanning dependencies"}'
+printf '%s\n' ${shellQuote(makeSubagentToolUpdateLine("Scanning dependencies"))}
 printf '%s\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"toolCall","name":"read","id":"tc-read","arguments":{"path":"package.json"}}]}}'
 printf '%s\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"done"}],"usage":{"input":5,"output":10,"totalTokens":15,"cost":{"total":0.005}}}}'
 printf '%s\n' '{"type":"agent_end"}'
@@ -2330,4 +2332,312 @@ exit 0
   expect(progress?.toolCalls.length).toBeGreaterThanOrEqual(1);
   expect(progress?.toolCalls[0]?.id).toBe("tc-read");
   expect(progress?.toolCalls[0]?.preview).toBe("read: package.json");
+});
+
+test("renderResult isPartial=true uses content[0].text when finalOutput is empty", () => {
+  const fakeTheme: FakeTheme = {
+    fg: (color, text) => `[${color}]${text}[/${color}]`,
+    bg: (color, text) => `[${color}]${text}[/${color}]`,
+    bold: (text) => `*${text}*`,
+  };
+  const rendered = renderSubagentResult(
+    {
+      content: [{ type: "text" as const, text: "bash: ls" }],
+      details: {
+        mode: "single" as const,
+        agentScope: "both" as const,
+        projectAgentsDir: null,
+        results: [
+          {
+            agent: "test-agent",
+            agentSource: "user" as const,
+            task: "test",
+            exitCode: 0,
+            finalOutput: "",
+            stderr: "",
+            usage: {
+              input: 0,
+              output: 0,
+              cacheRead: 0,
+              cacheWrite: 0,
+              cost: 0,
+              contextTokens: 0,
+              turns: 0,
+            },
+            progress: {
+              activityText: "running bash: ls",
+              lastToolPreview: "bash: ls",
+            },
+            messages: [],
+          },
+        ],
+      },
+    },
+    fakeTheme,
+    { isPartial: true },
+  );
+  const renderedText = renderToString(rendered);
+  expect(renderedText).toContain("[toolOutput]bash: ls[/toolOutput]");
+  expect(renderedText).not.toContain("[muted](no output)[/muted]");
+});
+
+test("renderResult isPartial=true falls back to activityText when content[0].text is absent", () => {
+  const fakeTheme: FakeTheme = {
+    fg: (color, text) => `[${color}]${text}[/${color}]`,
+    bg: (color, text) => `[${color}]${text}[/${color}]`,
+    bold: (text) => `*${text}*`,
+  };
+  const rendered = renderSubagentResult(
+    {
+      content: [{ type: "text" as const }],
+      details: {
+        mode: "single" as const,
+        agentScope: "both" as const,
+        projectAgentsDir: null,
+        results: [
+          {
+            agent: "test-agent",
+            agentSource: "user" as const,
+            task: "test",
+            exitCode: 0,
+            finalOutput: "",
+            stderr: "",
+            usage: {
+              input: 0,
+              output: 0,
+              cacheRead: 0,
+              cacheWrite: 0,
+              cost: 0,
+              contextTokens: 0,
+              turns: 0,
+            },
+            progress: { activityText: "reading file" },
+            messages: [],
+          },
+        ],
+      },
+    },
+    fakeTheme,
+    { isPartial: true },
+  );
+  const renderedText = renderToString(rendered);
+  expect(renderedText).toContain("[toolOutput]reading file[/toolOutput]");
+  expect(renderedText).not.toContain("[muted](no output)[/muted]");
+});
+
+test("renderResult isPartial=true falls back to activityText when content[0].text is empty string", () => {
+  const fakeTheme: FakeTheme = {
+    fg: (color, text) => `[${color}]${text}[/${color}]`,
+    bg: (color, text) => `[${color}]${text}[/${color}]`,
+    bold: (text) => `*${text}*`,
+  };
+  const rendered = renderSubagentResult(
+    {
+      content: [{ type: "text" as const, text: "" }],
+      details: {
+        mode: "single" as const,
+        agentScope: "both" as const,
+        projectAgentsDir: null,
+        results: [
+          {
+            agent: "test-agent",
+            agentSource: "user" as const,
+            task: "test",
+            exitCode: 0,
+            finalOutput: "",
+            stderr: "",
+            usage: {
+              input: 0,
+              output: 0,
+              cacheRead: 0,
+              cacheWrite: 0,
+              cost: 0,
+              contextTokens: 0,
+              turns: 0,
+            },
+            progress: { activityText: "reading file" },
+            messages: [],
+          },
+        ],
+      },
+    },
+    fakeTheme,
+    { isPartial: true },
+  );
+  const renderedText = renderToString(rendered);
+  expect(renderedText).toContain("[toolOutput]reading file[/toolOutput]");
+  expect(renderedText).not.toContain("[muted](no output)[/muted]");
+});
+
+test("renderResult isPartial=true falls back to lastToolPreview when activityText is absent", () => {
+  const fakeTheme: FakeTheme = {
+    fg: (color, text) => `[${color}]${text}[/${color}]`,
+    bg: (color, text) => `[${color}]${text}[/${color}]`,
+    bold: (text) => `*${text}*`,
+  };
+  const rendered = renderSubagentResult(
+    {
+      content: [{ type: "text" as const }],
+      details: {
+        mode: "single" as const,
+        agentScope: "both" as const,
+        projectAgentsDir: null,
+        results: [
+          {
+            agent: "test-agent",
+            agentSource: "user" as const,
+            task: "test",
+            exitCode: 0,
+            finalOutput: "",
+            stderr: "",
+            usage: {
+              input: 0,
+              output: 0,
+              cacheRead: 0,
+              cacheWrite: 0,
+              cost: 0,
+              contextTokens: 0,
+              turns: 0,
+            },
+            progress: { lastToolPreview: "read: config.ts" },
+            messages: [],
+          },
+        ],
+      },
+    },
+    fakeTheme,
+    { isPartial: true },
+  );
+  const renderedText = renderToString(rendered);
+  expect(renderedText).toContain("[toolOutput]read: config.ts[/toolOutput]");
+  expect(renderedText).not.toContain("[muted](no output)[/muted]");
+});
+
+test("renderResult isPartial=true falls back to (running...) when all sources are empty", () => {
+  const fakeTheme: FakeTheme = {
+    fg: (color, text) => `[${color}]${text}[/${color}]`,
+    bg: (color, text) => `[${color}]${text}[/${color}]`,
+    bold: (text) => `*${text}*`,
+  };
+  const rendered = renderSubagentResult(
+    {
+      content: [{ type: "text" as const }],
+      details: {
+        mode: "single" as const,
+        agentScope: "both" as const,
+        projectAgentsDir: null,
+        results: [
+          {
+            agent: "test-agent",
+            agentSource: "user" as const,
+            task: "test",
+            exitCode: 0,
+            finalOutput: "",
+            stderr: "",
+            usage: {
+              input: 0,
+              output: 0,
+              cacheRead: 0,
+              cacheWrite: 0,
+              cost: 0,
+              contextTokens: 0,
+              turns: 0,
+            },
+            messages: [],
+          },
+        ],
+      },
+    },
+    fakeTheme,
+    { isPartial: true },
+  );
+  const renderedText = renderToString(rendered);
+  expect(renderedText).toContain("[toolOutput](running...)[/toolOutput]");
+  expect(renderedText).not.toContain("[muted](no output)[/muted]");
+});
+
+test("renderResult isPartial=false keeps using finalOutput as body", () => {
+  const fakeTheme: FakeTheme = {
+    fg: (color, text) => `[${color}]${text}[/${color}]`,
+    bg: (color, text) => `[${color}]${text}[/${color}]`,
+    bold: (text) => `*${text}*`,
+  };
+  const rendered = renderSubagentResult(
+    {
+      content: [{ type: "text" as const, text: "bash: ls" }],
+      details: {
+        mode: "single" as const,
+        agentScope: "both" as const,
+        projectAgentsDir: null,
+        results: [
+          {
+            agent: "test-agent",
+            agentSource: "user" as const,
+            task: "test",
+            exitCode: 0,
+            finalOutput: "final result text",
+            stderr: "",
+            usage: {
+              input: 0,
+              output: 0,
+              cacheRead: 0,
+              cacheWrite: 0,
+              cost: 0,
+              contextTokens: 0,
+              turns: 0,
+            },
+            messages: [],
+          },
+        ],
+      },
+    },
+    fakeTheme,
+    { isPartial: false },
+  );
+  const renderedText = renderToString(rendered);
+  expect(renderedText).toContain("[toolOutput]final result text[/toolOutput]");
+  expect(renderedText).not.toContain("bash: ls");
+});
+
+test("renderResult isPartial=true with non-empty finalOutput still uses finalOutput", () => {
+  const fakeTheme: FakeTheme = {
+    fg: (color, text) => `[${color}]${text}[/${color}]`,
+    bg: (color, text) => `[${color}]${text}[/${color}]`,
+    bold: (text) => `*${text}*`,
+  };
+  const rendered = renderSubagentResult(
+    {
+      content: [{ type: "text" as const, text: "bash: ls" }],
+      details: {
+        mode: "single" as const,
+        agentScope: "both" as const,
+        projectAgentsDir: null,
+        results: [
+          {
+            agent: "test-agent",
+            agentSource: "user" as const,
+            task: "test",
+            exitCode: 0,
+            finalOutput: "final result text",
+            stderr: "",
+            usage: {
+              input: 0,
+              output: 0,
+              cacheRead: 0,
+              cacheWrite: 0,
+              cost: 0,
+              contextTokens: 0,
+              turns: 0,
+            },
+            messages: [],
+          },
+        ],
+      },
+    },
+    fakeTheme,
+    { isPartial: true },
+  );
+  const renderedText = renderToString(rendered);
+  expect(renderedText).toContain("[toolOutput]final result text[/toolOutput]");
+  expect(renderedText).not.toContain("bash: ls");
 });

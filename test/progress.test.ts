@@ -14,6 +14,7 @@ import {
   makeTaskPreview,
   makeToolPreview,
   patchProgressState,
+  renderActivityStack,
   renderSubagentProgress,
   resetProgressStore,
 } from "../src/progress/progress.js";
@@ -997,11 +998,15 @@ test("patchProgressFromDetails preserves parent fields during nested-only update
     toolCalls: [{ id: "tc-child", preview: "bash: child-owned" }],
     activityText: "Nested: reading fresh.ts",
     lastToolPreview: "bash: child-owned",
+    activityStack: [
+      { preview: "subagent: build" },
+      { preview: "bash: child-owned" },
+    ],
   };
   const seen = new Set<string>(["tc-child"]);
   patchProgressFromDetails("req-1", details, seen);
   const state = getProgressState("req-1");
-  expect(state?.lastToolPreview).toBe("Nested: reading fresh.ts");
+  expect(state?.lastToolPreview).toBe("subagent: build - bash: child-owned");
   expect(state?.requestId).toBe("req-1");
   expect(state?.agent).toBe("agent-a");
   expect(state?.instanceName).toBe("able-falcon");
@@ -1074,7 +1079,7 @@ test("child default preview fallback: extractProgressFromDetails returns no new 
   expect([...seen]).toEqual(["child-tool-1"]);
 });
 
-test("child default preview fallback after nested activity: message update repeats default child preview with no fresh child tool-call IDs", () => {
+test("child default preview fallback after nested activity: message update repeats default child preview with no fresh tool-call IDs", () => {
   createProgressState("req-1", "agent-a", "task a");
   patchProgressState("req-1", {
     lastToolPreview: "Nested: scanning codebase",
@@ -1104,13 +1109,16 @@ test("child default preview fallback after nested activity: message update repea
   patchProgressFromDetails("req-1", details, seen);
   const state = getProgressState("req-1");
   expect(state?.toolCount).toBe(2);
-  expect(state?.lastToolPreview).toBe("Nested: scanning codebase");
+  // No activityStack in current state means structural echo check doesn't apply
+  // activityText updates the stack and preview
+  expect(state?.activityStack).toEqual([{ preview: "bash: ls" }]);
+  expect(state?.lastToolPreview).toBe("bash: ls");
   expect(state?.inputTokens).toBe(200);
   expect(state?.outputTokens).toBe(80);
   expect([...seen]).toEqual(["child-tool-1"]);
 });
 
-test("child default preview fallback after nested activity: tool-result update repeats default child preview with no fresh child tool-call IDs", () => {
+test("child default preview fallback after nested activity: tool-result update repeats default child preview with no fresh tool-call IDs", () => {
   createProgressState("req-1", "agent-a", "task a");
   patchProgressState("req-1", {
     lastToolPreview: "Nested: reading config.ts",
@@ -1143,7 +1151,10 @@ test("child default preview fallback after nested activity: tool-result update r
   patchProgressFromDetails("req-1", details, seen);
   const state = getProgressState("req-1");
   expect(state?.toolCount).toBe(3);
-  expect(state?.lastToolPreview).toBe("Nested: reading config.ts");
+  // No activityStack in current state means structural echo check doesn't apply
+  // activityText updates the stack and preview
+  expect(state?.activityStack).toEqual([{ preview: "read: /tmp/file" }]);
+  expect(state?.lastToolPreview).toBe("read: /tmp/file");
   expect(state?.inputTokens).toBe(300);
   expect(state?.outputTokens).toBe(120);
   expect([...seen]).toEqual(["child-tool-1", "child-tool-2"]);
@@ -1396,6 +1407,10 @@ test("nested activity passes through when activityText differs from child progre
     toolCalls: [{ id: "child-tool-1", preview: childDefaultPreview }],
     activityText: genuineActivity,
     lastToolPreview: childDefaultPreview,
+    activityStack: [
+      { preview: "subagent: build" },
+      { preview: childDefaultPreview },
+    ],
   };
   firstResult.usage = {
     ...firstResult.usage,
@@ -1408,7 +1423,7 @@ test("nested activity passes through when activityText differs from child progre
   patchProgressFromDetails("req-1", details, seen);
   const state = getProgressState("req-1");
   expect(state?.toolCount).toBe(2);
-  expect(state?.lastToolPreview).toBe(genuineActivity);
+  expect(state?.lastToolPreview).toBe("subagent: build - bash: ls");
   expect(state?.inputTokens).toBe(100);
   expect(state?.outputTokens).toBe(50);
   expect([...seen]).toEqual(["child-tool-1"]);
@@ -1815,7 +1830,7 @@ test("renderSubagentProgress keeps single title when instance is absent or empty
 
 test("renderSubagentProgress collapsed running colors tool preview segments", () => {
   setDateNow(1000);
-  createProgressState("rend-1", "my-agent", "do the thing");
+  createProgressState("rend-1", "my-agent", "do the thing", "rend-1");
   setDateNow(3500);
   patchProgressState("rend-1", {
     toolCount: 3,
@@ -2064,7 +2079,7 @@ test("format header stats handles zero usage and context fallbacks", () => {
 });
 
 test("renderSubagentProgress error state shows error text", () => {
-  createProgressState("rend-3", "err-agent", "a task");
+  createProgressState("rend-3", "err-agent", "a task", "rend-3");
   failProgressState("rend-3", "something exploded");
   const theme = makeTheme();
   const result = renderSubagentProgress(
@@ -2184,7 +2199,7 @@ test("renderSubagentProgress final success with output uses text fallback when n
 });
 
 test("renderSubagentProgress cancelled state shows cancelled", () => {
-  createProgressState("rend-5", "some-agent", "a task");
+  createProgressState("rend-5", "some-agent", "a task", "rend-5");
   cancelProgressState("rend-5", "user cancelled");
   const theme = makeTheme();
   const result = renderSubagentProgress(
@@ -2355,6 +2370,380 @@ test("getAllProgressStates returns empty array for empty store", () => {
   resetProgressStore();
   expect(getAllProgressStates()).toEqual([]);
 });
+test("renderActivityStack returns undefined for empty or undefined stack", () => {
+  expect(renderActivityStack(undefined)).toBeUndefined();
+  expect(renderActivityStack([])).toBeUndefined();
+});
+test("renderActivityStack renders single frame without instanceName", () => {
+  expect(renderActivityStack([{ preview: "bash: ls -la" }])).toBe(
+    "bash: ls -la",
+  );
+});
+test("renderActivityStack renders single frame with instanceName", () => {
+  expect(
+    renderActivityStack([
+      { preview: "subagent: build", instanceName: "swift-harbor" },
+    ]),
+  ).toBe("subagent: build [swift-harbor]");
+});
+test("renderActivityStack renders multiple frames with separator", () => {
+  const stack = [
+    { preview: "subagent: build", instanceName: "swift-harbor" },
+    { preview: "bash: make build" },
+  ];
+  expect(renderActivityStack(stack)).toBe(
+    "subagent: build [swift-harbor] - bash: make build",
+  );
+});
+test("renderActivityStack copies frames without mutating input", () => {
+  const frames = [{ preview: "bash: ls" }, { preview: "read: /tmp/x" }];
+  const original = JSON.stringify(frames);
+  const result = renderActivityStack(frames);
+  expect(JSON.stringify(frames)).toBe(original);
+  expect(result).toBe("bash: ls - read: /tmp/x");
+});
+test("renderActivityStack normalizes and truncates long previews", () => {
+  const longPreview = `bash: ${"x".repeat(150)}`;
+  const result = renderActivityStack([{ preview: longPreview }]);
+  expect(result).toBeDefined();
+  expect(Array.from(result as string).length).toBeLessThanOrEqual(120);
+  expect(result).toEndWith("…");
+});
+test("renderActivityStack omits brackets when instanceName is empty", () => {
+  expect(
+    renderActivityStack([{ preview: "subagent: build", instanceName: "" }]),
+  ).toBe("subagent: build");
+  expect(
+    renderActivityStack([
+      { preview: "subagent: build", instanceName: undefined },
+    ]),
+  ).toBe("subagent: build");
+});
+test("renderActivityStack joins multiple frames preserving instanceName only on annotated frames", () => {
+  const stack = [
+    { preview: "subagent: build", instanceName: "able-falcon" },
+    { preview: "read: /tmp/x" },
+    { preview: "bash: make", instanceName: "" },
+  ];
+  expect(renderActivityStack(stack)).toBe(
+    "subagent: build [able-falcon] - read: /tmp/x - bash: make",
+  );
+});
+test("activityStack reset on fresh direct child tool call", () => {
+  createProgressState("req-1", "agent-a", "task a");
+  patchProgressState("req-1", {
+    activityStack: [{ preview: "nested old" }],
+    lastToolPreview: "nested old",
+  });
+  const details = makeDetails([]);
+  const firstResult = details.results[0];
+  if (!firstResult) throw new Error("missing result");
+  firstResult.progress = {
+    toolCalls: [{ id: "tc-fresh", preview: "bash: new" }],
+    activityText: "bash: new",
+    lastToolPreview: "bash: new",
+  };
+  const seen = new Set<string>();
+  patchProgressFromDetails("req-1", details, seen);
+  const state = getProgressState("req-1");
+  expect(state?.activityStack).toEqual([{ preview: "bash: new" }]);
+  expect(state?.lastToolPreview).toBe("bash: new");
+  expect([...seen]).toEqual(["tc-fresh"]);
+});
+test("activityStack builds from parent subagent frame plus nested leaf", () => {
+  createProgressState("req-1", "agent-a", "task a", "able-falcon");
+  patchProgressState("req-1", {
+    activityStack: [{ preview: "subagent: build" }],
+    lastToolPreview: "subagent: build",
+    toolCount: 1,
+  });
+  const details = makeDetails([]);
+  const firstResult = details.results[0];
+  if (!firstResult) throw new Error("missing result");
+  firstResult.progress = {
+    toolCalls: [],
+    activityText: "bash: scan src",
+    activityStack: [
+      { preview: "subagent: build" },
+      { preview: "bash: scan src" },
+    ],
+  };
+  const seen = new Set<string>();
+  patchProgressFromDetails("req-1", details, seen);
+  const state = getProgressState("req-1");
+  expect(state?.activityStack).toEqual([
+    { preview: "subagent: build" },
+    { preview: "bash: scan src" },
+  ]);
+  expect(state?.lastToolPreview).toBe("subagent: build - bash: scan src");
+});
+test("activityStack preserves immutability across updates", () => {
+  createProgressState("req-1", "agent-a", "task a");
+  const d1 = makeDetails([]);
+  const r1 = d1.results[0];
+  if (!r1) throw new Error("missing result");
+  r1.progress = { toolCalls: [], activityText: "first nested" };
+  const s1 = new Set<string>();
+  patchProgressFromDetails("req-1", d1, s1);
+  const stack1 = getProgressState("req-1")?.activityStack;
+  const d2 = makeDetails([]);
+  const r2 = d2.results[0];
+  if (!r2) throw new Error("missing result");
+  r2.progress = { toolCalls: [], activityText: "second nested" };
+  const s2 = new Set<string>();
+  patchProgressFromDetails("req-1", d2, s2);
+  const stack2 = getProgressState("req-1")?.activityStack;
+  expect(stack1).toEqual([{ preview: "first nested" }]);
+  expect(stack2).toEqual([{ preview: "second nested" }]);
+  expect(stack1).not.toBe(stack2);
+  expect(stack1?.[0]).not.toBe(stack2?.[0]);
+});
+test("activityStack leaf pop on explicit tool_result_end completion", () => {
+  createProgressState("req-1", "agent-a", "task a", "able-falcon");
+  patchProgressState("req-1", {
+    activityStack: [
+      { preview: "subagent: build", instanceName: "able-falcon" },
+      { preview: "bash: scan src" },
+    ],
+    lastToolPreview: "subagent: build - bash: scan src",
+    toolCount: 1,
+  });
+  const details = makeDetails([]);
+  const firstResult = details.results[0];
+  if (!firstResult) throw new Error("missing result");
+  firstResult.progress = {
+    toolCalls: [],
+    activityStack: [
+      { preview: "subagent: build", instanceName: "able-falcon" },
+      { preview: "bash: scan src" },
+    ],
+    toolResultCompleted: true,
+  };
+  const seen = new Set<string>();
+  patchProgressFromDetails("req-1", details, seen);
+  const state = getProgressState("req-1");
+  expect(state?.activityStack).toEqual([
+    { preview: "subagent: build", instanceName: "able-falcon" },
+  ]);
+  expect(state?.lastToolPreview).toBe("subagent: build [able-falcon]");
+  expect(state?.toolResultCompleted).toBe(true);
+});
+test("activityStack leaf pop clears stack and preview when only one frame", () => {
+  createProgressState("req-1", "agent-a", "task a");
+  patchProgressState("req-1", {
+    activityStack: [{ preview: "bash: single" }],
+    lastToolPreview: "bash: single",
+    toolCount: 1,
+  });
+  const details = makeDetails([]);
+  const firstResult = details.results[0];
+  if (!firstResult) throw new Error("missing result");
+  firstResult.progress = {
+    toolCalls: [],
+    activityStack: [{ preview: "bash: single" }],
+    toolResultCompleted: true,
+  };
+  const seen = new Set<string>();
+  patchProgressFromDetails("req-1", details, seen);
+  const state = getProgressState("req-1");
+  expect(state?.activityStack).toBeUndefined();
+  expect(state?.lastToolPreview).toBeUndefined();
+  expect(state?.toolResultCompleted).toBe(true);
+});
+test("activityStack tool_result_end does not mutate stored frames", () => {
+  createProgressState("req-1", "agent-a", "task a");
+  const storedStack = [{ preview: "subagent: build" }, { preview: "bash: ls" }];
+  patchProgressState("req-1", {
+    activityStack: storedStack,
+    lastToolPreview: "subagent: build - bash: ls",
+    toolCount: 1,
+  });
+  const details = makeDetails([]);
+  const firstResult = details.results[0];
+  if (!firstResult) throw new Error("missing result");
+  firstResult.progress = {
+    toolCalls: [],
+    activityStack: [{ preview: "subagent: build" }, { preview: "bash: ls" }],
+    toolResultCompleted: true,
+  };
+  const seen = new Set<string>();
+  patchProgressFromDetails("req-1", details, seen);
+  expect(storedStack).toEqual([
+    { preview: "subagent: build" },
+    { preview: "bash: ls" },
+  ]);
+  expect(storedStack).toHaveLength(2);
+  const state = getProgressState("req-1");
+  expect(state?.activityStack).toEqual([{ preview: "subagent: build" }]);
+});
+test("nested-only activity batch preserves token accounting", () => {
+  createProgressState("req-1", "agent-a", "task a");
+  patchProgressState("req-1", {
+    lastToolPreview: "subagent: build - bash: ls",
+    toolCount: 2,
+    inputTokens: 100,
+    outputTokens: 50,
+    contextTokens: 150,
+    contextWindowTokens: 1000,
+  });
+  const details = makeDetails([]);
+  const firstResult = details.results[0];
+  if (!firstResult) throw new Error("missing result");
+  firstResult.progress = {
+    toolCalls: [],
+    activityText: "bash: scanning",
+    activityStack: [
+      { preview: "subagent: build" },
+      { preview: "bash: scanning" },
+    ],
+  };
+  firstResult.usage = {
+    ...firstResult.usage,
+    input: 999,
+    output: 888,
+    contextTokens: 777,
+    contextWindowTokens: 666,
+  };
+  const seen = new Set<string>();
+  patchProgressFromDetails("req-1", details, seen);
+  const state = getProgressState("req-1");
+  expect(state?.lastToolPreview).toBe("subagent: build - bash: scanning");
+  expect(state?.toolCount).toBe(2);
+  expect(state?.inputTokens).toBe(100);
+  expect(state?.outputTokens).toBe(50);
+  expect(state?.contextTokens).toBe(150);
+  expect(state?.contextWindowTokens).toBe(1000);
+});
+test("terminal success clears activityStack and lastToolPreview", () => {
+  createProgressState("req-1", "agent-a", "task a");
+  patchProgressState("req-1", {
+    activityStack: [{ preview: "subagent: build" }, { preview: "bash: ls" }],
+    lastToolPreview: "subagent: build - bash: ls",
+    toolCount: 2,
+  });
+  finalizeProgressState("req-1", "done");
+  const state = getProgressState("req-1");
+  expect(state?.status).toBe("success");
+  expect(state?.activityStack).toBeUndefined();
+  expect(state?.lastToolPreview).toBeUndefined();
+});
+test("terminal error clears activityStack and lastToolPreview", () => {
+  createProgressState("req-1", "agent-a", "task a");
+  patchProgressState("req-1", {
+    activityStack: [{ preview: "subagent: build" }],
+    lastToolPreview: "subagent: build",
+    toolCount: 1,
+  });
+  failProgressState("req-1", "child failed");
+  const state = getProgressState("req-1");
+  expect(state?.status).toBe("error");
+  expect(state?.activityStack).toBeUndefined();
+  expect(state?.lastToolPreview).toBeUndefined();
+});
+test("terminal cancellation clears activityStack and lastToolPreview", () => {
+  createProgressState("req-1", "agent-a", "task a");
+  patchProgressState("req-1", {
+    activityStack: [{ preview: "subagent: build" }],
+    lastToolPreview: "subagent: build",
+    toolCount: 1,
+  });
+  cancelProgressState("req-1", "user aborted");
+  const state = getProgressState("req-1");
+  expect(state?.status).toBe("cancelled");
+  expect(state?.activityStack).toBeUndefined();
+  expect(state?.lastToolPreview).toBeUndefined();
+});
+test("patchProgressFromDetails extracts and propagates toolResultCompleted", () => {
+  createProgressState("req-1", "agent-a", "task a");
+  const details = makeDetails([]);
+  const firstResult = details.results[0];
+  if (!firstResult) throw new Error("missing result");
+  firstResult.progress = {
+    toolCalls: [],
+    toolResultCompleted: true,
+  };
+  const seen = new Set<string>();
+  patchProgressFromDetails("req-1", details, seen);
+  expect(getProgressState("req-1")?.toolResultCompleted).toBe(true);
+});
+test("activityStack empty on progress update with no tool calls or activity", () => {
+  createProgressState("req-1", "agent-a", "task a");
+  patchProgressState("req-1", {
+    activityStack: [{ preview: "existing" }],
+    lastToolPreview: "existing",
+    toolCount: 1,
+  });
+  const details = makeDetails([]);
+  const firstResult = details.results[0];
+  if (!firstResult) throw new Error("missing result");
+  firstResult.progress = { toolCalls: [] };
+  const seen = new Set<string>();
+  patchProgressFromDetails("req-1", details, seen);
+  const state = getProgressState("req-1");
+  expect(state?.activityStack).toEqual([{ preview: "existing" }]);
+  expect(state?.lastToolPreview).toBe("existing");
+});
+test("depth-3 stack composition through child progress details", () => {
+  createProgressState("req-1", "parent-agent", "parent task");
+  const details = makeDetails([]);
+  const firstResult = details.results[0];
+  if (!firstResult) throw new Error("missing result");
+  firstResult.progress = {
+    toolCalls: [],
+    activityStack: [
+      { preview: "subagent: build", instanceName: "swift-harbor" },
+      { preview: "subagent: review", instanceName: "sharp-finch" },
+      { preview: "bash: make build" },
+    ],
+  };
+  const seen = new Set<string>();
+  patchProgressFromDetails("req-1", details, seen);
+  const state = getProgressState("req-1");
+  expect(state?.activityStack).toEqual([
+    { preview: "subagent: build", instanceName: "swift-harbor" },
+    { preview: "subagent: review", instanceName: "sharp-finch" },
+    { preview: "bash: make build" },
+  ]);
+  expect(state?.lastToolPreview).toBe(
+    "subagent: build [swift-harbor] - subagent: review [sharp-finch] - bash: make build",
+  );
+});
+test("depth-3 stack leaf pop on tool_result_end", () => {
+  createProgressState("req-1", "parent-agent", "parent task");
+  patchProgressState("req-1", {
+    activityStack: [
+      { preview: "subagent: build", instanceName: "swift-harbor" },
+      { preview: "subagent: review", instanceName: "sharp-finch" },
+      { preview: "bash: make build" },
+    ],
+    lastToolPreview:
+      "subagent: build [swift-harbor] - subagent: review [sharp-finch] - bash: make build",
+    toolCount: 2,
+  });
+  const details = makeDetails([]);
+  const firstResult = details.results[0];
+  if (!firstResult) throw new Error("missing result");
+  firstResult.progress = {
+    toolCalls: [],
+    activityStack: [
+      { preview: "subagent: build", instanceName: "swift-harbor" },
+      { preview: "subagent: review", instanceName: "sharp-finch" },
+      { preview: "bash: make build" },
+    ],
+    toolResultCompleted: true,
+  };
+  const seen = new Set<string>();
+  patchProgressFromDetails("req-1", details, seen);
+  const state = getProgressState("req-1");
+  expect(state?.activityStack).toEqual([
+    { preview: "subagent: build", instanceName: "swift-harbor" },
+    { preview: "subagent: review", instanceName: "sharp-finch" },
+  ]);
+  expect(state?.lastToolPreview).toBe(
+    "subagent: build [swift-harbor] - subagent: review [sharp-finch]",
+  );
+  expect(state?.toolResultCompleted).toBe(true);
+});
 test("getAllProgressStates returns all states sorted by startTime desc", () => {
   resetProgressStore();
   createProgressState("sort-a", "agent-a", "task-a");
@@ -2377,4 +2766,231 @@ test("getAllProgressStates returns all states sorted by startTime desc", () => {
   expect(requestIds).toContain("sort-b");
   expect(requestIds).toContain("sort-c");
   resetProgressStore();
+});
+test("back-to-back nested completion preserves accumulated tokens through pop transition", () => {
+  createProgressState("req-1", "parent-agent", "parent task");
+  patchProgressState("req-1", {
+    activityStack: [
+      { preview: "subagent: build", instanceName: "swift-harbor" },
+      { preview: "bash: make build" },
+    ],
+    lastToolPreview: "subagent: build [swift-harbor] - bash: make build",
+    toolCount: 3,
+    inputTokens: 100,
+    outputTokens: 50,
+    contextTokens: 150,
+    contextWindowTokens: 1000,
+  });
+  const d1 = makeDetails([]);
+  const r1 = d1.results[0];
+  if (!r1) throw new Error("missing result");
+  r1.progress = {
+    toolCalls: [],
+    activityText: "bash: make build",
+    activityStack: [
+      { preview: "subagent: build", instanceName: "swift-harbor" },
+      { preview: "bash: make build" },
+    ],
+    toolResultCompleted: true,
+  };
+  r1.usage = {
+    ...r1.usage,
+    input: 999,
+    output: 888,
+    contextTokens: 777,
+    contextWindowTokens: 1000,
+  };
+  const s1 = new Set<string>();
+  patchProgressFromDetails("req-1", d1, s1);
+  const state1 = getProgressState("req-1");
+  expect(state1?.activityStack).toEqual([
+    { preview: "subagent: build", instanceName: "swift-harbor" },
+  ]);
+  expect(state1?.lastToolPreview).toBe("subagent: build [swift-harbor]");
+  expect(state1?.inputTokens).toBe(100);
+  expect(state1?.outputTokens).toBe(50);
+  expect(state1?.contextTokens).toBe(150);
+  const d2 = makeDetails([]);
+  const r2 = d2.results[0];
+  if (!r2) throw new Error("missing result");
+  r2.progress = {
+    toolCalls: [{ id: "tc-post-pop", preview: "bash: echo done" }],
+    activityText: "bash: echo done",
+    lastToolPreview: "bash: echo done",
+  };
+  r2.usage = {
+    ...r2.usage,
+    input: 200,
+    output: 100,
+    contextTokens: 300,
+    contextWindowTokens: 1000,
+  };
+  const s2 = new Set<string>();
+  patchProgressFromDetails("req-1", d2, s2);
+  const state2 = getProgressState("req-1");
+  expect(state2?.activityStack).toEqual([{ preview: "bash: echo done" }]);
+  expect(state2?.lastToolPreview).toBe("bash: echo done");
+  expect(state2?.inputTokens).toBe(200);
+  expect(state2?.outputTokens).toBe(100);
+  expect(state2?.contextTokens).toBe(300);
+});
+test("child echoing own single-frame preview treated as non-nested update", () => {
+  createProgressState("req-1", "agent-a", "task a");
+  patchProgressState("req-1", {
+    activityStack: [{ preview: "bash: ls" }],
+    lastToolPreview: "bash: ls",
+    toolCount: 1,
+    inputTokens: 50,
+    outputTokens: 25,
+    contextTokens: 75,
+    contextWindowTokens: 1000,
+  });
+  const details = makeDetails([]);
+  const firstResult = details.results[0];
+  if (!firstResult) throw new Error("missing result");
+  firstResult.progress = {
+    toolCalls: [{ id: "tc-1", preview: "bash: ls" }],
+    activityText: "bash: ls",
+    lastToolPreview: "bash: ls",
+  };
+  firstResult.usage = {
+    ...firstResult.usage,
+    input: 100,
+    output: 50,
+    contextTokens: 150,
+    contextWindowTokens: 1000,
+  };
+  const seen = new Set<string>(["tc-1"]);
+  patchProgressFromDetails("req-1", details, seen);
+  const state = getProgressState("req-1");
+  expect(state?.activityStack).toEqual([{ preview: "bash: ls" }]);
+  expect(state?.lastToolPreview).toBe("bash: ls");
+  expect(state?.toolCount).toBe(1);
+  expect(state?.inputTokens).toBe(100);
+  expect(state?.outputTokens).toBe(50);
+});
+test("single-frame echo preserves activityStack reference and skips preview patch", () => {
+  createProgressState("req-1", "agent-a", "task a");
+  const storedStack = [{ preview: "Reading file.ts" }];
+  patchProgressState("req-1", {
+    activityStack: storedStack,
+    lastToolPreview: "Reading file.ts",
+    toolCount: 1,
+    inputTokens: 50,
+    outputTokens: 25,
+    contextTokens: 75,
+    contextWindowTokens: 1000,
+  });
+  const details = makeDetails([]);
+  const firstResult = details.results[0];
+  if (!firstResult) throw new Error("missing result");
+  firstResult.progress = {
+    toolCalls: [],
+    activityText: "Reading file.ts",
+  };
+  firstResult.usage = {
+    ...firstResult.usage,
+    input: 100,
+    output: 50,
+    contextTokens: 150,
+    contextWindowTokens: 1000,
+  };
+  const seen = new Set<string>();
+  patchProgressFromDetails("req-1", details, seen);
+  const state = getProgressState("req-1");
+  // Structural echo: activityStack reference preserved (not re-patched)
+  expect(state?.activityStack).toBe(storedStack);
+  expect(state?.lastToolPreview).toBe("Reading file.ts");
+  expect(state?.toolCount).toBe(1);
+  // Single-frame echo does NOT suppress token accounting
+  expect(state?.inputTokens).toBe(100);
+  expect(state?.outputTokens).toBe(50);
+});
+test("single-frame non-echo replaces stack and updates preview when activityText differs", () => {
+  createProgressState("req-1", "agent-a", "task a");
+  patchProgressState("req-1", {
+    activityStack: [{ preview: "Reading file.ts" }],
+    lastToolPreview: "Reading file.ts",
+    toolCount: 1,
+  });
+  const details = makeDetails([]);
+  const firstResult = details.results[0];
+  if (!firstResult) throw new Error("missing result");
+  firstResult.progress = {
+    toolCalls: [],
+    activityText: "Scanning src directory",
+  };
+  const seen = new Set<string>();
+  patchProgressFromDetails("req-1", details, seen);
+  const state = getProgressState("req-1");
+  expect(state?.activityStack).toEqual([{ preview: "Scanning src directory" }]);
+  expect(state?.lastToolPreview).toBe("Scanning src directory");
+  expect(state?.toolCount).toBe(1);
+});
+test("multi-frame stack with matching leaf activityText is not treated as single-frame echo", () => {
+  createProgressState("req-1", "agent-a", "task a");
+  patchProgressState("req-1", {
+    activityStack: [{ preview: "subagent: build" }, { preview: "bash: ls" }],
+    lastToolPreview: "subagent: build - bash: ls",
+    toolCount: 2,
+  });
+  const details = makeDetails([]);
+  const firstResult = details.results[0];
+  if (!firstResult) throw new Error("missing result");
+  firstResult.progress = {
+    toolCalls: [],
+    activityText: "bash: ls",
+  };
+  const seen = new Set<string>();
+  patchProgressFromDetails("req-1", details, seen);
+  const state = getProgressState("req-1");
+  // NOT an echo: stack replaced with single-frame from activityText
+  expect(state?.activityStack).toEqual([{ preview: "bash: ls" }]);
+  expect(state?.lastToolPreview).toBe("bash: ls");
+  expect(state?.toolCount).toBe(2);
+});
+test("nested activity details update parent frame and append leaf frame", () => {
+  createProgressState("req-1", "parent-agent", "parent task");
+  patchProgressState("req-1", {
+    activityStack: [{ preview: "subagent: build" }],
+    lastToolPreview: "subagent: build",
+    toolCount: 2,
+    inputTokens: 100,
+    outputTokens: 50,
+    contextTokens: 150,
+    contextWindowTokens: 1000,
+  });
+  const details = makeDetails([]);
+  const firstResult = details.results[0];
+  if (!firstResult) throw new Error("missing result");
+  firstResult.progress = {
+    toolCalls: [],
+    activityText: "bash: scanning src",
+    activityStack: [
+      { preview: "subagent: build", instanceName: "swift-harbor" },
+      { preview: "bash: scanning src" },
+    ],
+  };
+  firstResult.usage = {
+    ...firstResult.usage,
+    input: 999,
+    output: 888,
+    contextTokens: 777,
+    contextWindowTokens: 1000,
+  };
+  const seen = new Set<string>();
+  patchProgressFromDetails("req-1", details, seen);
+  const state = getProgressState("req-1");
+  expect(state?.activityStack).toEqual([
+    { preview: "subagent: build", instanceName: "swift-harbor" },
+    { preview: "bash: scanning src" },
+  ]);
+  expect(state?.lastToolPreview).toBe(
+    "subagent: build [swift-harbor] - bash: scanning src",
+  );
+  expect(state?.toolCount).toBe(2);
+  expect(state?.inputTokens).toBe(100);
+  expect(state?.outputTokens).toBe(50);
+  expect(state?.contextTokens).toBe(150);
+  expect(state?.contextWindowTokens).toBe(1000);
 });

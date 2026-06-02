@@ -9,7 +9,13 @@ import {
   SUBAGENT_RESULT_CONTRACT,
 } from "../src/child/prompt-contract.js";
 import type { SubagentDetails } from "../src/shared/types.js";
-import { setupHooks, setupTest, waitFor } from "./helpers.js";
+import {
+  makeSubagentToolUpdateLine,
+  setupHooks,
+  setupTest,
+  shellQuote,
+  waitFor,
+} from "./helpers.js";
 
 setupHooks();
 
@@ -199,12 +205,12 @@ test("runSingleAgent cleans prompt temp file when skill resolution fails after p
   expect(fs.existsSync(tmpDir ?? "")).toBe(false);
 });
 
-test("subagent_nested_activity triggers onUpdate without appending messages", async () => {
+test("nested activity triggers onUpdate without appending messages", async () => {
   const updates: { text: string; messageCount: number }[] = [];
   const { cwd } = await setupTest({
     piScript: `#!/bin/sh
 printf '%s\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"hello"}],"api":"fake","provider":"fake","model":"fake","usage":{"input":1,"output":1,"cacheRead":0,"cacheWrite":0,"totalTokens":2,"cost":{"total":0}},"stopReason":"stop","timestamp":0}}'
-printf '%s\n' '{"type":"subagent_nested_activity","activityText":"Reading file.ts"}'
+printf '%s\n' ${shellQuote(makeSubagentToolUpdateLine("Reading file.ts"))}
 printf '%s\n' '{"type":"agent_end","messages":[]}'
 exit 0
 `,
@@ -231,11 +237,11 @@ exit 0
   expect(nestedUpdate?.messageCount).toBe(1);
 });
 
-test("subagent_nested_activity with sensitive keywords is redacted", async () => {
+test("nested activity with sensitive keywords is redacted", async () => {
   let capturedText = "";
   const { cwd } = await setupTest({
     piScript: `#!/bin/sh
-printf '%s\n' '{"type":"subagent_nested_activity","activityText":"Reading secret-token.yaml"}'
+printf '%s\n' ${shellQuote(makeSubagentToolUpdateLine("Reading secret-token.yaml"))}
 printf '%s\n' '{"type":"agent_end","messages":[]}'
 exit 0
 `,
@@ -256,11 +262,11 @@ exit 0
   expect(capturedText).toBe("(running...)");
 });
 
-test("subagent_nested_activity handles no-message no-terminal child exit", async () => {
+test("nested activity handles no-message no-terminal child exit", async () => {
   const updates: { text: string; messageCount: number }[] = [];
   const { cwd } = await setupTest({
     piScript: `#!/bin/sh
-printf '%s\n' '{"type":"subagent_nested_activity","activityText":"Grandchild running"}'
+printf '%s\n' ${shellQuote(makeSubagentToolUpdateLine("Grandchild running"))}
 exit 0
 `,
   });
@@ -292,7 +298,7 @@ test("child tool events replace nested activity in subsequent updates", async ()
   const texts: string[] = [];
   const { cwd } = await setupTest({
     piScript: `#!/bin/sh
-printf '%s\n' '{"type":"subagent_nested_activity","activityText":"Grandchild working"}'
+printf '%s\n' ${shellQuote(makeSubagentToolUpdateLine("Grandchild working"))}
 printf '%s\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"toolCall","id":"tc-1","name":"bash","arguments":{"command":"ls"}}],"api":"fake","provider":"fake","model":"fake","usage":{"input":1,"output":1,"cacheRead":0,"cacheWrite":0,"totalTokens":2,"cost":{"total":0}},"stopReason":"stop","timestamp":0}}'
 printf '%s\n' '{"type":"agent_end","messages":[]}'
 exit 0

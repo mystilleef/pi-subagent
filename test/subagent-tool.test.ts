@@ -1,13 +1,13 @@
 import { afterEach, expect, test } from "bun:test";
 import { chmod, mkdir, symlink, writeFile } from "node:fs/promises";
 import path from "node:path";
+import type { AgentToolUpdateCallback } from "@earendil-works/pi-agent-core";
 import type { TextContent } from "@earendil-works/pi-ai";
-import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
+import type {
+  AgentToolResult,
+  ExtensionContext,
+} from "@earendil-works/pi-coding-agent";
 import { discoverAgentsAsync } from "../src/agent/agents.js";
-import {
-  makeNestedActivityLine,
-  NESTED_ACTIVITY_EVENT,
-} from "../src/child/child-events.js";
 import { SUBAGENT_RESULT_CONTRACT } from "../src/child/prompt-contract.js";
 import {
   cancelRunJob,
@@ -29,6 +29,7 @@ import {
 import type { SubagentDetails } from "../src/shared/types.js";
 import {
   getSubagentTool,
+  makeSubagentToolUpdateLine,
   type SendMessageArg,
   setupFakePi,
   setupHooks,
@@ -1815,68 +1816,45 @@ exit 0
   expect(sentMessages2.at(-1)?.content).not.toContain("SECRET_DEBUG");
 });
 
-test("positive-depth subagent emits nested activity JSON lines to parent stdout", async () => {
-  const sentMessages: SendMessageArg[] = [];
-  const nestedActivityLine = makeNestedActivityLine("Reading file.ts");
-  const { tool, cwd } = await setupTest({
-    sendMessage: (msg) => sentMessages.push(msg),
-    piScript: `#!/bin/sh
-printf '%s\n' '${nestedActivityLine}'
-printf '%s\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"done"}],"usage":{"input":1,"output":1,"totalTokens":2,"cost":{"total":0}}}}'
-printf '%s\n' '{"type":"agent_end"}'
-exit 0
-`,
-  });
-  const origWrite = process.stdout.write;
-  const capturedLines: string[] = [];
-  process.stdout.write = ((data: unknown) => {
-    if (typeof data === "string") {
-      for (const line of data.split("\n")) {
-        if (line.includes(NESTED_ACTIVITY_EVENT)) capturedLines.push(line);
-      }
-    }
-    return true;
-  }) as typeof process.stdout.write;
-  try {
-    process.env.PI_SUBAGENT_DEPTH = "1";
-    await tool.execute(
-      "test-tool-call",
-      { agent: "hang", task: "nested emit" },
-      undefined,
-      undefined,
-      { cwd, hasUI: false } as unknown as ExtensionContext,
-    );
-    const activityLines = capturedLines.filter((line) => {
-      try {
-        const parsed = JSON.parse(line);
-        return parsed.type === NESTED_ACTIVITY_EVENT;
-      } catch {
-        return false;
-      }
-    });
-    expect(activityLines.length).toBeGreaterThan(0);
-    for (const line of activityLines) {
-      const parsed = JSON.parse(line);
-      expect(parsed.type).toBe(NESTED_ACTIVITY_EVENT);
-      expect(typeof parsed.activityText).toBe("string");
-      expect(parsed.activityText.length).toBeGreaterThan(0);
-    }
-  } finally {
-    process.stdout.write = origWrite;
-  }
+const SUBAGENT_CALL_LINE = JSON.stringify({
+  type: "message_end",
+  message: {
+    role: "assistant",
+    content: [
+      {
+        type: "toolCall",
+        name: "subagent",
+        id: "sub-native-1",
+        arguments: { agent: "build", task: "compile" },
+      },
+    ],
+  },
 });
 
-test("root-depth subagent does NOT emit nested activity signals upstream", async () => {
+const NESTED_FINAL_LINE = JSON.stringify({
+  type: "message_end",
+  message: {
+    role: "assistant",
+    content: [{ type: "text", text: "done" }],
+    usage: { input: 1, output: 1, totalTokens: 2, cost: { total: 0 } },
+  },
+});
+
+test("tool_execution_update from subagent tool surfaces grandchild preview in parent store", async () => {
   const sentMessages: SendMessageArg[] = [];
-  const nestedActivityLine = makeNestedActivityLine("Reading file.ts");
   const { binDir, cwd } = await setupFakePi();
   const sentinel = path.join(cwd, "continue");
+  const toolUpdateLine = makeSubagentToolUpdateLine(
+    "bash: make build",
+    "swift-otter",
+  );
   await writeFile(
     path.join(binDir, "pi"),
     `#!/bin/sh
-printf '%s\n' '${nestedActivityLine}'
-while [ ! -f ${shellQuote(sentinel)} ]; do sleep 0.05; done
-printf '%s\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"done"}],"usage":{"input":1,"output":1,"totalTokens":2,"cost":{"total":0}}}}'
+printf '%s\n' ${shellQuote(SUBAGENT_CALL_LINE)}
+printf '%s\n' ${shellQuote(toolUpdateLine)}
+until [ -f ${shellQuote(sentinel)} ]; do sleep 0.02; done
+printf '%s\n' ${shellQuote(NESTED_FINAL_LINE)}
 printf '%s\n' '{"type":"agent_end"}'
 exit 0
 `,
@@ -1885,75 +1863,84 @@ exit 0
   const tool = getSubagentTool({
     sendMessage: (msg) => sentMessages.push(msg),
   });
-  const origWrite = process.stdout.write;
-  const origSetInterval = globalThis.setInterval;
-  const statusCalls: { key: string; value: string | undefined }[] = [];
-  const capturedLines: string[] = [];
-  process.stdout.write = ((data: unknown) => {
-    if (typeof data === "string") {
-      for (const line of data.split("\n")) {
-        if (line.includes(NESTED_ACTIVITY_EVENT)) capturedLines.push(line);
-      }
-    }
-    return true;
-  }) as typeof process.stdout.write;
-  globalThis.setInterval = ((..._args: Parameters<typeof setInterval>) =>
-    origSetInterval(() => {}, 60_000)) as typeof setInterval;
-  try {
-    process.env.PI_SUBAGENT_DEPTH = "0";
-    await tool.execute(
-      "test-tool-call",
-      { agent: "hang", task: "root emit" },
-      undefined,
-      undefined,
-      {
-        cwd,
-        hasUI: false,
-        ui: {
-          setStatus: (key: string, value: string | undefined) =>
-            statusCalls.push({ key, value }),
-        },
-      } as unknown as ExtensionContext,
-    );
-    await waitFor(
-      () =>
-        statusCalls.find((call) => call.key.startsWith("subagent-progress:")),
-      "nested activity render refresh",
-    );
-    expect(sentMessages).toHaveLength(1);
-    await writeFile(sentinel, "continue");
-    await waitForSentMessageCount(sentMessages, 2);
-    const activityLines = capturedLines.filter((line) => {
-      try {
-        const parsed = JSON.parse(line);
-        return parsed.type === NESTED_ACTIVITY_EVENT;
-      } catch {
-        return false;
-      }
-    });
-    expect(activityLines).toHaveLength(0);
-  } finally {
-    process.stdout.write = origWrite;
-    globalThis.setInterval = origSetInterval;
-  }
+  await tool.execute(
+    "test-tool-call",
+    { agent: "hang", task: "native nested" },
+    undefined,
+    undefined,
+    { cwd, hasUI: false } as unknown as ExtensionContext,
+  );
+  await waitForSentMessage(sentMessages);
+  const requestId = (sentMessages[0]?.details as { requestId?: string })
+    ?.requestId;
+  if (!requestId) throw new Error("requestId missing");
+  await waitFor(
+    () =>
+      getProgressState(requestId)?.activityStack?.length === 2
+        ? true
+        : undefined,
+    "grandchild preview surfaced via tool_execution_update",
+  );
+  const state = getProgressState(requestId);
+  expect(state?.activityStack).toHaveLength(2);
+  expect(state?.activityStack?.[0]?.preview).toBe("subagent: build");
+  expect(state?.activityStack?.[0]?.instanceName).toBe("swift-otter");
+  expect(state?.activityStack?.[1]?.preview).toBe("bash: make build");
+  expect(state?.lastToolPreview).toContain("bash: make build");
+  await writeFile(sentinel, "continue");
+  await waitForSentMessageCount(sentMessages, 2);
+  expect(getProgressState(requestId)?.status).toBe("success");
 });
 
-test("nested activity JSON lines are distinguishable from renderer messages", () => {
-  const activityLine = makeNestedActivityLine("Reading file.ts");
-  const parsed = JSON.parse(activityLine);
-  expect(parsed.type).toBe(NESTED_ACTIVITY_EVENT);
-  expect(typeof parsed.activityText).toBe("string");
-  const rendererLine = JSON.stringify({
-    customType: "subagent-progress",
-    content: "",
-    display: true,
-    details: { agent: "hang", instanceName: "test", requestId: "abc" },
+test("tool_execution_update for a non-subagent tool is ignored by the parent", async () => {
+  const sentMessages: SendMessageArg[] = [];
+  const { binDir, cwd } = await setupFakePi();
+  const sentinel = path.join(cwd, "continue");
+  const bashUpdateLine = makeSubagentToolUpdateLine(
+    "bash: ls src",
+    "swift-otter",
+    "bash",
+  );
+  await writeFile(
+    path.join(binDir, "pi"),
+    `#!/bin/sh
+printf '%s\n' ${shellQuote(SUBAGENT_CALL_LINE)}
+printf '%s\n' ${shellQuote(bashUpdateLine)}
+until [ -f ${shellQuote(sentinel)} ]; do sleep 0.02; done
+printf '%s\n' ${shellQuote(NESTED_FINAL_LINE)}
+printf '%s\n' '{"type":"agent_end"}'
+exit 0
+`,
+  );
+  await chmod(path.join(binDir, "pi"), 0o755);
+  const tool = getSubagentTool({
+    sendMessage: (msg) => sentMessages.push(msg),
   });
-  const rendererParsed = JSON.parse(rendererLine);
-  expect(rendererParsed.customType).toBe("subagent-progress");
-  expect(rendererParsed.type).toBeUndefined();
-  expect(activityLine).not.toContain("subagent-progress");
-  expect(rendererLine).not.toContain(NESTED_ACTIVITY_EVENT);
+  await tool.execute(
+    "test-tool-call",
+    { agent: "hang", task: "native filter" },
+    undefined,
+    undefined,
+    { cwd, hasUI: false } as unknown as ExtensionContext,
+  );
+  await waitForSentMessage(sentMessages);
+  const requestId = (sentMessages[0]?.details as { requestId?: string })
+    ?.requestId;
+  if (!requestId) throw new Error("requestId missing");
+  await waitFor(
+    () =>
+      getProgressState(requestId)?.lastToolPreview === "subagent: build"
+        ? true
+        : undefined,
+    "non-subagent update ignored, base preview preserved",
+  );
+  const state = getProgressState(requestId);
+  expect(state?.activityStack).toHaveLength(1);
+  expect(state?.lastToolPreview).toBe("subagent: build");
+  expect(state?.lastToolPreview).not.toContain("bash: ls src");
+  await writeFile(sentinel, "continue");
+  await waitForSentMessageCount(sentMessages, 2);
+  expect(getProgressState(requestId)?.status).toBe("success");
 });
 
 // --- emitCompletionAlert tests ---
@@ -2121,7 +2108,7 @@ test("orchestrated path preserves nested activity across fallback child status u
   await writeFile(
     path.join(binDir, "pi"),
     `#!/bin/sh
-printf '%s\n' '{"type":"nested_activity","activityText":"Reading config.ts"}'
+printf '%s\n' ${shellQuote(makeSubagentToolUpdateLine("Reading config.ts"))}
 printf '%s\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"toolCall","name":"bash","id":"tc-1","arguments":{"command":"ls"}}]}}'
 printf '%s\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"done"}],"usage":{"input":1,"output":1,"totalTokens":2,"cost":{"total":0}}}}'
 printf '%s\n' '{"type":"agent_end"}'
@@ -2154,7 +2141,7 @@ test("orchestrated path: fresh child tool call supersedes preserved nested activ
   await writeFile(
     path.join(binDir, "pi"),
     `#!/bin/sh
-printf '%s\n' '{"type":"nested_activity","activityText":"Scanning files"}'
+printf '%s\n' ${shellQuote(makeSubagentToolUpdateLine("Scanning files"))}
 printf '%s\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"toolCall","name":"bash","id":"tc-fresh","arguments":{"command":"cat file.ts"}}]}}'
 printf '%s\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"done"}],"usage":{"input":1,"output":1,"totalTokens":2,"cost":{"total":0}}}}'
 printf '%s\n' '{"type":"agent_end"}'
@@ -2187,7 +2174,7 @@ test("orchestrated path: terminal progress clears preserved nested activity", as
   await writeFile(
     path.join(binDir, "pi"),
     `#!/bin/sh
-printf '%s\n' '{"type":"nested_activity","activityText":"Reading config.ts"}'
+printf '%s\n' ${shellQuote(makeSubagentToolUpdateLine("Reading config.ts"))}
 printf '%s\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"Outcome: completed"}],"usage":{"input":1,"output":1,"totalTokens":2,"cost":{"total":0}}}}'
 printf '%s\n' '{"type":"agent_end"}'
 exit 0
@@ -2213,13 +2200,169 @@ exit 0
   expect(state?.lastToolPreview).toBeUndefined();
 });
 
+test("patchProgressFromDetails: tool_result_end does not overwrite nested activity preview", async () => {
+  const sentMessages: SendMessageArg[] = [];
+  const { binDir, cwd } = await setupFakePi();
+  const sentinel = path.join(cwd, "continue");
+  const subagentCallLine = JSON.stringify({
+    type: "message_end",
+    message: {
+      role: "assistant",
+      content: [
+        {
+          type: "toolCall",
+          name: "subagent",
+          id: "sub-nested-1",
+          arguments: { agent: "build", task: "compile" },
+        },
+      ],
+    },
+  });
+  const nestedLine = makeSubagentToolUpdateLine("bash: make build");
+  const toolResultEndLine = JSON.stringify({
+    type: "tool_result_end",
+    message: { role: "toolResult", content: [] },
+  });
+  const finalLine = JSON.stringify({
+    type: "message_end",
+    message: {
+      role: "assistant",
+      content: [{ type: "text", text: "done" }],
+      usage: { input: 1, output: 1, totalTokens: 2, cost: { total: 0 } },
+    },
+  });
+  await writeFile(
+    path.join(binDir, "pi"),
+    `#!/bin/sh
+printf '%s\n' ${shellQuote(subagentCallLine)}
+printf '%s\n' ${shellQuote(nestedLine)}
+printf '%s\n' ${shellQuote(toolResultEndLine)}
+until [ -f ${shellQuote(sentinel)} ]; do sleep 0.02; done
+printf '%s\n' ${shellQuote(finalLine)}
+printf '%s\n' '{"type":"agent_end"}'
+exit 0
+`,
+  );
+  await chmod(path.join(binDir, "pi"), 0o755);
+  const tool = getSubagentTool({
+    sendMessage: (msg) => sentMessages.push(msg),
+  });
+  await tool.execute(
+    "test-tool-call",
+    { agent: "hang", task: "nested preview" },
+    undefined,
+    undefined,
+    { cwd, hasUI: false } as unknown as ExtensionContext,
+  );
+  await waitForSentMessage(sentMessages);
+  const requestId = (sentMessages[0]?.details as { requestId?: string })
+    ?.requestId;
+  if (!requestId) throw new Error("requestId missing");
+  await waitFor(
+    () =>
+      getProgressState(requestId)?.lastToolPreview === "subagent: build"
+        ? true
+        : undefined,
+    "parent preview preserved through tool_result_end",
+  );
+  expect(getProgressState(requestId)?.lastToolPreview).toBe("subagent: build");
+  expect(getProgressState(requestId)?.activityStack).toHaveLength(1);
+  expect(
+    getProgressState(requestId)?.activityStack?.[0]?.instanceName,
+  ).toBeUndefined();
+  await writeFile(sentinel, "continue");
+  await waitForSentMessageCount(sentMessages, 2);
+  expect(getProgressState(requestId)?.status).toBe("success");
+});
+
+test("patchProgressFromDetails: parent preview shows friendly instance label after nested tool result pop", async () => {
+  const sentMessages: SendMessageArg[] = [];
+  const { binDir, cwd } = await setupFakePi();
+  const sentinel = path.join(cwd, "continue");
+  const subagentCallLine = JSON.stringify({
+    type: "message_end",
+    message: {
+      role: "assistant",
+      content: [
+        {
+          type: "toolCall",
+          name: "subagent",
+          id: "sub-nested-label",
+          arguments: { agent: "build", task: "compile" },
+        },
+      ],
+    },
+  });
+  const nestedLine = makeSubagentToolUpdateLine(
+    "bash: make build",
+    "able-falcon",
+  );
+  const toolResultEndLine = JSON.stringify({
+    type: "tool_result_end",
+    message: { role: "toolResult", content: [] },
+  });
+  const finalLine = JSON.stringify({
+    type: "message_end",
+    message: {
+      role: "assistant",
+      content: [{ type: "text", text: "done" }],
+      usage: { input: 1, output: 1, totalTokens: 2, cost: { total: 0 } },
+    },
+  });
+  await writeFile(
+    path.join(binDir, "pi"),
+    `#!/bin/sh
+printf '%s\n' ${shellQuote(subagentCallLine)}
+printf '%s\n' ${shellQuote(nestedLine)}
+printf '%s\n' ${shellQuote(toolResultEndLine)}
+until [ -f ${shellQuote(sentinel)} ]; do sleep 0.02; done
+printf '%s\n' ${shellQuote(finalLine)}
+printf '%s\n' '{"type":"agent_end"}'
+exit 0
+`,
+  );
+  await chmod(path.join(binDir, "pi"), 0o755);
+  const tool = getSubagentTool({
+    sendMessage: (msg) => sentMessages.push(msg),
+  });
+  await tool.execute(
+    "test-tool-call",
+    { agent: "hang", task: "nested label" },
+    undefined,
+    undefined,
+    { cwd, hasUI: false } as unknown as ExtensionContext,
+  );
+  await waitForSentMessage(sentMessages);
+  const requestId = (sentMessages[0]?.details as { requestId?: string })
+    ?.requestId;
+  if (!requestId) throw new Error("requestId missing");
+  await waitFor(
+    () =>
+      getProgressState(requestId)?.lastToolPreview ===
+      "subagent: build [able-falcon]"
+        ? true
+        : undefined,
+    "parent preview shows friendly instance label",
+  );
+  expect(getProgressState(requestId)?.lastToolPreview).toBe(
+    "subagent: build [able-falcon]",
+  );
+  expect(getProgressState(requestId)?.activityStack).toHaveLength(1);
+  expect(getProgressState(requestId)?.activityStack?.[0]?.instanceName).toBe(
+    "able-falcon",
+  );
+  await writeFile(sentinel, "continue");
+  await waitForSentMessageCount(sentMessages, 2);
+  expect(getProgressState(requestId)?.status).toBe("success");
+});
+
 test("orchestrated path: result detail shape remains compatible with preserved nested activity", async () => {
   const sentMessages: SendMessageArg[] = [];
   const { binDir, cwd } = await setupFakePi();
   await writeFile(
     path.join(binDir, "pi"),
     `#!/bin/sh
-printf '%s\n' '{"type":"nested_activity","activityText":"Reading config.ts"}'
+printf '%s\n' ${shellQuote(makeSubagentToolUpdateLine("Reading config.ts"))}
 printf '%s\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"toolCall","name":"bash","id":"tc-1","arguments":{"command":"ls"}}]}}'
 printf '%s\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"done"}],"usage":{"input":10,"output":20,"totalTokens":30,"cost":{"total":0.01}}}}'
 printf '%s\n' '{"type":"agent_end"}'
@@ -2244,4 +2387,442 @@ exit 0
   expect(resultDetails.results[0]?.usage).toBeDefined();
   expect(typeof resultDetails.results[0]?.usage?.input).toBe("number");
   expect(typeof resultDetails.results[0]?.usage?.output).toBe("number");
+});
+
+test("host onUpdate callback is forwarded to lifecycle for running jobs", async () => {
+  const sentMessages: SendMessageArg[] = [];
+  const hostOnUpdate: AgentToolUpdateCallback<SubagentDetails> = () => {};
+  const { tool, cwd } = await setupTest({
+    sendMessage: (msg) => sentMessages.push(msg),
+    piScript: `#!/bin/sh
+printf '%s\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"done"}],"usage":{"input":1,"output":1,"totalTokens":2,"cost":{"total":0}}}}'
+printf '%s\n' '{"type":"agent_end"}'
+exit 0
+`,
+  });
+  process.env.PI_SUBAGENT_DEPTH = "1";
+  const result = await tool.execute(
+    "test-tool-call",
+    { agent: "hang", task: "test" },
+    undefined,
+    hostOnUpdate,
+    { cwd, hasUI: false } as unknown as ExtensionContext,
+  );
+  await waitForSentMessageCount(sentMessages, 2);
+  expect(result.content).toBeDefined();
+  expect(result.details).toBeDefined();
+  expect(result.details.renderedByMessage).toBe(true);
+});
+
+test("host onUpdate callback type is compatible with AgentToolUpdateCallback", async () => {
+  const hostOnUpdate: AgentToolUpdateCallback<SubagentDetails> = (
+    partial: AgentToolResult<SubagentDetails>,
+  ) => {
+    expect(partial.content).toBeDefined();
+    expect(Array.isArray(partial.content)).toBe(true);
+    for (const contentBlock of partial.content) {
+      expect(contentBlock.type).toBe("text");
+      if (contentBlock.type === "text") {
+        expect(typeof contentBlock.text).toBe("string");
+      }
+    }
+    expect(partial.details).toBeDefined();
+    expect(partial.details.mode).toBe("single");
+    expect(partial.details.agentScope).toBeDefined();
+    expect(Array.isArray(partial.details.results)).toBe(true);
+  };
+  expect(typeof hostOnUpdate).toBe("function");
+});
+
+test("tool executes successfully without onUpdate callback", async () => {
+  const sentMessages: SendMessageArg[] = [];
+  const { tool, cwd } = await setupTest({
+    sendMessage: (msg) => sentMessages.push(msg),
+  });
+  process.env.PI_SUBAGENT_DEPTH = "1";
+  const result = await tool.execute(
+    "test-tool-call",
+    { agent: "hang", task: "test" },
+    undefined,
+    undefined,
+    { cwd, hasUI: false } as unknown as ExtensionContext,
+  );
+  await waitForSentMessageCount(sentMessages, 2);
+  expect(result.content).toBeDefined();
+  expect(result.content[0]?.type).toBe("text");
+  if (result.content[0]?.type === "text") {
+    expect(result.content[0].text).toBe("done");
+  }
+  expect(result.details).toBeDefined();
+  expect(result.details.mode).toBe("single");
+  expect(result.details.renderedByMessage).toBe(true);
+});
+
+test("non-started flows return same shape with and without callback", async () => {
+  const sentMessages: SendMessageArg[] = [];
+  const callbackInvocations: AgentToolResult<SubagentDetails>[] = [];
+  const hostOnUpdate = (partial: AgentToolResult<SubagentDetails>) => {
+    callbackInvocations.push(partial);
+  };
+  const { cwd } = await setupFakePi();
+  const tool = getSubagentTool({
+    sendMessage: (msg) => sentMessages.push(msg),
+  });
+  const resultWithCallback = await tool.execute(
+    "test-tool-call-1",
+    { agent: "non-existent", task: "test" },
+    undefined,
+    hostOnUpdate,
+    { cwd, hasUI: false } as unknown as ExtensionContext,
+  );
+  expect(callbackInvocations).toHaveLength(0);
+  expect(resultWithCallback.content).toBeDefined();
+  expect(resultWithCallback.content[0]?.type).toBe("text");
+  if (resultWithCallback.content[0]?.type === "text") {
+    expect(resultWithCallback.content[0].text).toContain(
+      'Unknown agent: "non-existent"',
+    );
+  }
+  expect(resultWithCallback.details).toBeDefined();
+  expect(resultWithCallback.details.mode).toBe("single");
+  sentMessages.length = 0;
+  const resultWithoutCallback = await tool.execute(
+    "test-tool-call-2",
+    { agent: "non-existent", task: "test" },
+    undefined,
+    undefined,
+    { cwd, hasUI: false } as unknown as ExtensionContext,
+  );
+  expect(resultWithoutCallback.content).toBeDefined();
+  expect(resultWithoutCallback.content[0]?.type).toBe("text");
+  if (resultWithoutCallback.content[0]?.type === "text") {
+    expect(resultWithoutCallback.content[0].text).toContain(
+      'Unknown agent: "non-existent"',
+    );
+  }
+  expect(resultWithoutCallback.details).toBeDefined();
+  expect(resultWithoutCallback.details.mode).toBe("single");
+});
+
+test("live partial updates are forwarded to host callback with correct shape", async () => {
+  const sentMessages: SendMessageArg[] = [];
+  const partialUpdates: AgentToolResult<SubagentDetails>[] = [];
+  const hostOnUpdate = (partial: AgentToolResult<SubagentDetails>) => {
+    partialUpdates.push(partial);
+  };
+  const { binDir, cwd } = await setupFakePi();
+  await writeFile(
+    path.join(binDir, "pi"),
+    `#!/bin/sh
+printf '%s\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"toolCall","name":"bash","id":"tc-1","arguments":{"command":"ls"}}]}}'
+sleep 0.1
+printf '%s\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"done"}],"usage":{"input":1,"output":1,"totalTokens":2,"cost":{"total":0}}}}'
+printf '%s\n' '{"type":"agent_end"}'
+exit 0
+`,
+  );
+  await chmod(path.join(binDir, "pi"), 0o755);
+  const tool = getSubagentTool({
+    sendMessage: (msg) => sentMessages.push(msg),
+  });
+  process.env.PI_SUBAGENT_DEPTH = "1";
+  const result = await tool.execute(
+    "test-tool-call",
+    { agent: "hang", task: "test" },
+    undefined,
+    hostOnUpdate,
+    { cwd, hasUI: false } as unknown as ExtensionContext,
+  );
+  expect(partialUpdates.length).toBeGreaterThan(0);
+  for (const partial of partialUpdates) {
+    expect(partial.content).toBeDefined();
+    expect(Array.isArray(partial.content)).toBe(true);
+    expect(partial.content.length).toBeGreaterThan(0);
+    expect(partial.content[0]?.type).toBe("text");
+    if (partial.content[0]?.type === "text") {
+      expect(typeof partial.content[0].text).toBe("string");
+      expect(partial.content[0].text.length).toBeGreaterThan(0);
+    }
+    expect(partial.details).toBeDefined();
+    expect(partial.details.mode).toBe("single");
+    expect(partial.details.agentScope).toBeDefined();
+    expect(Array.isArray(partial.details.results)).toBe(true);
+    expect(partial.details.renderedByMessage).toBeUndefined();
+  }
+  expect(result.details.renderedByMessage).toBe(true);
+});
+
+test("partial updates contain meaningful activity text from child progress", async () => {
+  const sentMessages: SendMessageArg[] = [];
+  const partialUpdates: AgentToolResult<SubagentDetails>[] = [];
+  const hostOnUpdate = (partial: AgentToolResult<SubagentDetails>) => {
+    partialUpdates.push(partial);
+  };
+  const { binDir, cwd } = await setupFakePi();
+  await writeFile(
+    path.join(binDir, "pi"),
+    `#!/bin/sh
+printf '%s\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"toolCall","name":"bash","id":"tc-1","arguments":{"command":"echo hello"}}]}}'
+sleep 0.1
+printf '%s\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"done"}],"usage":{"input":1,"output":1,"totalTokens":2,"cost":{"total":0}}}}'
+printf '%s\n' '{"type":"agent_end"}'
+exit 0
+`,
+  );
+  await chmod(path.join(binDir, "pi"), 0o755);
+  const tool = getSubagentTool({
+    sendMessage: (msg) => sentMessages.push(msg),
+  });
+  process.env.PI_SUBAGENT_DEPTH = "1";
+  await tool.execute(
+    "test-tool-call",
+    { agent: "hang", task: "test" },
+    undefined,
+    hostOnUpdate,
+    { cwd, hasUI: false } as unknown as ExtensionContext,
+  );
+  expect(partialUpdates.length).toBeGreaterThan(0);
+  const hasToolPreview = partialUpdates.some((partial) => {
+    const text =
+      partial.content[0]?.type === "text" ? partial.content[0].text : "";
+    return text.includes("bash") || text.includes("echo");
+  });
+  const hasRunningFallback = partialUpdates.some((partial) => {
+    const text =
+      partial.content[0]?.type === "text" ? partial.content[0].text : "";
+    return text === "(running...)";
+  });
+  expect(hasToolPreview || hasRunningFallback).toBe(true);
+});
+
+test("partial updates preserve progress state patching and progress card renders", async () => {
+  const sentMessages: SendMessageArg[] = [];
+  const partialUpdates: AgentToolResult<SubagentDetails>[] = [];
+  const hostOnUpdate = (partial: AgentToolResult<SubagentDetails>) => {
+    partialUpdates.push(partial);
+  };
+  const statusCalls: { key: string; value: string | undefined }[] = [];
+  const { binDir, cwd } = await setupFakePi();
+  await writeFile(
+    path.join(binDir, "pi"),
+    `#!/bin/sh
+printf '%s\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"toolCall","name":"bash","id":"tc-1","arguments":{"command":"ls"}}]}}'
+sleep 0.1
+printf '%s\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"done"}],"usage":{"input":1,"output":1,"totalTokens":2,"cost":{"total":0}}}}'
+printf '%s\n' '{"type":"agent_end"}'
+exit 0
+`,
+  );
+  await chmod(path.join(binDir, "pi"), 0o755);
+  const tool = getSubagentTool({
+    sendMessage: (msg) => sentMessages.push(msg),
+  });
+  process.env.PI_SUBAGENT_DEPTH = "1";
+  await tool.execute(
+    "test-tool-call",
+    { agent: "hang", task: "test" },
+    undefined,
+    hostOnUpdate,
+    {
+      cwd,
+      hasUI: false,
+      ui: {
+        setStatus: (key: string, value: string | undefined) =>
+          statusCalls.push({ key, value }),
+      },
+    } as unknown as ExtensionContext,
+  );
+  expect(partialUpdates.length).toBeGreaterThan(0);
+  const progressRenders = statusCalls.filter((call) =>
+    call.key.startsWith("subagent-progress:"),
+  );
+  expect(progressRenders.length).toBeGreaterThan(0);
+  expect(sentMessages[0]?.customType).toBe("subagent-progress");
+  expect(sentMessages.at(-1)?.customType).toBe("subagent-result");
+});
+
+test("final success result uses renderedByMessage to avoid duplicate rendering", async () => {
+  const sentMessages: SendMessageArg[] = [];
+  const partialUpdates: AgentToolResult<SubagentDetails>[] = [];
+  const hostOnUpdate = (partial: AgentToolResult<SubagentDetails>) => {
+    partialUpdates.push(partial);
+  };
+  const { tool, cwd } = await setupTest({
+    sendMessage: (msg) => sentMessages.push(msg),
+  });
+  process.env.PI_SUBAGENT_DEPTH = "1";
+  const result = await tool.execute(
+    "test-tool-call",
+    { agent: "hang", task: "test" },
+    undefined,
+    hostOnUpdate,
+    { cwd, hasUI: false } as unknown as ExtensionContext,
+  );
+  expect(partialUpdates.length).toBeGreaterThan(0);
+  for (const partial of partialUpdates) {
+    expect(partial.details.renderedByMessage).toBeUndefined();
+  }
+  expect(result.details.renderedByMessage).toBe(true);
+  const resultMessage = sentMessages.find(
+    (msg) => msg.customType === "subagent-result",
+  );
+  expect(resultMessage).toBeDefined();
+  const resultMessageDetails = resultMessage?.details as SubagentDetails;
+  expect(resultMessageDetails.renderedByMessage).toBeUndefined();
+});
+
+test("failure path with callback does not throw and returns structured error", async () => {
+  const sentMessages: SendMessageArg[] = [];
+  const partialUpdates: AgentToolResult<SubagentDetails>[] = [];
+  const hostOnUpdate = (partial: AgentToolResult<SubagentDetails>) => {
+    partialUpdates.push(partial);
+  };
+  const { binDir, cwd } = await setupFakePi();
+  await writeFile(
+    path.join(binDir, "pi"),
+    `#!/bin/sh
+printf '%s\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"error occurred"}],"usage":{"input":1,"output":1,"totalTokens":2,"cost":{"total":0}},"errorMessage":"test error"}}'
+printf '%s\n' '{"type":"agent_end"}'
+exit 1
+`,
+  );
+  await chmod(path.join(binDir, "pi"), 0o755);
+  const tool = getSubagentTool({
+    sendMessage: (msg) => sentMessages.push(msg),
+  });
+  process.env.PI_SUBAGENT_DEPTH = "1";
+  const result = await tool.execute(
+    "test-tool-call",
+    { agent: "hang", task: "test" },
+    undefined,
+    hostOnUpdate,
+    { cwd, hasUI: false } as unknown as ExtensionContext,
+  );
+  expect(result.content).toBeDefined();
+  expect(result.details).toBeDefined();
+  expect(result.details.renderedByMessage).toBe(true);
+  const latestResult = result.details.results[0];
+  expect(latestResult?.exitCode).toBe(1);
+});
+
+test("cancellation path with callback does not throw and returns structured cancellation", async () => {
+  const sentMessages: SendMessageArg[] = [];
+  const partialUpdates: AgentToolResult<SubagentDetails>[] = [];
+  const hostOnUpdate = (partial: AgentToolResult<SubagentDetails>) => {
+    partialUpdates.push(partial);
+  };
+  const controller = new AbortController();
+  const { binDir, cwd } = await setupFakePi();
+  await writeFile(
+    path.join(binDir, "pi"),
+    `#!/bin/sh
+printf '%s\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"working"}],"usage":{"input":1,"output":1,"totalTokens":2,"cost":{"total":0}}}}'
+sleep 5
+`,
+  );
+  await chmod(path.join(binDir, "pi"), 0o755);
+  const tool = getSubagentTool({
+    sendMessage: (msg) => sentMessages.push(msg),
+  });
+  process.env.PI_SUBAGENT_DEPTH = "1";
+  const executePromise = tool.execute(
+    "test-tool-call",
+    { agent: "hang", task: "test" },
+    controller.signal,
+    hostOnUpdate,
+    { cwd, hasUI: false } as unknown as ExtensionContext,
+  );
+  await Bun.sleep(50);
+  controller.abort();
+  const result = await executePromise;
+  expect(result.content).toBeDefined();
+  expect(result.details).toBeDefined();
+  expect(result.details.renderedByMessage).toBe(true);
+});
+
+test("rapid duplicate progress events are coalesced by deduplication guard", async () => {
+  const sentMessages: SendMessageArg[] = [];
+  const partialUpdates: AgentToolResult<SubagentDetails>[] = [];
+  const hostOnUpdate = (partial: AgentToolResult<SubagentDetails>) => {
+    partialUpdates.push(partial);
+  };
+  const { binDir, cwd } = await setupFakePi();
+  await writeFile(
+    path.join(binDir, "pi"),
+    `#!/bin/sh
+printf '%s\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"toolCall","name":"bash","id":"tc-1","arguments":{"command":"ls"}}]}}'
+sleep 0.05
+printf '%s\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"toolCall","name":"bash","id":"tc-1","arguments":{"command":"ls"}}]}}'
+sleep 0.05
+printf '%s\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"toolCall","name":"bash","id":"tc-1","arguments":{"command":"ls"}}]}}'
+sleep 0.1
+printf '%s\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"done"}],"usage":{"input":1,"output":1,"totalTokens":2,"cost":{"total":0}}}}'
+printf '%s\n' '{"type":"agent_end"}'
+exit 0
+`,
+  );
+  await chmod(path.join(binDir, "pi"), 0o755);
+  const tool = getSubagentTool({
+    sendMessage: (msg) => sentMessages.push(msg),
+  });
+  process.env.PI_SUBAGENT_DEPTH = "1";
+  await tool.execute(
+    "test-tool-call",
+    { agent: "hang", task: "test" },
+    undefined,
+    hostOnUpdate,
+    { cwd, hasUI: false } as unknown as ExtensionContext,
+  );
+  const toolCallUpdates = partialUpdates.filter((partial) => {
+    const text =
+      partial.content[0]?.type === "text" ? partial.content[0].text : "";
+    return text.includes("bash") || text.includes("ls");
+  });
+  expect(toolCallUpdates.length).toBeLessThan(3);
+  expect(partialUpdates.length).toBeGreaterThan(0);
+});
+
+test("distinct progress events reach callback despite deduplication guard", async () => {
+  const sentMessages: SendMessageArg[] = [];
+  const partialUpdates: AgentToolResult<SubagentDetails>[] = [];
+  const hostOnUpdate = (partial: AgentToolResult<SubagentDetails>) => {
+    partialUpdates.push(partial);
+  };
+  const { binDir, cwd } = await setupFakePi();
+  await writeFile(
+    path.join(binDir, "pi"),
+    `#!/bin/sh
+printf '%s\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"toolCall","name":"bash","id":"tc-1","arguments":{"command":"ls"}}]}}'
+sleep 0.1
+printf '%s\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"toolCall","name":"read","id":"tc-2","arguments":{"path":"file.txt"}}]}}'
+sleep 0.1
+printf '%s\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"done"}],"usage":{"input":1,"output":1,"totalTokens":2,"cost":{"total":0}}}}'
+printf '%s\n' '{"type":"agent_end"}'
+exit 0
+`,
+  );
+  await chmod(path.join(binDir, "pi"), 0o755);
+  const tool = getSubagentTool({
+    sendMessage: (msg) => sentMessages.push(msg),
+  });
+  process.env.PI_SUBAGENT_DEPTH = "1";
+  await tool.execute(
+    "test-tool-call",
+    { agent: "hang", task: "test" },
+    undefined,
+    hostOnUpdate,
+    { cwd, hasUI: false } as unknown as ExtensionContext,
+  );
+  const hasLsTool = partialUpdates.some((partial) => {
+    const text =
+      partial.content[0]?.type === "text" ? partial.content[0].text : "";
+    return text.includes("ls");
+  });
+  const hasReadTool = partialUpdates.some((partial) => {
+    const text =
+      partial.content[0]?.type === "text" ? partial.content[0].text : "";
+    return text.includes("read") || text.includes("file.txt");
+  });
+  expect(hasLsTool).toBe(true);
+  expect(hasReadTool).toBe(true);
 });
