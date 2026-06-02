@@ -7,7 +7,11 @@ import {
   normalizeSummaryValue,
   normalizeTerminalSentence,
 } from "../output/normalize.js";
-import type { SingleResult, SubagentDetails } from "../shared/types.js";
+import type {
+  ActivityFrame,
+  SingleResult,
+  SubagentDetails,
+} from "../shared/types.js";
 
 export type ThemeBg = "toolPendingBg" | "toolSuccessBg" | "toolErrorBg";
 
@@ -42,7 +46,9 @@ export interface SubagentProgressState {
   status: ProgressStatus;
   startTime: number;
   durationMs?: number;
+  activityStack?: ActivityFrame[];
   lastToolPreview?: string;
+  toolResultCompleted?: boolean;
   toolCount: number;
   inputTokens?: number;
   outputTokens?: number;
@@ -58,7 +64,7 @@ export function createProgressState(
   requestId: string,
   agent: string,
   task: string,
-  instanceName = requestId,
+  instanceName?: string,
 ): void {
   store.set(requestId, {
     requestId,
@@ -90,7 +96,9 @@ export function patchProgressState(
     store.set(requestId, {
       ...state,
       ...patch,
+      activityStack: undefined,
       lastToolPreview: undefined,
+      toolResultCompleted: undefined,
     });
     return;
   }
@@ -114,7 +122,9 @@ export function finalizeProgressState(
   storeTerminalProgressState(requestId, {
     status: "success",
     finalOutput: makeProgressFinalOutput(finalOutput),
+    activityStack: undefined,
     lastToolPreview: undefined,
+    toolResultCompleted: undefined,
   });
 }
 
@@ -123,14 +133,18 @@ export function failProgressState(requestId: string, errorText: string): void {
   storeTerminalProgressState(requestId, {
     status: "error",
     errorText: sentence,
+    activityStack: undefined,
     lastToolPreview: undefined,
+    toolResultCompleted: undefined,
   });
 }
 
 export function cancelProgressState(requestId: string, reason?: string): void {
   storeTerminalProgressState(requestId, {
     status: "cancelled",
+    activityStack: undefined,
     lastToolPreview: undefined,
+    toolResultCompleted: undefined,
     ...(reason !== undefined
       ? { errorText: normalizeTerminalSentence(reason) }
       : {}),
@@ -198,7 +212,9 @@ function isMeaningfulProgressErrorLine(line: string): boolean {
 export interface DetailsProgress {
   lastToolPreview?: string;
   activityText?: string;
+  activityStack?: ActivityFrame[];
   progressLastToolPreview?: string;
+  toolResultCompleted?: boolean;
   newToolCallIds: string[];
 }
 
@@ -217,8 +233,10 @@ function trackNewToolCall(
 function extractProgressFromExistingProgress(
   progress: {
     activityText?: string;
+    activityStack?: ActivityFrame[];
     lastToolPreview?: string;
     toolCalls: { id: string; preview: string }[];
+    toolResultCompleted?: boolean;
   },
   seenToolCallIds: Set<string>,
   state: DetailsProgress,
@@ -230,12 +248,21 @@ function extractProgressFromExistingProgress(
     state.activityText = normalizeAndTruncate(progress.activityText);
   }
   if (
+    Array.isArray(progress.activityStack) &&
+    progress.activityStack.length > 0
+  ) {
+    state.activityStack = progress.activityStack;
+  }
+  if (
     typeof progress.lastToolPreview === "string" &&
     progress.lastToolPreview.trim()
   ) {
     state.progressLastToolPreview = normalizeAndTruncate(
       progress.lastToolPreview,
     );
+  }
+  if (progress.toolResultCompleted) {
+    state.toolResultCompleted = true;
   }
   for (const toolCall of progress.toolCalls) {
     if (!isDerivedToolCall(toolCall)) continue;
@@ -339,4 +366,24 @@ export function formatHeaderStats(state: SubagentProgressState): string {
   const elapsedMs = state.durationMs ?? Date.now() - state.startTime;
   const toolLabel = state.toolCount === 1 ? "tool" : "tools";
   return `${state.toolCount} ${toolLabel} · ${formatContextPercent(state)} ctx · ${formatElapsed(elapsedMs)}\n`;
+}
+
+/**
+ * Render an activity stack into a preview string.
+ * Copies frames, normalizes previews, appends `[instanceName]` when present,
+ * and joins frames with ` - `.
+ *
+ * @returns Rendered preview string or undefined if stack is empty
+ */
+export function renderActivityStack(
+  stack: ActivityFrame[] | undefined,
+): string | undefined {
+  if (!stack || stack.length === 0) return undefined;
+  const frames = stack.map((frame) => {
+    const normalized = normalizeAndTruncate(frame.preview);
+    return frame.instanceName
+      ? `${normalized} [${frame.instanceName}]`
+      : normalized;
+  });
+  return frames.join(" - ");
 }

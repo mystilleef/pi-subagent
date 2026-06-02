@@ -45,6 +45,7 @@ export {
   makeTaskPreview,
   type ProgressStatus,
   patchProgressState,
+  renderActivityStack,
   resetProgressStore,
   STATUS_COLOR,
   STATUS_ICON,

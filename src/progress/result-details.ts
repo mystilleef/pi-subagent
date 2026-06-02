@@ -4,6 +4,7 @@ import {
   summarizeFeedbackUiFinalOutput,
 } from "../output/summary.js";
 import type {
+  ActivityFrame,
   SingleResult,
   SubagentDetails,
   SubagentToolResult,
@@ -13,7 +14,7 @@ import {
   extractProgressFromDetails,
   getProgressState,
   patchProgressState,
-  type SubagentProgressState,
+  renderActivityStack,
 } from "./progress.js";
 
 export function hasSubagentFailed(result: SingleResult): boolean {
@@ -62,42 +63,13 @@ export function getLatestResult(
 
 function isNestedOnlyActivityUpdate(
   current: { activityText?: string; lastToolPreview?: string },
-  previous: { activityText?: string; lastToolPreview?: string } | undefined,
+  _previous: { activityText?: string; lastToolPreview?: string } | undefined,
+  _currentStack?: ActivityFrame[],
+  previousStack?: ActivityFrame[],
 ): boolean {
   if (!current.activityText || current.lastToolPreview) return false;
-  const prevHadCustomActivity =
-    previous?.activityText !== previous?.lastToolPreview;
-  return prevHadCustomActivity;
-}
-
-// After a grandchild finishes, the child synthesizes its result before
-// the next nested tool starts. During this window the child emits the
-// default subagent preview, which would overwrite the last meaningful
-// nested activity. This helper detects that fallback so the preserved
-// preview intentionally lags until a fresh child or nested tool arrives.
-function isDefaultFallbackUpdate(
-  current: {
-    activityText?: string;
-    lastToolPreview?: string;
-    progressLastToolPreview?: string;
-  },
-  stored: SubagentProgressState | undefined,
-  newToolCallIds: string[],
-): boolean {
-  const { activityText, lastToolPreview, progressLastToolPreview } = current;
-  if (
-    !lastToolPreview &&
-    progressLastToolPreview &&
-    activityText &&
-    activityText === progressLastToolPreview &&
-    newToolCallIds.length === 0
-  ) {
-    return (
-      stored?.lastToolPreview !== undefined &&
-      stored.lastToolPreview !== progressLastToolPreview
-    );
-  }
-  return false;
+  // Stack-based detection only: multi-frame stack indicates nested activity
+  return previousStack !== undefined && previousStack.length > 1;
 }
 
 export function patchProgressFromDetails(
@@ -110,26 +82,69 @@ export function patchProgressFromDetails(
     newToolCallIds,
     lastToolPreview,
     activityText,
-    progressLastToolPreview,
+    activityStack,
+    toolResultCompleted,
   } = extractProgressFromDetails(details, seenToolCallIds);
   const current = getProgressState(requestId);
   if (!current) return;
   const patch: Record<string, unknown> = {
     toolCount: current.toolCount + newToolCallIds.length,
   };
-  const effectivePreview = lastToolPreview ?? activityText;
+  // Stack transitions
+  let nextStack: ActivityFrame[] | undefined;
+  let isSingleFrameEcho = false;
+  if (newToolCallIds.length > 0 && lastToolPreview) {
+    // Fresh direct child tool call → reset stack to one frame
+    nextStack = [{ preview: lastToolPreview }];
+  } else if (activityStack && activityStack.length > 0) {
+    // Nested activity with stack → copy incoming stack for immutability
+    nextStack = activityStack.map((f) => ({ ...f }));
+  } else if (activityText) {
+    // Structural check: single-frame echo detection
+    const currentHasMatchingSingleFrame =
+      current.activityStack &&
+      current.activityStack.length === 1 &&
+      current.activityStack[0]?.preview === activityText;
+    if (currentHasMatchingSingleFrame) {
+      isSingleFrameEcho = true;
+      nextStack = current.activityStack;
+    } else {
+      // Nested activity without stack → build single-frame stack from activityText
+      nextStack = [{ preview: activityText }];
+    }
+  } else if (current.activityStack && current.activityStack.length > 0) {
+    // No new stack info → preserve current
+    nextStack = current.activityStack;
+  }
+  // Pop leaf frame on explicit completion signal
+  if (toolResultCompleted && nextStack && nextStack.length > 0) {
+    nextStack = nextStack.slice(0, -1);
+    if (nextStack.length === 0) {
+      nextStack = undefined;
+    }
+  }
+  // Apply stack and derive preview (skip during single-frame echo to preserve stored state)
+  if (!isSingleFrameEcho) {
+    patch.activityStack = nextStack;
+    const renderedPreview = renderActivityStack(nextStack);
+    if (renderedPreview) {
+      patch.lastToolPreview = renderedPreview;
+    } else if (toolResultCompleted && !nextStack) {
+      // Clear preview when stack is empty after pop
+      patch.lastToolPreview = undefined;
+    }
+  }
+  // Expose completion signal
+  if (toolResultCompleted) {
+    patch.toolResultCompleted = true;
+  }
+  // Token accounting with nested-only guard
   const isNestedOnlyUpdate = isNestedOnlyActivityUpdate(
     { activityText, lastToolPreview },
     latestResult?.progress,
+    current.activityStack,
+    latestResult?.progress?.activityStack,
   );
-  const isDefaultFallback = isDefaultFallbackUpdate(
-    { activityText, lastToolPreview, progressLastToolPreview },
-    current,
-    newToolCallIds,
-  );
-  if (effectivePreview && !isDefaultFallback) {
-    patch.lastToolPreview = effectivePreview;
-  }
   if (latestResult?.usage && !isNestedOnlyUpdate) {
     patch.inputTokens = latestResult.usage.input;
     patch.outputTokens = latestResult.usage.output;
