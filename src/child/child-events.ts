@@ -2,25 +2,25 @@ export type ChildKnownEvent =
   | { type: "message_end"; message: unknown }
   | { type: "tool_result_end"; message: unknown }
   | { type: "agent_end"; messages?: unknown; stopReason?: string }
-  | { type: "subagent_nested_activity"; activityText: string };
+  | {
+      type: "tool_execution_update";
+      toolName: string;
+      partialResult: { content?: unknown; details?: unknown };
+    };
 
 export type ChildEventParseResult =
   | { kind: "known"; event: ChildKnownEvent }
   | { kind: "unknown"; event: unknown }
   | { kind: "invalid"; line: string };
 
-export const NESTED_ACTIVITY_EVENT = "subagent_nested_activity" as const;
+export const TOOL_EXECUTION_UPDATE_EVENT = "tool_execution_update" as const;
 
 const KNOWN_TYPES = new Set([
   "message_end",
   "tool_result_end",
   "agent_end",
-  NESTED_ACTIVITY_EVENT,
+  TOOL_EXECUTION_UPDATE_EVENT,
 ]);
-
-export function makeNestedActivityLine(activityText: string): string {
-  return JSON.stringify({ type: NESTED_ACTIVITY_EVENT, activityText });
-}
 
 export function parseChildEventLine(line: string): ChildEventParseResult {
   if (typeof line !== "string" || !line.trim())
@@ -40,8 +40,15 @@ export function parseChildEventLine(line: string): ChildEventParseResult {
   ) {
     const record = event as Record<string, unknown>;
     if (
-      record.type === NESTED_ACTIVITY_EVENT &&
-      typeof record.activityText !== "string"
+      record.type === TOOL_EXECUTION_UPDATE_EVENT &&
+      typeof record.toolName !== "string"
+    ) {
+      return { kind: "unknown", event };
+    }
+    if (
+      record.type === TOOL_EXECUTION_UPDATE_EVENT &&
+      (typeof record.partialResult !== "object" ||
+        record.partialResult === null)
     ) {
       return { kind: "unknown", event };
     }

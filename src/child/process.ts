@@ -18,8 +18,12 @@ import type { AgentConfig, ThinkingLevel } from "../agent/agents.js";
 import { normalizeAndTruncate } from "../output/normalize.js";
 import { getFinalOutput } from "../output/ui.js";
 import { makeToolPreview } from "../progress/progress.js";
-import { isToolCallPart } from "../progress/progress-state.js";
+import {
+  isToolCallPart,
+  renderActivityStack,
+} from "../progress/progress-state.js";
 import type {
+  ActivityFrame,
   OnUpdateCallback,
   SingleResult,
   StreamingProgress,
@@ -36,8 +40,8 @@ import {
 } from "../shared/utils.js";
 import {
   type ChildKnownEvent,
-  NESTED_ACTIVITY_EVENT,
   parseChildEventLine,
+  TOOL_EXECUTION_UPDATE_EVENT,
 } from "./child-events.js";
 import { appendSubagentResultContract } from "./prompt-contract.js";
 import {
@@ -48,6 +52,7 @@ import {
 const MAX_STDERR_BYTES = 10_000;
 const AGENT_END_GRACE_MS = 250;
 const SENSITIVE_PATTERN = /secret|token|password/i;
+const SUBAGENT_TOOL_NAME = "subagent";
 
 export function resolveThinkingLevel(
   requested: ThinkingLevel,
@@ -387,25 +392,50 @@ function findRecentMessagesAnchor(messages: Message[]): number {
 }
 
 /**
+ * Builds a compact tool preview for the live progress card.
+ * Collapses subagent calls to `subagent: <agent>` so the long task string
+ * does not crowd out the instance tag and nested tool preview. Other tools
+ * keep their standard preview (which includes their semantic target).
+ */
+function makeProgressToolPreview(
+  name: string,
+  args: Record<string, unknown> | undefined,
+): string {
+  if (name === "subagent" && args && typeof args.agent === "string") {
+    return normalizeAndTruncate(`subagent: ${args.agent}`);
+  }
+  return makeToolPreview(name, args);
+}
+
+/**
  * Derives current execution progress from accumulated messages.
  * Maps tool calls to UI-safe previews for real-time feedback.
+ * Builds a single-frame activityStack from the most recent tool call.
  */
 function deriveStreamingProgress(messages: Message[]): StreamingProgress {
   const toolCalls: { id: string; preview: string }[] = [];
   let lastToolPreview: string | undefined;
+  let lastToolFrame: ActivityFrame | undefined;
   for (const msg of messages) {
     if (msg.role !== "assistant" || !Array.isArray(msg.content)) continue;
     for (const part of msg.content) {
       if (!isToolCallPart(part)) continue;
       const preview = sanitizeProgressPreview(
-        makeToolPreview(part.name, part.arguments),
+        makeProgressToolPreview(part.name, part.arguments),
         part.name,
       );
       toolCalls.push({ id: part.id, preview });
       lastToolPreview = preview;
+      lastToolFrame = { preview };
     }
   }
-  return { activityText: lastToolPreview, toolCalls, lastToolPreview };
+  const activityStack = lastToolFrame ? [lastToolFrame] : [];
+  return {
+    activityText: lastToolPreview,
+    activityStack,
+    toolCalls,
+    lastToolPreview,
+  };
 }
 
 /**
@@ -429,15 +459,48 @@ function makeEmitUpdate(
     results: RuntimeResult[],
     options?: { includeMessages?: boolean; recentMessages?: Message[] },
   ) => SubagentDetails,
-): (activityOverride?: string) => void {
-  return (activityOverride?: string) => {
+): (options?: {
+  activityOverride?: string;
+  instanceName?: string;
+  toolResultCompleted?: boolean;
+}) => void {
+  return (options) => {
     const msgs = result.messages;
     const anchorIdx = findRecentMessagesAnchor(msgs);
     const recentMessages =
       anchorIdx >= 0 ? msgs.slice(anchorIdx) : msgs.slice(-5);
     const progress = deriveStreamingProgress(msgs);
-    if (activityOverride !== undefined)
-      progress.activityText = activityOverride;
+    // Preserve stored activity stack for tool-result completion signals
+    // so the parent can pop the leaf without losing nested context
+    if (
+      options?.toolResultCompleted &&
+      result.progress?.activityStack &&
+      result.progress.activityStack.length > 0
+    ) {
+      progress.activityStack = result.progress.activityStack;
+      progress.activityText = renderActivityStack(progress.activityStack);
+    }
+    // Handle nested activity by adding a leaf frame to the stack
+    if (options?.activityOverride !== undefined) {
+      const baseStack = progress.activityStack ?? [];
+      // Annotate parent subagent frame with instance name when available
+      if (options.instanceName && baseStack.length > 0) {
+        const lastFrame = baseStack[baseStack.length - 1];
+        if (lastFrame) {
+          baseStack[baseStack.length - 1] = {
+            ...lastFrame,
+            instanceName: options.instanceName,
+          };
+        }
+      }
+      const leafFrame: ActivityFrame = { preview: options.activityOverride };
+      progress.activityStack = [...baseStack, leafFrame];
+      progress.activityText = renderActivityStack(progress.activityStack);
+    }
+    // Handle tool result completion signal
+    if (options?.toolResultCompleted) {
+      progress.toolResultCompleted = true;
+    }
     result.progress = progress;
     onUpdate?.({
       content: [
@@ -480,27 +543,48 @@ function clearGraceTimer(state: SubagentState): void {
 function handleMessageEvent(
   event: ChildKnownEvent,
   state: SubagentState,
-  emitUpdate: (activityOverride?: string) => void,
+  emitUpdate: (options?: {
+    activityOverride?: string;
+    toolResultCompleted?: boolean;
+  }) => void,
 ): void {
   if (event.type !== "message_end" && event.type !== "tool_result_end") return;
   if (event.message) {
     addMessageToResult(state.result, event.message as Message);
-    emitUpdate();
+    // Detect tool_result_end and expose completion signal
+    const toolResultCompleted = event.type === "tool_result_end";
+    emitUpdate({ toolResultCompleted });
   }
 }
 
-function handleNestedActivityEvent(
+function handleToolExecutionUpdateEvent(
   event: ChildKnownEvent,
-  emitUpdate: (activityOverride?: string) => void,
+  emitUpdate: (options?: {
+    activityOverride?: string;
+    instanceName?: string;
+    toolResultCompleted?: boolean;
+  }) => void,
 ): void {
-  if (event.type !== NESTED_ACTIVITY_EVENT) return;
-  emitUpdate(sanitizeNestedActivity(event.activityText));
+  if (event.type !== TOOL_EXECUTION_UPDATE_EVENT) return;
+  if (event.toolName !== SUBAGENT_TOOL_NAME) return;
+  const details = event.partialResult.details as SubagentDetails | undefined;
+  const nested = details?.results?.[0];
+  const preview =
+    nested?.progress?.lastToolPreview ?? nested?.progress?.activityText;
+  if (typeof preview !== "string" || !preview.trim()) return;
+  emitUpdate({
+    activityOverride: sanitizeNestedActivity(preview),
+    instanceName: nested?.instanceName,
+  });
 }
 
 function handleAgentEndEvent(
   event: ChildKnownEvent,
   state: SubagentState,
-  emitUpdate: (activityOverride?: string) => void,
+  emitUpdate: (options?: {
+    activityOverride?: string;
+    toolResultCompleted?: boolean;
+  }) => void,
   requestTermination: (reason: string) => Promise<unknown>,
 ): void {
   if (event.type !== "agent_end") return;
@@ -521,14 +605,17 @@ function handleAgentEndEvent(
 function processEventLine(
   line: string,
   state: SubagentState,
-  emitUpdate: (activityOverride?: string) => void,
+  emitUpdate: (options?: {
+    activityOverride?: string;
+    toolResultCompleted?: boolean;
+  }) => void,
   requestTermination: (reason: string) => Promise<unknown>,
 ): void {
   const parseResult = parseChildEventLine(line);
   if (parseResult.kind !== "known") return;
   const { event } = parseResult;
   handleMessageEvent(event, state, emitUpdate);
-  handleNestedActivityEvent(event, emitUpdate);
+  handleToolExecutionUpdateEvent(event, emitUpdate);
   handleAgentEndEvent(event, state, emitUpdate, requestTermination);
 }
 
@@ -580,7 +667,10 @@ function buildPiArgs(
 function setupChildProcess(
   proc: ChildProcess,
   state: SubagentState,
-  emitUpdate: (activityOverride?: string) => void,
+  emitUpdate: (options?: {
+    activityOverride?: string;
+    toolResultCompleted?: boolean;
+  }) => void,
   requestTermination: (reason: string) => Promise<unknown>,
 ): void {
   proc.once("error", (error) => {
