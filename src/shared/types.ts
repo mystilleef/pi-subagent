@@ -13,6 +13,11 @@ export interface UsageStats {
   turns: number;
 }
 
+export interface ActivityFrame {
+  preview: string;
+  instanceName?: string;
+}
+
 export interface StreamingProgressToolCall {
   id: string;
   preview: string;
@@ -20,8 +25,10 @@ export interface StreamingProgressToolCall {
 
 export interface StreamingProgress {
   activityText?: string;
+  activityStack?: ActivityFrame[];
   toolCalls: StreamingProgressToolCall[];
   lastToolPreview?: string;
+  toolResultCompleted?: boolean;
 }
 
 export interface SingleResult {
