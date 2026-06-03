@@ -143,8 +143,8 @@ test("extractSemanticToolTarget hides unknown args unless forced", () => {
     password: "secret-password",
     nested: { value: "hidden" },
   };
-  expect(extractSemanticToolTarget("unknown", secretArgs)).toBe("");
-  expect(extractSemanticToolTarget("unknown", secretArgs, true)).toBe(
+  expect(extractSemanticToolTarget(secretArgs)).toBe("");
+  expect(extractSemanticToolTarget(secretArgs, true)).toBe(
     JSON.stringify(secretArgs),
   );
 });
@@ -208,17 +208,105 @@ test("parent formatter prepends warning even when finalOutput is only whitespace
 });
 
 test("extractSemanticToolTarget keeps known safe targets", () => {
-  expect(extractSemanticToolTarget("bash", { command: "bun test" })).toBe(
-    "bun test",
-  );
-  expect(extractSemanticToolTarget("read", { path: "src/index.ts" })).toBe(
+  expect(extractSemanticToolTarget({ command: "bun test" })).toBe("bun test");
+  expect(extractSemanticToolTarget({ path: "src/index.ts" })).toBe(
     "src/index.ts",
   );
   expect(
-    extractSemanticToolTarget("subagent", {
+    extractSemanticToolTarget({
       agent: "reviewer",
       task: "**Check UI**",
       agentScope: "project",
     }),
+  ).toBe("reviewer");
+});
+
+test("extractSemanticToolTarget uses semantic key priority order", () => {
+  expect(extractSemanticToolTarget({ query: "typescript" })).toBe("typescript");
+  expect(extractSemanticToolTarget({ url: "https://example.com" })).toBe(
+    "https://example.com",
+  );
+  expect(extractSemanticToolTarget({ action: "click" })).toBe("click");
+  expect(extractSemanticToolTarget({ name: "custom-tool" })).toBe(
+    "custom-tool",
+  );
+});
+
+test("extractSemanticToolTarget falls back to empty when no semantic key has a non-blank string", () => {
+  expect(
+    extractSemanticToolTarget({
+      token: "secret",
+      nested: { value: "hidden" },
+    }),
   ).toBe("");
+  expect(extractSemanticToolTarget({ command: "  \n\t  " })).toBe("");
+});
+
+test("extractSemanticToolTarget falls back to first safe non-blank string", () => {
+  expect(extractSemanticToolTarget({ project: "my-project" })).toBe(
+    "my-project",
+  );
+  expect(extractSemanticToolTarget({ project: "my-project", count: 42 })).toBe(
+    "my-project",
+  );
+});
+
+test("extractSemanticToolTarget skips secret-like keys in fallback", () => {
+  expect(
+    extractSemanticToolTarget({
+      token: "x",
+      project: "my-project",
+    }),
+  ).toBe("my-project");
+  expect(
+    extractSemanticToolTarget({
+      password: "pw",
+      auth: "bearer-token",
+      data: "safe-data",
+    }),
+  ).toBe("safe-data");
+});
+
+test("extractSemanticToolTarget suppresses fallback when all keys are secret-like", () => {
+  expect(
+    extractSemanticToolTarget({
+      token: "x",
+      password: "y",
+    }),
+  ).toBe("");
+});
+
+test("extractSemanticToolTarget suppresses fallback for secret-like long values", () => {
+  expect(
+    extractSemanticToolTarget({
+      project: "a".repeat(65),
+    }),
+  ).toBe("");
+  expect(
+    extractSemanticToolTarget({
+      project:
+        "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U",
+    }),
+  ).toBe("");
+});
+
+test("extractSemanticToolTarget returns empty when args have only non-string values", () => {
+  expect(
+    extractSemanticToolTarget({
+      nested: { value: "hidden" },
+      count: 42,
+      flag: true,
+    }),
+  ).toBe("");
+});
+
+test("extractSemanticToolTarget forced JSON bypasses fallback safety", () => {
+  const safeArgs = { project: "my-project" };
+  expect(extractSemanticToolTarget(safeArgs, true)).toBe(
+    JSON.stringify(safeArgs),
+  );
+  const secretArgs = { token: "x", password: "y" };
+  expect(extractSemanticToolTarget(secretArgs, true)).toBe(
+    JSON.stringify(secretArgs),
+  );
 });

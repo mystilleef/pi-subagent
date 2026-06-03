@@ -393,13 +393,28 @@ test("makeToolPreview omits unknown tool arguments", () => {
   expect(preview).not.toContain("secret");
 });
 
-test("makeToolPreview returns tool name only for subagent (parser owns semantic preview)", () => {
+test("makeToolPreview includes agent for subagent", () => {
   const preview = makeToolPreview("subagent", {
     agent: "builder",
     task: `${"review ".repeat(30)}sentinel`,
     agentScope: "project",
   });
-  expect(preview).toBe("subagent");
+  expect(preview).toBe("subagent: builder");
+});
+
+test("makeToolPreview uses query for web_search", () => {
+  const preview = makeToolPreview("web_search", { query: "typescript" });
+  expect(preview).toBe("web_search: typescript");
+});
+
+test("makeToolPreview uses url for fetch_url", () => {
+  const preview = makeToolPreview("fetch_url", { url: "https://example.com" });
+  expect(preview).toBe("fetch_url: https://example.com");
+});
+
+test("makeToolPreview uses action for computer_use", () => {
+  const preview = makeToolPreview("computer_use", { action: "click" });
+  expect(preview).toBe("computer_use: click");
 });
 
 test("makeToolPreview handles empty args", () => {
@@ -409,6 +424,27 @@ test("makeToolPreview handles empty args", () => {
 
 test("makeToolPreview omits blank semantic targets", () => {
   expect(makeToolPreview("bash", { command: "\n\t  " })).toBe("bash");
+});
+
+test("makeToolPreview includes safe first string for unknown tools", () => {
+  expect(makeToolPreview("unknown_tool", { project: "my-project" })).toBe(
+    "unknown_tool: my-project",
+  );
+  expect(
+    makeToolPreview("unknown_tool", {
+      project: "my-project",
+      count: 42,
+    }),
+  ).toBe("unknown_tool: my-project");
+});
+
+test("makeToolPreview suppresses fallback when only secret-like keys present", () => {
+  expect(makeToolPreview("unknown_tool", { token: "x", password: "y" })).toBe(
+    "unknown_tool",
+  );
+  expect(
+    makeToolPreview("unknown_tool", { token: "x", password: "y" }),
+  ).not.toContain(":");
 });
 
 test("multiple independent request ids are isolated", () => {

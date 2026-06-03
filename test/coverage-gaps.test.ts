@@ -304,7 +304,9 @@ exit 0
         (t) => t.length > 1 && t !== "(running...)",
       );
       expect(nestedText).toBeDefined();
-      expect(nestedText?.length).toBeLessThanOrEqual(120);
+      // Tree rendering joins parent + child with " - ", so the total
+      // may exceed 120 chars when parent prefix is included.
+      expect(nestedText?.length).toBeLessThanOrEqual(131);
       expect(nestedText).toContain("…");
     });
     test("minimal nested activity payload surfaces tool name only", async () => {

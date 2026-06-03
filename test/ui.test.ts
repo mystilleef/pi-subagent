@@ -747,9 +747,9 @@ test("renderSubagentResult formats units, fallback output, and failed tool resul
   ).toBe(
     "2 turns · ↑1.5k ↓15k · cache:R999/W1.5M · ctx:42 · $0.1235 · provider/model:high",
   );
-  // Parser-owned preview suppresses task text in formatToolCall
+  // Subagent now extracts agent via semantic key lookup
   expect(formatToolCall("subagent", { agent: "child" }, fakeTheme.fg)).toBe(
-    "[accent]subagent[/accent]",
+    "[accent]subagent[/accent][dim] child[/dim]",
   );
   expect(
     formatToolCall(
@@ -761,6 +761,12 @@ test("renderSubagentResult formats units, fallback output, and failed tool resul
   expect(
     formatToolCall("unknown", { token: "secret" }, fakeTheme.fg, true),
   ).toBe('[accent]unknown[/accent][dim] {"token":"secret"}[/dim]');
+  expect(
+    formatToolCall("unknown", { project: "my-project" }, fakeTheme.fg),
+  ).toBe("[accent]unknown[/accent][dim] my-project[/dim]");
+  expect(
+    formatToolCall("unknown", { token: "x", password: "y" }, fakeTheme.fg),
+  ).toBe("[accent]unknown[/accent]");
   expect(formatToolCall("bash", { command: "bun test" }, fakeTheme.fg)).toBe(
     "[accent]bash[/accent][dim] bun test[/dim]",
   );
@@ -770,14 +776,14 @@ test("renderSubagentResult formats units, fallback output, and failed tool resul
   expect(formatToolCall("bash", { command: "\n\t  " }, fakeTheme.fg)).toBe(
     "[accent]bash[/accent]",
   );
-  // Parser-owned preview suppresses task text: subagent args produce tool name only
+  // subagent ignores task, uses agent only
   expect(
     formatToolCall(
       "subagent",
       { agent: "child", task: "line one\n\t  line two" },
       fakeTheme.fg,
     ),
-  ).toBe("[accent]subagent[/accent]");
+  ).toBe("[accent]subagent[/accent][dim] child[/dim]");
   const call = renderSubagentCall({}, fakeTheme) as unknown as {
     text: string;
     render: (width: number) => string[];

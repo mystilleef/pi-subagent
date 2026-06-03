@@ -1883,7 +1883,7 @@ exit 0
   );
   const state = getProgressState(requestId);
   expect(state?.activeToolActivity?.toolName).toBe("subagent");
-  expect(state?.activeToolActivity?.inputSummary).toBe("subagent");
+  expect(state?.activeToolActivity?.inputSummary).toBe("subagent: build");
   expect(state?.activeToolActivity?.instanceName).toBe("swift-otter");
   expect(state?.activeToolActivity?.child?.inputSummary).toBe(
     "bash: make build",
@@ -2261,12 +2261,12 @@ exit 0
   if (!requestId) throw new Error("requestId missing");
   await waitFor(
     () =>
-      getProgressState(requestId)?.lastToolPreview === "subagent"
+      getProgressState(requestId)?.lastToolPreview === "subagent: build"
         ? true
         : undefined,
     "parent preview preserved through tool_result_end",
   );
-  expect(getProgressState(requestId)?.lastToolPreview).toBe("subagent");
+  expect(getProgressState(requestId)?.lastToolPreview).toBe("subagent: build");
   expect(getProgressState(requestId)?.activeToolActivity).toBeDefined();
   expect(
     getProgressState(requestId)?.activeToolActivity?.instanceName,
@@ -2339,13 +2339,14 @@ exit 0
   if (!requestId) throw new Error("requestId missing");
   await waitFor(
     () =>
-      getProgressState(requestId)?.lastToolPreview === "subagent [able-falcon]"
+      getProgressState(requestId)?.lastToolPreview ===
+      "subagent: build [able-falcon]"
         ? true
         : undefined,
     "parent preview shows friendly instance label",
   );
   expect(getProgressState(requestId)?.lastToolPreview).toBe(
-    "subagent [able-falcon]",
+    "subagent: build [able-falcon]",
   );
   expect(getProgressState(requestId)?.activeToolActivity).toBeDefined();
   expect(getProgressState(requestId)?.activeToolActivity?.instanceName).toBe(

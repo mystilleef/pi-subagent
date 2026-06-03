@@ -233,7 +233,9 @@ exit 0
   );
   expect(result.exitCode).toBe(0);
   expect(result.messages).toHaveLength(1);
-  const nestedUpdate = updates.find((u) => u.text === "Reading file.ts");
+  const nestedUpdate = updates.find(
+    (u) => u.text === "subagent - Reading file.ts",
+  );
   expect(nestedUpdate).toBeDefined();
   expect(nestedUpdate?.messageCount).toBe(1);
 });
@@ -288,9 +290,9 @@ exit 0
   );
   expect(result.exitCode).toBe(0);
   expect(result.messages).toHaveLength(0);
-  expect(result.progress?.activityText).toBe("Grandchild running");
+  expect(result.progress?.activityText).toBe("subagent - Grandchild running");
   expect(updates).toContainEqual({
-    text: "Grandchild running",
+    text: "subagent - Grandchild running",
     messageCount: 0,
   });
 });
@@ -318,9 +320,9 @@ exit 0
     undefined,
     "off",
   );
-  expect(texts).toContain("Grandchild working");
+  expect(texts).toContain("subagent - Grandchild working");
   expect(texts.some((t) => t.includes("bash"))).toBe(true);
-  const nestedIdx = texts.indexOf("Grandchild working");
+  const nestedIdx = texts.indexOf("subagent - Grandchild working");
   const toolIdx = texts.findIndex((t) => t.includes("bash"));
   expect(toolIdx).toBeGreaterThan(nestedIdx);
 });
@@ -375,20 +377,20 @@ function makeRuntimeWithToolCall(
 }
 
 test("makeEmitUpdate merge: inputSummary === toolName fallback does not overwrite parent inputSummary", () => {
-  // deriveStreamingProgress produces inputSummary from makeToolPreview("subagent", ...) → "subagent"
+  // deriveStreamingProgress produces inputSummary from makeToolPreview("subagent", ...) → "subagent: builder"
   const result = makeRuntimeWithToolCall("subagent", {
     agent: "builder",
     task: "fix bugs",
     agentScope: "project",
   });
   const emitUpdate = makeEmitUpdate(result, undefined, makeDetails);
-  // Parser sends bare toolName fallback (inputSummary === toolName) — should retain parent's value
+  // Parser sends bare toolName fallback (inputSummary === toolName) — should retain parent's richer value
   emitUpdate({
     toolActivity: { toolName: "subagent", inputSummary: "subagent" },
   });
   expect(result.progress?.activeToolActivity).toEqual({
     toolName: "subagent",
-    inputSummary: "subagent",
+    inputSummary: "subagent: builder",
   });
 });
 
@@ -417,7 +419,7 @@ test("makeEmitUpdate merge: incoming without inputSummary preserves parent input
     agentScope: "project",
   });
   const emitUpdate = makeEmitUpdate(result, undefined, makeDetails);
-  // Incoming has no inputSummary — merge should keep parent's value
+  // Incoming has no inputSummary — merge should keep parent's richer semantic value
   emitUpdate({
     toolActivity: {
       toolName: "subagent",
@@ -426,13 +428,13 @@ test("makeEmitUpdate merge: incoming without inputSummary preserves parent input
   });
   expect(result.progress?.activeToolActivity).toEqual({
     toolName: "subagent",
-    inputSummary: "subagent",
+    inputSummary: "subagent: builder",
     child: { toolName: "bash", inputSummary: "bash: ls" },
   });
 });
 
-test("makeEmitUpdate streaming integration: subagent preview starts with toolName then updated to richer parser inputSummary", () => {
-  // deriveStreamingProgress produces activeToolActivity with inputSummary: "subagent" (bare)
+test("makeEmitUpdate streaming integration: subagent preview starts with semantic target then updated to richer parser inputSummary", () => {
+  // deriveStreamingProgress produces activeToolActivity with inputSummary from semantic lookup: "subagent: builder"
   const result = makeRuntimeWithToolCall("subagent", {
     agent: "builder",
     task: "fix bugs",
@@ -448,12 +450,12 @@ test("makeEmitUpdate streaming integration: subagent preview starts with toolNam
   );
   // First call triggers deriveStreamingProgress and sets result.progress
   emitUpdate();
-  // progress derived from messages: makeToolPreview("subagent", ...) → "subagent"
+  // progress derived from messages: makeToolPreview("subagent", ...) → "subagent: builder" (semantic lookup)
   expect(result.progress?.activeToolActivity).toEqual({
     toolName: "subagent",
-    inputSummary: "subagent",
+    inputSummary: "subagent: builder",
   });
-  expect(result.progress?.activityText).toBe("subagent");
+  expect(result.progress?.activityText).toBe("subagent: builder");
   // Parser sends richer nested child data — merge prefers incoming inputSummary
   emitUpdate({
     toolActivity: {
