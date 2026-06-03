@@ -6,6 +6,7 @@ import {
   normalizeAndTruncate,
   normalizeSummaryValue,
   normalizeTerminalSentence,
+  truncateText,
 } from "../output/normalize.js";
 import type {
   SingleResult,
@@ -367,30 +368,58 @@ export function formatHeaderStats(state: SubagentProgressState): string {
   return `${state.toolCount} ${toolLabel} · ${formatContextPercent(state)} ctx · ${formatElapsed(elapsedMs)}\n`;
 }
 
+const REDACTED_PLACEHOLDER = "(running...)";
+const REDACTED_PLACEHOLDER_LENGTH = REDACTED_PLACEHOLDER.length;
+
+function redactOrTruncate(text: string, maxChars: number): string {
+  if (SENSITIVE_PATTERN.test(text))
+    return maxChars >= REDACTED_PLACEHOLDER_LENGTH ? REDACTED_PLACEHOLDER : "";
+  return truncateText(text, maxChars);
+}
+
+function walkActivityTree(activity: ToolActivity): string[] {
+  const parts: string[] = [];
+  let current: ToolActivity | undefined = activity;
+  while (current) {
+    if (current.inputSummary) {
+      const annotated = current.instanceName
+        ? `${current.inputSummary} [${current.instanceName}]`
+        : current.inputSummary;
+      parts.push(annotated);
+    }
+    current = current.child;
+  }
+  return parts;
+}
+
 /**
- * Renders a ToolActivity tree into a display string.
- * Walks the tree depth-first, collecting inputSummary values from nodes
- * that have them. Skips structural nodes without summaries. Annotates
- * with instanceName when present. Joins with " - ".
+ * Renders a ToolActivity tree for storage. Each segment is
+ * independently normalized and truncated to TOOL_PREVIEW_MAX_CHARS (120).
  */
 export function renderToolActivity(
   activity: ToolActivity | undefined,
 ): string | undefined {
   if (!activity) return undefined;
-  const parts: string[] = [];
-  let current: ToolActivity | undefined = activity;
-  while (current) {
-    if (current.inputSummary) {
-      const normalized = normalizeAndTruncate(current.inputSummary);
-      const annotated = current.instanceName
-        ? `${normalized} [${current.instanceName}]`
-        : normalized;
-      parts.push(annotated);
-    }
-    current = current.child;
-  }
+  const parts = walkActivityTree(activity);
   if (parts.length === 0) return activity.toolName;
-  const result = parts.join(" - ");
-  if (SENSITIVE_PATTERN.test(result)) return "(running...)";
+  const result = parts.map((p) => normalizeAndTruncate(p)).join(" - ");
+  if (SENSITIVE_PATTERN.test(result)) return REDACTED_PLACEHOLDER;
   return result;
+}
+
+/**
+ * Renders a ToolActivity tree for display with a caller-provided truncation
+ * budget. Segments are normalized without individual truncation so the
+ * joined result shares one post-join display budget.
+ */
+export function renderToolActivityForDisplay(
+  activity: ToolActivity | undefined,
+  maxChars: number,
+): string | undefined {
+  if (!activity) return undefined;
+  if (maxChars <= 0) return "";
+  const parts = walkActivityTree(activity);
+  if (parts.length === 0) return redactOrTruncate(activity.toolName, maxChars);
+  const joined = parts.map((p) => normalizeSummaryValue(p)).join(" - ");
+  return redactOrTruncate(joined, maxChars);
 }

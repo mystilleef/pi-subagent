@@ -23,7 +23,7 @@ import {
   formatHeaderStats,
   getProgressState,
   type ProgressStatus,
-  renderToolActivity,
+  renderToolActivityForDisplay,
   STATUS_BG,
   STATUS_COLOR,
   STATUS_ICON,
@@ -47,6 +47,7 @@ export {
   type ProgressStatus,
   patchProgressState,
   renderToolActivity,
+  renderToolActivityForDisplay,
   resetProgressStore,
   STATUS_COLOR,
   STATUS_ICON,
@@ -97,7 +98,9 @@ class DynamicSubagentProgressText implements Component {
   render(width: number): string[] {
     const state = getProgressState(this.requestId);
     if (!state) return [];
-    return renderProgressBox(state, this.options, this.theme).render(width);
+    return renderProgressBox(state, this.options, this.theme, width).render(
+      width,
+    );
   }
 }
 
@@ -109,6 +112,7 @@ function renderProgressBox(
   state: SubagentProgressState,
   options: { expanded: boolean },
   theme: SubagentTheme,
+  width: number,
 ): Box {
   const status = state.status;
   const title = formatSubagentTitle(state.agent, state.instanceName, theme);
@@ -117,28 +121,19 @@ function renderProgressBox(
     theme.bg(getProgressBackground(status), line),
   );
   box.addChild(new Text(header, 0, 0));
-  addProgressBody(box, state, options, theme);
-  return box;
-}
-
-function addProgressBody(
-  box: Box,
-  state: SubagentProgressState,
-  options: { expanded: boolean },
-  theme: SubagentTheme,
-): void {
-  const body = makeProgressBody(state, options, theme);
-  if (body.length === 0) return;
+  const body = makeProgressBody(state, options, theme, width);
   for (const line of body) box.addChild(line);
+  return box;
 }
 
 function makeProgressBody(
   state: SubagentProgressState,
   options: { expanded: boolean },
   theme: SubagentTheme,
+  width: number,
 ): Text[] {
   if (state.status === "running")
-    return makeRunningProgressBody(state, options, theme);
+    return makeRunningProgressBody(state, options, theme, width);
   if (state.status === "error" || state.status === "cancelled") {
     return makeStoppedProgressBody(state, options, theme);
   }
@@ -151,9 +146,14 @@ function makeRunningProgressBody(
   state: SubagentProgressState,
   options: { expanded: boolean },
   theme: SubagentTheme,
+  width: number,
 ): Text[] {
   const body: Text[] = [];
-  const activityPreview = renderToolActivity(state.activeToolActivity);
+  const activityBudget = Math.max(0, width - 8);
+  const activityPreview = renderToolActivityForDisplay(
+    state.activeToolActivity,
+    activityBudget,
+  );
   if (activityPreview) {
     body.push(new Text(formatRunningToolPreview(activityPreview, theme), 2, 0));
   }

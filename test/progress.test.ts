@@ -21,6 +21,7 @@ import {
 import {
   getAllProgressStates,
   renderToolActivity,
+  renderToolActivityForDisplay,
 } from "../src/progress/progress-state.js";
 import { patchProgressFromDetails } from "../src/progress/result-details.js";
 import type {
@@ -1764,6 +1765,22 @@ function renderLines(
   return rendered.render(120);
 }
 
+function renderLinesAtWidth(
+  rendered: { render(width: number): string[] } | undefined,
+  width: number,
+): string[] {
+  if (!rendered) return [];
+  return rendered.render(width);
+}
+
+function stripAnsiAndWrappers(text: string): string {
+  const ansiPattern = new RegExp(`${String.fromCharCode(27)}\\[[0-9;]*m`, "g");
+  return text
+    .replace(ansiPattern, "")
+    .replace(/\[(?:toolPendingBg|toolSuccessBg|toolErrorBg)\]/g, "")
+    .replace(/\[\/(?:toolPendingBg|toolSuccessBg|toolErrorBg)\]/g, "");
+}
+
 function renderText(
   rendered: { render(width: number): string[] } | undefined,
 ): string {
@@ -3310,6 +3327,90 @@ test("depth-2 parent activity remains visible after child tool_result_end", () =
   expect(state?.lastToolPreview).toBe("subagent: build [swift-harbor]");
   expect(state?.toolResultCompleted).toBe(true);
 });
+test("renderToolActivityForDisplay returns undefined for undefined activity", () => {
+  expect(renderToolActivityForDisplay(undefined, 80)).toBeUndefined();
+});
+test("renderToolActivityForDisplay returns toolName when no inputSummary", () => {
+  expect(renderToolActivityForDisplay({ toolName: "bash" }, 80)).toBe("bash");
+});
+test("renderToolActivityForDisplay renders depth-1 with budget", () => {
+  expect(
+    renderToolActivityForDisplay(
+      { toolName: "bash", inputSummary: "ls -la" },
+      80,
+    ),
+  ).toBe("ls -la");
+});
+test("renderToolActivityForDisplay truncates joined result once not segments independently", () => {
+  const activity: ToolActivity = {
+    toolName: "subagent",
+    inputSummary:
+      "first-segment-that-is-sixty-characters-long-padding-here-now",
+    child: {
+      toolName: "bash",
+      inputSummary:
+        "second-segment-that-is-also-sixty-characters-long-padding-here",
+    },
+  };
+  const result = renderToolActivityForDisplay(activity, 80);
+  expect(result).toBeDefined();
+  expect(result?.length).toBeLessThanOrEqual(80);
+  expect(result).toContain("first-segment");
+  expect(result).toContain("second-segment");
+  expect(result).toMatch(/…$/);
+});
+test("renderToolActivityForDisplay preserves full text when within budget", () => {
+  const activity: ToolActivity = {
+    toolName: "subagent",
+    inputSummary: "short-one",
+    child: {
+      toolName: "bash",
+      inputSummary: "short-two",
+    },
+  };
+  expect(renderToolActivityForDisplay(activity, 80)).toBe(
+    "short-one - short-two",
+  );
+});
+test("renderToolActivityForDisplay redacts sensitive keywords in joined text", () => {
+  const activity: ToolActivity = {
+    toolName: "subagent",
+    inputSummary: "reading config",
+    child: {
+      toolName: "bash",
+      inputSummary: "secret-token.yaml",
+    },
+  };
+  expect(renderToolActivityForDisplay(activity, 80)).toBe("(running...)");
+});
+test("renderToolActivityForDisplay annotates instanceName before joining", () => {
+  const activity: ToolActivity = {
+    toolName: "subagent",
+    inputSummary: "parent-task",
+    instanceName: "alpha",
+    child: {
+      toolName: "bash",
+      inputSummary: "child-task",
+    },
+  };
+  expect(renderToolActivityForDisplay(activity, 80)).toBe(
+    "parent-task [alpha] - child-task",
+  );
+});
+test("renderToolActivityForDisplay applies tight budget correctly", () => {
+  const activity: ToolActivity = {
+    toolName: "subagent",
+    inputSummary: "this-is-a-very-long-first-segment",
+    child: {
+      toolName: "bash",
+      inputSummary: "this-is-a-very-long-second-segment",
+    },
+  };
+  const result = renderToolActivityForDisplay(activity, 30);
+  expect(result).toBeDefined();
+  expect(result?.length).toBeLessThanOrEqual(30);
+  expect(result).toMatch(/…$/);
+});
 test("makeEmitUpdate merge prefers parser inputSummary when richer than bare toolName fallback", () => {
   const result = {
     agent: "test-agent",
@@ -3487,4 +3588,597 @@ test("makeEmitUpdate merge preserves instanceName and child from incoming activi
   expect(result.progress?.activityText).toBe(
     "coder [sharp-finch] - bash: cargo build",
   );
+});
+test("renderToolActivityForDisplay respects narrow width budget", () => {
+  const activity: ToolActivity = {
+    toolName: "bash",
+    inputSummary:
+      "bash: this-is-a-very-long-command-that-exceeds-narrow-budget",
+  };
+  const result = renderToolActivityForDisplay(activity, 20);
+  expect(result).toBeDefined();
+  expect(result?.length).toBeLessThanOrEqual(20);
+  expect(result).toMatch(/…$/);
+});
+test("renderToolActivityForDisplay returns empty string for zero budget", () => {
+  expect(
+    renderToolActivityForDisplay(
+      { toolName: "bash", inputSummary: "bash: ls" },
+      0,
+    ),
+  ).toBe("");
+});
+test("renderToolActivityForDisplay returns empty string for negative budget", () => {
+  expect(
+    renderToolActivityForDisplay(
+      { toolName: "bash", inputSummary: "bash: ls" },
+      -5,
+    ),
+  ).toBe("");
+});
+test("renderToolActivityForDisplay returns empty string for zero budget with sensitive text", () => {
+  const activity: ToolActivity = {
+    toolName: "subagent",
+    inputSummary: "reading secret-token.yaml",
+  };
+  expect(renderToolActivityForDisplay(activity, 0)).toBe("");
+});
+test("renderToolActivityForDisplay redacts sensitive text only when budget fits (running...)", () => {
+  const activity: ToolActivity = {
+    toolName: "subagent",
+    inputSummary: "reading config",
+    child: { toolName: "bash", inputSummary: "cat secret-token.yaml" },
+  };
+  expect(renderToolActivityForDisplay(activity, 12)).toBe("(running...)");
+  expect(renderToolActivityForDisplay(activity, 11)).toBe("");
+});
+test("renderToolActivityForDisplay handles very narrow budget gracefully", () => {
+  const activity: ToolActivity = {
+    toolName: "bash",
+    inputSummary: "bash: command",
+  };
+  const result = renderToolActivityForDisplay(activity, 5);
+  expect(result).toBeDefined();
+  expect(result?.length).toBeLessThanOrEqual(5);
+});
+test("renderToolActivityForDisplay truncates nested activity at narrow width", () => {
+  const activity: ToolActivity = {
+    toolName: "subagent",
+    inputSummary: "subagent: build-task-with-long-description",
+    child: {
+      toolName: "bash",
+      inputSummary: "bash: make-build-with-verbose-output",
+    },
+  };
+  const result = renderToolActivityForDisplay(activity, 40);
+  expect(result).toBeDefined();
+  expect(result?.length).toBeLessThanOrEqual(40);
+  expect(result).toContain("subagent");
+  expect(result).toMatch(/…$/);
+});
+test("running progress renders long single activity as one line at narrow width", () => {
+  createProgressState("rend-1", "agent", "task");
+  patchProgressState("rend-1", {
+    activeToolActivity: {
+      toolName: "bash",
+      inputSummary: `bash: ${"x".repeat(200)}`,
+    },
+    lastToolPreview: `bash: ${"x".repeat(200)}`,
+  });
+  const theme = makeTheme();
+  const result = renderSubagentProgress(
+    {
+      customType: "subagent-progress",
+      content: "",
+      display: true,
+      details: { requestId: "rend-1" },
+    },
+    { expanded: false },
+    theme,
+  );
+  expect(result).toBeDefined();
+  const lines = renderLinesAtWidth(result, 60);
+  const toolLines = lines.filter((line) => line.includes("→"));
+  expect(toolLines).toHaveLength(1);
+  const visibleText = stripAnsiAndWrappers(toolLines[0] ?? "");
+  expect(visibleText.length).toBeLessThanOrEqual(60);
+  expect(toolLines[0]).toContain("…");
+});
+test("running progress renders nested activity chain as one line at medium width", () => {
+  createProgressState("rend-1", "agent", "task");
+  patchProgressState("rend-1", {
+    activeToolActivity: {
+      toolName: "subagent",
+      inputSummary: "subagent: build-with-long-task-description",
+      child: {
+        toolName: "bash",
+        inputSummary: "bash: make-build-with-verbose-compiler-output",
+      },
+    },
+    lastToolPreview:
+      "subagent: build-with-long-task-description - bash: make-build-with-verbose-compiler-output",
+  });
+  const theme = makeTheme();
+  const result = renderSubagentProgress(
+    {
+      customType: "subagent-progress",
+      content: "",
+      display: true,
+      details: { requestId: "rend-1" },
+    },
+    { expanded: false },
+    theme,
+  );
+  expect(result).toBeDefined();
+  const lines = renderLinesAtWidth(result, 80);
+  const toolLines = lines.filter((line) => line.includes("→"));
+  expect(toolLines).toHaveLength(1);
+  const visibleText = stripAnsiAndWrappers(toolLines[0] ?? "");
+  expect(visibleText.length).toBeLessThanOrEqual(80);
+  expect(toolLines[0]).toContain("subagent");
+});
+test("running progress handles very narrow render width without wrapping", () => {
+  createProgressState("rend-1", "agent", "task");
+  patchProgressState("rend-1", {
+    activeToolActivity: {
+      toolName: "bash",
+      inputSummary: "bash: ls",
+    },
+    lastToolPreview: "bash: ls",
+  });
+  const theme = makeTheme();
+  const result = renderSubagentProgress(
+    {
+      customType: "subagent-progress",
+      content: "",
+      display: true,
+      details: { requestId: "rend-1" },
+    },
+    { expanded: false },
+    theme,
+  );
+  expect(result).toBeDefined();
+  const lines = renderLinesAtWidth(result, 30);
+  const toolLines = lines.filter((line) => line.includes("→"));
+  expect(toolLines).toHaveLength(1);
+  const visibleText = stripAnsiAndWrappers(toolLines[0] ?? "");
+  expect(visibleText.length).toBeLessThanOrEqual(30);
+});
+test("running progress at width 120 keeps long activity within budget", () => {
+  createProgressState("rend-1", "agent", "task");
+  patchProgressState("rend-1", {
+    activeToolActivity: {
+      toolName: "bash",
+      inputSummary: `bash: ${"x".repeat(150)}`,
+    },
+    lastToolPreview: `bash: ${"x".repeat(150)}`,
+  });
+  const theme = makeTheme();
+  const result = renderSubagentProgress(
+    {
+      customType: "subagent-progress",
+      content: "",
+      display: true,
+      details: { requestId: "rend-1" },
+    },
+    { expanded: false },
+    theme,
+  );
+  expect(result).toBeDefined();
+  const lines = renderLinesAtWidth(result, 120);
+  const toolLines = lines.filter((line) => line.includes("→"));
+  expect(toolLines).toHaveLength(1);
+  const visibleText = stripAnsiAndWrappers(toolLines[0] ?? "");
+  expect(visibleText.length).toBeLessThanOrEqual(120);
+  expect(toolLines[0]).toContain("…");
+});
+test("stored preview truncation remains unchanged at 120 characters", () => {
+  const longCommand = "x".repeat(150);
+  const preview = makeToolPreview("bash", { command: longCommand });
+  expect(Array.from(preview).length).toBe(120);
+  expect(preview).toEndWith("…");
+  expect(preview).toBe(`bash: ${"x".repeat(113)}…`);
+});
+test("emitted progress preview truncation remains at 120 characters", () => {
+  const details = makeDetails([]);
+  const firstResult = details.results[0];
+  if (!firstResult) throw new Error("missing result");
+  firstResult.progress = {
+    toolCalls: [{ id: "tc-1", preview: `bash: ${"y".repeat(150)}` }],
+  };
+  const seen = new Set<string>();
+  const result = extractProgressFromDetails(details, seen);
+  expect(result.lastToolPreview).toBeDefined();
+  if (result.lastToolPreview) {
+    expect(Array.from(result.lastToolPreview).length).toBe(120);
+    expect(result.lastToolPreview).toEndWith("…");
+  }
+});
+test("sensitive activity redaction applies to joined display text", () => {
+  const activity: ToolActivity = {
+    toolName: "subagent",
+    inputSummary: "reading config",
+    child: {
+      toolName: "bash",
+      inputSummary: "bash: cat secret-token.yaml",
+    },
+  };
+  const result = renderToolActivityForDisplay(activity, 80);
+  expect(result).toBe("(running...)");
+});
+test("collapsed running presentation preserves targetless tool formatting", () => {
+  createProgressState("rend-1", "agent", "task");
+  patchProgressState("rend-1", {
+    activeToolActivity: { toolName: "bash", inputSummary: "bash" },
+    lastToolPreview: "bash",
+  });
+  const theme = makeMarkerTheme();
+  const result = renderSubagentProgress(
+    {
+      customType: "subagent-progress",
+      content: "",
+      display: true,
+      details: { requestId: "rend-1" },
+    },
+    { expanded: false },
+    theme,
+  );
+  expect(result).toBeDefined();
+  const _text = renderText(result);
+  const toolLine = renderLines(result).find((line) => line.includes("bash"));
+  expect(toolLine).toStartWith(
+    "[toolPendingBg]   <muted>→</muted> <accent>bash</accent>",
+  );
+  expect(toolLine).not.toContain("<dim>:");
+});
+test("expanded running presentation includes task preview on separate line", () => {
+  createProgressState("rend-1", "agent", "do the important task");
+  patchProgressState("rend-1", {
+    activeToolActivity: { toolName: "bash", inputSummary: "bash: ls" },
+    lastToolPreview: "bash: ls",
+  });
+  const theme = makeTheme();
+  const result = renderSubagentProgress(
+    {
+      customType: "subagent-progress",
+      content: "",
+      display: true,
+      details: { requestId: "rend-1" },
+    },
+    { expanded: true },
+    theme,
+  );
+  expect(result).toBeDefined();
+  const text = renderText(result);
+  expect(text).toContain("do the important task");
+  expect(text).toContain("→ bash: ls");
+  const lines = renderLines(result);
+  const taskLineIndex = lines.findIndex((line) =>
+    line.includes("do the important task"),
+  );
+  const toolLineIndex = lines.findIndex((line) => line.includes("→ bash: ls"));
+  expect(taskLineIndex).toBeGreaterThan(-1);
+  expect(toolLineIndex).toBeGreaterThan(-1);
+  expect(taskLineIndex).not.toBe(toolLineIndex);
+});
+test("header stats remain unchanged with width-aware preview", () => {
+  createProgressState("rend-1", "agent", "task");
+  patchProgressState("rend-1", {
+    toolCount: 5,
+    contextTokens: 50_000,
+    contextWindowTokens: 200_000,
+    activeToolActivity: { toolName: "bash", inputSummary: "bash: ls" },
+    lastToolPreview: "bash: ls",
+  });
+  const theme = makeTheme();
+  const result = renderSubagentProgress(
+    {
+      customType: "subagent-progress",
+      content: "",
+      display: true,
+      details: { requestId: "rend-1" },
+    },
+    { expanded: false },
+    theme,
+  );
+  expect(result).toBeDefined();
+  const text = renderText(result);
+  expect(text).toContain("5 tools · 25% ctx ·");
+});
+test("status coloring remains unchanged with width-aware preview", () => {
+  createProgressState("rend-1", "agent", "task");
+  patchProgressState("rend-1", {
+    activeToolActivity: { toolName: "bash", inputSummary: "bash: ls" },
+    lastToolPreview: "bash: ls",
+  });
+  const theme = makeMarkerTheme();
+  const result = renderSubagentProgress(
+    {
+      customType: "subagent-progress",
+      content: "",
+      display: true,
+      details: { requestId: "rend-1" },
+    },
+    { expanded: false },
+    theme,
+  );
+  expect(result).toBeDefined();
+  const text = renderText(result);
+  expect(text).toContain("<accent>⟳</accent>");
+  expect(text).toContain("<dim>[running]</dim>");
+  expect(
+    renderLines(result).every(
+      (line) =>
+        line.startsWith("[toolPendingBg]") && line.endsWith("[/toolPendingBg]"),
+    ),
+  ).toBe(true);
+});
+test("running progress omits activity row when render width leaves no budget", () => {
+  createProgressState("rend-1", "agent", "task");
+  patchProgressState("rend-1", {
+    activeToolActivity: { toolName: "bash", inputSummary: "bash: ls" },
+    lastToolPreview: "bash: ls",
+  });
+  const theme = makeTheme();
+  const result = renderSubagentProgress(
+    {
+      customType: "subagent-progress",
+      content: "",
+      display: true,
+      details: { requestId: "rend-1" },
+    },
+    { expanded: false },
+    theme,
+  );
+  expect(result).toBeDefined();
+  const lines8 = renderLinesAtWidth(result, 8);
+  expect(lines8.filter((line) => line.includes("→")).length).toBe(0);
+  const lines7 = renderLinesAtWidth(result, 7);
+  expect(lines7.filter((line) => line.includes("→")).length).toBe(0);
+  const header = renderLinesAtWidth(result, 60).find((line) =>
+    line.includes("running"),
+  );
+  expect(header).toBeDefined();
+});
+test("running progress truncates long toolName fallback at narrow positive width", () => {
+  createProgressState("rend-1", "agent", "task");
+  const longToolName = `very-long-tool-name-${"x".repeat(100)}`;
+  patchProgressState("rend-1", {
+    activeToolActivity: { toolName: longToolName },
+    lastToolPreview: longToolName,
+  });
+  const theme = makeTheme();
+  const result = renderSubagentProgress(
+    {
+      customType: "subagent-progress",
+      content: "",
+      display: true,
+      details: { requestId: "rend-1" },
+    },
+    { expanded: false },
+    theme,
+  );
+  expect(result).toBeDefined();
+  const width = 25;
+  const lines = renderLinesAtWidth(result, width);
+  const toolLines = lines.filter((line) => line.includes("→"));
+  expect(toolLines).toHaveLength(1);
+  const visibleText = stripAnsiAndWrappers(toolLines[0] ?? "");
+  expect(visibleText.length).toBeLessThanOrEqual(width);
+  expect(toolLines[0]).toContain("…");
+});
+test("running progress omits activity row for long toolName fallback at zero budget", () => {
+  createProgressState("rend-1", "agent", "task");
+  const longToolName = `very-long-tool-name-${"x".repeat(100)}`;
+  patchProgressState("rend-1", {
+    activeToolActivity: { toolName: longToolName },
+    lastToolPreview: longToolName,
+  });
+  const theme = makeTheme();
+  const result = renderSubagentProgress(
+    {
+      customType: "subagent-progress",
+      content: "",
+      display: true,
+      details: { requestId: "rend-1" },
+    },
+    { expanded: false },
+    theme,
+  );
+  expect(result).toBeDefined();
+  const lines = renderLinesAtWidth(result, 8);
+  expect(lines.filter((line) => line.includes("→")).length).toBe(0);
+});
+test("running progress omits activity row for long toolName fallback at no-row budget", () => {
+  createProgressState("rend-1", "agent", "task");
+  const longToolName = `very-long-tool-name-${"x".repeat(100)}`;
+  patchProgressState("rend-1", {
+    activeToolActivity: { toolName: longToolName },
+    lastToolPreview: longToolName,
+  });
+  const theme = makeTheme();
+  const result = renderSubagentProgress(
+    {
+      customType: "subagent-progress",
+      content: "",
+      display: true,
+      details: { requestId: "rend-1" },
+    },
+    { expanded: false },
+    theme,
+  );
+  expect(result).toBeDefined();
+  const lines = renderLinesAtWidth(result, 5);
+  expect(lines.filter((line) => line.includes("→")).length).toBe(0);
+});
+test("running progress prevents toolName fallback wrapping at previously-wrapping widths", () => {
+  createProgressState("rend-1", "agent", "task");
+  const longToolName = `tool-with-very-long-name-${"z".repeat(80)}`;
+  patchProgressState("rend-1", {
+    activeToolActivity: { toolName: longToolName },
+    lastToolPreview: longToolName,
+  });
+  const theme = makeTheme();
+  const result = renderSubagentProgress(
+    {
+      customType: "subagent-progress",
+      content: "",
+      display: true,
+      details: { requestId: "rend-1" },
+    },
+    { expanded: false },
+    theme,
+  );
+  expect(result).toBeDefined();
+  for (const width of [15, 20, 25, 30, 40]) {
+    const lines = renderLinesAtWidth(result, width);
+    const toolLines = lines.filter((line) => line.includes("→"));
+    expect(toolLines.length).toBeLessThanOrEqual(1);
+    if (toolLines.length === 1) {
+      const visibleText = stripAnsiAndWrappers(toolLines[0] ?? "");
+      expect(visibleText.length).toBeLessThanOrEqual(width);
+    }
+  }
+});
+test("running progress single activity stays within render width across sweep", () => {
+  createProgressState("rend-1", "agent", "task");
+  patchProgressState("rend-1", {
+    activeToolActivity: {
+      toolName: "bash",
+      inputSummary: `bash: ${"x".repeat(200)}`,
+    },
+    lastToolPreview: `bash: ${"x".repeat(200)}`,
+  });
+  const theme = makeTheme();
+  const result = renderSubagentProgress(
+    {
+      customType: "subagent-progress",
+      content: "",
+      display: true,
+      details: { requestId: "rend-1" },
+    },
+    { expanded: false },
+    theme,
+  );
+  expect(result).toBeDefined();
+  for (const width of [10, 20, 40, 60, 80, 120]) {
+    const lines = renderLinesAtWidth(result, width);
+    const toolLines = lines.filter((line) => line.includes("→"));
+    expect(toolLines.length).toBeLessThanOrEqual(1);
+    if (toolLines.length === 1) {
+      const visibleText = stripAnsiAndWrappers(toolLines[0] ?? "");
+      expect(visibleText.length).toBeLessThanOrEqual(width);
+    }
+  }
+});
+test("running progress nested activity chain stays within budget at very narrow widths", () => {
+  createProgressState("rend-1", "agent", "task");
+  patchProgressState("rend-1", {
+    activeToolActivity: {
+      toolName: "subagent",
+      inputSummary: "subagent: build-with-long-description-here",
+      child: {
+        toolName: "bash",
+        inputSummary: "bash: make-build-verbose-compiler-output-here",
+      },
+    },
+    lastToolPreview:
+      "subagent: build-with-long-description-here - bash: make-build-verbose-compiler-output-here",
+  });
+  const theme = makeTheme();
+  const result = renderSubagentProgress(
+    {
+      customType: "subagent-progress",
+      content: "",
+      display: true,
+      details: { requestId: "rend-1" },
+    },
+    { expanded: false },
+    theme,
+  );
+  expect(result).toBeDefined();
+  for (const width of [15, 20, 30]) {
+    const lines = renderLinesAtWidth(result, width);
+    const toolLines = lines.filter((line) => line.includes("→"));
+    expect(toolLines.length).toBeLessThanOrEqual(1);
+    if (toolLines.length === 1) {
+      const visibleText = stripAnsiAndWrappers(toolLines[0] ?? "");
+      expect(visibleText.length).toBeLessThanOrEqual(width);
+    }
+  }
+});
+test("running progress redacts sensitive toolName fallback at sufficient budget", () => {
+  createProgressState("rend-1", "agent", "task");
+  patchProgressState("rend-1", {
+    activeToolActivity: { toolName: "secret-manager" },
+    lastToolPreview: "secret-manager",
+  });
+  const theme = makeTheme();
+  const result = renderSubagentProgress(
+    {
+      customType: "subagent-progress",
+      content: "",
+      display: true,
+      details: { requestId: "rend-1" },
+    },
+    { expanded: false },
+    theme,
+  );
+  expect(result).toBeDefined();
+  const lines = renderLinesAtWidth(result, 60);
+  const toolLines = lines.filter((line) => line.includes("→"));
+  expect(toolLines).toHaveLength(1);
+  expect(toolLines[0]).toContain("(running...)");
+  expect(toolLines[0]).not.toContain("secret-manager");
+});
+test("running progress omits sensitive toolName fallback when budget too small for redaction", () => {
+  createProgressState("rend-1", "agent", "task");
+  patchProgressState("rend-1", {
+    activeToolActivity: { toolName: "secret-manager" },
+    lastToolPreview: "secret-manager",
+  });
+  const theme = makeTheme();
+  const result = renderSubagentProgress(
+    {
+      customType: "subagent-progress",
+      content: "",
+      display: true,
+      details: { requestId: "rend-1" },
+    },
+    { expanded: false },
+    theme,
+  );
+  expect(result).toBeDefined();
+  const lines = renderLinesAtWidth(result, 19);
+  const toolLines = lines.filter((line) => line.includes("→"));
+  expect(toolLines.length).toBe(0);
+});
+test("renderToolActivity retains existing 120 character truncation for stored previews", () => {
+  const longSummary = "x".repeat(200);
+  const activity: ToolActivity = {
+    toolName: "bash",
+    inputSummary: longSummary,
+  };
+  const result = renderToolActivity(activity);
+  expect(result).toBeDefined();
+  if (result) {
+    expect(Array.from(result).length).toBeLessThanOrEqual(120);
+    expect(result).toEndWith("…");
+  }
+});
+test("renderToolActivity depth-2 retains truncation for stored previews", () => {
+  const activity: ToolActivity = {
+    toolName: "subagent",
+    inputSummary: "parent-summary",
+    child: {
+      toolName: "bash",
+      inputSummary: "x".repeat(200),
+    },
+  };
+  const result = renderToolActivity(activity);
+  expect(result).toBeDefined();
+  if (result) {
+    expect(result).toContain("parent-summary");
+    expect(result).toContain(" - ");
+  }
 });
