@@ -92,6 +92,7 @@ export function makeSubagentToolUpdateLine(
       toolCalls: [],
       lastToolPreview: preview,
       activityText: preview,
+      activeToolActivity: { toolName: "tool", inputSummary: preview },
     },
   };
   if (instanceName !== undefined) result.instanceName = instanceName;

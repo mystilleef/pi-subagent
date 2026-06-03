@@ -1876,23 +1876,25 @@ exit 0
   if (!requestId) throw new Error("requestId missing");
   await waitFor(
     () =>
-      getProgressState(requestId)?.activityStack?.length === 2
+      getProgressState(requestId)?.activeToolActivity?.child !== undefined
         ? true
         : undefined,
     "grandchild preview surfaced via tool_execution_update",
   );
   const state = getProgressState(requestId);
-  expect(state?.activityStack).toHaveLength(2);
-  expect(state?.activityStack?.[0]?.preview).toBe("subagent: build");
-  expect(state?.activityStack?.[0]?.instanceName).toBe("swift-otter");
-  expect(state?.activityStack?.[1]?.preview).toBe("bash: make build");
+  expect(state?.activeToolActivity?.toolName).toBe("subagent");
+  expect(state?.activeToolActivity?.inputSummary).toBe("subagent");
+  expect(state?.activeToolActivity?.instanceName).toBe("swift-otter");
+  expect(state?.activeToolActivity?.child?.inputSummary).toBe(
+    "bash: make build",
+  );
   expect(state?.lastToolPreview).toContain("bash: make build");
   await writeFile(sentinel, "continue");
   await waitForSentMessageCount(sentMessages, 2);
   expect(getProgressState(requestId)?.status).toBe("success");
 });
 
-test("tool_execution_update for a non-subagent tool is ignored by the parent", async () => {
+test("tool_execution_update for a non-subagent tool updates parent activity", async () => {
   const sentMessages: SendMessageArg[] = [];
   const { binDir, cwd } = await setupFakePi();
   const sentinel = path.join(cwd, "continue");
@@ -1929,15 +1931,14 @@ exit 0
   if (!requestId) throw new Error("requestId missing");
   await waitFor(
     () =>
-      getProgressState(requestId)?.lastToolPreview === "subagent: build"
+      getProgressState(requestId)?.lastToolPreview?.includes("bash: ls src")
         ? true
         : undefined,
-    "non-subagent update ignored, base preview preserved",
+    "non-subagent update surfaces in parent activity",
   );
   const state = getProgressState(requestId);
-  expect(state?.activityStack).toHaveLength(1);
-  expect(state?.lastToolPreview).toBe("subagent: build");
-  expect(state?.lastToolPreview).not.toContain("bash: ls src");
+  expect(state?.activeToolActivity).toBeDefined();
+  expect(state?.lastToolPreview).toContain("bash: ls src");
   await writeFile(sentinel, "continue");
   await waitForSentMessageCount(sentMessages, 2);
   expect(getProgressState(requestId)?.status).toBe("success");
@@ -2260,15 +2261,15 @@ exit 0
   if (!requestId) throw new Error("requestId missing");
   await waitFor(
     () =>
-      getProgressState(requestId)?.lastToolPreview === "subagent: build"
+      getProgressState(requestId)?.lastToolPreview === "subagent"
         ? true
         : undefined,
     "parent preview preserved through tool_result_end",
   );
-  expect(getProgressState(requestId)?.lastToolPreview).toBe("subagent: build");
-  expect(getProgressState(requestId)?.activityStack).toHaveLength(1);
+  expect(getProgressState(requestId)?.lastToolPreview).toBe("subagent");
+  expect(getProgressState(requestId)?.activeToolActivity).toBeDefined();
   expect(
-    getProgressState(requestId)?.activityStack?.[0]?.instanceName,
+    getProgressState(requestId)?.activeToolActivity?.instanceName,
   ).toBeUndefined();
   await writeFile(sentinel, "continue");
   await waitForSentMessageCount(sentMessages, 2);
@@ -2338,17 +2339,16 @@ exit 0
   if (!requestId) throw new Error("requestId missing");
   await waitFor(
     () =>
-      getProgressState(requestId)?.lastToolPreview ===
-      "subagent: build [able-falcon]"
+      getProgressState(requestId)?.lastToolPreview === "subagent [able-falcon]"
         ? true
         : undefined,
     "parent preview shows friendly instance label",
   );
   expect(getProgressState(requestId)?.lastToolPreview).toBe(
-    "subagent: build [able-falcon]",
+    "subagent [able-falcon]",
   );
-  expect(getProgressState(requestId)?.activityStack).toHaveLength(1);
-  expect(getProgressState(requestId)?.activityStack?.[0]?.instanceName).toBe(
+  expect(getProgressState(requestId)?.activeToolActivity).toBeDefined();
+  expect(getProgressState(requestId)?.activeToolActivity?.instanceName).toBe(
     "able-falcon",
   );
   await writeFile(sentinel, "continue");

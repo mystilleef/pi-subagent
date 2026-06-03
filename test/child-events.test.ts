@@ -119,6 +119,366 @@ describe("parseChildEventLine", () => {
       );
       expect(r.kind).toBe("unknown");
     });
+    test("subagent with nested activity produces toolActivity tree", () => {
+      const r = known(
+        JSON.stringify({
+          type: TOOL_EXECUTION_UPDATE_EVENT,
+          toolName: "subagent",
+          partialResult: {
+            details: {
+              results: [
+                {
+                  agent: "coder",
+                  instanceName: "instance-123",
+                  progress: {
+                    activeToolActivity: {
+                      toolName: "bash",
+                      inputSummary: "ls -la",
+                    },
+                  },
+                },
+              ],
+            },
+          },
+        }),
+      );
+      expect(r.event.type).toBe(TOOL_EXECUTION_UPDATE_EVENT);
+      const event = r.event as {
+        toolName: string;
+        toolActivity: {
+          toolName: string;
+          inputSummary?: string;
+          instanceName?: string;
+          child?: { toolName: string; inputSummary?: string };
+        };
+      };
+      expect(event.toolActivity.toolName).toBe("subagent");
+      expect(event.toolActivity.inputSummary).toBe("subagent: coder");
+      expect(event.toolActivity.instanceName).toBe("instance-123");
+      expect(event.toolActivity.child).toBeDefined();
+      expect(event.toolActivity.child?.toolName).toBe("bash");
+      expect(event.toolActivity.child?.inputSummary).toBe("ls -la");
+    });
+    test("non-subagent tool produces generic toolActivity", () => {
+      const r = known(
+        JSON.stringify({
+          type: TOOL_EXECUTION_UPDATE_EVENT,
+          toolName: "bash",
+          partialResult: { content: [] },
+        }),
+      );
+      const event = r.event as {
+        toolName: string;
+        toolActivity: { toolName: string; inputSummary: string };
+      };
+      expect(event.toolActivity.toolName).toBe("bash");
+      expect(event.toolActivity.inputSummary).toBe("bash");
+    });
+    test("subagent with empty results produces fallback toolActivity", () => {
+      const r = known(
+        JSON.stringify({
+          type: TOOL_EXECUTION_UPDATE_EVENT,
+          toolName: "subagent",
+          partialResult: { details: { results: [] } },
+        }),
+      );
+      const event = r.event as {
+        toolName: string;
+        toolActivity: { toolName: string };
+      };
+      expect(event.toolActivity.toolName).toBe("subagent");
+    });
+    test("subagent with missing details produces fallback toolActivity", () => {
+      const r = known(
+        JSON.stringify({
+          type: TOOL_EXECUTION_UPDATE_EVENT,
+          toolName: "subagent",
+          partialResult: {},
+        }),
+      );
+      const event = r.event as {
+        toolName: string;
+        toolActivity: { toolName: string };
+      };
+      expect(event.toolActivity.toolName).toBe("subagent");
+    });
+    test("subagent with malformed nested result produces fallback toolActivity", () => {
+      const r = known(
+        JSON.stringify({
+          type: TOOL_EXECUTION_UPDATE_EVENT,
+          toolName: "subagent",
+          partialResult: { details: { results: [null] } },
+        }),
+      );
+      const event = r.event as {
+        toolName: string;
+        toolActivity: { toolName: string };
+      };
+      expect(event.toolActivity.toolName).toBe("subagent");
+    });
+    test("subagent without activeToolActivity omits child field", () => {
+      const r = known(
+        JSON.stringify({
+          type: TOOL_EXECUTION_UPDATE_EVENT,
+          toolName: "subagent",
+          partialResult: {
+            details: {
+              results: [
+                {
+                  agent: "writer",
+                  progress: {},
+                },
+              ],
+            },
+          },
+        }),
+      );
+      const event = r.event as {
+        toolName: string;
+        toolActivity: {
+          toolName: string;
+          inputSummary?: string;
+          child?: unknown;
+        };
+      };
+      expect(event.toolActivity.toolName).toBe("subagent");
+      expect(event.toolActivity.inputSummary).toBe("subagent: writer");
+      expect(event.toolActivity.child).toBeUndefined();
+    });
+    test("subagent with string progress field produces fallback without child", () => {
+      const r = known(
+        JSON.stringify({
+          type: TOOL_EXECUTION_UPDATE_EVENT,
+          toolName: "subagent",
+          partialResult: {
+            details: {
+              results: [
+                {
+                  agent: "coder",
+                  progress: "invalid-string",
+                },
+              ],
+            },
+          },
+        }),
+      );
+      const event = r.event as {
+        toolName: string;
+        toolActivity: {
+          toolName: string;
+          inputSummary?: string;
+          child?: unknown;
+        };
+      };
+      expect(event.toolActivity.toolName).toBe("subagent");
+      expect(event.toolActivity.inputSummary).toBe("subagent: coder");
+      expect(event.toolActivity.child).toBeUndefined();
+    });
+    test("subagent with non-string activeToolActivity.toolName omits child", () => {
+      const r = known(
+        JSON.stringify({
+          type: TOOL_EXECUTION_UPDATE_EVENT,
+          toolName: "subagent",
+          partialResult: {
+            details: {
+              results: [
+                {
+                  agent: "coder",
+                  progress: {
+                    activeToolActivity: {
+                      toolName: 42,
+                      inputSummary: "bash: ls",
+                    },
+                  },
+                },
+              ],
+            },
+          },
+        }),
+      );
+      const event = r.event as {
+        toolName: string;
+        toolActivity: {
+          toolName: string;
+          inputSummary?: string;
+          child?: unknown;
+        };
+      };
+      expect(event.toolActivity.toolName).toBe("subagent");
+      expect(event.toolActivity.inputSummary).toBe("subagent: coder");
+      expect(event.toolActivity.child).toBeUndefined();
+    });
+    test("subagent with string results field produces fallback without child", () => {
+      const r = known(
+        JSON.stringify({
+          type: TOOL_EXECUTION_UPDATE_EVENT,
+          toolName: "subagent",
+          partialResult: {
+            details: {
+              results: "not-an-array",
+            },
+          },
+        }),
+      );
+      const event = r.event as {
+        toolName: string;
+        toolActivity: {
+          toolName: string;
+          child?: unknown;
+        };
+      };
+      expect(event.toolActivity.toolName).toBe("subagent");
+      expect(event.toolActivity.child).toBeUndefined();
+    });
+    test("subagent with number result entry produces fallback without child", () => {
+      const r = known(
+        JSON.stringify({
+          type: TOOL_EXECUTION_UPDATE_EVENT,
+          toolName: "subagent",
+          partialResult: {
+            details: {
+              results: [123],
+            },
+          },
+        }),
+      );
+      const event = r.event as {
+        toolName: string;
+        toolActivity: {
+          toolName: string;
+          child?: unknown;
+        };
+      };
+      expect(event.toolActivity.toolName).toBe("subagent");
+      expect(event.toolActivity.child).toBeUndefined();
+    });
+    test("non-subagent tool with null details produces fallback inputSummary", () => {
+      const r = known(
+        JSON.stringify({
+          type: TOOL_EXECUTION_UPDATE_EVENT,
+          toolName: "bash",
+          partialResult: { details: null },
+        }),
+      );
+      const event = r.event as {
+        toolName: string;
+        toolActivity: {
+          toolName: string;
+          inputSummary: string;
+          child?: unknown;
+        };
+      };
+      expect(event.toolActivity.toolName).toBe("bash");
+      expect(event.toolActivity.inputSummary).toBe("bash");
+      expect(event.toolActivity.child).toBeUndefined();
+    });
+    test("non-subagent tool with empty results produces fallback inputSummary", () => {
+      const r = known(
+        JSON.stringify({
+          type: TOOL_EXECUTION_UPDATE_EVENT,
+          toolName: "read",
+          partialResult: { details: { results: [] } },
+        }),
+      );
+      const event = r.event as {
+        toolName: string;
+        toolActivity: { toolName: string; inputSummary: string };
+      };
+      expect(event.toolActivity.toolName).toBe("read");
+      expect(event.toolActivity.inputSummary).toBe("read");
+    });
+    test("non-subagent tool with non-object nested result produces fallback inputSummary", () => {
+      const r = known(
+        JSON.stringify({
+          type: TOOL_EXECUTION_UPDATE_EVENT,
+          toolName: "bash",
+          partialResult: { details: { results: [42] } },
+        }),
+      );
+      const event = r.event as {
+        toolName: string;
+        toolActivity: { toolName: string; inputSummary: string };
+      };
+      expect(event.toolActivity.toolName).toBe("bash");
+      expect(event.toolActivity.inputSummary).toBe("bash");
+    });
+    test("non-subagent tool with child missing inputSummary falls back to toolName", () => {
+      const r = known(
+        JSON.stringify({
+          type: TOOL_EXECUTION_UPDATE_EVENT,
+          toolName: "bash",
+          partialResult: {
+            details: {
+              results: [
+                {
+                  instanceName: "test-instance",
+                  progress: {
+                    activeToolActivity: {
+                      toolName: "read",
+                    },
+                  },
+                },
+              ],
+            },
+          },
+        }),
+      );
+      const event = r.event as {
+        toolName: string;
+        toolActivity: {
+          toolName: string;
+          inputSummary: string;
+          instanceName?: string;
+          child?: { toolName: string };
+        };
+      };
+      expect(event.toolActivity.toolName).toBe("bash");
+      expect(event.toolActivity.instanceName).toBe("test-instance");
+      expect(event.toolActivity.inputSummary).toBe("bash");
+      expect(event.toolActivity.child).toBeDefined();
+      expect(event.toolActivity.child?.toolName).toBe("read");
+    });
+    test("non-subagent tool with details produces generic toolActivity with child", () => {
+      const r = known(
+        JSON.stringify({
+          type: TOOL_EXECUTION_UPDATE_EVENT,
+          toolName: "bash",
+          partialResult: {
+            details: {
+              results: [
+                {
+                  instanceName: "test-instance",
+                  progress: {
+                    activeToolActivity: {
+                      toolName: "read",
+                      inputSummary: "file.txt",
+                    },
+                  },
+                },
+              ],
+            },
+          },
+        }),
+      );
+      const event = r.event as {
+        toolName: string;
+        toolActivity: {
+          toolName: string;
+          inputSummary: string;
+          instanceName?: string;
+          child?: {
+            toolName: string;
+            inputSummary?: string;
+          };
+        };
+      };
+      expect(event.toolActivity.toolName).toBe("bash");
+      expect(event.toolActivity.instanceName).toBe("test-instance");
+      expect(event.toolActivity.inputSummary).toBe("file.txt");
+      expect(event.toolActivity.child).toBeDefined();
+      expect(event.toolActivity.child?.toolName).toBe("read");
+      expect(event.toolActivity.child?.inputSummary).toBe("file.txt");
+    });
   });
 
   describe("tool_result_end completion shapes", () => {

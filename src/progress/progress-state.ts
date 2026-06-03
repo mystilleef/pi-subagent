@@ -8,10 +8,12 @@ import {
   normalizeTerminalSentence,
 } from "../output/normalize.js";
 import type {
-  ActivityFrame,
   SingleResult,
   SubagentDetails,
+  ToolActivity,
 } from "../shared/types.js";
+
+export const SENSITIVE_PATTERN = /secret|token|password/i;
 
 export type ThemeBg = "toolPendingBg" | "toolSuccessBg" | "toolErrorBg";
 
@@ -46,7 +48,7 @@ export interface SubagentProgressState {
   status: ProgressStatus;
   startTime: number;
   durationMs?: number;
-  activityStack?: ActivityFrame[];
+  activeToolActivity?: ToolActivity;
   lastToolPreview?: string;
   toolResultCompleted?: boolean;
   toolCount: number;
@@ -96,7 +98,7 @@ export function patchProgressState(
     store.set(requestId, {
       ...state,
       ...patch,
-      activityStack: undefined,
+      activeToolActivity: undefined,
       lastToolPreview: undefined,
       toolResultCompleted: undefined,
     });
@@ -122,7 +124,7 @@ export function finalizeProgressState(
   storeTerminalProgressState(requestId, {
     status: "success",
     finalOutput: makeProgressFinalOutput(finalOutput),
-    activityStack: undefined,
+    activeToolActivity: undefined,
     lastToolPreview: undefined,
     toolResultCompleted: undefined,
   });
@@ -133,7 +135,7 @@ export function failProgressState(requestId: string, errorText: string): void {
   storeTerminalProgressState(requestId, {
     status: "error",
     errorText: sentence,
-    activityStack: undefined,
+    activeToolActivity: undefined,
     lastToolPreview: undefined,
     toolResultCompleted: undefined,
   });
@@ -142,7 +144,7 @@ export function failProgressState(requestId: string, errorText: string): void {
 export function cancelProgressState(requestId: string, reason?: string): void {
   storeTerminalProgressState(requestId, {
     status: "cancelled",
-    activityStack: undefined,
+    activeToolActivity: undefined,
     lastToolPreview: undefined,
     toolResultCompleted: undefined,
     ...(reason !== undefined
@@ -212,7 +214,7 @@ function isMeaningfulProgressErrorLine(line: string): boolean {
 export interface DetailsProgress {
   lastToolPreview?: string;
   activityText?: string;
-  activityStack?: ActivityFrame[];
+  activeToolActivity?: ToolActivity;
   progressLastToolPreview?: string;
   toolResultCompleted?: boolean;
   newToolCallIds: string[];
@@ -233,7 +235,7 @@ function trackNewToolCall(
 function extractProgressFromExistingProgress(
   progress: {
     activityText?: string;
-    activityStack?: ActivityFrame[];
+    activeToolActivity?: ToolActivity;
     lastToolPreview?: string;
     toolCalls: { id: string; preview: string }[];
     toolResultCompleted?: boolean;
@@ -247,11 +249,8 @@ function extractProgressFromExistingProgress(
   ) {
     state.activityText = normalizeAndTruncate(progress.activityText);
   }
-  if (
-    Array.isArray(progress.activityStack) &&
-    progress.activityStack.length > 0
-  ) {
-    state.activityStack = progress.activityStack;
+  if (progress.activeToolActivity) {
+    state.activeToolActivity = progress.activeToolActivity;
   }
   if (
     typeof progress.lastToolPreview === "string" &&
@@ -369,21 +368,29 @@ export function formatHeaderStats(state: SubagentProgressState): string {
 }
 
 /**
- * Render an activity stack into a preview string.
- * Copies frames, normalizes previews, appends `[instanceName]` when present,
- * and joins frames with ` - `.
- *
- * @returns Rendered preview string or undefined if stack is empty
+ * Renders a ToolActivity tree into a display string.
+ * Walks the tree depth-first, collecting inputSummary values from nodes
+ * that have them. Skips structural nodes without summaries. Annotates
+ * with instanceName when present. Joins with " - ".
  */
-export function renderActivityStack(
-  stack: ActivityFrame[] | undefined,
+export function renderToolActivity(
+  activity: ToolActivity | undefined,
 ): string | undefined {
-  if (!stack || stack.length === 0) return undefined;
-  const frames = stack.map((frame) => {
-    const normalized = normalizeAndTruncate(frame.preview);
-    return frame.instanceName
-      ? `${normalized} [${frame.instanceName}]`
-      : normalized;
-  });
-  return frames.join(" - ");
+  if (!activity) return undefined;
+  const parts: string[] = [];
+  let current: ToolActivity | undefined = activity;
+  while (current) {
+    if (current.inputSummary) {
+      const normalized = normalizeAndTruncate(current.inputSummary);
+      const annotated = current.instanceName
+        ? `${normalized} [${current.instanceName}]`
+        : normalized;
+      parts.push(annotated);
+    }
+    current = current.child;
+  }
+  if (parts.length === 0) return activity.toolName;
+  const result = parts.join(" - ");
+  if (SENSITIVE_PATTERN.test(result)) return "(running...)";
+  return result;
 }

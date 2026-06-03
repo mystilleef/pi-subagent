@@ -220,5 +220,5 @@ test("extractSemanticToolTarget keeps known safe targets", () => {
       task: "**Check UI**",
       agentScope: "project",
     }),
-  ).toBe("reviewer Check UI [project]");
+  ).toBe("");
 });

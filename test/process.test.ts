@@ -1,14 +1,15 @@
 import { expect, test } from "bun:test";
 import * as fs from "node:fs";
 import path from "node:path";
+import type { Message } from "@earendil-works/pi-ai";
 import { DefaultResourceLoader } from "@earendil-works/pi-coding-agent";
 import type { AgentConfig } from "../src/agent/agents.js";
-import { runSingleAgent } from "../src/child/process.js";
+import { makeEmitUpdate, runSingleAgent } from "../src/child/process.js";
 import {
   appendSubagentResultContract,
   SUBAGENT_RESULT_CONTRACT,
 } from "../src/child/prompt-contract.js";
-import type { SubagentDetails } from "../src/shared/types.js";
+import type { SingleResult, SubagentDetails } from "../src/shared/types.js";
 import {
   makeSubagentToolUpdateLine,
   setupHooks,
@@ -338,4 +339,132 @@ test("appendSubagentResultContract appends contract to prompt", () => {
   const result = appendSubagentResultContract("Task: foo");
   expect(result.startsWith("Task: foo\n\n")).toBe(true);
   expect(result.endsWith(SUBAGENT_RESULT_CONTRACT)).toBe(true);
+});
+
+// Helper: build a minimal RuntimeResult with a tool-call message so deriveStreamingProgress produces activeToolActivity
+function makeRuntimeWithToolCall(
+  toolName: string,
+  args: Record<string, unknown>,
+) {
+  const messages = [
+    {
+      role: "assistant",
+      content: [
+        { type: "toolCall", id: "tc-1", name: toolName, arguments: args },
+      ],
+    },
+  ] as Message[];
+  return {
+    agent: "test",
+    agentSource: "user" as const,
+    task: "task",
+    exitCode: 0,
+    finalOutput: "",
+    stderr: "",
+    usage: {
+      input: 0,
+      output: 0,
+      cacheRead: 0,
+      cacheWrite: 0,
+      cost: 0,
+      contextTokens: 0,
+      turns: 0,
+    },
+    messages,
+  } as SingleResult & { messages: Message[] };
+}
+
+test("makeEmitUpdate merge: inputSummary === toolName fallback does not overwrite parent inputSummary", () => {
+  // deriveStreamingProgress produces inputSummary from makeToolPreview("subagent", ...) → "subagent"
+  const result = makeRuntimeWithToolCall("subagent", {
+    agent: "builder",
+    task: "fix bugs",
+    agentScope: "project",
+  });
+  const emitUpdate = makeEmitUpdate(result, undefined, makeDetails);
+  // Parser sends bare toolName fallback (inputSummary === toolName) — should retain parent's value
+  emitUpdate({
+    toolActivity: { toolName: "subagent", inputSummary: "subagent" },
+  });
+  expect(result.progress?.activeToolActivity).toEqual({
+    toolName: "subagent",
+    inputSummary: "subagent",
+  });
+});
+
+test("makeEmitUpdate merge: inputSummary !== toolName overwrites parent inputSummary", () => {
+  // deriveStreamingProgress produces inputSummary: "subagent" (bare toolName from makeToolPreview)
+  const result = makeRuntimeWithToolCall("subagent", {
+    agent: "builder",
+    task: "fix bugs",
+    agentScope: "project",
+  });
+  const emitUpdate = makeEmitUpdate(result, undefined, makeDetails);
+  // Parser sends richer inputSummary from nested child (different from toolName "subagent")
+  emitUpdate({
+    toolActivity: { toolName: "subagent", inputSummary: "bash: scan src" },
+  });
+  expect(result.progress?.activeToolActivity).toEqual({
+    toolName: "subagent",
+    inputSummary: "bash: scan src",
+  });
+});
+
+test("makeEmitUpdate merge: incoming without inputSummary preserves parent inputSummary", () => {
+  const result = makeRuntimeWithToolCall("subagent", {
+    agent: "builder",
+    task: "fix bugs",
+    agentScope: "project",
+  });
+  const emitUpdate = makeEmitUpdate(result, undefined, makeDetails);
+  // Incoming has no inputSummary — merge should keep parent's value
+  emitUpdate({
+    toolActivity: {
+      toolName: "subagent",
+      child: { toolName: "bash", inputSummary: "bash: ls" },
+    },
+  });
+  expect(result.progress?.activeToolActivity).toEqual({
+    toolName: "subagent",
+    inputSummary: "subagent",
+    child: { toolName: "bash", inputSummary: "bash: ls" },
+  });
+});
+
+test("makeEmitUpdate streaming integration: subagent preview starts with toolName then updated to richer parser inputSummary", () => {
+  // deriveStreamingProgress produces activeToolActivity with inputSummary: "subagent" (bare)
+  const result = makeRuntimeWithToolCall("subagent", {
+    agent: "builder",
+    task: "fix bugs",
+    agentScope: "project",
+  });
+  const texts: string[] = [];
+  const emitUpdate = makeEmitUpdate(
+    result,
+    (partial) => {
+      texts.push(partial.content[0]?.text ?? "");
+    },
+    makeDetails,
+  );
+  // First call triggers deriveStreamingProgress and sets result.progress
+  emitUpdate();
+  // progress derived from messages: makeToolPreview("subagent", ...) → "subagent"
+  expect(result.progress?.activeToolActivity).toEqual({
+    toolName: "subagent",
+    inputSummary: "subagent",
+  });
+  expect(result.progress?.activityText).toBe("subagent");
+  // Parser sends richer nested child data — merge prefers incoming inputSummary
+  emitUpdate({
+    toolActivity: {
+      toolName: "subagent",
+      inputSummary: "bash: scan src",
+      child: { toolName: "bash", inputSummary: "bash: scan src" },
+    },
+  });
+  expect(result.progress?.activeToolActivity?.inputSummary).toBe(
+    "bash: scan src",
+  );
+  // renderToolActivity walks full tree: parent + child joined with " - "
+  expect(result.progress?.activityText).toBe("bash: scan src - bash: scan src");
 });

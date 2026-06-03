@@ -672,8 +672,12 @@ test("renderCall formats tool execution correctly", () => {
   expect((rendered as unknown as { text: string }).text).toContain(
     "[toolTitle]*subagent *[/toolTitle][accent]test-agent[/accent][muted] [both][/muted]",
   );
+  // Parser-owned preview suppresses task text: only shows [scope] when agent present
+  expect((rendered as unknown as { text: string }).text).not.toContain(
+    "long task description that should exceed 60 characters",
+  );
   expect((rendered as unknown as { text: string }).text).toContain(
-    "test-agent long task description that should exceed 60 characters so it gets truncated and ends up shorter",
+    "[dim][both][/dim]",
   );
   const renderedShort = tool.renderCall?.(
     { agent: "...", task: "short" },
@@ -683,8 +687,9 @@ test("renderCall formats tool execution correctly", () => {
   expect((renderedShort as unknown as { text: string }).text).toContain(
     "[accent]...[/accent]",
   );
+  // Task text suppressed: shows [scope] not task
   expect((renderedShort as unknown as { text: string }).text).toContain(
-    "[dim]... short[/dim]",
+    "[dim][both][/dim]",
   );
 });
 
@@ -742,8 +747,9 @@ test("renderSubagentResult formats units, fallback output, and failed tool resul
   ).toBe(
     "2 turns · ↑1.5k ↓15k · cache:R999/W1.5M · ctx:42 · $0.1235 · provider/model:high",
   );
+  // Parser-owned preview suppresses task text in formatToolCall
   expect(formatToolCall("subagent", { agent: "child" }, fakeTheme.fg)).toBe(
-    "[accent]subagent[/accent][dim] child[/dim]",
+    "[accent]subagent[/accent]",
   );
   expect(
     formatToolCall(
@@ -764,13 +770,14 @@ test("renderSubagentResult formats units, fallback output, and failed tool resul
   expect(formatToolCall("bash", { command: "\n\t  " }, fakeTheme.fg)).toBe(
     "[accent]bash[/accent]",
   );
+  // Parser-owned preview suppresses task text: subagent args produce tool name only
   expect(
     formatToolCall(
       "subagent",
       { agent: "child", task: "line one\n\t  line two" },
       fakeTheme.fg,
     ),
-  ).toBe("[accent]subagent[/accent][dim] child line one line two[/dim]");
+  ).toBe("[accent]subagent[/accent]");
   const call = renderSubagentCall({}, fakeTheme) as unknown as {
     text: string;
     render: (width: number) => string[];
@@ -888,6 +895,7 @@ test("subagent result keeps subagent call chrome unchanged", () => {
     text: string;
     render: (width: number) => string[];
   };
+  // Parser-owned preview: no agent → falls back to JSON.stringify(args)
   expect(call.text).toContain(
     "[accent]...[/accent][muted] [both][/muted]\n  [dim]{}[/dim]",
   );

@@ -129,7 +129,7 @@ function sanitizeResultDetails(
   if (progress !== undefined) {
     const {
       activityText,
-      activityStack,
+      activeToolActivity,
       lastToolPreview,
       toolResultCompleted,
       ...progBase
@@ -140,7 +140,7 @@ function sanitizeResultDetails(
         preview: tc.preview,
       })),
       ...(activityText !== undefined && { activityText }),
-      ...(activityStack !== undefined && { activityStack }),
+      ...(activeToolActivity !== undefined && { activeToolActivity }),
       ...(lastToolPreview !== undefined && { lastToolPreview }),
       ...(toolResultCompleted !== undefined && { toolResultCompleted }),
     };

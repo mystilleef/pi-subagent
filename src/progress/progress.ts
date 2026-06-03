@@ -23,6 +23,7 @@ import {
   formatHeaderStats,
   getProgressState,
   type ProgressStatus,
+  renderToolActivity,
   STATUS_BG,
   STATUS_COLOR,
   STATUS_ICON,
@@ -45,7 +46,7 @@ export {
   makeTaskPreview,
   type ProgressStatus,
   patchProgressState,
-  renderActivityStack,
+  renderToolActivity,
   resetProgressStore,
   STATUS_COLOR,
   STATUS_ICON,
@@ -152,10 +153,9 @@ function makeRunningProgressBody(
   theme: SubagentTheme,
 ): Text[] {
   const body: Text[] = [];
-  if (state.lastToolPreview) {
-    body.push(
-      new Text(formatRunningToolPreview(state.lastToolPreview, theme), 2, 0),
-    );
+  const activityPreview = renderToolActivity(state.activeToolActivity);
+  if (activityPreview) {
+    body.push(new Text(formatRunningToolPreview(activityPreview, theme), 2, 0));
   }
   if (options.expanded)
     body.push(new Text(theme.fg("dim", state.taskPreview), 2, 0));

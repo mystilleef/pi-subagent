@@ -307,13 +307,18 @@ exit 0
       expect(nestedText?.length).toBeLessThanOrEqual(120);
       expect(nestedText).toContain("…");
     });
-    test("invalid nested activity payload does not trigger update", async () => {
+    test("minimal nested activity payload surfaces tool name only", async () => {
       const texts = await runAgentWithNestedActivity(`#!/bin/sh
 printf '%s\n' '{"type":"tool_execution_update","toolName":"subagent","partialResult":{"details":{"results":[{}]}}}'
 printf '%s\n' '{"type":"agent_end","messages":[]}'
 exit 0
 `);
-      expect(texts.every((t) => t === "(running...)" || t === "")).toBe(true);
+      // Empty result object produces { toolName: "subagent" } with no inputSummary,
+      // which renders as the bare tool name
+      const hasRunningOrEmpty = texts.every(
+        (t) => t === "(running...)" || t === "" || t === "subagent",
+      );
+      expect(hasRunningOrEmpty).toBe(true);
     });
   });
   describe("helpers.ts waitFor timeout", () => {

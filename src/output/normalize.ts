@@ -20,15 +20,6 @@ export function extractSemanticToolTarget(
     typeof args.path === "string"
   )
     return args.path;
-  if (toolName === "subagent") {
-    const parts = [];
-    if (typeof args.agent === "string") parts.push(args.agent);
-    if (typeof args.task === "string")
-      parts.push(normalizeSummaryValue(args.task));
-    if (typeof args.agentScope === "string") parts.push(`[${args.agentScope}]`);
-    if (parts.length) return parts.join(" ");
-    return JSON.stringify(args);
-  }
   return "";
 }
 

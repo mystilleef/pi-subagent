@@ -15,19 +15,18 @@ import {
   type ModelThinkingLevel,
 } from "@earendil-works/pi-ai";
 import type { AgentConfig, ThinkingLevel } from "../agent/agents.js";
-import { normalizeAndTruncate } from "../output/normalize.js";
 import { getFinalOutput } from "../output/ui.js";
-import { makeToolPreview } from "../progress/progress.js";
+import { makeToolPreview, renderToolActivity } from "../progress/progress.js";
 import {
   isToolCallPart,
-  renderActivityStack,
+  SENSITIVE_PATTERN,
 } from "../progress/progress-state.js";
 import type {
-  ActivityFrame,
   OnUpdateCallback,
   SingleResult,
   StreamingProgress,
   SubagentDetails,
+  ToolActivity,
 } from "../shared/types.js";
 import {
   detectMessageError,
@@ -51,9 +50,6 @@ import {
 
 const MAX_STDERR_BYTES = 10_000;
 const AGENT_END_GRACE_MS = 250;
-const SENSITIVE_PATTERN = /secret|token|password/i;
-const SUBAGENT_TOOL_NAME = "subagent";
-
 export function resolveThinkingLevel(
   requested: ThinkingLevel,
   provider: string,
@@ -392,47 +388,31 @@ function findRecentMessagesAnchor(messages: Message[]): number {
 }
 
 /**
- * Builds a compact tool preview for the live progress card.
- * Collapses subagent calls to `subagent: <agent>` so the long task string
- * does not crowd out the instance tag and nested tool preview. Other tools
- * keep their standard preview (which includes their semantic target).
- */
-function makeProgressToolPreview(
-  name: string,
-  args: Record<string, unknown> | undefined,
-): string {
-  if (name === "subagent" && args && typeof args.agent === "string") {
-    return normalizeAndTruncate(`subagent: ${args.agent}`);
-  }
-  return makeToolPreview(name, args);
-}
-
-/**
  * Derives current execution progress from accumulated messages.
  * Maps tool calls to UI-safe previews for real-time feedback.
- * Builds a single-frame activityStack from the most recent tool call.
+ * Builds activeToolActivity from the most recent tool call, providing
+ * a compact parent summary for subagent tools before nested child data arrives.
  */
 function deriveStreamingProgress(messages: Message[]): StreamingProgress {
   const toolCalls: { id: string; preview: string }[] = [];
   let lastToolPreview: string | undefined;
-  let lastToolFrame: ActivityFrame | undefined;
+  let activeToolActivity: ToolActivity | undefined;
   for (const msg of messages) {
     if (msg.role !== "assistant" || !Array.isArray(msg.content)) continue;
     for (const part of msg.content) {
       if (!isToolCallPart(part)) continue;
       const preview = sanitizeProgressPreview(
-        makeProgressToolPreview(part.name, part.arguments),
+        makeToolPreview(part.name, part.arguments),
         part.name,
       );
       toolCalls.push({ id: part.id, preview });
       lastToolPreview = preview;
-      lastToolFrame = { preview };
+      activeToolActivity = { toolName: part.name, inputSummary: preview };
     }
   }
-  const activityStack = lastToolFrame ? [lastToolFrame] : [];
   return {
-    activityText: lastToolPreview,
-    activityStack,
+    activeToolActivity,
+    activityText: renderToolActivity(activeToolActivity),
     toolCalls,
     lastToolPreview,
   };
@@ -446,13 +426,7 @@ function sanitizeProgressPreview(preview: string, toolName: string): string {
   return SENSITIVE_PATTERN.test(preview) ? toolName : preview;
 }
 
-function sanitizeNestedActivity(activityText: string): string {
-  const sanitized = normalizeAndTruncate(activityText);
-  if (SENSITIVE_PATTERN.test(sanitized)) return "(running...)";
-  return sanitized;
-}
-
-function makeEmitUpdate(
+export function makeEmitUpdate(
   result: RuntimeResult,
   onUpdate: OnUpdateCallback | undefined,
   makeDetails: (
@@ -460,8 +434,7 @@ function makeEmitUpdate(
     options?: { includeMessages?: boolean; recentMessages?: Message[] },
   ) => SubagentDetails,
 ): (options?: {
-  activityOverride?: string;
-  instanceName?: string;
+  toolActivity?: ToolActivity;
   toolResultCompleted?: boolean;
 }) => void {
   return (options) => {
@@ -470,34 +443,39 @@ function makeEmitUpdate(
     const recentMessages =
       anchorIdx >= 0 ? msgs.slice(anchorIdx) : msgs.slice(-5);
     const progress = deriveStreamingProgress(msgs);
-    // Preserve stored activity stack for tool-result completion signals
-    // so the parent can pop the leaf without losing nested context
-    if (
-      options?.toolResultCompleted &&
-      result.progress?.activityStack &&
-      result.progress.activityStack.length > 0
-    ) {
-      progress.activityStack = result.progress.activityStack;
-      progress.activityText = renderActivityStack(progress.activityStack);
+    // Preserve stored activity tree for tool-result completion signals
+    // so the parent retains nested context until newer activity arrives
+    if (options?.toolResultCompleted && result.progress?.activeToolActivity) {
+      progress.activeToolActivity = result.progress.activeToolActivity;
+      progress.activityText = renderToolActivity(progress.activeToolActivity);
     }
-    // Handle nested activity by adding a leaf frame to the stack
-    if (options?.activityOverride !== undefined) {
-      const baseStack = progress.activityStack ?? [];
-      // Annotate parent subagent frame with instance name when available
-      if (options.instanceName && baseStack.length > 0) {
-        const lastFrame = baseStack[baseStack.length - 1];
-        if (lastFrame) {
-          baseStack[baseStack.length - 1] = {
-            ...lastFrame,
-            instanceName: options.instanceName,
-          };
-        }
+    // Handle parsed tool activity from child events
+    // Merge with parent activity if this is a nested update
+    if (options?.toolActivity) {
+      if (
+        progress.activeToolActivity &&
+        progress.activeToolActivity.toolName === options.toolActivity.toolName
+      ) {
+        // Merge: prefer parser inputSummary when non-empty and richer than bare toolName fallback
+        const incomingSummary = options.toolActivity.inputSummary;
+        const preferIncoming =
+          incomingSummary && incomingSummary !== options.toolActivity.toolName;
+        progress.activeToolActivity = {
+          ...progress.activeToolActivity,
+          inputSummary: preferIncoming
+            ? incomingSummary
+            : progress.activeToolActivity.inputSummary,
+          instanceName:
+            options.toolActivity.instanceName ??
+            progress.activeToolActivity.instanceName,
+          child:
+            options.toolActivity.child ?? progress.activeToolActivity.child,
+        };
+      } else {
+        progress.activeToolActivity = options.toolActivity;
       }
-      const leafFrame: ActivityFrame = { preview: options.activityOverride };
-      progress.activityStack = [...baseStack, leafFrame];
-      progress.activityText = renderActivityStack(progress.activityStack);
+      progress.activityText = renderToolActivity(progress.activeToolActivity);
     }
-    // Handle tool result completion signal
     if (options?.toolResultCompleted) {
       progress.toolResultCompleted = true;
     }
@@ -544,14 +522,13 @@ function handleMessageEvent(
   event: ChildKnownEvent,
   state: SubagentState,
   emitUpdate: (options?: {
-    activityOverride?: string;
+    toolActivity?: ToolActivity;
     toolResultCompleted?: boolean;
   }) => void,
 ): void {
   if (event.type !== "message_end" && event.type !== "tool_result_end") return;
   if (event.message) {
     addMessageToResult(state.result, event.message as Message);
-    // Detect tool_result_end and expose completion signal
     const toolResultCompleted = event.type === "tool_result_end";
     emitUpdate({ toolResultCompleted });
   }
@@ -560,29 +537,19 @@ function handleMessageEvent(
 function handleToolExecutionUpdateEvent(
   event: ChildKnownEvent,
   emitUpdate: (options?: {
-    activityOverride?: string;
-    instanceName?: string;
+    toolActivity?: ToolActivity;
     toolResultCompleted?: boolean;
   }) => void,
 ): void {
   if (event.type !== TOOL_EXECUTION_UPDATE_EVENT) return;
-  if (event.toolName !== SUBAGENT_TOOL_NAME) return;
-  const details = event.partialResult.details as SubagentDetails | undefined;
-  const nested = details?.results?.[0];
-  const preview =
-    nested?.progress?.lastToolPreview ?? nested?.progress?.activityText;
-  if (typeof preview !== "string" || !preview.trim()) return;
-  emitUpdate({
-    activityOverride: sanitizeNestedActivity(preview),
-    instanceName: nested?.instanceName,
-  });
+  emitUpdate({ toolActivity: event.toolActivity });
 }
 
 function handleAgentEndEvent(
   event: ChildKnownEvent,
   state: SubagentState,
   emitUpdate: (options?: {
-    activityOverride?: string;
+    toolActivity?: ToolActivity;
     toolResultCompleted?: boolean;
   }) => void,
   requestTermination: (reason: string) => Promise<unknown>,
@@ -606,7 +573,7 @@ function processEventLine(
   line: string,
   state: SubagentState,
   emitUpdate: (options?: {
-    activityOverride?: string;
+    toolActivity?: ToolActivity;
     toolResultCompleted?: boolean;
   }) => void,
   requestTermination: (reason: string) => Promise<unknown>,
@@ -668,7 +635,7 @@ function setupChildProcess(
   proc: ChildProcess,
   state: SubagentState,
   emitUpdate: (options?: {
-    activityOverride?: string;
+    toolActivity?: ToolActivity;
     toolResultCompleted?: boolean;
   }) => void,
   requestTermination: (reason: string) => Promise<unknown>,

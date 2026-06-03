@@ -181,7 +181,8 @@ export function renderSubagentCall(
 ): Text {
   const scope: AgentScope = args.agentScope ?? "both";
   const agentName = args.agent || "...";
-  const target = extractSemanticToolTarget("subagent", args);
+  // Parser-owned preview suppresses task text: show agent + scope only
+  const target = args.agent ? `[${scope}]` : JSON.stringify(args);
   let text =
     theme.fg("toolTitle", theme.bold("subagent ")) +
     theme.fg("accent", agentName) +

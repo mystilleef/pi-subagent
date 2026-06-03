@@ -13,9 +13,11 @@ export interface UsageStats {
   turns: number;
 }
 
-export interface ActivityFrame {
-  preview: string;
+export interface ToolActivity {
+  toolName: string;
+  inputSummary?: string;
   instanceName?: string;
+  child?: ToolActivity;
 }
 
 export interface StreamingProgressToolCall {
@@ -25,7 +27,7 @@ export interface StreamingProgressToolCall {
 
 export interface StreamingProgress {
   activityText?: string;
-  activityStack?: ActivityFrame[];
+  activeToolActivity?: ToolActivity;
   toolCalls: StreamingProgressToolCall[];
   lastToolPreview?: string;
   toolResultCompleted?: boolean;
