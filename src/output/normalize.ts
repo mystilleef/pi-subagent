@@ -7,24 +7,35 @@ export function normalizeSummaryValue(value: string): string {
   return normalized;
 }
 
+const SECRET_KEY_RE = /secret|token|password|passwd|credential|auth/i;
+const JWT_RE = /^eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/;
+
 export function extractSemanticToolTarget(
-  toolName: string,
   args: Record<string, unknown>,
   forceJson = false,
 ): string {
   if (forceJson) return JSON.stringify(args);
-  if (toolName === "bash" && typeof args.command === "string")
-    return args.command;
-  if (
-    ["read", "write", "edit", "file_search"].includes(toolName) &&
-    typeof args.path === "string"
-  )
-    return args.path;
+  const semanticKeys = [
+    "command",
+    "path",
+    "agent",
+    "query",
+    "url",
+    "action",
+    "name",
+  ];
+  for (const key of semanticKeys) {
+    const value = args[key];
+    if (typeof value === "string" && value.trim()) return value;
+  }
+  for (const key of Object.keys(args)) {
+    const value = args[key];
+    if (typeof value !== "string" || !value.trim()) continue;
+    if (SECRET_KEY_RE.test(key)) continue;
+    if (value.length > 60 || JWT_RE.test(value)) continue;
+    return value;
+  }
   return "";
-}
-
-function stripTerminalStatusPrefixes(value: string): string {
-  return value.replace(/^(?:(?:success|failure):\s*)+/i, "");
 }
 
 export function truncateText(text: string, limit: number): string {
@@ -42,7 +53,10 @@ export function normalizeTerminalSentence(
     .replace(/^\s*`{1,3}([^`]+)`{1,3}\s*$/, "$1")
     .replace(/^\s*\*\*([^*]+)\*\*\s*$/, "$1")
     .replace(/^\s*__([^_]+)__\s*$/, "$1");
-  const withoutStatusPrefix = stripTerminalStatusPrefixes(unwrapped);
+  const withoutStatusPrefix = unwrapped.replace(
+    /^(?:(?:success|failure):\s*)+/i,
+    "",
+  );
   const withoutLabel = withoutStatusPrefix.replace(
     /^\s*(?:status|summary|result|output|message|error|check|outcome|project summary):\s+/i,
     "",
@@ -67,9 +81,7 @@ export function makeToolPreview(
   args: Record<string, unknown> | undefined,
 ): string {
   if (!args || Object.keys(args).length === 0) return toolName;
-  const target = normalizeSummaryValue(
-    extractSemanticToolTarget(toolName, args),
-  );
+  const target = normalizeSummaryValue(extractSemanticToolTarget(args));
   if (!target) return toolName;
   return normalizeAndTruncate(`${toolName}: ${target}`);
 }

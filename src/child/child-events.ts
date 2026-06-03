@@ -1,6 +1,7 @@
+import { makeToolPreview } from "../output/normalize.js";
 import type { ToolActivity } from "../shared/types.js";
 
-/** Extracts the first result record from partialResult.details.results, or null if malformed. */
+// Extracts results[0] from details; null-safe for malformed input.
 function tryFirstResult(details: unknown): Record<string, unknown> | null {
   try {
     if (typeof details !== "object" || details === null) return null;
@@ -14,11 +15,7 @@ function tryFirstResult(details: unknown): Record<string, unknown> | null {
   }
 }
 
-/**
- * Extracts ToolActivity from tool_execution_update partialResult.
- * Builds a complete activity tree with parent (toolName + instanceName) and child (nested progress).
- * Never throws - malformed data falls back to { toolName }.
- */
+// Malformed details (null result) falls back to { toolName }.
 function parseToolActivity(
   toolName: string,
   partialResult: { content?: unknown; details?: unknown },
@@ -26,47 +23,39 @@ function parseToolActivity(
   const nestedRecord = tryFirstResult(partialResult.details);
   if (!nestedRecord) return { toolName, inputSummary: toolName };
   const isSubagent = toolName === "subagent";
-  try {
-    const activity: ToolActivity = { toolName };
-    if (isSubagent) {
-      if (typeof nestedRecord.agent === "string" && nestedRecord.agent) {
-        activity.inputSummary = `subagent: ${nestedRecord.agent}`;
-      }
-    } else {
-      activity.inputSummary = toolName;
-    }
-    if (
-      typeof nestedRecord.instanceName === "string" &&
-      nestedRecord.instanceName
-    ) {
-      activity.instanceName = nestedRecord.instanceName;
-    }
-    const progress = nestedRecord.progress;
-    if (typeof progress === "object" && progress !== null) {
-      const activeToolActivity = (progress as Record<string, unknown>)
-        .activeToolActivity;
-      if (
-        typeof activeToolActivity === "object" &&
-        activeToolActivity !== null &&
-        typeof (activeToolActivity as Record<string, unknown>).toolName ===
-          "string"
-      ) {
-        const childActivity = activeToolActivity as ToolActivity;
-        activity.child = childActivity;
-        // Subagent delegates inputSummary to its own agent name, not child
-        if (
-          !isSubagent &&
-          typeof childActivity.inputSummary === "string" &&
-          childActivity.inputSummary
-        ) {
-          activity.inputSummary = childActivity.inputSummary;
-        }
-      }
-    }
-    return activity;
-  } catch {
-    return { toolName, inputSummary: toolName };
+  const activity: ToolActivity = { toolName };
+  const agent = typeof nestedRecord.agent === "string" && nestedRecord.agent;
+  activity.inputSummary =
+    isSubagent && agent ? makeToolPreview(toolName, nestedRecord) : toolName;
+  if (
+    typeof nestedRecord.instanceName === "string" &&
+    nestedRecord.instanceName
+  ) {
+    activity.instanceName = nestedRecord.instanceName;
   }
+  const progress = nestedRecord.progress;
+  if (typeof progress === "object" && progress !== null) {
+    const activeToolActivity = (progress as Record<string, unknown>)
+      .activeToolActivity;
+    if (
+      typeof activeToolActivity === "object" &&
+      activeToolActivity !== null &&
+      typeof (activeToolActivity as Record<string, unknown>).toolName ===
+        "string"
+    ) {
+      const childActivity = activeToolActivity as ToolActivity;
+      activity.child = childActivity;
+      // Subagent delegates inputSummary to its own agent name, not child
+      if (
+        !isSubagent &&
+        typeof childActivity.inputSummary === "string" &&
+        childActivity.inputSummary
+      ) {
+        activity.inputSummary = childActivity.inputSummary;
+      }
+    }
+  }
+  return activity;
 }
 
 export type ChildKnownEvent =

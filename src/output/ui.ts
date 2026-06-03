@@ -125,7 +125,7 @@ export function formatToolCall(
   forceJson = false,
 ): string {
   const target = normalizeSummaryValue(
-    extractSemanticToolTarget(toolName, args, forceJson),
+    extractSemanticToolTarget(args, forceJson),
   );
   if (!target) return themeFg("accent", toolName);
   return themeFg("accent", toolName) + themeFg("dim", ` ${target}`);
@@ -201,15 +201,7 @@ export function renderSubagentToolResult(
   return renderSubagentResult(result, theme, display);
 }
 
-/**
- * Renders the subagent result box.
- *
- * Invariants:
- * - Red background indicates failure (exit code, error reason, or message error).
- * - Green background indicates success.
- * - Trims redundant "Outcome:" lines from the body.
- * - Displays usage stats and duration in the footer.
- */
+// Invariants: Red background = failure, green = success. Trims redundant "Outcome:" lines. Shows usage stats + duration in footer.
 export function renderSubagentResult(
   result: { content: { type: string; text?: string }[]; details?: unknown },
   theme: SubagentTheme,
@@ -356,7 +348,6 @@ function renderJobCard(
   );
 }
 
-/** Sort states by startTime descending (newest first). */
 function sortByStartTimeDesc(
   a: SubagentProgressState,
   b: SubagentProgressState,
@@ -372,11 +363,8 @@ const BOARD_SECTIONS: [string, ProgressStatus][] = [
   ["SUCCEEDED", "success"],
 ];
 
-/**
- * Renders a unified job board for the `/jobs` command.
- * Jobs render in status-specific sections, each sorted by `startTime` descending.
- * Status icons preserve the existing /jobs contract for running and cancelled jobs.
- */
+// Jobs render in status-specific sections, each sorted by `startTime` descending.
+// Status icons preserve the existing /jobs contract for running and cancelled jobs.
 export function renderRunsBoard(
   states: SubagentProgressState[],
   theme: SubagentTheme,
