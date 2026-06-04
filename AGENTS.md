@@ -2,9 +2,9 @@
 
 ## Commands
 
-- **Lint:** `bun check`
-- **Test:** `bun verify`
 - **Install:** `bun install`
+- **Typecheck:** `bun check`
+- **Comprehensive validation:** `bun verify`
 
 ## Workflow
 
@@ -20,7 +20,7 @@
 - Write testable code.
 - After edits:
   - Run `bun check` to address lint issues
-  - Optionally, run `bun verify` for comprehensive validation
+  - Run `bun verify` at your discretion.
 
 ## Gotchas
 
