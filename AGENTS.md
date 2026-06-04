@@ -17,6 +17,7 @@
 
 - Write asynchronous, non-blocking code.
 - Write code that never blocks the `TUI`/`GUI`.
+- Write testable code.
 - After edits:
   - Run `bun check` to address lint issues
   - Optionally, run `bun verify` for comprehensive validation
