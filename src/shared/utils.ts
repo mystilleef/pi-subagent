@@ -89,15 +89,54 @@ export function getPiInvocation(args: string[]): {
   return { command: "pi", args };
 }
 
+const SKILL_DISCOVERY_CACHE_TTL_MS = 300_000;
+
+type ResolvedSkillArgsCacheEntry = {
+  skillPaths: Map<string, string>;
+  ts: number;
+};
+
+const resolvedSkillArgsCache = new Map<string, ResolvedSkillArgsCacheEntry>();
+
+async function canonicalPath(filePath: string): Promise<string> {
+  try {
+    return await fs.promises.realpath(filePath);
+  } catch {
+    return path.resolve(filePath);
+  }
+}
+
+function buildSkillArgs(
+  requested: string[],
+  skillPaths: Map<string, string>,
+): string[] {
+  return requested.flatMap((name) => ["--skill", skillPaths.get(name) ?? name]);
+}
+
+export function resetResolvedAgentSkillArgsCache(): void {
+  resolvedSkillArgsCache.clear();
+}
+
 export async function resolveAgentSkillArgs(
   cwd: string,
   skillNames: string[],
 ): Promise<{ args: string[] } | { error: string }> {
   const requested = Array.from(new Set(skillNames));
   if (requested.length === 0) return { args: [] };
+  const cacheIdentitySkills = [...requested].sort();
+  const agentDir = getAgentDir();
+  const cacheKey = JSON.stringify({
+    cwd: await canonicalPath(cwd),
+    agentDir: await canonicalPath(agentDir),
+    skills: cacheIdentitySkills,
+  });
+  const cached = resolvedSkillArgsCache.get(cacheKey);
+  if (cached && Date.now() - cached.ts <= SKILL_DISCOVERY_CACHE_TTL_MS) {
+    return { args: buildSkillArgs(requested, cached.skillPaths) };
+  }
   const loader = new DefaultResourceLoader({
     cwd,
-    agentDir: getAgentDir(),
+    agentDir,
     noContextFiles: true,
     noPromptTemplates: true,
     noThemes: true,
@@ -124,12 +163,12 @@ export async function resolveAgentSkillArgs(
         .join(", ")}. Available skills: ${available}.`,
     };
   }
-  return {
-    args: requested.flatMap((name) => [
-      "--skill",
-      skillMap.get(name)?.filePath ?? name,
-    ]),
-  };
+  const skillPaths = new Map(
+    requested.map((name) => [name, skillMap.get(name)?.filePath ?? name]),
+  );
+  const args = buildSkillArgs(requested, skillPaths);
+  resolvedSkillArgsCache.set(cacheKey, { skillPaths, ts: Date.now() });
+  return { args };
 }
 
 export function getSubagentDepth(): number {

@@ -11,6 +11,10 @@ import {
 } from "../src/child/prompt-contract.js";
 import type { SingleResult, SubagentDetails } from "../src/shared/types.js";
 import {
+  resetResolvedAgentSkillArgsCache,
+  resolveAgentSkillArgs,
+} from "../src/shared/utils.js";
+import {
   makeSubagentToolUpdateLine,
   setupHooks,
   setupTest,
@@ -152,6 +156,73 @@ Use fast skill.
     });
     releaseOnce();
     await promise.catch(() => {});
+  }
+});
+
+test("runSingleAgent uses warmed skill cache without blocking prompt setup", async () => {
+  const { cwd, agentDir } = await setupTest();
+  const skillDir = path.join(agentDir, "skills", "warm");
+  const skillPath = path.join(skillDir, "SKILL.md");
+  await fs.promises.mkdir(skillDir, { recursive: true });
+  await fs.promises.writeFile(
+    skillPath,
+    `---
+name: warm
+description: Warm skill
+---
+Use warm skill.
+`,
+  );
+  resetResolvedAgentSkillArgsCache();
+  await expect(resolveAgentSkillArgs(cwd, ["warm"])).resolves.toEqual({
+    args: ["--skill", skillPath],
+  });
+  const originalReload = DefaultResourceLoader.prototype.reload;
+  const originalWriteFile = fs.promises.writeFile;
+  let reloadCalled = false;
+  let promptWriteStarted = false;
+  DefaultResourceLoader.prototype.reload = async function failWarmReload() {
+    reloadCalled = true;
+    throw new Error("warm cache missed");
+  };
+  Object.defineProperty(fs.promises, "writeFile", {
+    configurable: true,
+    value: async (...args: unknown[]) => {
+      if (String(args[1]).includes("Warm prompt.")) promptWriteStarted = true;
+      return Reflect.apply(originalWriteFile, fs.promises, args);
+    },
+  });
+  const agent: AgentConfig = {
+    name: "warm-agent",
+    description: "Warm agent",
+    thinking: "off",
+    systemPrompt: "Warm prompt.",
+    source: "user",
+    filePath: "warm-agent.md",
+    skills: ["warm"],
+  };
+  try {
+    const result = await runSingleAgent(
+      cwd,
+      [agent],
+      "warm-agent",
+      "task",
+      undefined,
+      undefined,
+      makeDetails,
+      undefined,
+      "off",
+    );
+    expect(result.exitCode).toBe(0);
+    expect(reloadCalled).toBe(false);
+    expect(promptWriteStarted).toBe(true);
+  } finally {
+    DefaultResourceLoader.prototype.reload = originalReload;
+    Object.defineProperty(fs.promises, "writeFile", {
+      configurable: true,
+      value: originalWriteFile,
+    });
+    resetResolvedAgentSkillArgsCache();
   }
 });
 
