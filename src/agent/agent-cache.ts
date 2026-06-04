@@ -9,12 +9,14 @@ import {
   discoverAgentsAsync,
   emptyScopeResult,
   getUserAgentsDir,
-  readMarkdownDirEntriesAsync,
+  readMarkdownDirWithStatusAsync,
 } from "./agents.js";
 
 interface AgentDiscoveryScopeSnapshot {
   markdownFiles: string[];
   fileHashes: Record<string, string | null>;
+  listingTrusted: boolean;
+  directory: string | null;
 }
 
 type AgentDiscoverySnapshots = Record<AgentSource, AgentDiscoveryScopeSnapshot>;
@@ -52,7 +54,12 @@ function getFreshCacheEntry(
 }
 
 function emptySnapshot(): AgentDiscoveryScopeSnapshot {
-  return { markdownFiles: [], fileHashes: {} };
+  return {
+    markdownFiles: [],
+    fileHashes: {},
+    listingTrusted: false,
+    directory: null,
+  };
 }
 
 function cloneScopeSnapshot(
@@ -62,6 +69,8 @@ function cloneScopeSnapshot(
   return {
     markdownFiles: [...snapshot.markdownFiles],
     fileHashes: { ...snapshot.fileHashes },
+    listingTrusted: snapshot.listingTrusted,
+    directory: snapshot.directory,
   };
 }
 
@@ -71,14 +80,17 @@ function equalStringSets(a: string[], b: string[]): boolean {
   return b.every((value) => set.has(value));
 }
 
-function snapshotsEqual(
-  left: AgentDiscoveryScopeSnapshot,
-  right: AgentDiscoveryScopeSnapshot,
+function snapshotHasRequiredMetadata(
+  snapshot: AgentDiscoveryScopeSnapshot,
 ): boolean {
-  if (!equalStringSets(left.markdownFiles, right.markdownFiles)) return false;
-  return left.markdownFiles.every(
-    (fileName) => left.fileHashes[fileName] === right.fileHashes[fileName],
-  );
+  if (typeof snapshot.listingTrusted !== "boolean") return false;
+  if (snapshot.directory !== null && typeof snapshot.directory !== "string")
+    return false;
+  if (
+    !equalStringSets(snapshot.markdownFiles, Object.keys(snapshot.fileHashes))
+  )
+    return false;
+  return true;
 }
 
 function scopeAgentsMatchListing(
@@ -118,16 +130,20 @@ async function hashMarkdownFileAsync(
 async function buildScopeSnapshotAsync(
   dir: string | null,
 ): Promise<AgentDiscoveryScopeSnapshot> {
-  if (!dir) return emptySnapshot();
-  const entries = await readMarkdownDirEntriesAsync(dir);
-  const markdownFiles = entries.map((entry) => entry.name);
+  const listing = await readMarkdownDirWithStatusAsync(dir);
+  const markdownFiles = listing.entries.map((entry) => entry.name);
   const hashPairs = await Promise.all(
     markdownFiles.map(
       async (fileName) =>
-        [fileName, await hashMarkdownFileAsync(dir, fileName)] as const,
+        [fileName, await hashMarkdownFileAsync(dir ?? "", fileName)] as const,
     ),
   );
-  return { markdownFiles, fileHashes: Object.fromEntries(hashPairs) };
+  return {
+    markdownFiles,
+    fileHashes: Object.fromEntries(hashPairs),
+    listingTrusted: listing.ok,
+    directory: dir ? path.resolve(dir) : null,
+  };
 }
 
 async function buildCacheSnapshotsAsync(
@@ -146,13 +162,22 @@ async function canTrustDerivedScopeAsync(
 ): Promise<boolean> {
   const dir =
     source === "user" ? getUserAgentsDir() : bothEntry.projectAgentsDir;
+  const resolvedDir = dir ? path.resolve(dir) : null;
   const scopeResult = bothEntry.scopes[source];
   const cachedSnapshot = bothEntry.snapshots?.[source];
   if (!cachedSnapshot) return false;
+  if (!snapshotHasRequiredMetadata(cachedSnapshot)) return false;
+  if (!cachedSnapshot.listingTrusted) return false;
+  if (cachedSnapshot.directory !== resolvedDir) return false;
   if (!scopeAgentsMatchListing(scopeResult, source, dir)) return false;
   if (!equalStringSets(scopeResult.markdownFiles, cachedSnapshot.markdownFiles))
     return false;
-  return snapshotsEqual(cachedSnapshot, await buildScopeSnapshotAsync(dir));
+  const listing = await readMarkdownDirWithStatusAsync(dir);
+  if (!listing.ok) return false;
+  return equalStringSets(
+    cachedSnapshot.markdownFiles,
+    listing.entries.map((entry) => entry.name),
+  );
 }
 
 function buildSourceRecord<T>(
@@ -220,11 +245,14 @@ async function primeScopedCacheEntriesAsync(
   ctx: CacheOperationContext,
   bothEntry: AgentDiscoveryCacheEntry,
 ): Promise<void> {
-  for (const source of AGENT_SOURCES) {
-    const scopedKey = cacheKey(ctx.cwd, source);
-    if (getFreshCacheEntry(ctx, scopedKey)) continue;
-    await deriveOrDiscoverScopedEntryAsync(ctx, source, bothEntry);
-  }
+  const missingSources = AGENT_SOURCES.filter(
+    (source) => !getFreshCacheEntry(ctx, cacheKey(ctx.cwd, source)),
+  );
+  await Promise.all(
+    missingSources.map((source) =>
+      deriveOrDiscoverScopedEntryAsync(ctx, source, bothEntry),
+    ),
+  );
 }
 
 export async function getCachedAgentDiscovery(

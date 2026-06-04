@@ -1,4 +1,5 @@
-import { expect, test } from "bun:test";
+import { expect, spyOn, test } from "bun:test";
+import * as fsPromises from "node:fs/promises";
 import { chmod, mkdir, rename, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -20,6 +21,7 @@ import {
   getPiInvocation,
   getSubagentDepth,
   getSubagentOutputLimits,
+  resetResolvedAgentSkillArgsCache,
   resolveAgentSkillArgs,
   subagentDepthEnv,
   truncateOutput,
@@ -337,6 +339,65 @@ Project C prompt`,
   }
 });
 
+test("agent discovery cache primes scoped entries concurrently after cold both discovery", async () => {
+  const root = await makeTempDir("pi-subagent-concurrent-prime-");
+  const agentDir = path.join(root, "agent");
+  const cwd = path.join(root, "work");
+  const userDir = path.join(agentDir, "agents");
+  const projectDir = path.join(cwd, ".pi", "agents");
+  await mkdir(userDir, { recursive: true });
+  await mkdir(projectDir, { recursive: true });
+  await writeFile(
+    path.join(userDir, "user.md"),
+    `---
+name: user
+description: User
+---
+User prompt`,
+  );
+  await writeFile(
+    path.join(projectDir, "project.md"),
+    `---
+name: project
+description: Project
+---
+Project prompt`,
+  );
+  process.env.PI_CODING_AGENT_DIR = agentDir;
+  const cache: AgentDiscoveryCache = new Map();
+  const originalReaddir = fsPromises.readdir;
+  let listingReadCount = 0;
+  let activePrimingReads = 0;
+  let peakPrimingReads = 0;
+  const readdirSpy = spyOn(fsPromises, "readdir").mockImplementation((async (
+    ...args: Parameters<typeof fsPromises.readdir>
+  ) => {
+    if (args[0] === userDir || args[0] === projectDir) {
+      listingReadCount += 1;
+      if (listingReadCount > 4) {
+        activePrimingReads += 1;
+        peakPrimingReads = Math.max(peakPrimingReads, activePrimingReads);
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        activePrimingReads -= 1;
+      }
+    }
+    return originalReaddir(...args);
+  }) as typeof fsPromises.readdir);
+  try {
+    const both = await getCachedAgentDiscovery(cwd, "both", cache, 3000);
+    const user = cache.get(`${path.resolve(cwd)}\0user`);
+    const project = cache.get(`${path.resolve(cwd)}\0project`);
+    expect(cache.size).toBe(3);
+    expect(user?.agents.map((agent) => agent.name)).toEqual(["user"]);
+    expect(project?.agents.map((agent) => agent.name)).toEqual(["project"]);
+    expect(user?.ts).toBe(both.ts);
+    expect(project?.ts).toBe(both.ts);
+    expect(peakPrimingReads).toBe(2);
+  } finally {
+    readdirSpy.mockRestore();
+  }
+});
+
 test("agent discovery cache derives scoped entries from trusted both discovery", async () => {
   const root = await makeTempDir("pi-subagent-derived-cache-");
   const agentDir = path.join(root, "agent");
@@ -385,9 +446,17 @@ Project prompt`,
   try {
     const both = await getCachedAgentDiscovery(cwd, "both", cache, 3000);
     expect(cache.size).toBe(3);
+    cache.delete(`${path.resolve(cwd)}\0user`);
+    cache.delete(`${path.resolve(cwd)}\0project`);
+    const readFileSpy = spyOn(fsPromises, "readFile").mockImplementation(
+      (() => {
+        throw new Error("derived cache must not hash markdown contents");
+      }) as typeof fsPromises.readFile,
+    );
     now += 1;
     const user = await getCachedAgentDiscovery(cwd, "user", cache, 3000);
     const project = await getCachedAgentDiscovery(cwd, "project", cache, 3000);
+    readFileSpy.mockRestore();
     expect(user.ts).toBe(both.ts);
     expect(project.ts).toBe(both.ts);
     expect(both.agents.find((agent) => agent.name === "same")?.source).toBe(
@@ -406,7 +475,141 @@ Project prompt`,
   }
 });
 
-test("agent discovery cache falls back when derived listing or content changes", async () => {
+test("agent discovery cache trusts successful empty derived listings", async () => {
+  const root = await makeTempDir("pi-subagent-derived-empty-cache-");
+  const agentDir = path.join(root, "agent");
+  const userDir = path.join(agentDir, "agents");
+  const cwd = path.join(root, "work");
+  const userKey = `${path.resolve(cwd)}\0user`;
+  await mkdir(userDir, { recursive: true });
+  await mkdir(cwd, { recursive: true });
+  process.env.PI_CODING_AGENT_DIR = agentDir;
+  const cache: AgentDiscoveryCache = new Map();
+  let now = 6000;
+  const originalNow = Date.now;
+  Date.now = () => now;
+  try {
+    const both = await getCachedAgentDiscovery(cwd, "both", cache, 3000);
+    expect(both.snapshots?.user.listingTrusted).toBe(true);
+    cache.delete(userKey);
+    const readFileSpy = spyOn(fsPromises, "readFile").mockImplementation(
+      (() => {
+        throw new Error(
+          "empty derived listing must not hash markdown contents",
+        );
+      }) as typeof fsPromises.readFile,
+    );
+    now += 1;
+    const user = await getCachedAgentDiscovery(cwd, "user", cache, 3000);
+    readFileSpy.mockRestore();
+    expect(user.agents).toEqual([]);
+    expect(user.scopes.user.markdownFiles).toEqual([]);
+    expect(user.ts).toBe(both.ts);
+  } finally {
+    Date.now = originalNow;
+  }
+});
+
+test("agent discovery cache falls back when fresh derived listing read fails", async () => {
+  const root = await makeTempDir("pi-subagent-derived-listing-fail-");
+  const agentDir = path.join(root, "agent");
+  const userDir = path.join(agentDir, "agents");
+  const cwd = path.join(root, "work");
+  const userKey = `${path.resolve(cwd)}\0user`;
+  await mkdir(userDir, { recursive: true });
+  await mkdir(cwd, { recursive: true });
+  await writeFile(
+    path.join(userDir, "reviewer.md"),
+    `---
+name: reviewer
+description: Reviewer
+---
+Old prompt`,
+  );
+  process.env.PI_CODING_AGENT_DIR = agentDir;
+  const cache: AgentDiscoveryCache = new Map();
+  let now = 6500;
+  const originalNow = Date.now;
+  const originalReaddir = fsPromises.readdir;
+  Date.now = () => now;
+  try {
+    const both = await getCachedAgentDiscovery(cwd, "both", cache, 3000);
+    expect(both.snapshots?.user.listingTrusted).toBe(true);
+    cache.delete(userKey);
+    await writeFile(
+      path.join(userDir, "reviewer.md"),
+      `---
+name: reviewer-new
+description: Reviewer new
+---
+New prompt`,
+    );
+    let failingTrustRead = true;
+    const freshReaddirSpy = spyOn(fsPromises, "readdir").mockImplementation(
+      (async (...args: Parameters<typeof fsPromises.readdir>) => {
+        if (args[0] === userDir && failingTrustRead) {
+          failingTrustRead = false;
+          throw new Error("simulated fresh listing failure");
+        }
+        return originalReaddir(...args);
+      }) as typeof fsPromises.readdir,
+    );
+    now += 1;
+    try {
+      const user = await getCachedAgentDiscovery(cwd, "user", cache, 3000);
+      expect(user.agents.map((agent) => agent.name)).toEqual(["reviewer-new"]);
+      expect(user.ts).toBe(now);
+      expect(both.ts).toBe(6500);
+    } finally {
+      freshReaddirSpy.mockRestore();
+    }
+  } finally {
+    Date.now = originalNow;
+  }
+});
+
+test("agent discovery cache falls back when derived parent expires", async () => {
+  const root = await makeTempDir("pi-subagent-derived-expired-cache-");
+  const agentDir = path.join(root, "agent");
+  const userDir = path.join(agentDir, "agents");
+  const cwd = path.join(root, "work");
+  const userKey = `${path.resolve(cwd)}\0user`;
+  await mkdir(userDir, { recursive: true });
+  await mkdir(cwd, { recursive: true });
+  await writeFile(
+    path.join(userDir, "reviewer.md"),
+    `---
+name: reviewer
+description: Reviewer
+---
+Old prompt`,
+  );
+  process.env.PI_CODING_AGENT_DIR = agentDir;
+  const cache: AgentDiscoveryCache = new Map();
+  let now = 6800;
+  const originalNow = Date.now;
+  Date.now = () => now;
+  try {
+    await getCachedAgentDiscovery(cwd, "both", cache, 3000);
+    cache.delete(userKey);
+    await writeFile(
+      path.join(userDir, "reviewer.md"),
+      `---
+name: reviewer-new
+description: Reviewer new
+---
+New prompt`,
+    );
+    now += 3001;
+    const user = await getCachedAgentDiscovery(cwd, "user", cache, 3000);
+    expect(user.agents.map((agent) => agent.name)).toEqual(["reviewer-new"]);
+    expect(user.ts).toBe(now);
+  } finally {
+    Date.now = originalNow;
+  }
+});
+
+test("agent discovery cache trusts fresh derived content and falls back on listing changes", async () => {
   const root = await makeTempDir("pi-subagent-derived-cache-stale-");
   const agentDir = path.join(root, "agent");
   const cwd = path.join(root, "work");
@@ -446,9 +649,9 @@ New prompt`,
       3000,
     );
     expect(contentChanged.agents.map((agent) => agent.name)).toEqual([
-      "reviewer-new",
+      "reviewer",
     ]);
-    expect(contentChanged.ts).toBe(now);
+    expect(contentChanged.ts).toBe(7000);
     cache.delete(userKey);
     await rename(
       path.join(userDir, "reviewer.md"),
@@ -473,6 +676,312 @@ Renamed prompt`,
       "renamed-reviewer",
     ]);
     expect(listingChanged.ts).toBe(now);
+  } finally {
+    Date.now = originalNow;
+  }
+});
+
+test("agent discovery cache falls back when derived snapshot metadata mismatches", async () => {
+  const root = await makeTempDir("pi-subagent-derived-cache-metadata-");
+  const agentDir = path.join(root, "agent");
+  const cwd = path.join(root, "work");
+  const userDir = path.join(agentDir, "agents");
+  const userKey = `${path.resolve(cwd)}\0user`;
+  await mkdir(userDir, { recursive: true });
+  await mkdir(cwd, { recursive: true });
+  await writeFile(
+    path.join(userDir, "reviewer.md"),
+    `---
+name: reviewer
+description: Reviewer
+---
+Old prompt`,
+  );
+  process.env.PI_CODING_AGENT_DIR = agentDir;
+  const cache: AgentDiscoveryCache = new Map();
+  let now = 9000;
+  const originalNow = Date.now;
+  Date.now = () => now;
+  try {
+    const both = await getCachedAgentDiscovery(cwd, "both", cache, 3000);
+    if (!both.snapshots) throw new Error("missing discovery snapshots");
+    both.snapshots.user.markdownFiles = ["different.md"];
+    cache.delete(userKey);
+    await writeFile(
+      path.join(userDir, "reviewer.md"),
+      `---
+name: reviewer-new
+description: Reviewer new
+---
+New prompt`,
+    );
+    now += 1;
+    const user = await getCachedAgentDiscovery(cwd, "user", cache, 3000);
+    expect(user.agents.map((agent) => agent.name)).toEqual(["reviewer-new"]);
+    expect(user.ts).toBe(now);
+  } finally {
+    Date.now = originalNow;
+  }
+});
+
+test("agent discovery cache falls back when derived snapshot listingTrusted is false", async () => {
+  const root = await makeTempDir("pi-subagent-derived-trust-false-");
+  const agentDir = path.join(root, "agent");
+  const cwd = path.join(root, "work");
+  const userDir = path.join(agentDir, "agents");
+  const userKey = `${path.resolve(cwd)}\0user`;
+  await mkdir(userDir, { recursive: true });
+  await mkdir(cwd, { recursive: true });
+  await writeFile(
+    path.join(userDir, "reviewer.md"),
+    `---
+name: reviewer
+description: Reviewer
+---
+Old prompt`,
+  );
+  process.env.PI_CODING_AGENT_DIR = agentDir;
+  const cache: AgentDiscoveryCache = new Map();
+  let now = 9200;
+  const originalNow = Date.now;
+  Date.now = () => now;
+  try {
+    const both = await getCachedAgentDiscovery(cwd, "both", cache, 3000);
+    if (!both.snapshots) throw new Error("missing discovery snapshots");
+    both.snapshots.user.listingTrusted = false;
+    cache.delete(userKey);
+    await writeFile(
+      path.join(userDir, "reviewer.md"),
+      `---
+name: reviewer-new
+description: Reviewer new
+---
+New prompt`,
+    );
+    now += 1;
+    const user = await getCachedAgentDiscovery(cwd, "user", cache, 3000);
+    expect(user.agents.map((agent) => agent.name)).toEqual(["reviewer-new"]);
+    expect(user.ts).toBe(now);
+  } finally {
+    Date.now = originalNow;
+  }
+});
+
+test("agent discovery cache falls back when derived snapshot directory mismatches", async () => {
+  const root = await makeTempDir("pi-subagent-derived-dir-mismatch-");
+  const agentDir = path.join(root, "agent");
+  const cwd = path.join(root, "work");
+  const userDir = path.join(agentDir, "agents");
+  const userKey = `${path.resolve(cwd)}\0user`;
+  await mkdir(userDir, { recursive: true });
+  await mkdir(cwd, { recursive: true });
+  await writeFile(
+    path.join(userDir, "reviewer.md"),
+    `---
+name: reviewer
+description: Reviewer
+---
+Old prompt`,
+  );
+  process.env.PI_CODING_AGENT_DIR = agentDir;
+  const cache: AgentDiscoveryCache = new Map();
+  let now = 9400;
+  const originalNow = Date.now;
+  Date.now = () => now;
+  try {
+    const both = await getCachedAgentDiscovery(cwd, "both", cache, 3000);
+    if (!both.snapshots) throw new Error("missing discovery snapshots");
+    both.snapshots.user.directory = path.resolve("/other/agent/dir");
+    cache.delete(userKey);
+    await writeFile(
+      path.join(userDir, "reviewer.md"),
+      `---
+name: reviewer-new
+description: Reviewer new
+---
+New prompt`,
+    );
+    now += 1;
+    const user = await getCachedAgentDiscovery(cwd, "user", cache, 3000);
+    expect(user.agents.map((agent) => agent.name)).toEqual(["reviewer-new"]);
+    expect(user.ts).toBe(now);
+  } finally {
+    Date.now = originalNow;
+  }
+});
+
+test("agent discovery cache falls back when empty derived listing trust read fails", async () => {
+  const root = await makeTempDir("pi-subagent-derived-empty-fail-");
+  const agentDir = path.join(root, "agent");
+  const userDir = path.join(agentDir, "agents");
+  const cwd = path.join(root, "work");
+  const projectDir = path.join(cwd, ".pi", "agents");
+  const userKey = `${path.resolve(cwd)}\0user`;
+  await mkdir(userDir, { recursive: true });
+  await mkdir(projectDir, { recursive: true });
+  await mkdir(cwd, { recursive: true });
+  process.env.PI_CODING_AGENT_DIR = agentDir;
+  const cache: AgentDiscoveryCache = new Map();
+  let now = 6700;
+  const originalNow = Date.now;
+  const originalReaddir = fsPromises.readdir;
+  Date.now = () => now;
+  try {
+    const both = await getCachedAgentDiscovery(cwd, "both", cache, 3000);
+    expect(both.agents).toEqual([]);
+    expect(both.snapshots?.user.markdownFiles).toEqual([]);
+    expect(both.snapshots?.user.listingTrusted).toBe(true);
+    expect(both.snapshots?.project.markdownFiles).toEqual([]);
+    expect(both.snapshots?.project.listingTrusted).toBe(true);
+    cache.delete(userKey);
+    let trustListingFailed = false;
+    const readdirSpy = spyOn(fsPromises, "readdir").mockImplementation((async (
+      ...args: Parameters<typeof fsPromises.readdir>
+    ) => {
+      if (args[0] === userDir && !trustListingFailed) {
+        trustListingFailed = true;
+        throw new Error("simulated trust listing failure");
+      }
+      return originalReaddir(...args);
+    }) as typeof fsPromises.readdir);
+    now += 1;
+    try {
+      const user = await getCachedAgentDiscovery(cwd, "user", cache, 3000);
+      expect(user.agents).toEqual([]);
+      expect(user.ts).toBe(now);
+      expect(both.ts).toBe(6700);
+      expect(user.ts).toBeGreaterThan(both.ts);
+    } finally {
+      readdirSpy.mockRestore();
+    }
+  } finally {
+    Date.now = originalNow;
+  }
+});
+
+test("agent discovery cache falls back when derived both entry has no snapshots", async () => {
+  const root = await makeTempDir("pi-subagent-derived-no-snapshots-");
+  const agentDir = path.join(root, "agent");
+  const cwd = path.join(root, "work");
+  const userDir = path.join(agentDir, "agents");
+  const userKey = `${path.resolve(cwd)}\0user`;
+  await mkdir(userDir, { recursive: true });
+  await mkdir(cwd, { recursive: true });
+  await writeFile(
+    path.join(userDir, "reviewer.md"),
+    `---
+name: reviewer
+description: Reviewer
+---
+Old prompt`,
+  );
+  process.env.PI_CODING_AGENT_DIR = agentDir;
+  const cache: AgentDiscoveryCache = new Map();
+  let now = 9600;
+  const originalNow = Date.now;
+  Date.now = () => now;
+  try {
+    const both = await getCachedAgentDiscovery(cwd, "both", cache, 3000);
+    delete both.snapshots;
+    cache.delete(userKey);
+    await writeFile(
+      path.join(userDir, "reviewer.md"),
+      `---
+name: reviewer-new
+description: Reviewer new
+---
+New prompt`,
+    );
+    now += 1;
+    const user = await getCachedAgentDiscovery(cwd, "user", cache, 3000);
+    expect(user.agents.map((agent) => agent.name)).toEqual(["reviewer-new"]);
+    expect(user.ts).toBe(now);
+  } finally {
+    Date.now = originalNow;
+  }
+});
+
+test("agent discovery cache falls back when snapshot listingTrusted is non-boolean", async () => {
+  const root = await makeTempDir("pi-subagent-derived-trust-nonbool-");
+  const agentDir = path.join(root, "agent");
+  const cwd = path.join(root, "work");
+  const userDir = path.join(agentDir, "agents");
+  const userKey = `${path.resolve(cwd)}\0user`;
+  await mkdir(userDir, { recursive: true });
+  await mkdir(cwd, { recursive: true });
+  await writeFile(
+    path.join(userDir, "reviewer.md"),
+    `---
+name: reviewer
+description: Reviewer
+---
+Old prompt`,
+  );
+  process.env.PI_CODING_AGENT_DIR = agentDir;
+  const cache: AgentDiscoveryCache = new Map();
+  let now = 9800;
+  const originalNow = Date.now;
+  Date.now = () => now;
+  try {
+    const both = await getCachedAgentDiscovery(cwd, "both", cache, 3000);
+    // biome-ignore lint/suspicious/noExplicitAny: runtime type mutation for test
+    (both.snapshots?.user as any).listingTrusted = "yes";
+    cache.delete(userKey);
+    await writeFile(
+      path.join(userDir, "reviewer.md"),
+      `---
+name: reviewer-new
+description: Reviewer new
+---
+New prompt`,
+    );
+    now += 1;
+    const user = await getCachedAgentDiscovery(cwd, "user", cache, 3000);
+    expect(user.agents.map((agent) => agent.name)).toEqual(["reviewer-new"]);
+    expect(user.ts).toBe(now);
+  } finally {
+    Date.now = originalNow;
+  }
+});
+
+test("agent discovery cache falls back when snapshot directory is non-null non-string", async () => {
+  const root = await makeTempDir("pi-subagent-derived-dir-nonstring-");
+  const agentDir = path.join(root, "agent");
+  const cwd = path.join(root, "work");
+  const userDir = path.join(agentDir, "agents");
+  const userKey = `${path.resolve(cwd)}\0user`;
+  await mkdir(userDir, { recursive: true });
+  await mkdir(cwd, { recursive: true });
+  await writeFile(
+    path.join(userDir, "reviewer.md"),
+    `---
+name: reviewer
+description: Reviewer
+---
+Old prompt`,
+  );
+  process.env.PI_CODING_AGENT_DIR = agentDir;
+  const cache: AgentDiscoveryCache = new Map();
+  let now = 9900;
+  const originalNow = Date.now;
+  Date.now = () => now;
+  try {
+    const both = await getCachedAgentDiscovery(cwd, "both", cache, 3000);
+    // biome-ignore lint/suspicious/noExplicitAny: runtime type mutation for test
+    (both.snapshots?.user as any).directory = 42;
+    cache.delete(userKey);
+    await writeFile(
+      path.join(userDir, "reviewer.md"),
+      `---
+name: reviewer-new
+description: Reviewer new
+---
+New prompt`,
+    );
+    now += 1;
+    const user = await getCachedAgentDiscovery(cwd, "user", cache, 3000);
+    expect(user.agents.map((agent) => agent.name)).toEqual(["reviewer-new"]);
+    expect(user.ts).toBe(now);
   } finally {
     Date.now = originalNow;
   }
@@ -935,5 +1444,275 @@ description: Helps tests
   expect("args" in resolved).toBe(true);
   if ("args" in resolved) {
     expect(resolved.args).toEqual(["--skill", path.join(skillDir, "SKILL.md")]);
+  }
+  resetResolvedAgentSkillArgsCache();
+});
+
+test("resolveAgentSkillArgs caches successes by cwd and agent directory", async () => {
+  const root = await makeTempDir("pi-subagent-skill-cache-");
+  const cwdA = path.join(root, "work-a");
+  const cwdB = path.join(root, "work-b");
+  const agentDirA = path.join(root, "agent-a");
+  const agentDirB = path.join(root, "agent-b");
+  const cwdSkillA = path.join(cwdA, ".pi", "skills", "helper");
+  const cwdSkillB = path.join(cwdB, ".pi", "skills", "helper");
+  const agentSkillB = path.join(agentDirB, "skills", "helper");
+  await mkdir(cwdSkillA, { recursive: true });
+  await mkdir(cwdSkillB, { recursive: true });
+  await mkdir(agentSkillB, { recursive: true });
+  for (const dir of [cwdSkillA, cwdSkillB, agentSkillB]) {
+    await writeFile(
+      path.join(dir, "SKILL.md"),
+      `---
+name: helper
+description: Helps tests
+---
+# Helper
+`,
+    );
+  }
+  const originalReload = DefaultResourceLoader.prototype.reload;
+  let reloads = 0;
+  DefaultResourceLoader.prototype.reload = async function (...args) {
+    reloads += 1;
+    return originalReload.apply(this, args);
+  };
+  try {
+    process.env.PI_CODING_AGENT_DIR = agentDirA;
+    const first = await resolveAgentSkillArgs(cwdA, ["helper"]);
+    const warm = await resolveAgentSkillArgs(cwdA, ["helper", "helper"]);
+    process.env.PI_CODING_AGENT_DIR = agentDirB;
+    const differentAgentDir = await resolveAgentSkillArgs(cwdA, ["helper"]);
+    const differentCwd = await resolveAgentSkillArgs(cwdB, ["helper"]);
+    expect(reloads).toBe(3);
+    expect(first).toEqual({
+      args: ["--skill", path.join(cwdSkillA, "SKILL.md")],
+    });
+    expect(warm).toEqual(first);
+    expect(differentAgentDir).toEqual({
+      args: ["--skill", path.join(cwdSkillA, "SKILL.md")],
+    });
+    expect(differentCwd).toEqual({
+      args: ["--skill", path.join(cwdSkillB, "SKILL.md")],
+    });
+  } finally {
+    DefaultResourceLoader.prototype.reload = originalReload;
+    resetResolvedAgentSkillArgsCache();
+  }
+});
+
+test("resolveAgentSkillArgs preserves request order on order-insensitive warm hits", async () => {
+  const root = await makeTempDir("pi-subagent-skill-order-");
+  const cwd = path.join(root, "work");
+  const alphaSkill = path.join(cwd, ".pi", "skills", "alpha");
+  const betaSkill = path.join(cwd, ".pi", "skills", "beta");
+  await mkdir(alphaSkill, { recursive: true });
+  await mkdir(betaSkill, { recursive: true });
+  await writeFile(
+    path.join(alphaSkill, "SKILL.md"),
+    `---
+name: alpha
+description: Alpha
+---
+# Alpha
+`,
+  );
+  await writeFile(
+    path.join(betaSkill, "SKILL.md"),
+    `---
+name: beta
+description: Beta
+---
+# Beta
+`,
+  );
+  const originalReload = DefaultResourceLoader.prototype.reload;
+  let reloads = 0;
+  DefaultResourceLoader.prototype.reload = async function (...args) {
+    reloads += 1;
+    return originalReload.apply(this, args);
+  };
+  try {
+    const first = await resolveAgentSkillArgs(cwd, ["beta", "alpha"]);
+    const warm = await resolveAgentSkillArgs(cwd, ["alpha", "beta", "alpha"]);
+    expect(reloads).toBe(1);
+    expect(first).toEqual({
+      args: [
+        "--skill",
+        path.join(betaSkill, "SKILL.md"),
+        "--skill",
+        path.join(alphaSkill, "SKILL.md"),
+      ],
+    });
+    expect(warm).toEqual({
+      args: [
+        "--skill",
+        path.join(alphaSkill, "SKILL.md"),
+        "--skill",
+        path.join(betaSkill, "SKILL.md"),
+      ],
+    });
+  } finally {
+    DefaultResourceLoader.prototype.reload = originalReload;
+    resetResolvedAgentSkillArgsCache();
+  }
+});
+
+test("resolveAgentSkillArgs keeps missing diagnostics in first-seen order", async () => {
+  const root = await makeTempDir("pi-subagent-skill-missing-");
+  const cwd = path.join(root, "work");
+  const alphaSkill = path.join(cwd, ".pi", "skills", "alpha");
+  const betaSkill = path.join(cwd, ".pi", "skills", "beta");
+  await mkdir(alphaSkill, { recursive: true });
+  await mkdir(betaSkill, { recursive: true });
+  await writeFile(
+    path.join(alphaSkill, "SKILL.md"),
+    `---
+name: alpha
+description: Alpha
+---
+# Alpha
+`,
+  );
+  await writeFile(
+    path.join(betaSkill, "SKILL.md"),
+    `---
+name: beta
+description: Beta
+---
+# Beta
+`,
+  );
+  const resolved = await resolveAgentSkillArgs(cwd, [
+    "zeta",
+    "alpha",
+    "eta",
+    "zeta",
+  ]);
+  expect("error" in resolved).toBe(true);
+  if ("error" in resolved) {
+    expect(resolved.error).toStartWith(
+      'Unknown skills: "zeta", "eta". Available skills:',
+    );
+    expect(resolved.error.indexOf("alpha")).toBeLessThan(
+      resolved.error.indexOf("beta"),
+    );
+  }
+  resetResolvedAgentSkillArgsCache();
+});
+
+test("resolveAgentSkillArgs isolates cache entries by active agent directory paths", async () => {
+  const root = await makeTempDir("pi-subagent-skill-agent-dir-");
+  const cwd = path.join(root, "work");
+  const agentDirA = path.join(root, "agent-a");
+  const agentDirB = path.join(root, "agent-b");
+  const agentSkillA = path.join(agentDirA, "skills", "helper");
+  const agentSkillB = path.join(agentDirB, "skills", "helper");
+  await mkdir(cwd, { recursive: true });
+  await mkdir(agentSkillA, { recursive: true });
+  await mkdir(agentSkillB, { recursive: true });
+  for (const dir of [agentSkillA, agentSkillB]) {
+    await writeFile(
+      path.join(dir, "SKILL.md"),
+      `---
+name: helper
+description: Helps tests
+---
+# Helper
+`,
+    );
+  }
+  const originalReload = DefaultResourceLoader.prototype.reload;
+  let reloads = 0;
+  DefaultResourceLoader.prototype.reload = async function (...args) {
+    reloads += 1;
+    return originalReload.apply(this, args);
+  };
+  try {
+    process.env.PI_CODING_AGENT_DIR = agentDirA;
+    const first = await resolveAgentSkillArgs(cwd, ["helper"]);
+    process.env.PI_CODING_AGENT_DIR = agentDirB;
+    const second = await resolveAgentSkillArgs(cwd, ["helper"]);
+    expect(reloads).toBe(2);
+    expect(first).toEqual({
+      args: ["--skill", path.join(agentSkillA, "SKILL.md")],
+    });
+    expect(second).toEqual({
+      args: ["--skill", path.join(agentSkillB, "SKILL.md")],
+    });
+  } finally {
+    DefaultResourceLoader.prototype.reload = originalReload;
+    resetResolvedAgentSkillArgsCache();
+  }
+});
+
+test("resolveAgentSkillArgs canonicalizes cwd via realpath with resolve fallback on error", async () => {
+  const root = await makeTempDir("pi-subagent-skill-canonical-");
+  const cwd = path.join(root, "work");
+  const skillDir = path.join(cwd, ".pi", "skills", "helper");
+  await mkdir(skillDir, { recursive: true });
+  await writeFile(
+    path.join(skillDir, "SKILL.md"),
+    `---
+name: helper
+description: Helps tests
+---
+# Helper
+`,
+  );
+  const originalRealpath = fsPromises.realpath;
+  let realpathCalls = 0;
+  const realpathSpy = spyOn(fsPromises, "realpath").mockImplementation((async (
+    filePath: string,
+  ) => {
+    realpathCalls += 1;
+    if (realpathCalls <= 2) throw new Error("ENOENT");
+    return originalRealpath(filePath);
+  }) as typeof fsPromises.realpath);
+  try {
+    const resolved = await resolveAgentSkillArgs(cwd, ["helper"]);
+    expect(resolved).toEqual({
+      args: ["--skill", path.join(skillDir, "SKILL.md")],
+    });
+  } finally {
+    realpathSpy.mockRestore();
+    resetResolvedAgentSkillArgsCache();
+  }
+});
+
+test("resolveAgentSkillArgs expires warm cache entries after discovery TTL", async () => {
+  const root = await makeTempDir("pi-subagent-skill-cache-ttl-");
+  const cwd = path.join(root, "work");
+  const skillDir = path.join(cwd, ".pi", "skills", "helper");
+  await mkdir(skillDir, { recursive: true });
+  await writeFile(
+    path.join(skillDir, "SKILL.md"),
+    `---
+name: helper
+description: Helps tests
+---
+# Helper
+`,
+  );
+  const originalNow = Date.now;
+  const originalReload = DefaultResourceLoader.prototype.reload;
+  let now = 1000;
+  let reloads = 0;
+  Date.now = () => now;
+  DefaultResourceLoader.prototype.reload = async function (...args) {
+    reloads += 1;
+    return originalReload.apply(this, args);
+  };
+  try {
+    await resolveAgentSkillArgs(cwd, ["helper"]);
+    now += 300000;
+    await resolveAgentSkillArgs(cwd, ["helper"]);
+    now += 1;
+    await resolveAgentSkillArgs(cwd, ["helper"]);
+    expect(reloads).toBe(2);
+  } finally {
+    Date.now = originalNow;
+    DefaultResourceLoader.prototype.reload = originalReload;
+    resetResolvedAgentSkillArgsCache();
   }
 });

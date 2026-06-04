@@ -143,7 +143,7 @@ async function loadAgentsFromDirAsync(
   dir: string,
   source: AgentSource,
 ): Promise<AgentDiscoveryScopeResult> {
-  const markdownEntries = await readMarkdownDirEntriesAsync(dir);
+  const markdownEntries = (await readMarkdownDirWithStatusAsync(dir)).entries;
   const markdownFiles = markdownEntries.map((entry) => entry.name);
   const parsedAgents = await Promise.all(
     markdownEntries.map((entry) =>
@@ -162,15 +162,20 @@ export function isMarkdownDirent(entry: Dirent): boolean {
   );
 }
 
-export async function readMarkdownDirEntriesAsync(
+export interface MarkdownDirListing {
+  entries: Dirent[];
+  ok: boolean;
+}
+
+export async function readMarkdownDirWithStatusAsync(
   dir: string | null,
-): Promise<Dirent[]> {
-  if (!dir) return [];
+): Promise<MarkdownDirListing> {
+  if (!dir) return { entries: [], ok: true };
   try {
     const entries = await fsPromises.readdir(dir, { withFileTypes: true });
-    return entries.filter(isMarkdownDirent);
+    return { entries: entries.filter(isMarkdownDirent), ok: true };
   } catch {
-    return [];
+    return { entries: [], ok: false };
   }
 }
 
