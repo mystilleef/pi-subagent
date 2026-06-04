@@ -73,7 +73,7 @@ export function resolveThinkingLevel(
   return { level: clamped, warning: mkWarning(clamped) };
 }
 
-const MAX_SUBAGENT_DEPTH = 2;
+const MAX_SUBAGENT_DEPTH = 3;
 export const TOOL_RESULT_FAILED_MESSAGE = "Subagent tool result failed.";
 
 type RuntimeResult = SingleResult & { messages: Message[] };

@@ -1634,7 +1634,7 @@ test("subagent tool reports depth limit synchronously via sent messages", async 
   const tool = getSubagentTool({
     sendMessage: (msg) => sentMessages.push(msg),
   });
-  process.env.PI_SUBAGENT_DEPTH = "2";
+  process.env.PI_SUBAGENT_DEPTH = "3";
   const result = await tool.execute(
     "test-tool-call",
     { agent: "hang", task: "nested" },
@@ -1664,15 +1664,15 @@ test("subagent tool reports depth limit synchronously via sent messages", async 
   expect(listRunJobs()).toHaveLength(0);
 });
 
-test("positive-depth subagent tool completes successfully at depth 1 (max-depth-minus-one)", async () => {
+test("positive-depth subagent tool completes successfully at depth 2 (max-depth-minus-one)", async () => {
   const sentMessages: SendMessageArg[] = [];
   const { tool, cwd } = await setupTest({
     sendMessage: (msg) => sentMessages.push(msg),
   });
-  process.env.PI_SUBAGENT_DEPTH = "1";
+  process.env.PI_SUBAGENT_DEPTH = "2";
   const result = await tool.execute(
     "test-tool-call",
-    { agent: "hang", task: "depth-1" },
+    { agent: "hang", task: "depth-2" },
     undefined,
     undefined,
     { cwd, hasUI: false } as unknown as ExtensionContext,
