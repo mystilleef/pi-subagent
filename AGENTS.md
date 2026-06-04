@@ -19,7 +19,7 @@ with separate context windows.
 
 ## Architecture
 
-- **Entry point:** `src/index.ts` registers the extension, renderers,
+- **Entry point:** `src/index.ts` registers the extension, `renderers`,
   commands, and autocomplete.
 - **Agent discovery** (`src/agent/`): `agents.ts` and `agent-cache.ts`
   find, parse, and cache user and project agent definitions.
@@ -41,7 +41,6 @@ with separate context windows.
 ## Commands
 
 - Full verification: `bun verify`
-- Fix formatting: `bun fix`
 - Lint checks: `bun check`
 - Test coverage: `bun coverage`
 - Biome migration: `bun migrate`
@@ -85,14 +84,16 @@ with separate context windows.
 
 ## Testing
 
-- Tests live under `test/`: `child-events.test.ts`,
-  `coverage-gaps.test.ts`, `process.test.ts`, `progress.test.ts`,
-  `run-command.test.ts`, `subagent-tool.test.ts`, `summary.test.ts`,
-  `termination.test.ts`, `ui.test.ts`, and `utils.test.ts`.
+- Run `bun verify`
 - Test support files: `test/helpers.ts` and `test/preload.ts`.
 
 ## Rules
 
+- After edits:
+  - Run `bun check` to address lint issues
+  - Optionally, run `bun verify` for comprehensive validation
+- Write asynchronous, non-blocking code.
+- Write code that never blocks the `TUI`/`GUI`.
 - Remove all empty lines inside TypeScript and JavaScript functions.
 - Don't add empty lines inside TypeScript and JavaScript functions.
 - Leave an empty line before and after functions and classes.

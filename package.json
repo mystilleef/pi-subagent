@@ -48,12 +48,11 @@
   },
   "scripts": {
     "typecheck": "tsc --noEmit",
-    "lint": "biome check --error-on-warnings .",
-    "fix": "biome check --write --unsafe .",
+    "lint": "biome check --write --unsafe --error-on-warnings .",
     "migrate": "biome migrate --write",
     "coverage": "bun test --coverage",
     "check": "bun lint && bun typecheck",
-    "verify": "bun migrate && bun fix && bun typecheck && bun coverage",
+    "verify": "bun migrate && bun check && bun coverage",
     "pack:smoke": "bun scripts/pack-smoke.ts",
     "release": "sh -c 'npm version \"$1\" -m \"chore(release): %s\" && git push --follow-tags' --"
   },
