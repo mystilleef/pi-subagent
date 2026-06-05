@@ -77,6 +77,10 @@ type DetailsBuilder = (
   options?: DetailsOptions,
 ) => SubagentDetails;
 
+function isDebugDetailsAuthorized(debugRequested: boolean): boolean {
+  return debugRequested && process.env.PI_SUBAGENT_DEBUG_ENABLED === "1";
+}
+
 interface LifecycleContext {
   pi: ExtensionAPI;
   ctx: ExtensionContext;
@@ -318,6 +322,7 @@ async function runSubagentLifecycle(
       lc.makeDetails,
       lc.parentModel,
       lc.parentThinking,
+      lc.debug,
     );
     return finishLifecycleResult(lc, result);
   } catch (error) {
@@ -409,7 +414,7 @@ async function prepareSubagentJob(
   const agentScope: AgentScope = params.agentScope ?? "both";
   const discovery = await getCachedAgentDiscovery(ctx.cwd, agentScope);
   const agents = discovery.agents;
-  const debug = params.debug === true;
+  const debug = isDebugDetailsAuthorized(params.debug === true);
   const makeDetails = createDetailsBuilder(
     agentScope,
     discovery.projectAgentsDir,

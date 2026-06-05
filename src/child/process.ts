@@ -32,12 +32,14 @@ import {
   detectMessageError,
   getPiInvocation,
   getSubagentDepth,
+  getSubagentRuntimeLimits,
   resolveAgentSkillArgs,
   subagentDepthEnv,
   truncateOutput,
   writePromptToTempFile,
 } from "../shared/utils.js";
 import {
+  type ChildEventParseResult,
   type ChildKnownEvent,
   parseChildEventLine,
   TOOL_EXECUTION_UPDATE_EVENT,
@@ -48,8 +50,6 @@ import {
   terminateChildProcess,
 } from "./termination.js";
 
-const MAX_STDERR_BYTES = 10_000;
-const AGENT_END_GRACE_MS = 250;
 export function resolveThinkingLevel(
   requested: ThinkingLevel,
   provider: string,
@@ -73,9 +73,9 @@ export function resolveThinkingLevel(
   return { level: clamped, warning: mkWarning(clamped) };
 }
 
-const MAX_SUBAGENT_DEPTH = 3;
 export const TOOL_RESULT_FAILED_MESSAGE = "Subagent tool result failed.";
 
+type RuntimeLimits = ReturnType<typeof getSubagentRuntimeLimits>;
 type RuntimeResult = SingleResult & { messages: Message[] };
 
 export class SubagentAbortError extends Error {
@@ -91,6 +91,7 @@ type PromptSetupResult = { tmpPrompt: TempPrompt | null } | { error: unknown };
 
 interface SubagentState {
   result: RuntimeResult;
+  runtimeLimits: RuntimeLimits;
   spawnError?: Error;
   wasAborted: boolean;
   agentEndGraceTimer?: ReturnType<typeof setTimeout>;
@@ -99,15 +100,30 @@ interface SubagentState {
 
 function appendWithByteLimit(
   current: string,
-  data: string,
+  data: string | Buffer,
   max: number,
 ): string {
-  if (current.length >= max) return current;
-  return current + data.slice(0, max - current.length);
+  const currentBytes = Buffer.from(current, "utf-8");
+  if (currentBytes.length >= max) return current;
+  const incomingBytes = Buffer.isBuffer(data)
+    ? data
+    : Buffer.from(data, "utf-8");
+  const combined = Buffer.concat([currentBytes, incomingBytes]);
+  if (combined.length <= max) return combined.toString("utf-8");
+  return truncateValidUtf8(combined, max);
+}
+
+function truncateValidUtf8(buffer: Buffer, max: number): string {
+  let end = Math.min(max, buffer.length);
+  while (end > 0) {
+    const candidate = buffer.subarray(0, end).toString("utf-8");
+    if (!candidate.endsWith("�")) return candidate;
+    end -= 1;
+  }
+  return "";
 }
 
 /**
- * Attempts to resolve the context window token limit for a given message's model.
  * Rationale: Subagent usage reporting needs context window awareness to provide
  * meaningful "context full" indicators to the parent.
  */
@@ -134,11 +150,6 @@ function getAbortReason(signal: AbortSignal): string {
   return "abort";
 }
 
-/**
- * Verifies if the agent produced any textual output or final response.
- * Precondition: Called after process exit to distinguish between clean completion
- * and silent failures where the process exited 0 but did nothing.
- */
 function hasCompletedAgentOutput(result: RuntimeResult): boolean {
   if (result.finalOutput.trim()) return true;
   return result.messages.some(
@@ -151,7 +162,6 @@ function hasCompletedAgentOutput(result: RuntimeResult): boolean {
 }
 
 /**
- * Determines the exit code for processes terminated via the agent_end timeout.
  * Rationale: `pi` processes in JSON mode might hang after finishing their task;
  * we force-kill them after a grace period and treat it as success (0) if they
  * actually produced output.
@@ -168,7 +178,6 @@ function getAgentEndTimeoutExitCode(
 }
 
 /**
- * Orchestrates the cleanup and exit code capture of a child process.
  * Safety: Implements a dual-timer strategy (idle and hard) to ensure streams
  * are destroyed and promises settled even if the process or its pipes hang.
  */
@@ -336,13 +345,14 @@ function errorForDepthLimit(
   source: "user" | "project" | "unknown",
   task: string,
   depth: number,
+  maxDepth: number,
   model?: string,
 ): SingleResult {
   return createErrorResult(
     agentName,
     source,
     task,
-    `Subagent nesting limit reached (depth ${depth}/${MAX_SUBAGENT_DEPTH}).`,
+    `Subagent nesting limit reached (depth ${depth}/${maxDepth}).`,
     model,
   );
 }
@@ -387,12 +397,6 @@ function findRecentMessagesAnchor(messages: Message[]): number {
   return -1;
 }
 
-/**
- * Derives current execution progress from accumulated messages.
- * Maps tool calls to UI-safe previews for real-time feedback.
- * Builds activeToolActivity from the most recent tool call, providing
- * a compact parent summary for subagent tools before nested child data arrives.
- */
 function deriveStreamingProgress(messages: Message[]): StreamingProgress {
   const toolCalls: { id: string; preview: string }[] = [];
   let lastToolPreview: string | undefined;
@@ -418,10 +422,6 @@ function deriveStreamingProgress(messages: Message[]): StreamingProgress {
   };
 }
 
-/**
- * Prevents leaking secrets in the CLI progress display.
- * Redacts values if the preview contains sensitive keywords.
- */
 function sanitizeProgressPreview(preview: string, toolName: string): string {
   return SENSITIVE_PATTERN.test(preview) ? toolName : preview;
 }
@@ -565,8 +565,21 @@ function handleAgentEndEvent(
   state.agentEndGraceTimer = setTimeout(() => {
     state.agentEndGraceTimer = undefined;
     void requestTermination("agent_end_timeout");
-  }, AGENT_END_GRACE_MS);
+  }, state.runtimeLimits.agentEndGraceMs);
   state.agentEndGraceTimer.unref?.();
+}
+
+function formatUnknownEventDiagnostic(
+  line: string,
+  parseResult: Exclude<ChildEventParseResult, { kind: "known" }>,
+): string {
+  if (parseResult.kind === "invalid" && !line.trim()) {
+    return "[pi-subagent:unknown-event] blank";
+  }
+  if (parseResult.kind === "invalid") {
+    return `[pi-subagent:unknown-event] malformed: ${line}`;
+  }
+  return `[pi-subagent:unknown-event] unknown: ${JSON.stringify(parseResult.event)}`;
 }
 
 function processEventLine(
@@ -577,9 +590,17 @@ function processEventLine(
     toolResultCompleted?: boolean;
   }) => void,
   requestTermination: (reason: string) => Promise<unknown>,
+  debugEventDiagnostics: boolean,
 ): void {
   const parseResult = parseChildEventLine(line);
-  if (parseResult.kind !== "known") return;
+  if (parseResult.kind !== "known") {
+    if (debugEventDiagnostics) {
+      process.stderr.write(
+        `${formatUnknownEventDiagnostic(line, parseResult)}\n`,
+      );
+    }
+    return;
+  }
   const { event } = parseResult;
   handleMessageEvent(event, state, emitUpdate);
   handleToolExecutionUpdateEvent(event, emitUpdate);
@@ -639,28 +660,35 @@ function setupChildProcess(
     toolResultCompleted?: boolean;
   }) => void,
   requestTermination: (reason: string) => Promise<unknown>,
+  debugEventDiagnostics: boolean,
 ): void {
   proc.once("error", (error) => {
     state.spawnError = error;
     state.result.stderr = appendWithByteLimit(
       state.result.stderr,
       error.message,
-      MAX_STDERR_BYTES,
+      state.runtimeLimits.maxStderrBytes,
     );
   });
   if (proc.stdout) {
     readline
       .createInterface({ input: proc.stdout })
       .on("line", (line) =>
-        processEventLine(line, state, emitUpdate, requestTermination),
+        processEventLine(
+          line,
+          state,
+          emitUpdate,
+          requestTermination,
+          debugEventDiagnostics,
+        ),
       );
   }
   if (proc.stderr) {
-    proc.stderr.on("data", (data) => {
+    proc.stderr.on("data", (data: Buffer) => {
       state.result.stderr = appendWithByteLimit(
         state.result.stderr,
-        data.toString(),
-        MAX_STDERR_BYTES,
+        data,
+        state.runtimeLimits.maxStderrBytes,
       );
     });
   }
@@ -689,8 +717,6 @@ async function finalizeResult(
 }
 
 /**
- * Executes a single subagent task.
- *
  * Rationale: Subagents run in isolated child processes to protect the parent's
  * context window and allow specialized system prompts/tools without polluting
  * the main conversation.
@@ -716,12 +742,20 @@ export async function runSingleAgent(
   ) => SubagentDetails,
   parentModel: { provider: string; id: string } | undefined,
   parentThinking: ThinkingLevel,
+  debugEventDiagnostics = false,
 ): Promise<SingleResult> {
   const agent = agents.find((a) => a.name === agentName);
   if (!agent) return errorForUnknownAgent(agentName, agents, task);
+  const runtimeLimits = getSubagentRuntimeLimits();
   const depth = getSubagentDepth();
-  if (depth >= MAX_SUBAGENT_DEPTH) {
-    return errorForDepthLimit(agentName, agent.source, task, depth);
+  if (depth >= runtimeLimits.maxDepth) {
+    return errorForDepthLimit(
+      agentName,
+      agent.source,
+      task,
+      depth,
+      runtimeLimits.maxDepth,
+    );
   }
   const requestedThinking = agent.thinking ?? parentThinking;
   const { level: thinking, warning: thinkingWarning } = parentModel
@@ -754,6 +788,7 @@ export async function runSingleAgent(
   const startedAt = Date.now();
   const state: SubagentState = {
     result: initRuntimeResult(agentName, agent.source, task, modelDisplay),
+    runtimeLimits,
     wasAborted: false,
   };
   if (thinkingWarning) state.result.thinkingWarning = thinkingWarning;
@@ -787,7 +822,13 @@ export async function runSingleAgent(
       terminateOptions,
       state,
     );
-    setupChildProcess(proc, state, emitUpdate, requestTermination);
+    setupChildProcess(
+      proc,
+      state,
+      emitUpdate,
+      requestTermination,
+      debugEventDiagnostics,
+    );
     const onAbort = setupAbortHandler(
       signal,
       state,

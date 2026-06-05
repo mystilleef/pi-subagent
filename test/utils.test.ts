@@ -15,12 +15,16 @@ import {
 import type { AgentConfig } from "../src/agent/agents.js";
 import { discoverAgentsAsync, formatAgentList } from "../src/agent/agents.js";
 import {
+  DEFAULT_AGENT_END_GRACE_MS,
   DEFAULT_MAX_OUTPUT_BYTES,
   DEFAULT_MAX_OUTPUT_LINES,
+  DEFAULT_MAX_STDERR_BYTES,
+  DEFAULT_MAX_SUBAGENT_DEPTH,
   detectMessageError,
   getPiInvocation,
   getSubagentDepth,
   getSubagentOutputLimits,
+  getSubagentRuntimeLimits,
   resetResolvedAgentSkillArgsCache,
   resolveAgentSkillArgs,
   subagentDepthEnv,
@@ -135,6 +139,66 @@ test("utility helpers cover truncation, invocation, prompt files, depth, and mes
       { role: "assistant", content: [{ type: "text", text: "recovered" }] },
     ] as unknown as Message[]),
   ).toBe(false);
+});
+
+test("subagent runtime limits parse env values safely", () => {
+  expect(DEFAULT_AGENT_END_GRACE_MS).toBe(250);
+  expect(DEFAULT_MAX_STDERR_BYTES).toBe(10_000);
+  expect(DEFAULT_MAX_SUBAGENT_DEPTH).toBe(3);
+  expect(getSubagentRuntimeLimits()).toEqual({
+    agentEndGraceMs: 250,
+    maxStderrBytes: 10_000,
+    maxDepth: 3,
+  });
+  expect(
+    getSubagentRuntimeLimits({
+      PI_SUBAGENT_AGENT_END_GRACE_MS: "125",
+      PI_SUBAGENT_MAX_STDERR_BYTES: "2048",
+      PI_SUBAGENT_MAX_DEPTH: "7",
+    }),
+  ).toEqual({ agentEndGraceMs: 125, maxStderrBytes: 2048, maxDepth: 7 });
+  expect(
+    getSubagentRuntimeLimits({
+      PI_SUBAGENT_AGENT_END_GRACE_MS: 75,
+      PI_SUBAGENT_MAX_STDERR_BYTES: 512,
+      PI_SUBAGENT_MAX_DEPTH: 2,
+    }),
+  ).toEqual({ agentEndGraceMs: 75, maxStderrBytes: 512, maxDepth: 2 });
+});
+
+test("subagent runtime limits fall back for invalid env values", () => {
+  const invalidValues = [
+    undefined,
+    "",
+    "0",
+    "-1",
+    "1.5",
+    "Infinity",
+    "NaN",
+    "not-a-number",
+  ];
+  for (const value of invalidValues) {
+    expect(
+      getSubagentRuntimeLimits({
+        PI_SUBAGENT_AGENT_END_GRACE_MS: value,
+        PI_SUBAGENT_MAX_STDERR_BYTES: value,
+        PI_SUBAGENT_MAX_DEPTH: value,
+      }),
+    ).toEqual({ agentEndGraceMs: 250, maxStderrBytes: 10_000, maxDepth: 3 });
+  }
+});
+
+test("subagent runtime max depth clamps above ceiling", () => {
+  expect(getSubagentRuntimeLimits({ PI_SUBAGENT_MAX_DEPTH: "10" })).toEqual({
+    agentEndGraceMs: 250,
+    maxStderrBytes: 10_000,
+    maxDepth: 10,
+  });
+  expect(getSubagentRuntimeLimits({ PI_SUBAGENT_MAX_DEPTH: "11" })).toEqual({
+    agentEndGraceMs: 250,
+    maxStderrBytes: 10_000,
+    maxDepth: 10,
+  });
 });
 
 test("getPiInvocation keeps custom non-generic runtimes", () => {

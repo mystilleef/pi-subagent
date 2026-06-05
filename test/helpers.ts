@@ -21,6 +21,10 @@ const ORIGINAL_ARGV_1 = process.argv[1] ?? "";
 const ORIGINAL_PATH = process.env.PATH;
 const ORIGINAL_AGENT_DIR = process.env.PI_CODING_AGENT_DIR;
 const ORIGINAL_SUBAGENT_DEPTH = process.env.PI_SUBAGENT_DEPTH;
+const ORIGINAL_AGENT_END_GRACE_MS = process.env.PI_SUBAGENT_AGENT_END_GRACE_MS;
+const ORIGINAL_MAX_STDERR_BYTES = process.env.PI_SUBAGENT_MAX_STDERR_BYTES;
+const ORIGINAL_MAX_DEPTH = process.env.PI_SUBAGENT_MAX_DEPTH;
+const ORIGINAL_DEBUG_ENABLED = process.env.PI_SUBAGENT_DEBUG_ENABLED;
 
 let tempDirs: string[] = [];
 
@@ -236,6 +240,7 @@ export function setupHooks() {
   beforeEach(() => {
     tempDirs = [];
     process.env.PI_SUBAGENT_DEPTH = "0";
+    delete process.env.PI_SUBAGENT_DEBUG_ENABLED;
   });
   afterEach(async () => {
     process.argv[1] = ORIGINAL_ARGV_1;
@@ -247,6 +252,19 @@ export function setupHooks() {
     if (ORIGINAL_SUBAGENT_DEPTH === undefined)
       delete process.env.PI_SUBAGENT_DEPTH;
     else process.env.PI_SUBAGENT_DEPTH = ORIGINAL_SUBAGENT_DEPTH;
+    if (ORIGINAL_AGENT_END_GRACE_MS === undefined)
+      delete process.env.PI_SUBAGENT_AGENT_END_GRACE_MS;
+    else
+      process.env.PI_SUBAGENT_AGENT_END_GRACE_MS = ORIGINAL_AGENT_END_GRACE_MS;
+    if (ORIGINAL_MAX_STDERR_BYTES === undefined)
+      delete process.env.PI_SUBAGENT_MAX_STDERR_BYTES;
+    else process.env.PI_SUBAGENT_MAX_STDERR_BYTES = ORIGINAL_MAX_STDERR_BYTES;
+    if (ORIGINAL_MAX_DEPTH === undefined)
+      delete process.env.PI_SUBAGENT_MAX_DEPTH;
+    else process.env.PI_SUBAGENT_MAX_DEPTH = ORIGINAL_MAX_DEPTH;
+    if (ORIGINAL_DEBUG_ENABLED === undefined)
+      delete process.env.PI_SUBAGENT_DEBUG_ENABLED;
+    else process.env.PI_SUBAGENT_DEBUG_ENABLED = ORIGINAL_DEBUG_ENABLED;
     await Promise.all(
       tempDirs.map((dir) => rm(dir, { recursive: true, force: true })),
     );

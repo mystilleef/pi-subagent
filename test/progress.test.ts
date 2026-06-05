@@ -22,8 +22,12 @@ import {
   getAllProgressStates,
   renderToolActivity,
   renderToolActivityForDisplay,
+  SENSITIVE_PATTERN,
 } from "../src/progress/progress-state.js";
-import { patchProgressFromDetails } from "../src/progress/result-details.js";
+import {
+  patchProgressFromDetails,
+  sanitizeDetailsForDisplay,
+} from "../src/progress/result-details.js";
 import type {
   StreamingProgress,
   SubagentDetails,
@@ -37,7 +41,7 @@ function setDateNow(now: number): void {
 }
 
 function makeDetails(
-  messages: { role: string; content: unknown[] }[],
+  messages: { role: string; content: unknown[]; usage?: unknown }[],
 ): SubagentDetails {
   return {
     mode: "single",
@@ -457,6 +461,124 @@ test("multiple independent request ids are isolated", () => {
   expect(s1?.status).toBe("success");
   expect(s2?.status).toBe("running");
   expect(s2?.agent).toBe("agent-b");
+});
+
+test("SENSITIVE_PATTERN matches sensitive terms and mixed content", () => {
+  expect(SENSITIVE_PATTERN.test("secret")).toBe(true);
+  expect(SENSITIVE_PATTERN.test("token")).toBe(true);
+  expect(SENSITIVE_PATTERN.test("password")).toBe(true);
+  expect(SENSITIVE_PATTERN.test("apiToken")).toBe(true);
+  expect(SENSITIVE_PATTERN.test("user_password")).toBe(true);
+  expect(SENSITIVE_PATTERN.test("benign preface token=abc benign suffix")).toBe(
+    true,
+  );
+  expect(SENSITIVE_PATTERN.test("safe context only")).toBe(false);
+});
+
+test("sanitizeDetailsForDisplay redacts sensitive debug message content", () => {
+  const details = makeDetails([
+    {
+      role: "assistant",
+      usage: { input: 1, output: 2 },
+      content: [
+        { type: "text", text: "safe context" },
+        { type: "text", text: "secret launch token" },
+        {
+          type: "toolCall",
+          id: "tc-1",
+          name: "bash",
+          arguments: {
+            command: "echo benign",
+            token: "abc123",
+            nested: { password: "hunter2" },
+          },
+        },
+      ],
+    },
+  ]);
+  const sanitized = sanitizeDetailsForDisplay(details, true);
+  const messageJson = JSON.stringify(sanitized.results[0]?.messages);
+  expect(sanitized.results[0]?.messages?.map((m) => m.role)).toEqual([
+    "assistant",
+  ]);
+  expect(messageJson).toContain("safe context");
+  expect(messageJson).toContain("echo benign");
+  expect(messageJson).toContain("launch");
+  expect(messageJson).toContain("usage");
+  expect(messageJson).not.toContain("secret launch token");
+  expect(messageJson).not.toContain("abc123");
+  expect(messageJson).not.toContain("hunter2");
+  expect(messageJson).toContain("[redacted] launch [redacted]");
+});
+
+test("sanitizeDetailsForDisplay handles unusual debug message shapes", () => {
+  const details = makeDetails([]);
+  const firstResult = details.results[0];
+  if (!firstResult) throw new Error("missing result");
+  firstResult.messages = [
+    null,
+    "password inline",
+    { role: "assistant", content: null },
+    {
+      role: "toolResult",
+      content: [{ type: "text", text: ["token nested", "benign"] }],
+      usage: { input: 1, output: 2 },
+    },
+  ] as unknown as Message[];
+  const sanitized = sanitizeDetailsForDisplay(details, true);
+  const messageJson = JSON.stringify(sanitized.results[0]?.messages);
+  expect(messageJson).toContain("benign");
+  expect(messageJson).toContain('"input":1');
+  expect(messageJson).toContain("inline");
+  expect(messageJson).toContain("nested");
+  expect(messageJson).not.toContain("password inline");
+  expect(messageJson).not.toContain("token nested");
+});
+
+test("sanitizeDetailsForDisplay preserves benign mixed debug detail", () => {
+  const details = makeDetails([
+    {
+      role: "assistant",
+      usage: { input: 3, output: 4, totalTokens: 7 },
+      content: [
+        {
+          type: "text",
+          text: "benign preface token=abc benign suffix",
+        },
+        {
+          type: "toolCall",
+          id: "tc-1",
+          name: "write",
+          arguments: {
+            path: "safe.txt",
+            metadata: { label: "benign field" },
+            password: "hunter2",
+          },
+        },
+      ],
+    },
+    {
+      role: "user",
+      usage: { input: 5, output: 0 },
+      content: [{ type: "text", text: "ordinary follow up" }],
+    },
+  ]);
+  const sanitized = sanitizeDetailsForDisplay(details, true);
+  const messages = sanitized.results[0]?.messages ?? [];
+  const messageJson = JSON.stringify(messages);
+  expect(messages.map((message) => message.role)).toEqual([
+    "assistant",
+    "user",
+  ]);
+  expect(messageJson).toContain("benign preface");
+  expect(messageJson).toContain("benign suffix");
+  expect(messageJson).toContain("safe.txt");
+  expect(messageJson).toContain("benign field");
+  expect(messageJson).toContain("ordinary follow up");
+  expect(messageJson).toContain('"input":3');
+  expect(messageJson).not.toContain("token=abc");
+  expect(messageJson).not.toContain("hunter2");
+  expect(messageJson).toContain("[redacted]");
 });
 
 test("extractProgressFromDetails returns empty result for details with no messages", () => {

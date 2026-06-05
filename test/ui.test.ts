@@ -402,6 +402,7 @@ exit 0
 
 test("debug result details include child messages in sent result card", async () => {
   const sentMessages: SendMessageArg[] = [];
+  process.env.PI_SUBAGENT_DEBUG_ENABLED = "1";
   const { tool, cwd } = await setupTest({
     sendMessage: (msg) => sentMessages.push(msg),
     piScript: `#!/bin/sh

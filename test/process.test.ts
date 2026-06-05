@@ -59,6 +59,212 @@ test("runSingleAgent reports unknown agents with available names", async () => {
   );
 });
 
+test("runSingleAgent reports default depth limit with effective max depth", async () => {
+  process.env.PI_SUBAGENT_DEPTH = "3";
+  const result = await runSingleAgent(
+    "/tmp",
+    [hangAgent],
+    "hang",
+    "task",
+    undefined,
+    undefined,
+    makeDetails,
+    undefined,
+    "off",
+  );
+  expect(result.exitCode).toBe(1);
+  expect(result.stderr).toContain("depth 3/3");
+});
+
+test("runSingleAgent uses env-configured max depth", async () => {
+  process.env.PI_SUBAGENT_DEPTH = "4";
+  process.env.PI_SUBAGENT_MAX_DEPTH = "5";
+  const { cwd } = await setupTest();
+  const result = await runSingleAgent(
+    cwd,
+    [hangAgent],
+    "hang",
+    "task",
+    undefined,
+    undefined,
+    makeDetails,
+    undefined,
+    "off",
+  );
+  expect(result.exitCode).toBe(0);
+  expect(result.finalOutput).toBe("done");
+});
+
+test("runSingleAgent reports clamped env max depth", async () => {
+  process.env.PI_SUBAGENT_DEPTH = "10";
+  process.env.PI_SUBAGENT_MAX_DEPTH = "99";
+  const result = await runSingleAgent(
+    "/tmp",
+    [hangAgent],
+    "hang",
+    "task",
+    undefined,
+    undefined,
+    makeDetails,
+    undefined,
+    "off",
+  );
+  expect(result.exitCode).toBe(1);
+  expect(result.stderr).toContain("depth 10/10");
+});
+
+test("runSingleAgent truncates stderr to env-configured byte cap", async () => {
+  process.env.PI_SUBAGENT_MAX_STDERR_BYTES = "7";
+  const { cwd } = await setupTest({
+    piScript: `#!/bin/sh
+printf 'abcdefghij' >&2
+printf '%s\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"done"}],"api":"fake","provider":"fake","model":"fake","usage":{"input":1,"output":1,"cacheRead":0,"cacheWrite":0,"totalTokens":2,"cost":{"total":0}},"stopReason":"stop","timestamp":0}}'
+printf '%s\n' '{"type":"agent_end","messages":[]}'
+exit 0
+`,
+  });
+  const result = await runSingleAgent(
+    cwd,
+    [hangAgent],
+    "hang",
+    "task",
+    undefined,
+    undefined,
+    makeDetails,
+    undefined,
+    "off",
+  );
+  expect(result.stderr).toBe("abcdefg");
+});
+
+test("runSingleAgent truncates multibyte stderr at valid UTF-8 byte boundaries", async () => {
+  process.env.PI_SUBAGENT_MAX_STDERR_BYTES = "7";
+  const { cwd } = await setupTest({
+    piScript: `#!/bin/sh
+printf 'a😀b中c' >&2
+printf '%s\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"done"}],"api":"fake","provider":"fake","model":"fake","usage":{"input":1,"output":1,"cacheRead":0,"cacheWrite":0,"totalTokens":2,"cost":{"total":0}},"stopReason":"stop","timestamp":0}}'
+printf '%s\n' '{"type":"agent_end","messages":[]}'
+exit 0
+`,
+  });
+  const result = await runSingleAgent(
+    cwd,
+    [hangAgent],
+    "hang",
+    "task",
+    undefined,
+    undefined,
+    makeDetails,
+    undefined,
+    "off",
+  );
+  expect(result.stderr).toBe("a😀b");
+  expect(Buffer.byteLength(result.stderr, "utf-8")).toBeLessThanOrEqual(7);
+  expect(result.stderr).not.toContain("�");
+});
+
+test("runSingleAgent keeps empty stderr under configured byte cap", async () => {
+  process.env.PI_SUBAGENT_MAX_STDERR_BYTES = "1";
+  const { cwd } = await setupTest({
+    piScript: `#!/bin/sh
+printf '%s\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"done"}],"api":"fake","provider":"fake","model":"fake","usage":{"input":1,"output":1,"cacheRead":0,"cacheWrite":0,"totalTokens":2,"cost":{"total":0}},"stopReason":"stop","timestamp":0}}'
+printf '%s\n' '{"type":"agent_end","messages":[]}'
+exit 0
+`,
+  });
+  const result = await runSingleAgent(
+    cwd,
+    [hangAgent],
+    "hang",
+    "task",
+    undefined,
+    undefined,
+    makeDetails,
+    undefined,
+    "off",
+  );
+  expect(result.stderr).toBe("");
+});
+
+test("runSingleAgent caps spawn error stderr by configured byte limit", async () => {
+  process.env.PI_SUBAGENT_MAX_STDERR_BYTES = "6";
+  const { cwd } = await setupTest();
+  const originalArgv1 = process.argv[1];
+  const originalExecPath = process.execPath;
+  process.argv[1] = "/non/existent/pi";
+  process.execPath = "/non/existent/pi_exec";
+  try {
+    const result = await runSingleAgent(
+      cwd,
+      [hangAgent],
+      "hang",
+      "task",
+      undefined,
+      undefined,
+      makeDetails,
+      undefined,
+      "off",
+    );
+    expect(result.exitCode).toBe(1);
+    expect(Buffer.byteLength(result.stderr, "utf-8")).toBeLessThanOrEqual(6);
+    expect(result.stderr).not.toContain("�");
+  } finally {
+    if (originalArgv1 !== undefined) process.argv[1] = originalArgv1;
+    process.execPath = originalExecPath;
+  }
+});
+
+test("runSingleAgent preserves default stdout drain after agent_end", async () => {
+  const { cwd } = await setupTest({
+    piScript: `#!/bin/sh
+printf '%s\n' '{"type":"agent_end","messages":[]}'
+sleep 0.05
+printf '%s\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"done after agent_end"}],"api":"fake","provider":"fake","model":"fake","usage":{"input":1,"output":1,"cacheRead":0,"cacheWrite":0,"totalTokens":2,"cost":{"total":0}},"stopReason":"stop","timestamp":0}}'
+exit 0
+`,
+  });
+  const result = await runSingleAgent(
+    cwd,
+    [hangAgent],
+    "hang",
+    "task",
+    undefined,
+    undefined,
+    makeDetails,
+    undefined,
+    "off",
+  );
+  expect(result.exitCode).toBe(0);
+  expect(result.finalOutput).toBe("done after agent_end");
+});
+
+test("runSingleAgent honors explicit lower agent-end grace", async () => {
+  process.env.PI_SUBAGENT_AGENT_END_GRACE_MS = "25";
+  const { cwd } = await setupTest({
+    piScript: `#!/bin/sh
+trap 'exit 0' TERM
+printf '%s\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"done"}],"api":"fake","provider":"fake","model":"fake","usage":{"input":1,"output":1,"cacheRead":0,"cacheWrite":0,"totalTokens":2,"cost":{"total":0}},"stopReason":"stop","timestamp":0}}'
+printf '%s\n' '{"type":"agent_end","messages":[]}'
+sleep 10 &
+wait $!
+`,
+  });
+  const startedAt = Date.now();
+  const result = await runSingleAgent(
+    cwd,
+    [hangAgent],
+    "hang",
+    "task",
+    undefined,
+    undefined,
+    makeDetails,
+    undefined,
+    "off",
+  );
+  expect(Date.now() - startedAt).toBeLessThan(500);
+  expect(result.termination?.cancelReason).toBe("agent_end_timeout");
+});
+
 test("runSingleAgent cancels cleanly with nonstandard abort reason", async () => {
   const { cwd } = await setupTest({
     piScript: `#!/bin/sh

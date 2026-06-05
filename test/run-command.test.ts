@@ -1094,6 +1094,7 @@ sleep 10
 
 test("/run debug exposes agent_end_timeout metadata", async () => {
   const sentMessages: SendMessageArg[] = [];
+  process.env.PI_SUBAGENT_DEBUG_ENABLED = "1";
   const { tool, cwd } = await setupTest({
     sendMessage: (msg) => sentMessages.push(msg),
     piScript: `#!/bin/sh
@@ -1123,10 +1124,12 @@ sleep 10
 
 test("/run debug includes child messages in final details", async () => {
   const sentMessages: SendMessageArg[] = [];
+  process.env.PI_SUBAGENT_DEBUG_ENABLED = "1";
   const { tool, cwd } = await setupTest({
     sendMessage: (msg) => sentMessages.push(msg),
     piScript: `#!/bin/sh
-printf '%s\n' '${JSON.stringify({ type: "message_end", message: { role: "assistant", content: [{ type: "toolCall", name: "bash", id: "tc-1", arguments: { command: "DEBUG_COMMAND" } }] } })}'
+printf '%s\n' '${JSON.stringify({ type: "message_end", message: { role: "assistant", content: [{ type: "toolCall", name: "bash", id: "tc-1", arguments: { command: "DEBUG_COMMAND", token: "password-value" } }] } })}'
+printf '%s\n' '${JSON.stringify({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "benign preface token=abc benign suffix" }] } })}'
 printf '%s\n' '${JSON.stringify({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "Outcome: done" }], usage: { input: 1, output: 1, totalTokens: 2, cost: { total: 0 } } } })}'
 printf '%s\n' '{"type":"agent_end"}'
 exit 0
@@ -1141,10 +1144,46 @@ exit 0
   const details = sentMessages.at(-1)?.details as {
     results?: { messages?: unknown[] }[];
   };
-  expect(details.results?.[0]?.messages).toHaveLength(2);
-  expect(JSON.stringify(details.results?.[0]?.messages)).toContain(
-    "DEBUG_COMMAND",
-  );
+  expect(details.results?.[0]?.messages).toHaveLength(3);
+  const messageJson = JSON.stringify(details.results?.[0]?.messages);
+  expect(messageJson).toContain("DEBUG_COMMAND");
+  expect(messageJson).toContain("benign preface");
+  expect(messageJson).toContain("benign suffix");
+  expect(messageJson).not.toContain("password-value");
+  expect(messageJson).not.toContain("token=abc");
+  expect(messageJson).toContain("[redacted]");
+});
+
+test("/run debug without env opt-in uses non-debug details", async () => {
+  const sentMessages: SendMessageArg[] = [];
+  const { tool, cwd } = await setupTest({
+    sendMessage: (msg) => sentMessages.push(msg),
+    piScript: `#!/bin/sh
+printf '%s\n' 'STDERR_SECRET' >&2
+printf '%s\n' '${JSON.stringify({ type: "message_end", message: { role: "assistant", content: [{ type: "toolCall", name: "bash", id: "tc-1", arguments: { command: "DEBUG_COMMAND", token: "password-value" } }] } })}'
+printf '%s\n' '${JSON.stringify({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "Outcome: done" }], usage: { input: 1, output: 1, totalTokens: 2, cost: { total: 0 } } } })}'
+printf '%s\n' '{"type":"agent_end"}'
+exit 0
+`,
+  });
+  const runCommand = tool.registeredCommands.get("run");
+  await runCommand?.handler("--debug hang test task", {
+    cwd,
+    ui: { notify: () => {} },
+  } as unknown as ExtensionCommandContext);
+  await waitForSentMessageCount(sentMessages, 2);
+  const details = sentMessages.at(-1)?.details as {
+    results?: {
+      messages?: unknown[];
+      stderr?: string;
+      termination?: unknown;
+    }[];
+  };
+  expect(details.results?.[0]?.messages).toBeUndefined();
+  expect(details.results?.[0]?.termination).toBeUndefined();
+  expect(details.results?.[0]?.stderr).toBe("");
+  expect(JSON.stringify(details)).not.toContain("password-value");
+  expect(JSON.stringify(details)).not.toContain("STDERR_SECRET");
 });
 
 test("/run context hygiene: sent message content excludes child internals", async () => {

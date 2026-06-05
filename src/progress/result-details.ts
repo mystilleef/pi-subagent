@@ -16,6 +16,7 @@ import {
   patchProgressState,
   renderToolActivity,
 } from "./progress.js";
+import { SENSITIVE_PATTERN } from "./progress-state.js";
 
 export function hasSubagentFailed(result: SingleResult): boolean {
   return (
@@ -41,6 +42,46 @@ export function createSubagentError(result: SingleResult): Error {
   return new Error(`Agent ${result.stopReason || "failed"}: ${msg}`);
 }
 
+const DEBUG_REDACTED_PLACEHOLDER = "[redacted]";
+const SENSITIVE_ASSIGNMENT_PATTERN =
+  /\b(?:secret|password|[A-Za-z0-9_-]*token)(?:\s*[:=]\s*)(?:"[^"]*"|'[^']*'|[^\s,;]+)/gi;
+const SENSITIVE_TERM_PATTERN = new RegExp(SENSITIVE_PATTERN.source, "gi");
+const TOKEN_COUNT_KEY_PATTERN = /tokens$/i;
+
+function redactSensitiveDebugString(text: string): string {
+  return text
+    .replace(SENSITIVE_ASSIGNMENT_PATTERN, DEBUG_REDACTED_PLACEHOLDER)
+    .replace(SENSITIVE_TERM_PATTERN, DEBUG_REDACTED_PLACEHOLDER);
+}
+
+function isSensitiveDebugKey(key: string): boolean {
+  const lowerKey = key.toLowerCase();
+  if (TOKEN_COUNT_KEY_PATTERN.test(lowerKey)) return false;
+  return (
+    lowerKey.includes("secret") ||
+    lowerKey.includes("password") ||
+    lowerKey.endsWith("token")
+  );
+}
+
+function redactSensitiveDebugValue(value: unknown): unknown {
+  if (typeof value === "string") return redactSensitiveDebugString(value);
+  if (Array.isArray(value)) return value.map(redactSensitiveDebugValue);
+  if (typeof value !== "object" || value === null) return value;
+  const redacted: Record<string, unknown> = {};
+  for (const [key, child] of Object.entries(value)) {
+    redacted[key] = isSensitiveDebugKey(key)
+      ? DEBUG_REDACTED_PLACEHOLDER
+      : redactSensitiveDebugValue(child);
+  }
+  return redacted;
+}
+
+function redactSensitiveDebugMessages(messages: unknown): unknown {
+  if (!Array.isArray(messages)) return messages;
+  return messages.map(redactSensitiveDebugValue);
+}
+
 export function sanitizeDetailsForDisplay(
   details: SubagentDetails,
   includeMessages = false,
@@ -50,9 +91,11 @@ export function sanitizeDetailsForDisplay(
     results: details.results.map(({ messages, termination, ...result }) => ({
       ...result,
       stderr: includeMessages ? result.stderr : "",
-      ...(includeMessages ? { messages, termination } : {}),
+      ...(includeMessages
+        ? { messages: redactSensitiveDebugMessages(messages), termination }
+        : {}),
     })),
-  };
+  } as SubagentDetails;
 }
 
 export function getLatestResult(

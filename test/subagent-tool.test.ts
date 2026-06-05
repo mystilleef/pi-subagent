@@ -392,6 +392,7 @@ exit 7
     sendMessage: (msg) => sentMessages.push(msg),
   });
   process.env.PI_SUBAGENT_DEPTH = "1";
+  process.env.PI_SUBAGENT_DEBUG_ENABLED = "1";
   const result = await tool.execute(
     "test-tool-call",
     { agent: "hang", task: "nested stderr", debug: true },
@@ -431,6 +432,7 @@ wait $!
   });
   const controller = new AbortController();
   process.env.PI_SUBAGENT_DEPTH = "1";
+  process.env.PI_SUBAGENT_DEBUG_ENABLED = "1";
   const promise = tool.execute(
     "test-tool-call",
     { agent: "hang", task: "nested abort", debug: true },
@@ -477,6 +479,7 @@ wait $!
     sendMessage: (msg) => sentMessages.push(msg),
   });
   process.env.PI_SUBAGENT_DEPTH = "1";
+  process.env.PI_SUBAGENT_DEBUG_ENABLED = "1";
   const promise = tool.execute(
     "test-tool-call",
     { agent: "hang", task: "nested cancel", debug: true },
@@ -603,6 +606,7 @@ esac
 exit 0
 `,
   });
+  process.env.PI_SUBAGENT_DEBUG_ENABLED = "1";
   await tool.execute(
     "test-tool-call",
     { agent: "hang", task: "agent-end-no-exit", debug: true },
@@ -652,6 +656,7 @@ printf '%s\n' '{"type":"agent_end","messages":[]}'
 sleep 10
 `,
   });
+  process.env.PI_SUBAGENT_DEBUG_ENABLED = "1";
   await tool.execute(
     "test-tool-call",
     { agent: "hang", task: "agent-end-no-output", debug: true },
@@ -1473,6 +1478,7 @@ exit 0
   const tool2 = getSubagentTool({
     sendMessage: (msg) => sentMessages2.push(msg),
   });
+  process.env.PI_SUBAGENT_DEBUG_ENABLED = "1";
   await tool2.execute(
     "test-tool-call",
     { agent: "hang", task: "test", debug: true },
@@ -1545,6 +1551,7 @@ exit 0
 
 test("subagent tool preserves stopReason error after agent_end timeout", async () => {
   const sentMessages: SendMessageArg[] = [];
+  process.env.PI_SUBAGENT_DEBUG_ENABLED = "1";
   const { binDir, cwd } = await setupFakePi();
   const messageEnd = JSON.stringify({
     type: "message_end",
@@ -1591,6 +1598,7 @@ wait $!
 
 test("subagent tool fails agent_end timeout with tool-only transcript", async () => {
   const sentMessages: SendMessageArg[] = [];
+  process.env.PI_SUBAGENT_DEBUG_ENABLED = "1";
   const { binDir, cwd } = await setupFakePi();
   await writeFile(
     path.join(binDir, "pi"),
@@ -1806,14 +1814,97 @@ exit 0
     { cwd, hasUI: false } as unknown as ExtensionContext,
   );
   await waitForSentMessageCount(sentMessages2, 2);
-  const debugDetails = sentMessages2.at(-1)?.details as SubagentDetails;
+  const debugWithoutEnv = sentMessages2.at(-1)?.details as SubagentDetails;
+  expect(debugWithoutEnv.results[0]?.messages).toBeUndefined();
+  expect(debugWithoutEnv.results[0]?.termination).toBeUndefined();
+  expect(debugWithoutEnv.results[0]?.stderr).toBe("");
+  expect(JSON.stringify(debugWithoutEnv)).not.toContain("SECRET_DEBUG");
+  const sentMessages3: SendMessageArg[] = [];
+  const tool3 = getSubagentTool({
+    sendMessage: (msg) => sentMessages3.push(msg),
+  });
+  process.env.PI_SUBAGENT_DEBUG_ENABLED = "1";
+  await tool3.execute(
+    "test-tool-call",
+    { agent: "hang", task: "test", debug: true },
+    undefined,
+    undefined,
+    { cwd, hasUI: false } as unknown as ExtensionContext,
+  );
+  await waitForSentMessageCount(sentMessages3, 2);
+  const debugDetails = sentMessages3.at(-1)?.details as SubagentDetails;
   expect(debugDetails.results[0]?.messages).toHaveLength(2);
   expect(debugDetails.results[0]?.termination).toBeUndefined();
   expect(debugDetails.results[0]?.stderr).toContain("STDERR_DEBUG");
-  expect(JSON.stringify(debugDetails.results[0]?.messages)).toContain(
+  expect(JSON.stringify(debugDetails.results[0]?.messages)).not.toContain(
     "SECRET_DEBUG",
   );
-  expect(sentMessages2.at(-1)?.content).not.toContain("SECRET_DEBUG");
+  expect(JSON.stringify(debugDetails.results[0]?.messages)).toContain(
+    "[redacted]",
+  );
+  expect(sentMessages3.at(-1)?.content).not.toContain("SECRET_DEBUG");
+});
+
+test("subagent tool logs unknown event diagnostics only for authorized debug", async () => {
+  const originalStderrWrite = process.stderr.write;
+  const diagnostics: string[] = [];
+  (
+    process.stderr as unknown as {
+      write: (chunk: string | Uint8Array) => boolean;
+    }
+  ).write = (chunk) => {
+    diagnostics.push(chunk.toString());
+    return true;
+  };
+  try {
+    const { tool, cwd } = await setupTest({
+      piScript: `#!/bin/sh
+printf '%s\n' '{"type":"future_event","payload":1}'
+printf '%s\n' '{ not json }'
+printf '\n'
+printf '%s\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"Outcome: diagnostics"}]}}'
+printf '%s\n' '{"type":"agent_end","messages":[]}'
+exit 0
+`,
+    });
+    await tool.execute(
+      "test-tool-call",
+      { agent: "hang", task: "test", debug: true },
+      undefined,
+      undefined,
+      { cwd, hasUI: false } as unknown as ExtensionContext,
+    );
+    await waitForRunJobsCleared();
+    expect(diagnostics.join("")).not.toContain("[pi-subagent:unknown-event]");
+    process.env.PI_SUBAGENT_DEBUG_ENABLED = "1";
+    await tool.execute(
+      "test-tool-call",
+      { agent: "hang", task: "test" },
+      undefined,
+      undefined,
+      { cwd, hasUI: false } as unknown as ExtensionContext,
+    );
+    await waitForRunJobsCleared();
+    expect(diagnostics.join("")).not.toContain("[pi-subagent:unknown-event]");
+    await tool.execute(
+      "test-tool-call",
+      { agent: "hang", task: "test", debug: true },
+      undefined,
+      undefined,
+      { cwd, hasUI: false } as unknown as ExtensionContext,
+    );
+    await waitForRunJobsCleared();
+  } finally {
+    process.stderr.write = originalStderrWrite;
+  }
+  const output = diagnostics.join("");
+  expect(output).toContain(
+    '[pi-subagent:unknown-event] unknown: {"type":"future_event","payload":1}',
+  );
+  expect(output).toContain(
+    "[pi-subagent:unknown-event] malformed: { not json }",
+  );
+  expect(output).toContain("[pi-subagent:unknown-event] blank");
 });
 
 const SUBAGENT_CALL_LINE = JSON.stringify({
