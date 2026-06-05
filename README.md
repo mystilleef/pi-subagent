@@ -130,8 +130,9 @@ delegation.
 - `task`: task prompt for the child agent.
 - `agentScope`: optional lookup scope, one of `user`, `project`, or
   `both`.
-- `debug`: optional flag that includes full child messages in result
-  details.
+- `debug`: optional flag that requests child diagnostic details. Full child
+  messages and raw internals require `PI_SUBAGENT_DEBUG_ENABLED=1` in the
+  host environment.
 
 ## Security
 
@@ -143,6 +144,12 @@ executable automation.
 
 - Review project-local agents before running them.
 - Avoid delegating secrets unless the agent and tools need them.
+- Treat child-agent prompts, tool arguments, stderr, and debug transcripts as
+  potentially sensitive.
+- Enable debug details only for trusted investigations. `debug: true` or
+  `/run --debug` can expose child conversation transcripts, termination
+  internals, and stderr only when the host explicitly sets
+  `PI_SUBAGENT_DEBUG_ENABLED=1`.
 - Prefer trusted repositories for shared agent definitions.
 - Remember that child agents can call their configured tools.
 
@@ -150,12 +157,26 @@ executable automation.
 
 **Environment variables:**
 
-- `PI_SUBAGENT_DEPTH`: nested subagent depth guard. Nested calls stop at
-  depth `3`.
+- `PI_SUBAGENT_DEPTH`: current nested subagent depth counter set internally
+  for child processes.
+- `PI_SUBAGENT_MAX_DEPTH`: max nested subagent depth. Default: `3`. Values
+  above `10` clamp to the internal ceiling `10`; deeper nesting increases
+  cost, latency, and runaway delegation risk.
+- `PI_SUBAGENT_AGENT_END_GRACE_MS`: child process grace period after
+  `agent_end` before forced termination. Default: `250`.
+- `PI_SUBAGENT_MAX_STDERR_BYTES`: max captured child stderr bytes. Default:
+  `10000`.
 - `PI_SUBAGENT_MAX_OUTPUT_BYTES`: max returned output bytes. Default:
   `50000`.
 - `PI_SUBAGENT_MAX_OUTPUT_LINES`: max returned output lines. Default:
   `500`.
+- `PI_SUBAGENT_DEBUG_ENABLED`: debug detail authorization. Set to `1` to
+  allow `debug: true` or `/run --debug` to include sanitized child messages,
+  termination internals, and stderr; unset values keep non-debug detail
+  behavior.
+
+Limit variables parse as positive integers. Empty, zero, negative, decimal,
+`Infinity`, and non-numeric values fall back to defaults.
 
 ## Troubleshooting
 
@@ -173,7 +194,7 @@ executable automation.
 
 **Nested subagent blocked:**
 
-- Nested delegation hits the `PI_SUBAGENT_DEPTH` safety limit.
+- Nested delegation hits the `PI_SUBAGENT_MAX_DEPTH` safety limit.
 - Run the child task directly from the parent session instead.
 
 **Truncated output:**
