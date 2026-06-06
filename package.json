@@ -50,7 +50,7 @@
     "typecheck": "tsc --noEmit",
     "lint": "biome check --write --unsafe --error-on-warnings .",
     "migrate": "biome migrate --write",
-    "coverage": "bun test --coverage",
+    "coverage": "bun test --parallel --parallel-delay=0",
     "check": "bun lint && bun typecheck",
     "verify": "bun migrate && bun check && bun coverage",
     "pack:smoke": "bun scripts/pack-smoke.ts",
@@ -70,7 +70,7 @@
     "@earendil-works/pi-coding-agent": "^0.78.1",
     "@earendil-works/pi-tui": "^0.78.1",
     "@types/bun": "^1.3.14",
-    "@types/node": "^25.9.1",
+    "@types/node": "^25.9.2",
     "typebox": "^1.2.1",
     "typescript": "^6.0.3"
   }
