@@ -165,9 +165,7 @@ test("parent formatter prepends thinking warning when present", () => {
 
 test("parent formatter returns output unchanged when no thinking warning", () => {
   expect(
-    formatSubagentResultForParent(
-      result({ finalOutput: "task completed", thinkingWarning: undefined }),
-    ),
+    formatSubagentResultForParent(result({ finalOutput: "task completed" })),
   ).toBe("task completed");
 });
 

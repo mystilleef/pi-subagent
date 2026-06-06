@@ -2,8 +2,8 @@ import { beforeEach, expect, test } from "bun:test";
 import type { ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import { jobsCommandHandler } from "../src/orchestration/jobs-command.js";
 import {
-  clearRunJobsForTests,
   registerRunJob,
+  resetRunRegistry,
 } from "../src/orchestration/run-registry.js";
 import {
   cancelProgressState,
@@ -18,7 +18,7 @@ import { type FakeTheme, setupHooks } from "./helpers.js";
 setupHooks();
 
 beforeEach(() => {
-  clearRunJobsForTests();
+  resetRunRegistry();
   resetProgressStore();
 });
 

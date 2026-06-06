@@ -99,7 +99,7 @@ export function makeSubagentToolUpdateLine(
       activeToolActivity: { toolName: "tool", inputSummary: preview },
     },
   };
-  if (instanceName !== undefined) result.instanceName = instanceName;
+  if (instanceName !== undefined) result["instanceName"] = instanceName;
   return JSON.stringify({
     type: "tool_execution_update",
     toolName,
@@ -162,16 +162,26 @@ export async function setupTest(overrides?: {
     await writeFile(path.join(binDir, "pi"), overrides.piScript);
     await chmod(path.join(binDir, "pi"), 0o755);
   }
-  const tool = getSubagentTool({ sendMessage: overrides?.sendMessage });
+  const tool = getSubagentTool(
+    overrides?.sendMessage !== undefined
+      ? { sendMessage: overrides.sendMessage }
+      : undefined,
+  );
   return { binDir, cwd, agentDir, tool };
 }
 
 export type RegisteredTool = Parameters<ExtensionAPI["registerTool"]>[0];
 
-export type CapturedSubagentTool = ToolDefinition<
-  typeof SubagentParams,
-  SubagentDetails
+export type CapturedSubagentTool = Omit<
+  ToolDefinition<typeof SubagentParams, SubagentDetails>,
+  "renderCall" | "renderResult"
 > & {
+  renderCall: NonNullable<
+    ToolDefinition<typeof SubagentParams, SubagentDetails>["renderCall"]
+  >;
+  renderResult: NonNullable<
+    ToolDefinition<typeof SubagentParams, SubagentDetails>["renderResult"]
+  >;
   execute: (
     toolCallId: string,
     params: Record<string, unknown>,

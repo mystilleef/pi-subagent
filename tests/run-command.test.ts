@@ -9,9 +9,9 @@ import { getCachedAgentDiscovery } from "../src/agent/agent-cache.js";
 import { resetAgentCache } from "../src/index.js";
 import {
   cancelRunJob,
-  clearRunJobsForTests,
   getRunJob,
   listRunJobs,
+  resetRunRegistry,
 } from "../src/orchestration/run-registry.js";
 import {
   clearProgressState,
@@ -48,7 +48,7 @@ async function emitSessionStart(
 }
 
 test("/run handler resolves before child completion and cancel command reaches active job", async () => {
-  clearRunJobsForTests();
+  resetRunRegistry();
   const notices: string[] = [];
   const sentMessages: SendMessageArg[] = [];
   const { tool, cwd } = await setupTest({
@@ -83,7 +83,7 @@ wait $!
 });
 
 test("/run startup reuses completion discovery cache", async () => {
-  clearRunJobsForTests();
+  resetRunRegistry();
   const notices: string[] = [];
   const { tool, cwd } = await setupTest();
   const runCommand = tool.registeredCommands.get("run");
@@ -110,7 +110,7 @@ Fresh prompt`,
 });
 
 test("/run registry registers active job and removes it after internal cancellation", async () => {
-  clearRunJobsForTests();
+  resetRunRegistry();
   const sentMessages: SendMessageArg[] = [];
   const { tool, cwd } = await setupTest({
     sendMessage: (msg) => sentMessages.push(msg),
@@ -143,7 +143,7 @@ wait $!
 });
 
 test("/run registry removes job after host signal cancellation", async () => {
-  clearRunJobsForTests();
+  resetRunRegistry();
   const controller = new AbortController();
   const notices: string[] = [];
   const sentMessages: SendMessageArg[] = [];
@@ -170,7 +170,7 @@ wait $!
 });
 
 test("/cancel-subagent no-args opens interactive selector and cancels selected agent", async () => {
-  clearRunJobsForTests();
+  resetRunRegistry();
   const notices: string[] = [];
   const sentMessages: SendMessageArg[] = [];
   const { tool, cwd } = await setupTest({
@@ -210,7 +210,7 @@ wait $!
 });
 
 test("/cancel-subagent dismiss selector performs no cancellation", async () => {
-  clearRunJobsForTests();
+  resetRunRegistry();
   const notices: string[] = [];
   const sentMessages: SendMessageArg[] = [];
   const { tool, cwd } = await setupTest({
@@ -245,7 +245,7 @@ wait $!
 });
 
 test("/cancel-subagent selector all cancels every active job", async () => {
-  clearRunJobsForTests();
+  resetRunRegistry();
   const notices: string[] = [];
   const { tool, cwd } = await setupTest({
     piScript: `#!/bin/sh
@@ -279,7 +279,7 @@ wait $!
 });
 
 test("/cancel-subagent no-args with no jobs notifies without opening selector", async () => {
-  clearRunJobsForTests();
+  resetRunRegistry();
   const notices: string[] = [];
   let selectCalled = false;
   const { tool, cwd } = await setupTest();
@@ -299,7 +299,7 @@ test("/cancel-subagent no-args with no jobs notifies without opening selector", 
 });
 
 test("/cancel-subagent whitespace args with no jobs notifies without opening selector", async () => {
-  clearRunJobsForTests();
+  resetRunRegistry();
   const notices: string[] = [];
   let selectCalled = false;
   const { tool, cwd } = await setupTest();
@@ -319,7 +319,7 @@ test("/cancel-subagent whitespace args with no jobs notifies without opening sel
 });
 
 test("/cancel-subagent cancels matching request id with reason", async () => {
-  clearRunJobsForTests();
+  resetRunRegistry();
   const notices: string[] = [];
   const { tool, cwd } = await setupTest({
     piScript: `#!/bin/sh
@@ -354,7 +354,7 @@ wait $!
 });
 
 test("/cancel-subagent all cancels every active job", async () => {
-  clearRunJobsForTests();
+  resetRunRegistry();
   const notices: string[] = [];
   const { tool, cwd } = await setupTest({
     piScript: `#!/bin/sh
@@ -385,7 +385,7 @@ wait $!
 });
 
 test("/cancel-subagent reports missing and already-finished jobs", async () => {
-  clearRunJobsForTests();
+  resetRunRegistry();
   const notices: string[] = [];
   const { tool, cwd } = await setupTest();
   const runCommand = tool.registeredCommands.get("run");
@@ -417,7 +417,7 @@ test("/cancel-subagent reports missing and already-finished jobs", async () => {
 });
 
 test("/cancel-subagent lists no jobs when called without a target", async () => {
-  clearRunJobsForTests();
+  resetRunRegistry();
   const notices: string[] = [];
   const { tool, cwd } = await setupTest();
   const cancelCommand = tool.registeredCommands.get("cancel-subagent");
@@ -429,7 +429,7 @@ test("/cancel-subagent lists no jobs when called without a target", async () => 
 });
 
 test("/run without args reports usage without starting a job", async () => {
-  clearRunJobsForTests();
+  resetRunRegistry();
   const notices: string[] = [];
   const { tool, cwd } = await setupTest();
   const runCommand = tool.registeredCommands.get("run");
@@ -442,7 +442,7 @@ test("/run without args reports usage without starting a job", async () => {
 });
 
 test("/run unknown agent reports an error without starting a job", async () => {
-  clearRunJobsForTests();
+  resetRunRegistry();
   const notices: string[] = [];
   const { tool, cwd } = await setupTest();
   const runCommand = tool.registeredCommands.get("run");
@@ -455,7 +455,7 @@ test("/run unknown agent reports an error without starting a job", async () => {
 });
 
 test("/run pre-aborted host signal cancels before worker starts", async () => {
-  clearRunJobsForTests();
+  resetRunRegistry();
   const notices: string[] = [];
   const sentMessages: SendMessageArg[] = [];
   const controller = new AbortController();
@@ -481,7 +481,7 @@ exit 0
 });
 
 test("/run worker launch waits for a macrotask turn", async () => {
-  clearRunJobsForTests();
+  resetRunRegistry();
   const sentMessages: SendMessageArg[] = [];
   const { tool, cwd } = await setupTest({
     sendMessage: (msg) => sentMessages.push(msg),
@@ -915,7 +915,7 @@ exit 7
 });
 
 test("/run final result send failure marks state error and sends fallback", async () => {
-  clearRunJobsForTests();
+  resetRunRegistry();
   const notices: string[] = [];
   const sentMessages: SendMessageArg[] = [];
   let failNextResult = true;
@@ -953,7 +953,7 @@ test("/run final result send failure marks state error and sends fallback", asyn
 });
 
 test("/run project-agent confirmation failure cancels job and propagates error", async () => {
-  clearRunJobsForTests();
+  resetRunRegistry();
   const { cwd } = await setupTest();
   const projectAgentsDir = path.join(cwd, ".pi", "agents");
   await Bun.$`mkdir -p ${projectAgentsDir}`;
@@ -988,7 +988,7 @@ Prompt`,
 });
 
 test("/run project-agent denial creates no side effects", async () => {
-  clearRunJobsForTests();
+  resetRunRegistry();
   const notices: string[] = [];
   const { cwd } = await setupTest();
   const projectAgentsDir = path.join(cwd, ".pi", "agents");
@@ -1250,7 +1250,7 @@ exit 0
     "instanceName",
     "requestId",
   ]);
-  const requestId = msgDetails.requestId as string;
+  const requestId = msgDetails["requestId"] as string;
   const state = getProgressState(requestId);
   expect(state).toBeDefined();
   const stateStr = JSON.stringify(state);
@@ -1508,7 +1508,7 @@ test("/run final result message renderer hides header and keeps success backgrou
 });
 
 test("/run collision: project agent with same-named user agent emits warning", async () => {
-  clearRunJobsForTests();
+  resetRunRegistry();
   const sentMessages: SendMessageArg[] = [];
   const { tool, agentDir, cwd } = await setupTest({
     sendMessage: (msg) => sentMessages.push(msg),
@@ -1546,7 +1546,7 @@ test("/run collision: project agent with same-named user agent emits warning", a
 });
 
 test("/run collision uses cached user discovery", async () => {
-  clearRunJobsForTests();
+  resetRunRegistry();
   const sentMessages: SendMessageArg[] = [];
   const { tool, agentDir, cwd } = await setupTest({
     sendMessage: (msg) => sentMessages.push(msg),
@@ -1590,7 +1590,7 @@ test("/run collision uses cached user discovery", async () => {
 });
 
 test("/run no collision when only project agent exists", async () => {
-  clearRunJobsForTests();
+  resetRunRegistry();
   const sentMessages: SendMessageArg[] = [];
   const { tool, cwd } = await setupTest({
     sendMessage: (msg) => sentMessages.push(msg),
@@ -1621,7 +1621,7 @@ test("/run no collision when only project agent exists", async () => {
 });
 
 test("/run collision reuses derived user cache from completion", async () => {
-  clearRunJobsForTests();
+  resetRunRegistry();
   const sentMessages: SendMessageArg[] = [];
   const { tool, agentDir, cwd } = await setupTest({
     sendMessage: (msg) => sentMessages.push(msg),
@@ -1709,7 +1709,7 @@ exit 0
 });
 
 test("/run repeated completions reuse cached discovery without redundant scans", async () => {
-  clearRunJobsForTests();
+  resetRunRegistry();
   const { tool, cwd } = await setupTest();
   const projectAgentsDir = path.join(cwd, ".pi", "agents");
   await Bun.$`mkdir -p ${projectAgentsDir}`;
@@ -1739,7 +1739,7 @@ test("/run repeated completions reuse cached discovery without redundant scans",
 });
 
 test("/run completion with different prefixes reuses same cache entry", async () => {
-  clearRunJobsForTests();
+  resetRunRegistry();
   const { tool, cwd } = await setupTest();
   const projectAgentsDir = path.join(cwd, ".pi", "agents");
   await Bun.$`mkdir -p ${projectAgentsDir}`;
@@ -1763,7 +1763,7 @@ test("/run completion with different prefixes reuses same cache entry", async ()
 });
 
 test("resources_discover event sets active workspace root for completion", async () => {
-  clearRunJobsForTests();
+  resetRunRegistry();
   const { tool, cwd } = await setupTest();
   const projectAgentsDir = path.join(cwd, ".pi", "agents");
   await Bun.$`mkdir -p ${projectAgentsDir}`;

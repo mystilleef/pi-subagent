@@ -11,6 +11,7 @@ type FakeChild = EventEmitter & {
   pid?: number;
   killed: boolean;
   exitCode: number | null;
+  signalCode: string | null;
   signals: TerminationSignal[];
   kill: (signal?: NodeJS.Signals | number) => boolean;
 };
@@ -20,6 +21,7 @@ function makeChild(overrides: Partial<FakeChild> = {}): FakeChild {
   child.pid = 123;
   child.killed = false;
   child.exitCode = null;
+  child.signalCode = null;
   child.signals = [];
   child.kill = (signal) => {
     child.signals.push(signal as TerminationSignal);
@@ -123,7 +125,8 @@ describe("terminateChildProcess", () => {
     expect(metadata.terminationSignal).toBeUndefined();
   });
   test("missing PID settles without signals", async () => {
-    const child = makeChild({ pid: undefined });
+    const child = makeChild();
+    delete child.pid;
     const metadata = await terminateChildProcess(
       child as unknown as ChildProcess,
     );
@@ -219,7 +222,7 @@ describe("terminateChildProcess", () => {
     const promise = terminateChildProcess(child as unknown as ChildProcess, {
       setTimeout: timers.setTimeout,
     });
-    child.pid = undefined;
+    delete child.pid;
     timers.timers[0]?.();
     const metadata = await promise;
     expect(child.signals).toEqual(["SIGTERM"]);
@@ -250,5 +253,168 @@ describe("terminateChildProcess", () => {
     });
     timers.timers[0]?.();
     expect(child.signals).toEqual(["SIGTERM", "SIGKILL"]);
+  });
+  test("win32 SIGTERM tree falls back to direct signal", async () => {
+    const child = makeChild({ pid: 555 });
+    const promise = terminateChildProcess(child as unknown as ChildProcess, {
+      tree: true,
+      platform: "win32",
+    });
+    child.emit("exit");
+    const metadata = await promise;
+    expect(child.signals).toEqual(["SIGTERM"]);
+    expect(metadata.fallbackCause).toBe(
+      "unsupported tree termination platform",
+    );
+    expect(metadata.target).toBe("direct");
+  });
+  test("settles via signalCode when exitCode is null", async () => {
+    const child = makeChild();
+    child.signalCode = "SIGTERM";
+    const metadata = await terminateChildProcess(
+      child as unknown as ChildProcess,
+    );
+    expect(child.signals).toEqual([]);
+    expect(metadata.terminationSignal).toBeUndefined();
+  });
+  test("error event settles the termination state", async () => {
+    const child = makeChild();
+    const timers = makeTimers();
+    const promise = terminateChildProcess(child as unknown as ChildProcess, {
+      setTimeout: timers.setTimeout,
+      clearTimeout: timers.clearTimeout,
+    });
+    child.emit("error", new Error("spawn failed"));
+    const metadata = await promise;
+    expect(metadata.escalated).toBe(false);
+    expect(timers.cleared).toHaveLength(1);
+  });
+  test("double settle is idempotent", async () => {
+    const child = makeChild();
+    const timers = makeTimers();
+    const promise = terminateChildProcess(child as unknown as ChildProcess, {
+      setTimeout: timers.setTimeout,
+      clearTimeout: timers.clearTimeout,
+    });
+    child.emit("exit", 0, null);
+    child.emit("close", 0, null);
+    const metadata = await promise;
+    expect(metadata.escalated).toBe(false);
+  });
+  test("timer unrefs when handle supports it", () => {
+    const child = makeChild();
+    const unrefed: unknown[] = [];
+    const fakeTimer = {
+      unref() {
+        unrefed.push(true);
+      },
+    };
+    void terminateChildProcess(child as unknown as ChildProcess, {
+      setTimeout() {
+        return fakeTimer;
+      },
+    });
+    expect(unrefed).toHaveLength(1);
+  });
+  test("tolerates timer handle without unref method", () => {
+    const child = makeChild();
+    const plainTimer = Symbol("timer");
+    void terminateChildProcess(child as unknown as ChildProcess, {
+      setTimeout() {
+        return plainTimer;
+      },
+    });
+  });
+  test("uses default killProcessGroup for POSIX detached tree", async () => {
+    const child = makeChild({ pid: 99999 });
+    const timers = makeTimers();
+    const promise = terminateChildProcess(child as unknown as ChildProcess, {
+      tree: true,
+      platform: "linux",
+      processTreeDetached: true,
+      setTimeout: timers.setTimeout,
+    });
+    expect(child.signals).toEqual(["SIGTERM"]);
+    child.emit("exit");
+    const metadata = await promise;
+    expect(metadata.fallbackCause).toBeDefined();
+    expect(metadata.target).toBe("direct");
+  });
+  test("uses default runTaskkill for Windows SIGKILL tree escalation", async () => {
+    const child = makeChild({ pid: 99999 });
+    const timers = makeTimers();
+    const promise = terminateChildProcess(child as unknown as ChildProcess, {
+      tree: true,
+      platform: "win32",
+      setTimeout: timers.setTimeout,
+    });
+    expect(child.signals).toEqual(["SIGTERM"]);
+    timers.timers[0]?.();
+    expect(child.signals).toEqual(["SIGTERM", "SIGKILL"]);
+    child.emit("exit");
+    const metadata = await promise;
+    expect(metadata.escalated).toBe(true);
+    expect(metadata.fallbackCause).toBeDefined();
+  });
+  test("falls back to direct when injected killProcessTree throws", async () => {
+    const child = makeChild({ pid: 444 });
+    const promise = terminateChildProcess(child as unknown as ChildProcess, {
+      tree: true,
+      platform: "linux",
+      killProcessTree() {
+        throw new Error("tree killer failed");
+      },
+    });
+    child.emit("exit");
+    const metadata = await promise;
+    expect(child.signals).toEqual(["SIGTERM"]);
+    expect(metadata.fallbackCause).toBe("tree killer failed");
+    expect(metadata.target).toBe("direct");
+  });
+  test("uses default fallbackCause for non-Error tree kill failures", async () => {
+    const child = makeChild({ pid: 556 });
+    const promise = terminateChildProcess(child as unknown as ChildProcess, {
+      tree: true,
+      platform: "linux",
+      killProcessTree() {
+        throw "string error";
+      },
+    });
+    child.emit("exit");
+    const metadata = await promise;
+    expect(metadata.fallbackCause).toBe("tree termination failed");
+    expect(metadata.target).toBe("direct");
+  });
+  test("populates cancelRequestedAt and cancelReason in metadata", async () => {
+    const child = makeChild();
+    const promise = terminateChildProcess(child as unknown as ChildProcess, {
+      reason: "user requested",
+      now: () => 42,
+    });
+    child.emit("exit");
+    const metadata = await promise;
+    expect(metadata.cancelRequestedAt).toBe(42);
+    expect(metadata.cancelReason).toBe("user requested");
+    expect(metadata.target).toBe("direct");
+    expect(metadata.escalated).toBe(false);
+    expect(metadata.processTreeKilled).toBe(false);
+  });
+  test("direct termination with explicit tree false and kill injection", async () => {
+    const child = makeChild({ pid: 111 });
+    const killed: TerminationSignal[] = [];
+    const promise = terminateChildProcess(child as unknown as ChildProcess, {
+      tree: false,
+      platform: "linux",
+      reason: "explicit",
+      killProcess(_proc, signal) {
+        killed.push(signal);
+      },
+    });
+    expect(killed).toEqual(["SIGTERM"]);
+    child.emit("exit");
+    const metadata = await promise;
+    expect(metadata.target).toBe("direct");
+    expect(metadata.processTreeKilled).toBe(false);
+    expect(metadata.cancelReason).toBe("explicit");
   });
 });

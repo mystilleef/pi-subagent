@@ -940,7 +940,6 @@ test("nested-only update changes running preview without changing toolCount", ()
   firstResult.progress = {
     toolCalls: [],
     activityText: "Reading config.ts",
-    lastToolPreview: undefined,
   };
   const seen = new Set<string>();
   patchProgressFromDetails("req-1", details, seen);
@@ -1801,7 +1800,7 @@ test("nested-only update detection returns false when latestResult progress is m
   const details = makeDetails([]);
   const firstResult = details.results[0];
   if (!firstResult) throw new Error("missing result");
-  firstResult.progress = undefined;
+  delete firstResult.progress;
   firstResult.messages = [
     {
       role: "assistant",
@@ -1985,7 +1984,7 @@ test("renderSubagentProgress uses ANSI italic fallback for instance title", () =
 test("renderSubagentProgress keeps single title when instance is absent or empty", () => {
   createProgressState("rend-1", "my-agent", "do the thing", "");
   createProgressState("rend-2", "other-agent", "do the thing");
-  patchProgressState("rend-2", { instanceName: undefined });
+  patchProgressState("rend-2", {});
   const theme = makeMarkerTheme();
   const first = renderSubagentProgress(
     {
@@ -3946,7 +3945,6 @@ test("collapsed running presentation preserves targetless tool formatting", () =
     theme,
   );
   expect(result).toBeDefined();
-  const _text = renderText(result);
   const toolLine = renderLines(result).find((line) => line.includes("bash"));
   expect(toolLine).toStartWith(
     "[toolPendingBg]   <muted>→</muted> <accent>bash</accent>",
