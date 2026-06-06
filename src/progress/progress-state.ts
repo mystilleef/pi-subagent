@@ -44,21 +44,21 @@ export const STATUS_BG: Record<ProgressStatus, ThemeBg> = {
 export interface SubagentProgressState {
   requestId: string;
   agent: string;
-  instanceName?: string;
+  instanceName?: string | undefined;
   taskPreview: string;
   status: ProgressStatus;
   startTime: number;
-  durationMs?: number;
-  activeToolActivity?: ToolActivity;
-  lastToolPreview?: string;
-  toolResultCompleted?: boolean;
+  durationMs?: number | undefined;
+  activeToolActivity?: ToolActivity | undefined;
+  lastToolPreview?: string | undefined;
+  toolResultCompleted?: boolean | undefined;
   toolCount: number;
-  inputTokens?: number;
-  outputTokens?: number;
-  contextTokens?: number;
-  contextWindowTokens?: number;
-  finalOutput?: string;
-  errorText?: string;
+  inputTokens?: number | undefined;
+  outputTokens?: number | undefined;
+  contextTokens?: number | undefined;
+  contextWindowTokens?: number | undefined;
+  finalOutput?: string | undefined;
+  errorText?: string | undefined;
 }
 
 const store = new Map<string, SubagentProgressState>();
@@ -89,6 +89,23 @@ export function getAllProgressStates(): SubagentProgressState[] {
   return [...store.values()].sort((a, b) => b.startTime - a.startTime);
 }
 
+type ProgressTransientFields = Pick<
+  SubagentProgressState,
+  "activeToolActivity" | "lastToolPreview" | "toolResultCompleted"
+>;
+
+function stripTransientFields(
+  merged: SubagentProgressState,
+): Omit<SubagentProgressState, keyof ProgressTransientFields> {
+  const {
+    activeToolActivity: _a,
+    lastToolPreview: _l,
+    toolResultCompleted: _t,
+    ...base
+  } = merged;
+  return base;
+}
+
 export function patchProgressState(
   requestId: string,
   patch: Partial<SubagentProgressState>,
@@ -96,13 +113,7 @@ export function patchProgressState(
   const state = store.get(requestId);
   if (!state) return;
   if (state.status !== "running") {
-    store.set(requestId, {
-      ...state,
-      ...patch,
-      activeToolActivity: undefined,
-      lastToolPreview: undefined,
-      toolResultCompleted: undefined,
-    });
+    store.set(requestId, stripTransientFields({ ...state, ...patch }));
     return;
   }
   store.set(requestId, { ...state, ...patch });
@@ -115,7 +126,10 @@ function storeTerminalProgressState(
   const state = store.get(requestId);
   if (!state) return;
   const durationMs = state.durationMs ?? Date.now() - state.startTime;
-  store.set(requestId, { ...state, ...patch, durationMs });
+  store.set(requestId, {
+    ...stripTransientFields({ ...state, ...patch }),
+    durationMs,
+  });
 }
 
 export function finalizeProgressState(
@@ -125,9 +139,6 @@ export function finalizeProgressState(
   storeTerminalProgressState(requestId, {
     status: "success",
     finalOutput: makeProgressFinalOutput(finalOutput),
-    activeToolActivity: undefined,
-    lastToolPreview: undefined,
-    toolResultCompleted: undefined,
   });
 }
 
@@ -136,21 +147,13 @@ export function failProgressState(requestId: string, errorText: string): void {
   storeTerminalProgressState(requestId, {
     status: "error",
     errorText: sentence,
-    activeToolActivity: undefined,
-    lastToolPreview: undefined,
-    toolResultCompleted: undefined,
   });
 }
 
 export function cancelProgressState(requestId: string, reason?: string): void {
   storeTerminalProgressState(requestId, {
     status: "cancelled",
-    activeToolActivity: undefined,
-    lastToolPreview: undefined,
-    toolResultCompleted: undefined,
-    ...(reason !== undefined
-      ? { errorText: normalizeTerminalSentence(reason) }
-      : {}),
+    errorText: reason ? normalizeTerminalSentence(reason) : undefined,
   });
 }
 
@@ -235,11 +238,11 @@ function trackNewToolCall(
 
 function extractProgressFromExistingProgress(
   progress: {
-    activityText?: string;
-    activeToolActivity?: ToolActivity;
-    lastToolPreview?: string;
+    activityText?: string | undefined;
+    activeToolActivity?: ToolActivity | undefined;
+    lastToolPreview?: string | undefined;
     toolCalls: { id: string; preview: string }[];
-    toolResultCompleted?: boolean;
+    toolResultCompleted?: boolean | undefined;
   },
   seenToolCallIds: Set<string>,
   state: DetailsProgress,
@@ -317,7 +320,7 @@ function isDerivedToolCall(part: unknown): part is {
   preview: string;
 } {
   if (!isObjectWith(part)) return false;
-  return typeof part.id === "string" && typeof part.preview === "string";
+  return typeof part["id"] === "string" && typeof part["preview"] === "string";
 }
 
 export function isToolCallPart(part: unknown): part is {
@@ -328,9 +331,9 @@ export function isToolCallPart(part: unknown): part is {
 } {
   if (!isObjectWith(part)) return false;
   return (
-    part.type === "toolCall" &&
-    typeof part.id === "string" &&
-    typeof part.name === "string"
+    part["type"] === "toolCall" &&
+    typeof part["id"] === "string" &&
+    typeof part["name"] === "string"
   );
 }
 

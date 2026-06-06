@@ -133,26 +133,27 @@ export function patchProgressFromDetails(
     nextActivity = current.activeToolActivity;
   }
   if (toolResultCompleted && nextActivity?.child) {
-    nextActivity = { ...nextActivity, child: undefined };
+    const { child: _child, ...rest } = nextActivity;
+    nextActivity = rest;
   } else if (toolResultCompleted) {
     nextActivity = undefined;
   }
-  patch.activeToolActivity = nextActivity;
+  patch["activeToolActivity"] = nextActivity;
   const renderedPreview = renderToolActivity(nextActivity);
   if (renderedPreview) {
-    patch.lastToolPreview = renderedPreview;
+    patch["lastToolPreview"] = renderedPreview;
   } else if (toolResultCompleted && !nextActivity) {
-    patch.lastToolPreview = undefined;
+    patch["lastToolPreview"] = undefined;
   }
   if (toolResultCompleted) {
-    patch.toolResultCompleted = true;
+    patch["toolResultCompleted"] = true;
   }
   // Token accounting always applies when usage data is available
   if (latestResult?.usage) {
-    patch.inputTokens = latestResult.usage.input;
-    patch.outputTokens = latestResult.usage.output;
-    patch.contextTokens = latestResult.usage.contextTokens;
-    patch.contextWindowTokens = latestResult.usage.contextWindowTokens;
+    patch["inputTokens"] = latestResult.usage.input;
+    patch["outputTokens"] = latestResult.usage.output;
+    patch["contextTokens"] = latestResult.usage.contextTokens;
+    patch["contextWindowTokens"] = latestResult.usage.contextWindowTokens;
   }
   patchProgressState(
     requestId,

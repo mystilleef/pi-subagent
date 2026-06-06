@@ -89,11 +89,18 @@ export function renderSubagentProgress(
 }
 
 class DynamicSubagentProgressText implements Component {
+  private readonly requestId: string;
+  private readonly options: { expanded: boolean };
+  private readonly theme: SubagentTheme;
   constructor(
-    private readonly requestId: string,
-    private readonly options: { expanded: boolean },
-    private readonly theme: SubagentTheme,
-  ) {}
+    requestId: string,
+    options: { expanded: boolean },
+    theme: SubagentTheme,
+  ) {
+    this.requestId = requestId;
+    this.options = options;
+    this.theme = theme;
+  }
   invalidate(): void {}
   render(width: number): string[] {
     const state = getProgressState(this.requestId);
