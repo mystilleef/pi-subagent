@@ -2102,6 +2102,8 @@ test("emitCompletionAlert emits bell on TTY", () => {
     process.stdout.write = origWrite;
     if (origIsTTY) {
       Object.defineProperty(process.stdout, "isTTY", origIsTTY);
+    } else {
+      delete (process.stdout as unknown as { isTTY?: boolean }).isTTY;
     }
   }
 });
@@ -2131,6 +2133,8 @@ test("emitCompletionAlert skips on non-TTY", () => {
     process.stdout.write = origWrite;
     if (origIsTTY) {
       Object.defineProperty(process.stdout, "isTTY", origIsTTY);
+    } else {
+      delete (process.stdout as unknown as { isTTY?: boolean }).isTTY;
     }
   }
 });
@@ -2157,6 +2161,8 @@ test("emitCompletionAlert skips for cancelled jobs", () => {
     process.stdout.write = origWrite;
     if (origIsTTY) {
       Object.defineProperty(process.stdout, "isTTY", origIsTTY);
+    } else {
+      delete (process.stdout as unknown as { isTTY?: boolean }).isTTY;
     }
   }
 });
@@ -2186,6 +2192,8 @@ test("emitCompletionAlert emits bell for error jobs", () => {
     process.stdout.write = origWrite;
     if (origIsTTY) {
       Object.defineProperty(process.stdout, "isTTY", origIsTTY);
+    } else {
+      delete (process.stdout as unknown as { isTTY?: boolean }).isTTY;
     }
   }
 });

@@ -357,8 +357,10 @@ Use fast skill.
   } finally {
     DefaultResourceLoader.prototype.reload = originalReload;
     Object.defineProperty(fs.promises, "writeFile", {
-      configurable: true,
       value: originalWriteFile,
+      writable: true,
+      enumerable: true,
+      configurable: true,
     });
     releaseOnce();
     await promise.catch(() => {});
@@ -425,8 +427,10 @@ Use warm skill.
   } finally {
     DefaultResourceLoader.prototype.reload = originalReload;
     Object.defineProperty(fs.promises, "writeFile", {
-      configurable: true,
       value: originalWriteFile,
+      writable: true,
+      enumerable: true,
+      configurable: true,
     });
     resetResolvedAgentSkillArgsCache();
   }
@@ -472,8 +476,10 @@ test("runSingleAgent cleans prompt temp file when skill resolution fails after p
     );
   } finally {
     Object.defineProperty(fs.promises, "mkdtemp", {
-      configurable: true,
       value: originalMkdtemp,
+      writable: true,
+      enumerable: true,
+      configurable: true,
     });
   }
   if (!result) throw new Error("result missing");

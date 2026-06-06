@@ -216,8 +216,11 @@ test("getPiInvocation keeps custom non-generic runtimes", () => {
     });
   } finally {
     process.argv[1] = originalArgv1;
-    if (originalExecPath)
+    if (originalExecPath) {
       Object.defineProperty(process, "execPath", originalExecPath);
+    } else {
+      delete (process as unknown as { execPath?: string }).execPath;
+    }
   }
 });
 
