@@ -94,7 +94,7 @@ interface LifecycleContext {
   task: string;
   parentModel: { provider: string; id: string } | undefined;
   parentThinking: ThinkingLevel;
-  hostOnUpdate?: AgentToolUpdateCallback<SubagentDetails>;
+  hostOnUpdate?: AgentToolUpdateCallback<SubagentDetails> | undefined;
 }
 
 function createDetailsBuilder(
@@ -127,7 +127,7 @@ function sanitizeResultDetails(
     usage: { ...usageBase },
   };
   if (contextWindowTokens !== undefined) {
-    (sanitized.usage as Record<string, unknown>).contextWindowTokens =
+    (sanitized["usage"] as Record<string, unknown>)["contextWindowTokens"] =
       contextWindowTokens;
   }
   if (progress !== undefined) {
@@ -138,7 +138,7 @@ function sanitizeResultDetails(
       toolResultCompleted,
       ...progBase
     } = progress;
-    sanitized.progress = {
+    sanitized["progress"] = {
       toolCalls: progBase.toolCalls.map((tc) => ({
         id: tc.id,
         preview: tc.preview,
@@ -150,7 +150,7 @@ function sanitizeResultDetails(
     };
   }
   if (includeMessages) {
-    sanitized.messages = options?.recentMessages
+    sanitized["messages"] = options?.recentMessages
       ? [...options.recentMessages]
       : messages !== undefined
         ? [...messages]
@@ -158,7 +158,7 @@ function sanitizeResultDetails(
     if (includeDebugMessages && termination !== undefined) {
       const { cancelReason, terminationSignal, fallbackCause, ...termBase } =
         termination;
-      sanitized.termination = {
+      sanitized["termination"] = {
         ...termBase,
         ...(cancelReason !== undefined && { cancelReason }),
         ...(terminationSignal !== undefined && { terminationSignal }),
@@ -363,7 +363,7 @@ type PrepareSubagentJobResult =
       lc: LifecycleContext;
       instanceName: string;
       requestProgressRender: () => void;
-      hostOnUpdate?: AgentToolUpdateCallback<SubagentDetails>;
+      hostOnUpdate?: AgentToolUpdateCallback<SubagentDetails> | undefined;
     }
   | { kind: "not_found"; makeDetails: DetailsBuilder }
   | { kind: "cancelled"; makeDetails: DetailsBuilder }

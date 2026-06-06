@@ -48,7 +48,6 @@ export function cancelAllRunJobs(reason = "Cancelled"): number {
   return count;
 }
 
-export function clearRunJobsForTests(): void {
+export function resetRunRegistry(): void {
   jobs.clear();
 }
-export const resetRunRegistry = clearRunJobsForTests;
