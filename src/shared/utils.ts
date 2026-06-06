@@ -41,10 +41,10 @@ export function getSubagentOutputLimits(
 ): SubagentOutputLimits {
   return {
     maxBytes:
-      parsePositiveInteger(config.PI_SUBAGENT_MAX_OUTPUT_BYTES) ??
+      parsePositiveInteger(config["PI_SUBAGENT_MAX_OUTPUT_BYTES"]) ??
       DEFAULT_MAX_OUTPUT_BYTES,
     maxLines:
-      parsePositiveInteger(config.PI_SUBAGENT_MAX_OUTPUT_LINES) ??
+      parsePositiveInteger(config["PI_SUBAGENT_MAX_OUTPUT_LINES"]) ??
       DEFAULT_MAX_OUTPUT_LINES,
   };
 }
@@ -53,14 +53,14 @@ export function getSubagentRuntimeLimits(
   config: EnvLimitConfig = process.env,
 ): SubagentRuntimeLimits {
   const maxDepth =
-    parsePositiveInteger(config.PI_SUBAGENT_MAX_DEPTH) ??
+    parsePositiveInteger(config["PI_SUBAGENT_MAX_DEPTH"]) ??
     DEFAULT_MAX_SUBAGENT_DEPTH;
   return {
     agentEndGraceMs:
-      parsePositiveInteger(config.PI_SUBAGENT_AGENT_END_GRACE_MS) ??
+      parsePositiveInteger(config["PI_SUBAGENT_AGENT_END_GRACE_MS"]) ??
       DEFAULT_AGENT_END_GRACE_MS,
     maxStderrBytes:
-      parsePositiveInteger(config.PI_SUBAGENT_MAX_STDERR_BYTES) ??
+      parsePositiveInteger(config["PI_SUBAGENT_MAX_STDERR_BYTES"]) ??
       DEFAULT_MAX_STDERR_BYTES,
     maxDepth: Math.min(maxDepth, MAX_SUBAGENT_DEPTH_CEILING),
   };

@@ -4,12 +4,12 @@ export type TerminationSignal = "SIGTERM" | "SIGKILL";
 
 export type TerminationMetadata = {
   cancelRequestedAt: number;
-  cancelReason?: string;
-  terminationSignal?: TerminationSignal;
+  cancelReason?: string | undefined;
+  terminationSignal?: TerminationSignal | undefined;
   escalated: boolean;
   processTreeKilled: boolean;
   target: "direct" | "tree";
-  fallbackCause?: string;
+  fallbackCause?: string | undefined;
 };
 
 type TimerHandle = unknown;
@@ -64,7 +64,7 @@ function settleState(state: TerminationState): void {
   if (state.settled) return;
   state.settled = true;
   if (state.timer) state.clearTimeout(state.timer);
-  state.timer = undefined;
+  delete state.timer;
   state.resolve(state.metadata);
 }
 

@@ -15,9 +15,9 @@ export interface UsageStats {
 
 export interface ToolActivity {
   toolName: string;
-  inputSummary?: string;
-  instanceName?: string;
-  child?: ToolActivity;
+  inputSummary?: string | undefined;
+  instanceName?: string | undefined;
+  child?: ToolActivity | undefined;
 }
 
 export interface StreamingProgressToolCall {
@@ -26,30 +26,30 @@ export interface StreamingProgressToolCall {
 }
 
 export interface StreamingProgress {
-  activityText?: string;
-  activeToolActivity?: ToolActivity;
+  activityText?: string | undefined;
+  activeToolActivity?: ToolActivity | undefined;
   toolCalls: StreamingProgressToolCall[];
-  lastToolPreview?: string;
-  toolResultCompleted?: boolean;
+  lastToolPreview?: string | undefined;
+  toolResultCompleted?: boolean | undefined;
 }
 
 export interface SingleResult {
   agent: string;
-  instanceName?: string;
+  instanceName?: string | undefined;
   agentSource: "user" | "project" | "unknown";
   task: string;
   exitCode: number;
   finalOutput: string;
   stderr: string;
   usage: UsageStats;
-  model?: string;
-  stopReason?: string;
-  errorMessage?: string;
-  durationMs?: number;
-  progress?: StreamingProgress;
-  messages?: Message[];
-  termination?: TerminationMetadata;
-  thinkingWarning?: string;
+  model?: string | undefined;
+  stopReason?: string | undefined;
+  errorMessage?: string | undefined;
+  durationMs?: number | undefined;
+  progress?: StreamingProgress | undefined;
+  messages?: Message[] | undefined;
+  termination?: TerminationMetadata | undefined;
+  thinkingWarning?: string | undefined;
 }
 
 export interface SubagentDetails {

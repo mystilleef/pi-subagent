@@ -79,9 +79,11 @@ type RuntimeLimits = ReturnType<typeof getSubagentRuntimeLimits>;
 type RuntimeResult = SingleResult & { messages: Message[] };
 
 export class SubagentAbortError extends Error {
-  constructor(public readonly result: SingleResult) {
+  readonly result: SingleResult;
+  constructor(result: SingleResult) {
     super("Subagent was aborted");
     this.name = "SubagentAbortError";
+    this.result = result;
   }
 }
 
@@ -129,11 +131,12 @@ function truncateValidUtf8(buffer: Buffer, max: number): string {
  */
 function resolveContextWindowTokens(msg: Message): number | undefined {
   const m = msg as unknown as Record<string, unknown>;
-  if (typeof m.provider !== "string" || typeof m.model !== "string") return;
+  if (typeof m["provider"] !== "string" || typeof m["model"] !== "string")
+    return;
   try {
     const contextWindow = getModel(
-      m.provider as never,
-      m.model as never,
+      m["provider"] as never,
+      m["model"] as never,
     )?.contextWindow;
     return Number.isFinite(contextWindow) && contextWindow > 0
       ? contextWindow
@@ -287,8 +290,9 @@ function accumulateUsage(result: RuntimeResult, msg: Message): void {
   result.usage.cacheWrite += usage.cacheWrite || 0;
   result.usage.cost += usage.cost?.total || 0;
   result.usage.contextTokens = usage.totalTokens || 0;
-  result.usage.contextWindowTokens =
-    resolveContextWindowTokens(msg) ?? result.usage.contextWindowTokens;
+  const ctxWindowTokens = resolveContextWindowTokens(msg);
+  if (ctxWindowTokens !== undefined)
+    result.usage.contextWindowTokens = ctxWindowTokens;
 }
 
 function addMessageToResult(result: RuntimeResult, msg: Message): void {
@@ -297,7 +301,7 @@ function addMessageToResult(result: RuntimeResult, msg: Message): void {
   if (msg.role === "toolResult" && msg.isError) {
     result.errorMessage ||= TOOL_RESULT_FAILED_MESSAGE;
   } else if (result.errorMessage === TOOL_RESULT_FAILED_MESSAGE) {
-    result.errorMessage = undefined;
+    delete result.errorMessage;
   }
   if (msg.role === "assistant") {
     accumulateUsage(result, msg);
@@ -414,9 +418,10 @@ function deriveStreamingProgress(messages: Message[]): StreamingProgress {
       activeToolActivity = { toolName: part.name, inputSummary: preview };
     }
   }
+  const activityText = renderToolActivity(activeToolActivity);
   return {
     activeToolActivity,
-    activityText: renderToolActivity(activeToolActivity),
+    activityText,
     toolCalls,
     lastToolPreview,
   };
@@ -447,7 +452,9 @@ export function makeEmitUpdate(
     // so the parent retains nested context until newer activity arrives
     if (options?.toolResultCompleted && result.progress?.activeToolActivity) {
       progress.activeToolActivity = result.progress.activeToolActivity;
-      progress.activityText = renderToolActivity(progress.activeToolActivity);
+      const renderedText = renderToolActivity(progress.activeToolActivity);
+      if (renderedText !== undefined) progress.activityText = renderedText;
+      else delete progress.activityText;
     }
     // Handle parsed tool activity from child events
     // Merge with parent activity if this is a nested update
@@ -474,7 +481,10 @@ export function makeEmitUpdate(
       } else {
         progress.activeToolActivity = options.toolActivity;
       }
-      progress.activityText = renderToolActivity(progress.activeToolActivity);
+      const renderedActivity = renderToolActivity(progress.activeToolActivity);
+      if (renderedActivity !== undefined)
+        progress.activityText = renderedActivity;
+      else delete progress.activityText;
     }
     if (options?.toolResultCompleted) {
       progress.toolResultCompleted = true;
@@ -515,7 +525,7 @@ function makeRequestTerminator(
 function clearGraceTimer(state: SubagentState): void {
   if (!state.agentEndGraceTimer) return;
   clearTimeout(state.agentEndGraceTimer);
-  state.agentEndGraceTimer = undefined;
+  delete state.agentEndGraceTimer;
 }
 
 function handleMessageEvent(
@@ -563,7 +573,7 @@ function handleAgentEndEvent(
   }
   if (state.agentEndGraceTimer || state.terminationPromise) return;
   state.agentEndGraceTimer = setTimeout(() => {
-    state.agentEndGraceTimer = undefined;
+    delete state.agentEndGraceTimer;
     void requestTermination("agent_end_timeout");
   }, state.runtimeLimits.agentEndGraceMs);
   state.agentEndGraceTimer.unref?.();

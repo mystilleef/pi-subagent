@@ -20,9 +20,9 @@ export type ThinkingLevel = (typeof THINKING_LEVELS)[number];
 export interface AgentConfig {
   name: string;
   description: string;
-  tools?: string[];
-  skills?: string[];
-  thinking?: ThinkingLevel;
+  tools?: string[] | undefined;
+  skills?: string[] | undefined;
+  thinking?: ThinkingLevel | undefined;
   systemPrompt: string;
   source: AgentSource;
   filePath: string;
