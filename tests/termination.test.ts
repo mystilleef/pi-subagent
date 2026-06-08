@@ -2,7 +2,11 @@ import { describe, expect, test } from "bun:test";
 import type { ChildProcess } from "node:child_process";
 import { EventEmitter } from "node:events";
 import {
+  acquireChildSleepInhibitor,
   getProcessTreeSpawnOptions,
+  makeHostSleepInhibitorAdapter,
+  type SleepInhibitorAdapter,
+  type SleepInhibitorHelperProcess,
   type TerminationSignal,
   terminateChildProcess,
 } from "../src/child/termination.js";
@@ -45,6 +49,251 @@ function makeTimers() {
     },
   };
 }
+
+describe("acquireChildSleepInhibitor", () => {
+  test("valid finite PIDs acquire one independent release handle", async () => {
+    const acquired: number[] = [];
+    const released: number[] = [];
+    const adapter: SleepInhibitorAdapter = {
+      acquire(pid) {
+        acquired.push(pid);
+        return {
+          release() {
+            released.push(pid);
+          },
+        };
+      },
+    };
+    const first = await acquireChildSleepInhibitor(101, adapter);
+    const second = await acquireChildSleepInhibitor(202, adapter);
+    await first.release();
+    await second.release();
+    expect(acquired).toEqual([101, 202]);
+    expect(released).toEqual([101, 202]);
+  });
+  test("invalid and missing PIDs return no-op handles without acquisition", async () => {
+    const acquired: unknown[] = [];
+    const adapter: SleepInhibitorAdapter = {
+      acquire(pid) {
+        acquired.push(pid);
+      },
+    };
+    const missing = await acquireChildSleepInhibitor(undefined, adapter);
+    const infinite = await acquireChildSleepInhibitor(Infinity, adapter);
+    const nonNumeric = await acquireChildSleepInhibitor("123", adapter);
+    await missing.release();
+    await infinite.release();
+    await nonNumeric.release();
+    expect(acquired).toEqual([]);
+  });
+  test("unsupported and failed acquisition degrade to no-op handles", async () => {
+    const unsupported = await acquireChildSleepInhibitor(303, {
+      supported() {
+        return false;
+      },
+      acquire() {
+        throw new Error("must not acquire");
+      },
+    });
+    const failed = await acquireChildSleepInhibitor(404, {
+      acquire() {
+        throw new Error("helper unavailable");
+      },
+    });
+    await unsupported.release();
+    await failed.release();
+  });
+  test("repeated release and release failures stay silent", async () => {
+    let releaseCalls = 0;
+    const handle = await acquireChildSleepInhibitor(505, {
+      acquire() {
+        return {
+          release() {
+            releaseCalls += 1;
+            throw new Error("already ended");
+          },
+        };
+      },
+    });
+    await handle.release();
+    await handle.release();
+    expect(releaseCalls).toBe(1);
+  });
+});
+
+describe("makeHostSleepInhibitorAdapter", () => {
+  test("supported hosts spawn a silent detached helper scoped to the child PID", async () => {
+    const helper = {
+      exitCode: null,
+      signalCode: null,
+      killSignals: [] as Array<NodeJS.Signals | number | undefined>,
+      unrefCalls: 0,
+      kill(signal?: NodeJS.Signals | number) {
+        helper.killSignals.push(signal);
+        return true;
+      },
+      unref() {
+        helper.unrefCalls += 1;
+      },
+    };
+    const spawned: Array<{
+      command: string;
+      args: string[];
+      options: { stdio: "ignore"; detached: true };
+    }> = [];
+    const adapter = makeHostSleepInhibitorAdapter({
+      platform: "darwin",
+      async commandExists(command) {
+        return command === "/usr/bin/caffeinate";
+      },
+      spawnHelper(command, args, options) {
+        spawned.push({ command, args, options });
+        return helper;
+      },
+    });
+    const handle = await acquireChildSleepInhibitor(606, adapter);
+    await handle.release();
+    expect(spawned).toEqual([
+      {
+        command: "/usr/bin/caffeinate",
+        args: ["-dimsu", "-w", "606"],
+        options: { stdio: "ignore", detached: true },
+      },
+    ]);
+    expect(helper.unrefCalls).toBe(1);
+    expect(helper.killSignals).toEqual(["SIGTERM"]);
+  });
+  test("unsupported hosts and missing helper capability stay no-op", async () => {
+    const spawned: string[] = [];
+    const unsupported = makeHostSleepInhibitorAdapter({
+      platform: "linux",
+      async commandExists() {
+        return true;
+      },
+      spawnHelper(command) {
+        spawned.push(command);
+        throw new Error("must not spawn");
+      },
+    });
+    const missingCapability = makeHostSleepInhibitorAdapter({
+      platform: "darwin",
+      async commandExists() {
+        return false;
+      },
+      spawnHelper(command) {
+        spawned.push(command);
+        throw new Error("must not spawn");
+      },
+    });
+    await (await acquireChildSleepInhibitor(707, unsupported)).release();
+    await (await acquireChildSleepInhibitor(808, missingCapability)).release();
+    expect(spawned).toEqual([]);
+  });
+  test("adapter without supported method delegates directly to acquire", async () => {
+    const acquired: number[] = [];
+    const adapter = {
+      acquire(pid: number) {
+        acquired.push(pid);
+        return { release() {} };
+      },
+    } as unknown as SleepInhibitorAdapter;
+    const handle = await acquireChildSleepInhibitor(111, adapter);
+    await handle.release();
+    expect(acquired).toEqual([111]);
+  });
+  test("helper with no kill method handles release gracefully", async () => {
+    const adapter = makeHostSleepInhibitorAdapter({
+      platform: "darwin",
+      async commandExists() {
+        return true;
+      },
+      spawnHelper() {
+        return {
+          exitCode: null,
+          signalCode: null,
+          unref() {},
+        } as unknown as SleepInhibitorHelperProcess;
+      },
+    });
+    const handle = await acquireChildSleepInhibitor(222, adapter);
+    await handle.release();
+  });
+  test("startup, async helper errors, release, and already-ended helpers degrade silently", async () => {
+    const startupFailure = makeHostSleepInhibitorAdapter({
+      platform: "darwin",
+      async commandExists() {
+        return true;
+      },
+      spawnHelper() {
+        throw new Error("spawn failed");
+      },
+    });
+    const releaseFailure = makeHostSleepInhibitorAdapter({
+      platform: "darwin",
+      async commandExists() {
+        return true;
+      },
+      spawnHelper() {
+        return {
+          exitCode: null,
+          signalCode: null,
+          unref() {},
+          kill() {
+            throw new Error("release failed");
+          },
+        };
+      },
+    });
+    let emittedHelper: EventEmitter | undefined;
+    const asyncHelperError = makeHostSleepInhibitorAdapter({
+      platform: "darwin",
+      async commandExists() {
+        return true;
+      },
+      spawnHelper() {
+        const helper = new EventEmitter() as EventEmitter & {
+          exitCode: null;
+          signalCode: null;
+          unref: () => void;
+          kill: () => void;
+        };
+        helper.exitCode = null;
+        helper.signalCode = null;
+        helper.unref = () => {};
+        helper.kill = () => {};
+        emittedHelper = helper;
+        return helper;
+      },
+    });
+    const alreadyEnded = makeHostSleepInhibitorAdapter({
+      platform: "darwin",
+      async commandExists() {
+        return true;
+      },
+      spawnHelper() {
+        return {
+          exitCode: 0,
+          signalCode: null,
+          unref() {},
+          kill() {
+            throw new Error("must not kill ended helper");
+          },
+        };
+      },
+    });
+    await (await acquireChildSleepInhibitor(909, startupFailure)).release();
+    await (await acquireChildSleepInhibitor(1001, releaseFailure)).release();
+    const asyncHandle = await acquireChildSleepInhibitor(
+      1002,
+      asyncHelperError,
+    );
+    expect(() =>
+      emittedHelper?.emit("error", new Error("helper failed")),
+    ).not.toThrow();
+    await asyncHandle.release();
+    await (await acquireChildSleepInhibitor(1003, alreadyEnded)).release();
+  });
+});
 
 describe("getProcessTreeSpawnOptions", () => {
   test("detaches only POSIX tree spawns", () => {

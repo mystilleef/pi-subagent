@@ -1,4 +1,7 @@
 import type { ChildProcess } from "node:child_process";
+import { spawn } from "node:child_process";
+import { constants } from "node:fs";
+import { access } from "node:fs/promises";
 
 export type TerminationSignal = "SIGTERM" | "SIGKILL";
 
@@ -10,6 +13,37 @@ export type TerminationMetadata = {
   processTreeKilled: boolean;
   target: "direct" | "tree";
   fallbackCause?: string | undefined;
+};
+
+export type SleepInhibitorHandle = {
+  release: () => Promise<void>;
+};
+
+export type SleepInhibitorAdapterHandle = {
+  release?: () => unknown;
+};
+
+export type SleepInhibitorAdapter = {
+  supported?: () => boolean | Promise<boolean>;
+  acquire: (pid: number) => unknown;
+};
+
+export type SleepInhibitorHelperProcess = {
+  exitCode?: number | null;
+  signalCode?: NodeJS.Signals | string | null;
+  kill?: (signal?: NodeJS.Signals | number) => unknown;
+  on?: (event: "error", listener: (error: Error) => void) => unknown;
+  unref?: () => unknown;
+};
+
+export type HostSleepInhibitorAdapterOptions = {
+  platform?: NodeJS.Platform;
+  commandExists?: (command: string) => boolean | Promise<boolean>;
+  spawnHelper?: (
+    command: string,
+    args: string[],
+    options: { stdio: "ignore"; detached: true },
+  ) => SleepInhibitorHelperProcess;
 };
 
 type TimerHandle = unknown;
@@ -43,6 +77,10 @@ export type TerminateChildProcessOptions = {
 };
 
 const DEFAULT_TIMEOUT_MS = 4_000;
+const CAFFEINATE_COMMAND = "/usr/bin/caffeinate";
+const noopSleepInhibitorHandle: SleepInhibitorHandle = {
+  async release() {},
+};
 const terminationStates = new WeakMap<ChildProcess, TerminationState>();
 
 export function getProcessTreeSpawnOptions(
@@ -52,12 +90,102 @@ export function getProcessTreeSpawnOptions(
   return tree && platform !== "win32" ? { detached: true } : {};
 }
 
+export function isFinitePid(pid: unknown): pid is number {
+  return typeof pid === "number" && Number.isFinite(pid);
+}
+
+function isAdapterHandle(
+  handle: unknown,
+): handle is SleepInhibitorAdapterHandle {
+  return typeof handle === "object" && handle !== null;
+}
+
+function makeSleepInhibitorHandle(
+  adapterHandle: SleepInhibitorAdapterHandle,
+): SleepInhibitorHandle {
+  let released = false;
+  return {
+    async release() {
+      if (released) return;
+      released = true;
+      try {
+        await adapterHandle.release?.();
+      } catch {
+        /* adapter release failures are non-fatal */
+      }
+    },
+  };
+}
+
+async function defaultCommandExists(command: string): Promise<boolean> {
+  try {
+    await access(command, constants.X_OK);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function helperHasEnded(helper: SleepInhibitorHelperProcess): boolean {
+  return (
+    (helper.exitCode ?? null) !== null || (helper.signalCode ?? null) !== null
+  );
+}
+
+export function makeHostSleepInhibitorAdapter(
+  options: HostSleepInhibitorAdapterOptions = {},
+): SleepInhibitorAdapter {
+  const platform = options.platform ?? process.platform;
+  const commandExists = options.commandExists ?? defaultCommandExists;
+  const spawnHelper =
+    options.spawnHelper ??
+    ((command, args, spawnOptions) => spawn(command, args, spawnOptions));
+  return {
+    async supported() {
+      return platform === "darwin" && (await commandExists(CAFFEINATE_COMMAND));
+    },
+    acquire(pid) {
+      const helper = spawnHelper(
+        CAFFEINATE_COMMAND,
+        ["-dimsu", "-w", String(pid)],
+        { stdio: "ignore", detached: true },
+      );
+      helper.on?.("error", () => undefined);
+      helper.unref?.();
+      return {
+        release() {
+          if (helperHasEnded(helper)) return;
+          helper.kill?.("SIGTERM");
+        },
+      };
+    },
+  };
+}
+
+export async function acquireChildSleepInhibitor(
+  pid: unknown,
+  adapter?: SleepInhibitorAdapter,
+): Promise<SleepInhibitorHandle> {
+  if (!isFinitePid(pid) || !adapter) return noopSleepInhibitorHandle;
+  try {
+    if ((await adapter.supported?.()) === false)
+      return noopSleepInhibitorHandle;
+    const handle = await adapter.acquire(pid);
+    return isAdapterHandle(handle)
+      ? makeSleepInhibitorHandle(handle)
+      : noopSleepInhibitorHandle;
+  } catch {
+    /* acquisition failures degrade to no-op handle */
+    return noopSleepInhibitorHandle;
+  }
+}
+
 function childHasExited(proc: ChildProcess): boolean {
   return proc.exitCode !== null || proc.signalCode != null;
 }
 
 function hasPid(proc: ChildProcess): proc is ChildProcess & { pid: number } {
-  return typeof proc.pid === "number" && Number.isFinite(proc.pid);
+  return isFinitePid(proc.pid);
 }
 
 function settleState(state: TerminationState): void {
