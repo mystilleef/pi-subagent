@@ -88,7 +88,7 @@ describe("acquireChildSleepInhibitor", () => {
     await nonNumeric.release();
     expect(acquired).toEqual([]);
   });
-  test("unsupported and failed acquisition degrade to no-op handles", async () => {
+  test("unsupported, failed, and non-object acquisitions degrade to no-op handles", async () => {
     const unsupported = await acquireChildSleepInhibitor(303, {
       supported() {
         return false;
@@ -102,8 +102,14 @@ describe("acquireChildSleepInhibitor", () => {
         throw new Error("helper unavailable");
       },
     });
+    const nonObject = await acquireChildSleepInhibitor(405, {
+      acquire() {
+        return "not a handle";
+      },
+    });
     await unsupported.release();
     await failed.release();
+    await nonObject.release();
   });
   test("repeated release and release failures stay silent", async () => {
     let releaseCalls = 0;
@@ -132,6 +138,216 @@ describe("makeHostSleepInhibitorAdapter", () => {
       "makeHostSleepInhibitorAdapter",
       "terminateChildProcess",
     ]);
+  });
+  test("win32 support returns true without command lookup", async () => {
+    const adapter = makeHostSleepInhibitorAdapter({
+      platform: "win32",
+      async commandExists(command) {
+        throw new Error(`must not check ${command}`);
+      },
+    });
+    expect(await adapter.supported?.()).toBe(true);
+  });
+  test("win32 acquisition builds the deterministic PowerShell helper command", async () => {
+    const spawned: Array<{
+      command: string;
+      args: string[];
+      options: { stdio: "ignore"; detached: true };
+    }> = [];
+    const adapter = makeHostSleepInhibitorAdapter({
+      platform: "win32",
+      spawnHelper(command, args, options) {
+        spawned.push({ command, args, options });
+        return { exitCode: null, signalCode: null, unref() {}, kill() {} };
+      },
+    });
+    await (await acquireChildSleepInhibitor(606, adapter)).release();
+    const script = spawned[0]?.args[2] ?? "";
+    expect(spawned).toHaveLength(1);
+    expect(spawned[0]).toEqual({
+      command: "powershell.exe",
+      args: ["-NonInteractive", "-Command", script],
+      options: { stdio: "ignore", detached: true },
+    });
+    expect(script).toContain(
+      "Add-Type -Namespace PiSubagent -Name NativeMethods",
+    );
+    expect(script).toContain("SetThreadExecutionState(uint esFlags)");
+    expect(script.indexOf("0x80000001")).toBeLessThan(
+      script.indexOf("Get-Process -Id 606"),
+    );
+    expect(script.indexOf("Get-Process -Id 606")).toBeLessThan(
+      script.indexOf("0x80000000"),
+    );
+  });
+  test("win32 helper interpolates finite PIDs only as numeric literals", async () => {
+    const scripts: string[] = [];
+    const adapter = makeHostSleepInhibitorAdapter({
+      platform: "win32",
+      spawnHelper(_command, args) {
+        scripts.push(args[2] ?? "");
+        return { exitCode: null, signalCode: null, unref() {}, kill() {} };
+      },
+    });
+    for (const pid of [0, -7, 42])
+      await (await acquireChildSleepInhibitor(pid, adapter)).release();
+    expect(
+      scripts.map((script) => script.match(/Get-Process -Id (-?\d+)/)?.[1]),
+    ).toEqual(["0", "-7", "42"]);
+    expect(scripts.some((script) => /Get-Process -Id ['"]/.test(script))).toBe(
+      false,
+    );
+  });
+  test("win32 invalid PIDs never reach adapter acquisition or scripts", async () => {
+    const acquired: unknown[] = [];
+    const spawned: string[] = [];
+    const adapter = makeHostSleepInhibitorAdapter({
+      platform: "win32",
+      spawnHelper(_command, args) {
+        spawned.push(args[2] ?? "");
+        return { exitCode: null, signalCode: null, unref() {}, kill() {} };
+      },
+    });
+    const rejectingAdapter: SleepInhibitorAdapter = {
+      acquire(pid) {
+        acquired.push(pid);
+        return {};
+      },
+    };
+    for (const pid of [undefined, "606", Number.NaN, Infinity, -Infinity]) {
+      await (await acquireChildSleepInhibitor(pid, adapter)).release();
+      await (await acquireChildSleepInhibitor(pid, rejectingAdapter)).release();
+    }
+    expect(spawned).toEqual([]);
+    expect(acquired).toEqual([]);
+  });
+  test("win32 active helpers receive one release signal through idempotent handles", async () => {
+    const killSignals: Array<NodeJS.Signals | number | undefined> = [];
+    const helper: SleepInhibitorHelperProcess = {
+      exitCode: null,
+      signalCode: null,
+      unref() {},
+      kill(signal?: NodeJS.Signals | number) {
+        killSignals.push(signal);
+        return true;
+      },
+    };
+    const adapter = makeHostSleepInhibitorAdapter({
+      platform: "win32",
+      spawnHelper() {
+        return helper;
+      },
+    });
+    const handle = await acquireChildSleepInhibitor(607, adapter);
+    await handle.release();
+    await handle.release();
+    expect(killSignals).toEqual(["SIGTERM"]);
+  });
+  test("win32 startup, event, script, early exit, and release failures stay silent", async () => {
+    const startupFailure = makeHostSleepInhibitorAdapter({
+      platform: "win32",
+      spawnHelper() {
+        throw new Error("powershell spawn failed");
+      },
+    });
+    let emittedHelper: EventEmitter | undefined;
+    const runtimeFailure = makeHostSleepInhibitorAdapter({
+      platform: "win32",
+      spawnHelper() {
+        const helper = new EventEmitter() as EventEmitter & {
+          exitCode: number | null;
+          signalCode: string | null;
+          killSignals: Array<NodeJS.Signals | number | undefined>;
+          kill: (signal?: NodeJS.Signals | number) => boolean;
+          unref: () => void;
+        };
+        helper.exitCode = null;
+        helper.signalCode = null;
+        helper.killSignals = [];
+        helper.kill = (signal) => {
+          helper.killSignals.push(signal);
+          return true;
+        };
+        helper.unref = () => {};
+        emittedHelper = helper;
+        return helper;
+      },
+    });
+    const signaledBeforeRelease = makeHostSleepInhibitorAdapter({
+      platform: "win32",
+      spawnHelper() {
+        return {
+          exitCode: null,
+          signalCode: "SIGTERM",
+          kill() {
+            throw new Error("runtime-failed helper must not be killed");
+          },
+        };
+      },
+    });
+    await (await acquireChildSleepInhibitor(613, startupFailure)).release();
+    const runtimeHandle = await acquireChildSleepInhibitor(614, runtimeFailure);
+    expect(() =>
+      emittedHelper?.emit("error", new Error("Add-Type failed")),
+    ).not.toThrow();
+    await runtimeHandle.release();
+    await (
+      await acquireChildSleepInhibitor(615, signaledBeforeRelease)
+    ).release();
+  });
+  test("win32 ended, missing-capability, and failing helpers release silently", async () => {
+    const activeKillSignals: Array<NodeJS.Signals | number | undefined> = [];
+    const helpers: SleepInhibitorHelperProcess[] = [
+      {
+        exitCode: 0,
+        signalCode: null,
+        kill() {
+          throw new Error("exited helper must not be killed");
+        },
+      },
+      {
+        exitCode: null,
+        signalCode: "SIGTERM",
+        kill() {
+          throw new Error("signaled helper must not be killed");
+        },
+      },
+      {
+        exitCode: null,
+        signalCode: null,
+      },
+      {
+        exitCode: null,
+        signalCode: null,
+        unref() {},
+        kill() {
+          throw new Error("release failed");
+        },
+      },
+      {
+        exitCode: null,
+        signalCode: null,
+        kill(signal?: NodeJS.Signals | number) {
+          activeKillSignals.push(signal);
+          return true;
+        },
+      },
+    ];
+    const adapter = makeHostSleepInhibitorAdapter({
+      platform: "win32",
+      spawnHelper() {
+        const helper = helpers.shift();
+        if (!helper) throw new Error("unexpected helper acquisition");
+        return helper;
+      },
+    });
+    await (await acquireChildSleepInhibitor(608, adapter)).release();
+    await (await acquireChildSleepInhibitor(609, adapter)).release();
+    await (await acquireChildSleepInhibitor(610, adapter)).release();
+    await (await acquireChildSleepInhibitor(611, adapter)).release();
+    await (await acquireChildSleepInhibitor(612, adapter)).release();
+    expect(activeKillSignals).toEqual(["SIGTERM"]);
+    expect(helpers).toHaveLength(0);
   });
   test("darwin support spawns a silent detached helper scoped to the child PID", async () => {
     const helper = {
@@ -347,6 +563,19 @@ describe("makeHostSleepInhibitorAdapter", () => {
     await (
       await acquireChildSleepInhibitor(1001, missingLinuxCapability)
     ).release();
+    expect(spawned).toEqual([]);
+  });
+  test("unsupported platform acquire returns empty object without spawning", async () => {
+    const spawned: string[] = [];
+    const adapter = makeHostSleepInhibitorAdapter({
+      platform: "freebsd",
+      spawnHelper(command) {
+        spawned.push(command);
+        throw new Error("must not spawn");
+      },
+    });
+    const handle = adapter.acquire(123);
+    expect(handle).toEqual({});
     expect(spawned).toEqual([]);
   });
   test("linux acquisition tolerates missing unref and rejects invalid PIDs before spawning", async () => {

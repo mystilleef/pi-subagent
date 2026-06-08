@@ -79,6 +79,7 @@ export type TerminateChildProcessOptions = {
 const DEFAULT_TIMEOUT_MS = 4_000;
 const CAFFEINATE_COMMAND = "/usr/bin/caffeinate";
 const SYSTEMD_INHIBIT_COMMAND = "/usr/bin/systemd-inhibit";
+const POWERSHELL_COMMAND = "powershell.exe";
 const SHELL_COMMAND = "/bin/sh";
 const noopSleepInhibitorHandle: SleepInhibitorHandle = {
   async release() {},
@@ -159,6 +160,15 @@ function makeSystemdInhibitArgs(pid: number): string[] {
   ];
 }
 
+function makePowerShellInhibitArgs(pid: number): string[] {
+  const script = [
+    "Add-Type -Namespace PiSubagent -Name NativeMethods -MemberDefinition '[DllImport(\"kernel32.dll\")] public static extern uint SetThreadExecutionState(uint esFlags);'",
+    "[PiSubagent.NativeMethods]::SetThreadExecutionState(0x80000001) | Out-Null",
+    `try { while (Get-Process -Id ${pid} -ErrorAction SilentlyContinue) { Start-Sleep -Seconds 1 } } finally { [PiSubagent.NativeMethods]::SetThreadExecutionState(0x80000000) | Out-Null }`,
+  ].join("; ");
+  return ["-NonInteractive", "-Command", script];
+}
+
 export function makeHostSleepInhibitorAdapter(
   options: HostSleepInhibitorAdapterOptions = {},
 ): SleepInhibitorAdapter {
@@ -169,6 +179,7 @@ export function makeHostSleepInhibitorAdapter(
     ((command, args, spawnOptions) => spawn(command, args, spawnOptions));
   return {
     async supported() {
+      if (platform === "win32") return true;
       if (platform === "darwin") return commandExists(CAFFEINATE_COMMAND);
       if (platform === "linux") return commandExists(SYSTEMD_INHIBIT_COMMAND);
       return false;
@@ -187,6 +198,17 @@ export function makeHostSleepInhibitorAdapter(
           SYSTEMD_INHIBIT_COMMAND,
           makeSystemdInhibitArgs(pid),
           { stdio: "ignore", detached: true },
+        );
+        return makeHelperHandle(helper);
+      }
+      if (platform === "win32") {
+        const helper = spawnHelper(
+          POWERSHELL_COMMAND,
+          makePowerShellInhibitArgs(pid),
+          {
+            stdio: "ignore",
+            detached: true,
+          },
         );
         return makeHelperHandle(helper);
       }
