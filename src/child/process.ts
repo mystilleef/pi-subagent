@@ -46,7 +46,11 @@ import {
 } from "./child-events.js";
 import { appendSubagentResultContract } from "./prompt-contract.js";
 import {
+  acquireChildSleepInhibitor,
   getProcessTreeSpawnOptions,
+  isFinitePid,
+  makeHostSleepInhibitorAdapter,
+  type SleepInhibitorHandle,
   terminateChildProcess,
 } from "./termination.js";
 
@@ -77,6 +81,11 @@ export const TOOL_RESULT_FAILED_MESSAGE = "Subagent tool result failed.";
 
 type RuntimeLimits = ReturnType<typeof getSubagentRuntimeLimits>;
 type RuntimeResult = SingleResult & { messages: Message[] };
+type SleepInhibitorAcquirer = (pid: number) => Promise<SleepInhibitorHandle>;
+
+type RunSingleAgentOptions = {
+  acquireSleepInhibitor?: SleepInhibitorAcquirer;
+};
 
 export class SubagentAbortError extends Error {
   readonly result: SingleResult;
@@ -151,6 +160,42 @@ function getAbortReason(signal: AbortSignal): string {
   if (reason instanceof Error && reason.message) return reason.message;
   if (typeof reason === "string" && reason.trim()) return reason;
   return "abort";
+}
+
+const hostSleepInhibitorAdapter = makeHostSleepInhibitorAdapter();
+
+async function acquireDefaultSleepInhibitor(
+  pid: number,
+): Promise<SleepInhibitorHandle> {
+  return acquireChildSleepInhibitor(pid, hostSleepInhibitorAdapter);
+}
+
+async function acquireSubagentSleepInhibitor(
+  pid: number,
+  acquireSleepInhibitor: SleepInhibitorAcquirer,
+): Promise<SleepInhibitorHandle | undefined> {
+  try {
+    return await acquireSleepInhibitor(pid);
+  } catch {
+    return undefined;
+  }
+}
+
+async function releaseSleepInhibitor(
+  handle: SleepInhibitorHandle | undefined,
+): Promise<void> {
+  if (!handle) return;
+  try {
+    await handle.release();
+  } catch {
+    /* release failures are non-fatal */
+  }
+}
+
+function startSleepInhibitorRelease(
+  acquisitionPromise: Promise<SleepInhibitorHandle | undefined>,
+): Promise<void> {
+  return acquisitionPromise.then(releaseSleepInhibitor, () => {});
 }
 
 function hasCompletedAgentOutput(result: RuntimeResult): boolean {
@@ -753,6 +798,7 @@ export async function runSingleAgent(
   parentModel: { provider: string; id: string } | undefined,
   parentThinking: ThinkingLevel,
   debugEventDiagnostics = false,
+  options: RunSingleAgentOptions = {},
 ): Promise<SingleResult> {
   const agent = agents.find((a) => a.name === agentName);
   if (!agent) return errorForUnknownAgent(agentName, agents, task);
@@ -845,12 +891,19 @@ export async function runSingleAgent(
       () => clearGraceTimer(state),
       requestTermination,
     );
+    const sleepInhibitorPromise = isFinitePid(proc.pid)
+      ? acquireSubagentSleepInhibitor(
+          proc.pid,
+          options.acquireSleepInhibitor ?? acquireDefaultSleepInhibitor,
+        )
+      : Promise.resolve(undefined);
     try {
       state.result.exitCode = (await processDone) ?? 0;
       return await finalizeResult(state, startedAt);
     } finally {
       clearGraceTimer(state);
       if (signal && onAbort) signal.removeEventListener("abort", onAbort);
+      void startSleepInhibitorRelease(sleepInhibitorPromise);
     }
   } finally {
     if (tmpPrompt) await cleanupTempPrompt(tmpPrompt);

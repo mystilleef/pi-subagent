@@ -4,7 +4,11 @@ import path from "node:path";
 import type { Message } from "@earendil-works/pi-ai";
 import { DefaultResourceLoader } from "@earendil-works/pi-coding-agent";
 import type { AgentConfig } from "../src/agent/agents.js";
-import { makeEmitUpdate, runSingleAgent } from "../src/child/process.js";
+import {
+  makeEmitUpdate,
+  runSingleAgent,
+  SubagentAbortError,
+} from "../src/child/process.js";
 import {
   appendSubagentResultContract,
   SUBAGENT_RESULT_CONTRACT,
@@ -212,6 +216,570 @@ test("runSingleAgent caps spawn error stderr by configured byte limit", async ()
     if (originalArgv1 !== undefined) process.argv[1] = originalArgv1;
     process.execPath = originalExecPath;
   }
+});
+
+test("runSingleAgent attempts one injected sleep inhibitor after normal exit", async () => {
+  const acquired: number[] = [];
+  let releases = 0;
+  const { cwd } = await setupTest();
+  const result = await runSingleAgent(
+    cwd,
+    [hangAgent],
+    "hang",
+    "task",
+    undefined,
+    undefined,
+    makeDetails,
+    undefined,
+    "off",
+    false,
+    {
+      async acquireSleepInhibitor(pid) {
+        acquired.push(pid);
+        return {
+          async release() {
+            releases += 1;
+          },
+        };
+      },
+    },
+  );
+  expect(acquired).toHaveLength(1);
+  expect(Number.isFinite(acquired[0])).toBe(true);
+  expect(releases).toBe(1);
+  expect(result.exitCode).toBe(0);
+  expect(result.finalOutput).toBe("done");
+  expect(result.stderr).toBe("");
+  expect(result.termination).toBeUndefined();
+  expect(result.usage.input).toBe(1);
+  expect(result.usage.output).toBe(1);
+});
+
+test("runSingleAgent skips sleep inhibitor acquisition when spawn has no PID", async () => {
+  let acquisitionAttempts = 0;
+  const { cwd } = await setupTest();
+  const originalArgv1 = process.argv[1];
+  const originalExecPath = process.execPath;
+  process.argv[1] = "/non/existent/pi";
+  process.execPath = "/non/existent/pi_exec";
+  try {
+    const result = await runSingleAgent(
+      cwd,
+      [hangAgent],
+      "hang",
+      "task",
+      undefined,
+      undefined,
+      makeDetails,
+      undefined,
+      "off",
+      false,
+      {
+        async acquireSleepInhibitor() {
+          acquisitionAttempts += 1;
+          return {
+            async release() {},
+          };
+        },
+      },
+    );
+    expect(acquisitionAttempts).toBe(0);
+    expect(result.exitCode).toBe(1);
+    expect(result.finalOutput).toBe("");
+    expect(result.termination).toBeUndefined();
+  } finally {
+    if (originalArgv1 !== undefined) process.argv[1] = originalArgv1;
+    process.execPath = originalExecPath;
+  }
+});
+
+test("runSingleAgent keeps acquisition and release failures invisible", async () => {
+  const { cwd } = await setupTest({
+    piScript: `#!/bin/sh
+printf 'child stderr' >&2
+printf '%s\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"done"}],"api":"fake","provider":"fake","model":"fake","usage":{"input":1,"output":1,"cacheRead":0,"cacheWrite":0,"totalTokens":2,"cost":{"total":0}},"stopReason":"stop","timestamp":0}}'
+printf '%s\n' '{"type":"agent_end","messages":[]}'
+exit 0
+`,
+  });
+  const releaseFailure = await runSingleAgent(
+    cwd,
+    [hangAgent],
+    "hang",
+    "task",
+    undefined,
+    undefined,
+    makeDetails,
+    undefined,
+    "off",
+    false,
+    {
+      async acquireSleepInhibitor() {
+        return {
+          async release() {
+            throw new Error("release failed");
+          },
+        };
+      },
+    },
+  );
+  const acquisitionFailure = await runSingleAgent(
+    cwd,
+    [hangAgent],
+    "hang",
+    "task",
+    undefined,
+    undefined,
+    makeDetails,
+    undefined,
+    "off",
+    false,
+    {
+      async acquireSleepInhibitor() {
+        throw new Error("acquire failed");
+      },
+    },
+  );
+  expect(releaseFailure.exitCode).toBe(0);
+  expect(releaseFailure.stderr).toBe("child stderr");
+  expect(releaseFailure.finalOutput).toBe("done");
+  expect(releaseFailure.termination).toBeUndefined();
+  expect(acquisitionFailure.exitCode).toBe(0);
+  expect(acquisitionFailure.stderr).toBe("child stderr");
+  expect(acquisitionFailure.finalOutput).toBe("done");
+  expect(acquisitionFailure.termination).toBeUndefined();
+});
+
+test("runSingleAgent settles immediate exit before delayed sleep inhibitor acquisition", async () => {
+  const { cwd } = await setupTest({
+    piScript: `#!/bin/sh
+printf 'delayed stderr' >&2
+printf '%s\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"delayed done"}],"api":"fake","provider":"fake","model":"fake","usage":{"input":1,"output":1,"cacheRead":0,"cacheWrite":0,"totalTokens":2,"cost":{"total":0}},"stopReason":"stop","timestamp":0}}'
+printf '%s\n' '{"type":"agent_end","messages":[]}'
+exit 0
+`,
+  });
+  const resultPromise = runSingleAgent(
+    cwd,
+    [hangAgent],
+    "hang",
+    "task",
+    undefined,
+    undefined,
+    makeDetails,
+    undefined,
+    "off",
+    false,
+    {
+      async acquireSleepInhibitor() {
+        return new Promise(() => {});
+      },
+    },
+  );
+  const result = await Promise.race([
+    resultPromise,
+    Bun.sleep(500).then(() => new Error("timed out waiting for result")),
+  ]);
+  expect(result).not.toBeInstanceOf(Error);
+  expect((result as SingleResult).exitCode).toBe(0);
+  expect((result as SingleResult).finalOutput).toBe("delayed done");
+  expect((result as SingleResult).stderr).toBe("delayed stderr");
+});
+
+test("runSingleAgent handles host abort before delayed sleep inhibitor acquisition resolves", async () => {
+  let acquired = false;
+  const { cwd } = await setupTest({
+    piScript: `#!/bin/sh
+trap 'exit 0' TERM
+sleep 10 &
+wait $!
+`,
+  });
+  const controller = new AbortController();
+  const promise = runSingleAgent(
+    cwd,
+    [hangAgent],
+    "hang",
+    "task",
+    controller.signal,
+    undefined,
+    makeDetails,
+    undefined,
+    "off",
+    false,
+    {
+      async acquireSleepInhibitor() {
+        acquired = true;
+        return new Promise(() => {});
+      },
+    },
+  );
+  await waitFor(
+    () => acquired || undefined,
+    "delayed sleep inhibitor acquisition",
+  );
+  controller.abort("host abort while acquiring");
+  const error = await Promise.race([
+    promise.then(
+      () => undefined,
+      (value: unknown) => value,
+    ),
+    Bun.sleep(500).then(() => new Error("timed out waiting for abort")),
+  ]);
+  expect(error).toBeInstanceOf(SubagentAbortError);
+  expect((error as SubagentAbortError).result.termination?.cancelReason).toBe(
+    "host abort while acquiring",
+  );
+});
+
+test("runSingleAgent releases injected sleep inhibitor after cancellation", async () => {
+  let releases = 0;
+  let acquired = false;
+  const { cwd } = await setupTest({
+    piScript: `#!/bin/sh
+trap 'exit 0' TERM
+sleep 10 &
+wait $!
+`,
+  });
+  const controller = new AbortController();
+  const promise = runSingleAgent(
+    cwd,
+    [hangAgent],
+    "hang",
+    "task",
+    controller.signal,
+    undefined,
+    makeDetails,
+    undefined,
+    "off",
+    false,
+    {
+      async acquireSleepInhibitor() {
+        acquired = true;
+        return {
+          async release() {
+            releases += 1;
+          },
+        };
+      },
+    },
+  );
+  await waitFor(() => acquired || undefined, "sleep inhibitor acquisition");
+  controller.abort("cancelled");
+  await expect(promise).rejects.toThrow("Subagent was aborted");
+  await promise.catch((error: unknown) => {
+    expect(error).toBeInstanceOf(SubagentAbortError);
+    expect((error as SubagentAbortError).result.termination?.cancelReason).toBe(
+      "cancelled",
+    );
+    expect((error as SubagentAbortError).result.stderr).toBe("");
+  });
+  expect(releases).toBe(1);
+});
+
+test("runSingleAgent releases injected sleep inhibitor after agent-end timeout", async () => {
+  process.env.PI_SUBAGENT_AGENT_END_GRACE_MS = "25";
+  let releases = 0;
+  const { cwd } = await setupTest({
+    piScript: `#!/bin/sh
+trap 'exit 0' TERM
+printf '%s\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"done"}],"api":"fake","provider":"fake","model":"fake","usage":{"input":1,"output":1,"cacheRead":0,"cacheWrite":0,"totalTokens":2,"cost":{"total":0}},"stopReason":"stop","timestamp":0}}'
+printf '%s\n' '{"type":"agent_end","messages":[]}'
+sleep 10 &
+wait $!
+`,
+  });
+  const result = await runSingleAgent(
+    cwd,
+    [hangAgent],
+    "hang",
+    "task",
+    undefined,
+    undefined,
+    makeDetails,
+    undefined,
+    "off",
+    false,
+    {
+      async acquireSleepInhibitor() {
+        return {
+          async release() {
+            releases += 1;
+          },
+        };
+      },
+    },
+  );
+  expect(result.exitCode).toBe(0);
+  expect(result.finalOutput).toBe("done");
+  expect(result.stderr).toBe("");
+  expect(result.termination?.cancelReason).toBe("agent_end_timeout");
+  expect(releases).toBe(1);
+});
+
+test("runSingleAgent releases injected sleep inhibitor after pre-aborted host signal", async () => {
+  let releases = 0;
+  const { cwd } = await setupTest({
+    piScript: `#!/bin/sh
+trap 'exit 0' TERM
+sleep 10 &
+wait $!
+`,
+  });
+  const controller = new AbortController();
+  controller.abort("host abort");
+  const promise = runSingleAgent(
+    cwd,
+    [hangAgent],
+    "hang",
+    "task",
+    controller.signal,
+    undefined,
+    makeDetails,
+    undefined,
+    "off",
+    false,
+    {
+      async acquireSleepInhibitor() {
+        return {
+          async release() {
+            releases += 1;
+          },
+        };
+      },
+    },
+  );
+  await expect(promise).rejects.toThrow("Subagent was aborted");
+  await promise.catch((error: unknown) => {
+    expect(error).toBeInstanceOf(SubagentAbortError);
+    expect((error as SubagentAbortError).result.termination?.cancelReason).toBe(
+      "host abort",
+    );
+    expect((error as SubagentAbortError).result.stderr).toBe("");
+  });
+  expect(releases).toBe(1);
+});
+
+test("runSingleAgent releases late-acquired sleep inhibitor handle after child completion", async () => {
+  const releaseLog: string[] = [];
+  let resolveAcquisition!: () => void;
+  const acquisitionBarrier = new Promise<void>((resolve) => {
+    resolveAcquisition = resolve;
+  });
+  const { cwd } = await setupTest({
+    piScript: `#!/bin/sh
+printf '%s\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"done"}],"api":"fake","provider":"fake","model":"fake","usage":{"input":1,"output":1,"cacheRead":0,"cacheWrite":0,"totalTokens":2,"cost":{"total":0}},"stopReason":"stop","timestamp":0}}'
+printf '%s\n' '{"type":"agent_end","messages":[]}'
+exit 0
+`,
+  });
+  const result = await runSingleAgent(
+    cwd,
+    [hangAgent],
+    "hang",
+    "task",
+    undefined,
+    undefined,
+    makeDetails,
+    undefined,
+    "off",
+    false,
+    {
+      async acquireSleepInhibitor() {
+        await acquisitionBarrier;
+        return {
+          async release() {
+            releaseLog.push("released");
+          },
+        };
+      },
+    },
+  );
+  expect(result.exitCode).toBe(0);
+  expect(result.finalOutput).toBe("done");
+  resolveAcquisition();
+  await Bun.sleep(20);
+  expect(releaseLog).toEqual(["released"]);
+});
+
+test("runSingleAgent suppresses unhandled rejection from late-acquired release failure", async () => {
+  const unhandledRejections: unknown[] = [];
+  const onUnhandled = (reason: unknown) => unhandledRejections.push(reason);
+  process.on("unhandledRejection", onUnhandled);
+  let resolveAcquisition!: () => void;
+  const acquisitionBarrier = new Promise<void>((resolve) => {
+    resolveAcquisition = resolve;
+  });
+  const { cwd } = await setupTest({
+    piScript: `#!/bin/sh
+printf '%s\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"done"}],"api":"fake","provider":"fake","model":"fake","usage":{"input":1,"output":1,"cacheRead":0,"cacheWrite":0,"totalTokens":2,"cost":{"total":0}},"stopReason":"stop","timestamp":0}}'
+printf '%s\n' '{"type":"agent_end","messages":[]}'
+exit 0
+`,
+  });
+  try {
+    const result = await runSingleAgent(
+      cwd,
+      [hangAgent],
+      "hang",
+      "task",
+      undefined,
+      undefined,
+      makeDetails,
+      undefined,
+      "off",
+      false,
+      {
+        async acquireSleepInhibitor() {
+          await acquisitionBarrier;
+          return {
+            async release() {
+              throw new Error("late release failure");
+            },
+          };
+        },
+      },
+    );
+    expect(result.exitCode).toBe(0);
+    expect(result.finalOutput).toBe("done");
+    resolveAcquisition();
+    await Bun.sleep(20);
+    expect(unhandledRejections).toHaveLength(0);
+  } finally {
+    process.removeListener("unhandledRejection", onUnhandled);
+  }
+});
+
+test("runSingleAgent handles repeated release on the same handle silently", async () => {
+  let releaseCalls = 0;
+  const { cwd } = await setupTest();
+  const result = await runSingleAgent(
+    cwd,
+    [hangAgent],
+    "hang",
+    "task",
+    undefined,
+    undefined,
+    makeDetails,
+    undefined,
+    "off",
+    false,
+    {
+      async acquireSleepInhibitor() {
+        return {
+          async release() {
+            releaseCalls += 1;
+          },
+        };
+      },
+    },
+  );
+  expect(result.exitCode).toBe(0);
+  expect(releaseCalls).toBe(1);
+});
+
+test("runSingleAgent suppresses release failure on already-resolved handle", async () => {
+  const { cwd } = await setupTest();
+  const result = await runSingleAgent(
+    cwd,
+    [hangAgent],
+    "hang",
+    "task",
+    undefined,
+    undefined,
+    makeDetails,
+    undefined,
+    "off",
+    false,
+    {
+      async acquireSleepInhibitor() {
+        return {
+          async release() {
+            throw new Error("release on resolved handle");
+          },
+        };
+      },
+    },
+  );
+  expect(result.exitCode).toBe(0);
+  expect(result.finalOutput).toBe("done");
+});
+
+test("runSingleAgent keeps concurrent sleep inhibitors independent", async () => {
+  const releasePath = path.join("release-held");
+  const releaseCounts = { cancelled: 0, held: 0 };
+  const acquired = { cancelled: false, held: false };
+  const { cwd } = await setupTest({
+    piScript: `#!/bin/sh
+case "$*" in
+  *cancelled-child*) trap 'exit 0' TERM; sleep 10 & wait $! ;;
+  *held-child*) while [ ! -f release-held ]; do sleep 0.01; done; printf '%s\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"held done"}],"api":"fake","provider":"fake","model":"fake","usage":{"input":2,"output":3,"cacheRead":0,"cacheWrite":0,"totalTokens":5,"cost":{"total":0}},"stopReason":"stop","timestamp":0}}'; printf '%s\n' '{"type":"agent_end","messages":[]}'; exit 0 ;;
+esac
+`,
+  });
+  const controller = new AbortController();
+  const cancelledPromise = runSingleAgent(
+    cwd,
+    [hangAgent],
+    "hang",
+    "cancelled-child",
+    controller.signal,
+    undefined,
+    makeDetails,
+    undefined,
+    "off",
+    false,
+    {
+      async acquireSleepInhibitor() {
+        acquired.cancelled = true;
+        return {
+          async release() {
+            releaseCounts.cancelled += 1;
+          },
+        };
+      },
+    },
+  );
+  const heldPromise = runSingleAgent(
+    cwd,
+    [hangAgent],
+    "hang",
+    "held-child",
+    undefined,
+    undefined,
+    makeDetails,
+    undefined,
+    "off",
+    false,
+    {
+      async acquireSleepInhibitor() {
+        acquired.held = true;
+        return {
+          async release() {
+            releaseCounts.held += 1;
+          },
+        };
+      },
+    },
+  );
+  await waitFor(
+    () => (acquired.cancelled && acquired.held) || undefined,
+    "concurrent sleep inhibitor acquisition",
+  );
+  controller.abort("cancelled child only");
+  await expect(cancelledPromise).rejects.toThrow("Subagent was aborted");
+  expect(releaseCounts.cancelled).toBe(1);
+  expect(releaseCounts.held).toBe(0);
+  await fs.promises.writeFile(path.join(cwd, releasePath), "release");
+  const heldResult = await heldPromise;
+  expect(heldResult.exitCode).toBe(0);
+  expect(heldResult.finalOutput).toBe("held done");
+  expect(heldResult.stderr).toBe("");
+  expect(heldResult.usage.input).toBe(2);
+  expect(heldResult.usage.output).toBe(3);
+  expect(heldResult.termination).toBeUndefined();
+  expect(releaseCounts.held).toBe(1);
 });
 
 test("runSingleAgent preserves default stdout drain after agent_end", async () => {
@@ -752,4 +1320,184 @@ test("makeEmitUpdate streaming integration: subagent preview starts with semanti
   );
   // renderToolActivity walks full tree: parent + child joined with " - "
   expect(result.progress?.activityText).toBe("bash: scan src - bash: scan src");
+});
+
+test("runSingleAgent releases sleep inhibitor after spawn error with valid PID", async () => {
+  let releases = 0;
+  const { cwd } = await setupTest({
+    piScript: `#!/bin/sh
+printf 'spawn error stderr' >&2
+exit 1
+`,
+  });
+  const result = await runSingleAgent(
+    cwd,
+    [hangAgent],
+    "hang",
+    "task",
+    undefined,
+    undefined,
+    makeDetails,
+    undefined,
+    "off",
+    false,
+    {
+      async acquireSleepInhibitor() {
+        return {
+          async release() {
+            releases += 1;
+          },
+        };
+      },
+    },
+  );
+  expect(result.exitCode).toBe(1);
+  expect(releases).toBe(1);
+});
+
+test("runSingleAgent agent-end timeout with empty output returns exit code 1", async () => {
+  process.env.PI_SUBAGENT_AGENT_END_GRACE_MS = "25";
+  const { cwd } = await setupTest({
+    piScript: `#!/bin/sh
+trap 'exit 0' TERM
+printf '%s\n' '{"type":"agent_end","messages":[]}'
+sleep 10 &
+wait $!
+`,
+  });
+  const result = await runSingleAgent(
+    cwd,
+    [hangAgent],
+    "hang",
+    "task",
+    undefined,
+    undefined,
+    makeDetails,
+    undefined,
+    "off",
+  );
+  expect(result.exitCode).toBe(1);
+  expect(result.finalOutput).toBe("");
+  expect(result.termination?.cancelReason).toBe("agent_end_timeout");
+});
+
+test("runSingleAgent writes unknown events to stderr when debug diagnostics enabled", async () => {
+  const stderrWrite = process.stderr.write;
+  const written: string[] = [];
+  process.stderr.write = ((chunk: string | Uint8Array) => {
+    written.push(String(chunk));
+    return true;
+  }) as typeof process.stderr.write;
+  const { cwd } = await setupTest({
+    piScript: `#!/bin/sh
+printf '%s\n' 'malformed json'
+printf '%s\n' '{"type":"unknown_type","data":1}'
+printf '%s\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"done"}],"api":"fake","provider":"fake","model":"fake","usage":{"input":1,"output":1,"cacheRead":0,"cacheWrite":0,"totalTokens":2,"cost":{"total":0}},"stopReason":"stop","timestamp":0}}'
+printf '%s\n' '{"type":"agent_end","messages":[]}'
+exit 0
+`,
+  });
+  try {
+    const result = await runSingleAgent(
+      cwd,
+      [hangAgent],
+      "hang",
+      "task",
+      undefined,
+      undefined,
+      makeDetails,
+      undefined,
+      "off",
+      true,
+    );
+    expect(result.exitCode).toBe(0);
+    expect(written.some((w) => w.includes("malformed"))).toBe(true);
+    expect(written.some((w) => w.includes("unknown"))).toBe(true);
+  } finally {
+    process.stderr.write = stderrWrite;
+  }
+});
+
+test("runSingleAgent acquisition failure on one concurrent child does not affect the other", async () => {
+  const releaseCounts = { failing: 0, succeeding: 0 };
+  const acquired = { failing: false, succeeding: false };
+  const releasePath = path.join("release-succeeding");
+  const { cwd } = await setupTest({
+    piScript: `#!/bin/sh
+case "$*" in
+  *failing-child*) exit 1 ;;
+  *succeeding-child*) while [ ! -f release-succeeding ]; do sleep 0.01; done; printf '%s\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"succeeding done"}],"api":"fake","provider":"fake","model":"fake","usage":{"input":2,"output":3,"cacheRead":0,"cacheWrite":0,"totalTokens":5,"cost":{"total":0}},"stopReason":"stop","timestamp":0}}'; printf '%s\n' '{"type":"agent_end","messages":[]}'; exit 0 ;;
+esac
+`,
+  });
+  const failingPromise = runSingleAgent(
+    cwd,
+    [hangAgent],
+    "hang",
+    "failing-child",
+    undefined,
+    undefined,
+    makeDetails,
+    undefined,
+    "off",
+    false,
+    {
+      async acquireSleepInhibitor() {
+        acquired.failing = true;
+        throw new Error("acquire failed");
+      },
+    },
+  );
+  const succeedingPromise = runSingleAgent(
+    cwd,
+    [hangAgent],
+    "hang",
+    "succeeding-child",
+    undefined,
+    undefined,
+    makeDetails,
+    undefined,
+    "off",
+    false,
+    {
+      async acquireSleepInhibitor() {
+        acquired.succeeding = true;
+        return {
+          async release() {
+            releaseCounts.succeeding += 1;
+          },
+        };
+      },
+    },
+  );
+  await waitFor(
+    () => (acquired.failing && acquired.succeeding) || undefined,
+    "concurrent acquisition attempts",
+  );
+  const failingResult = await failingPromise;
+  expect(failingResult.exitCode).toBe(1);
+  expect(releaseCounts.failing).toBe(0);
+  await fs.promises.writeFile(path.join(cwd, releasePath), "release");
+  const succeedingResult = await succeedingPromise;
+  expect(succeedingResult.exitCode).toBe(0);
+  expect(succeedingResult.finalOutput).toBe("succeeding done");
+  expect(releaseCounts.succeeding).toBe(1);
+});
+
+test("runSingleAgent default host adapter returns no-op handle on non-darwin platform", async () => {
+  const { cwd } = await setupTest();
+  const result = await runSingleAgent(
+    cwd,
+    [hangAgent],
+    "hang",
+    "task",
+    undefined,
+    undefined,
+    makeDetails,
+    undefined,
+    "off",
+  );
+  expect(result.exitCode).toBe(0);
+  expect(result.finalOutput).toBe("done");
+  expect(result.stderr).toBe("");
 });
