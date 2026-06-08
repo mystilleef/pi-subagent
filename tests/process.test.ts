@@ -1323,6 +1323,7 @@ test("makeEmitUpdate streaming integration: subagent preview starts with semanti
 });
 
 test("runSingleAgent releases sleep inhibitor after spawn error with valid PID", async () => {
+  const acquired: number[] = [];
   let releases = 0;
   const { cwd } = await setupTest({
     piScript: `#!/bin/sh
@@ -1342,7 +1343,8 @@ exit 1
     "off",
     false,
     {
-      async acquireSleepInhibitor() {
+      async acquireSleepInhibitor(pid) {
+        acquired.push(pid);
         return {
           async release() {
             releases += 1;
@@ -1351,6 +1353,8 @@ exit 1
       },
     },
   );
+  expect(acquired).toHaveLength(1);
+  expect(Number.isFinite(acquired[0])).toBe(true);
   expect(result.exitCode).toBe(1);
   expect(releases).toBe(1);
 });

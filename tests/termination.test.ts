@@ -1,9 +1,11 @@
 import { describe, expect, test } from "bun:test";
 import type { ChildProcess } from "node:child_process";
 import { EventEmitter } from "node:events";
+import * as terminationModule from "../src/child/termination.js";
 import {
   acquireChildSleepInhibitor,
   getProcessTreeSpawnOptions,
+  isFinitePid,
   makeHostSleepInhibitorAdapter,
   type SleepInhibitorAdapter,
   type SleepInhibitorHelperProcess,
@@ -122,7 +124,16 @@ describe("acquireChildSleepInhibitor", () => {
 });
 
 describe("makeHostSleepInhibitorAdapter", () => {
-  test("supported hosts spawn a silent detached helper scoped to the child PID", async () => {
+  test("linux support preserves the termination module runtime export surface", () => {
+    expect(Object.keys(terminationModule).sort()).toEqual([
+      "acquireChildSleepInhibitor",
+      "getProcessTreeSpawnOptions",
+      "isFinitePid",
+      "makeHostSleepInhibitorAdapter",
+      "terminateChildProcess",
+    ]);
+  });
+  test("darwin support spawns a silent detached helper scoped to the child PID", async () => {
     const helper = {
       exitCode: null,
       signalCode: null,
@@ -136,6 +147,7 @@ describe("makeHostSleepInhibitorAdapter", () => {
         helper.unrefCalls += 1;
       },
     };
+    const checkedCommands: string[] = [];
     const spawned: Array<{
       command: string;
       args: string[];
@@ -144,6 +156,7 @@ describe("makeHostSleepInhibitorAdapter", () => {
     const adapter = makeHostSleepInhibitorAdapter({
       platform: "darwin",
       async commandExists(command) {
+        checkedCommands.push(command);
         return command === "/usr/bin/caffeinate";
       },
       spawnHelper(command, args, options) {
@@ -151,8 +164,14 @@ describe("makeHostSleepInhibitorAdapter", () => {
         return helper;
       },
     });
+    expect(await adapter.supported?.()).toBe(true);
     const handle = await acquireChildSleepInhibitor(606, adapter);
     await handle.release();
+    await handle.release();
+    expect(checkedCommands).toEqual([
+      "/usr/bin/caffeinate",
+      "/usr/bin/caffeinate",
+    ]);
     expect(spawned).toEqual([
       {
         command: "/usr/bin/caffeinate",
@@ -163,31 +182,189 @@ describe("makeHostSleepInhibitorAdapter", () => {
     expect(helper.unrefCalls).toBe(1);
     expect(helper.killSignals).toEqual(["SIGTERM"]);
   });
+  test("linux support spawns a silent detached systemd-inhibit helper scoped to the child PID", async () => {
+    const helper = new EventEmitter() as EventEmitter & {
+      exitCode: null;
+      signalCode: null;
+      unrefCalls: number;
+      killSignals: Array<NodeJS.Signals | number | undefined>;
+      kill: (signal?: NodeJS.Signals | number) => boolean;
+      unref: () => void;
+    };
+    helper.exitCode = null;
+    helper.signalCode = null;
+    helper.unrefCalls = 0;
+    helper.killSignals = [];
+    helper.kill = (signal) => {
+      helper.killSignals.push(signal);
+      return true;
+    };
+    helper.unref = () => {
+      helper.unrefCalls += 1;
+    };
+    const checkedCommands: string[] = [];
+    const spawned: Array<{
+      command: string;
+      args: string[];
+      options: { stdio: "ignore"; detached: true };
+    }> = [];
+    const adapter = makeHostSleepInhibitorAdapter({
+      platform: "linux",
+      async commandExists(command) {
+        checkedCommands.push(command);
+        return command === "/usr/bin/systemd-inhibit";
+      },
+      spawnHelper(command, args, options) {
+        spawned.push({ command, args, options });
+        return helper;
+      },
+    });
+    expect(await adapter.supported?.()).toBe(true);
+    const handle = await acquireChildSleepInhibitor(707, adapter);
+    expect(() =>
+      helper.emit("error", new Error("helper failed")),
+    ).not.toThrow();
+    await handle.release();
+    expect(checkedCommands).toEqual([
+      "/usr/bin/systemd-inhibit",
+      "/usr/bin/systemd-inhibit",
+    ]);
+    expect(spawned).toEqual([
+      {
+        command: "/usr/bin/systemd-inhibit",
+        args: [
+          "--what=sleep",
+          "--who=pi-subagent",
+          "--why=subagent running",
+          "--mode=block",
+          "/bin/sh",
+          "-c",
+          "while kill -0 707 2>/dev/null; do sleep 1; done",
+        ],
+        options: { stdio: "ignore", detached: true },
+      },
+    ]);
+    expect(helper.unrefCalls).toBe(1);
+    expect(helper.killSignals).toEqual(["SIGTERM"]);
+  });
+  test("linux helper release handles active, completed, missing, throwing, and repeated kill paths", async () => {
+    const activeKillSignals: Array<NodeJS.Signals | number | undefined> = [];
+    const helpers: SleepInhibitorHelperProcess[] = [
+      {
+        exitCode: null,
+        signalCode: null,
+        kill(signal?: NodeJS.Signals | number) {
+          activeKillSignals.push(signal);
+          return true;
+        },
+      },
+      {
+        exitCode: 0,
+        signalCode: null,
+        kill() {
+          throw new Error("exited helper must not be killed");
+        },
+      },
+      {
+        exitCode: null,
+        signalCode: "SIGTERM",
+        kill() {
+          throw new Error("signaled helper must not be killed");
+        },
+      },
+      {
+        exitCode: null,
+        signalCode: null,
+      },
+      {
+        exitCode: null,
+        signalCode: null,
+        kill() {
+          throw new Error("release failed");
+        },
+      },
+    ];
+    const adapter = makeHostSleepInhibitorAdapter({
+      platform: "linux",
+      async commandExists() {
+        return true;
+      },
+      spawnHelper() {
+        const helper = helpers.shift();
+        if (!helper) throw new Error("unexpected helper acquisition");
+        return helper;
+      },
+    });
+    const active = await acquireChildSleepInhibitor(708, adapter);
+    await active.release();
+    await active.release();
+    await (await acquireChildSleepInhibitor(709, adapter)).release();
+    await (await acquireChildSleepInhibitor(710, adapter)).release();
+    await (await acquireChildSleepInhibitor(711, adapter)).release();
+    await (await acquireChildSleepInhibitor(712, adapter)).release();
+    expect(activeKillSignals).toEqual(["SIGTERM"]);
+    expect(helpers).toHaveLength(0);
+  });
   test("unsupported hosts and missing helper capability stay no-op", async () => {
     const spawned: string[] = [];
     const unsupported = makeHostSleepInhibitorAdapter({
+      platform: "freebsd",
+      async commandExists(command) {
+        throw new Error(`must not check ${command}`);
+      },
+      spawnHelper(command) {
+        spawned.push(command);
+        throw new Error("must not spawn");
+      },
+    });
+    const missingDarwinCapability = makeHostSleepInhibitorAdapter({
+      platform: "darwin",
+      async commandExists(command) {
+        return command !== "/usr/bin/caffeinate";
+      },
+      spawnHelper(command) {
+        spawned.push(command);
+        throw new Error("must not spawn");
+      },
+    });
+    const missingLinuxCapability = makeHostSleepInhibitorAdapter({
+      platform: "linux",
+      async commandExists(command) {
+        return command !== "/usr/bin/systemd-inhibit";
+      },
+      spawnHelper(command) {
+        spawned.push(command);
+        throw new Error("must not spawn");
+      },
+    });
+    expect(await unsupported.supported?.()).toBe(false);
+    expect(await missingDarwinCapability.supported?.()).toBe(false);
+    expect(await missingLinuxCapability.supported?.()).toBe(false);
+    await (await acquireChildSleepInhibitor(808, unsupported)).release();
+    await (
+      await acquireChildSleepInhibitor(909, missingDarwinCapability)
+    ).release();
+    await (
+      await acquireChildSleepInhibitor(1001, missingLinuxCapability)
+    ).release();
+    expect(spawned).toEqual([]);
+  });
+  test("linux acquisition tolerates missing unref and rejects invalid PIDs before spawning", async () => {
+    const spawned: string[] = [];
+    const adapter = makeHostSleepInhibitorAdapter({
       platform: "linux",
       async commandExists() {
         return true;
       },
       spawnHelper(command) {
         spawned.push(command);
-        throw new Error("must not spawn");
+        return { exitCode: null, signalCode: null };
       },
     });
-    const missingCapability = makeHostSleepInhibitorAdapter({
-      platform: "darwin",
-      async commandExists() {
-        return false;
-      },
-      spawnHelper(command) {
-        spawned.push(command);
-        throw new Error("must not spawn");
-      },
-    });
-    await (await acquireChildSleepInhibitor(707, unsupported)).release();
-    await (await acquireChildSleepInhibitor(808, missingCapability)).release();
-    expect(spawned).toEqual([]);
+    await (await acquireChildSleepInhibitor(Number.NaN, adapter)).release();
+    await (await acquireChildSleepInhibitor("707", adapter)).release();
+    await (await acquireChildSleepInhibitor(808, adapter)).release();
+    expect(spawned).toEqual(["/usr/bin/systemd-inhibit"]);
   });
   test("adapter without supported method delegates directly to acquire", async () => {
     const acquired: number[] = [];
@@ -220,7 +397,7 @@ describe("makeHostSleepInhibitorAdapter", () => {
   });
   test("startup, async helper errors, release, and already-ended helpers degrade silently", async () => {
     const startupFailure = makeHostSleepInhibitorAdapter({
-      platform: "darwin",
+      platform: "linux",
       async commandExists() {
         return true;
       },
@@ -292,6 +469,49 @@ describe("makeHostSleepInhibitorAdapter", () => {
     ).not.toThrow();
     await asyncHandle.release();
     await (await acquireChildSleepInhibitor(1003, alreadyEnded)).release();
+  });
+  test("default commandExists uses real filesystem access", async () => {
+    const spawned: string[] = [];
+    const adapter = makeHostSleepInhibitorAdapter({
+      platform: "darwin",
+      spawnHelper(command) {
+        spawned.push(command);
+        return { exitCode: null, signalCode: null, unref() {}, kill() {} };
+      },
+    });
+    const supported = await adapter.supported?.();
+    if (supported) {
+      await (await acquireChildSleepInhibitor(505, adapter)).release();
+      expect(spawned).toEqual(["/usr/bin/caffeinate"]);
+    } else {
+      await (await acquireChildSleepInhibitor(505, adapter)).release();
+      expect(spawned).toEqual([]);
+    }
+  });
+});
+
+describe("isFinitePid", () => {
+  test("accepts positive integers", () => {
+    expect(isFinitePid(1)).toBe(true);
+    expect(isFinitePid(99999)).toBe(true);
+  });
+  test("accepts zero", () => {
+    expect(isFinitePid(0)).toBe(true);
+  });
+  test("accepts negative integers", () => {
+    expect(isFinitePid(-1)).toBe(true);
+  });
+  test("rejects non-number types", () => {
+    expect(isFinitePid(undefined)).toBe(false);
+    expect(isFinitePid(null)).toBe(false);
+    expect(isFinitePid("123")).toBe(false);
+    expect(isFinitePid(true)).toBe(false);
+    expect(isFinitePid({})).toBe(false);
+  });
+  test("rejects non-finite numbers", () => {
+    expect(isFinitePid(Infinity)).toBe(false);
+    expect(isFinitePid(-Infinity)).toBe(false);
+    expect(isFinitePid(Number.NaN)).toBe(false);
   });
 });
 

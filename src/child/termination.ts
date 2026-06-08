@@ -78,6 +78,8 @@ export type TerminateChildProcessOptions = {
 
 const DEFAULT_TIMEOUT_MS = 4_000;
 const CAFFEINATE_COMMAND = "/usr/bin/caffeinate";
+const SYSTEMD_INHIBIT_COMMAND = "/usr/bin/systemd-inhibit";
+const SHELL_COMMAND = "/bin/sh";
 const noopSleepInhibitorHandle: SleepInhibitorHandle = {
   async release() {},
 };
@@ -132,6 +134,31 @@ function helperHasEnded(helper: SleepInhibitorHelperProcess): boolean {
   );
 }
 
+function makeHelperHandle(
+  helper: SleepInhibitorHelperProcess,
+): SleepInhibitorAdapterHandle {
+  helper.on?.("error", () => undefined);
+  helper.unref?.();
+  return {
+    release() {
+      if (helperHasEnded(helper)) return;
+      helper.kill?.("SIGTERM");
+    },
+  };
+}
+
+function makeSystemdInhibitArgs(pid: number): string[] {
+  return [
+    "--what=sleep",
+    "--who=pi-subagent",
+    "--why=subagent running",
+    "--mode=block",
+    SHELL_COMMAND,
+    "-c",
+    `while kill -0 ${pid} 2>/dev/null; do sleep 1; done`,
+  ];
+}
+
 export function makeHostSleepInhibitorAdapter(
   options: HostSleepInhibitorAdapterOptions = {},
 ): SleepInhibitorAdapter {
@@ -142,22 +169,28 @@ export function makeHostSleepInhibitorAdapter(
     ((command, args, spawnOptions) => spawn(command, args, spawnOptions));
   return {
     async supported() {
-      return platform === "darwin" && (await commandExists(CAFFEINATE_COMMAND));
+      if (platform === "darwin") return commandExists(CAFFEINATE_COMMAND);
+      if (platform === "linux") return commandExists(SYSTEMD_INHIBIT_COMMAND);
+      return false;
     },
     acquire(pid) {
-      const helper = spawnHelper(
-        CAFFEINATE_COMMAND,
-        ["-dimsu", "-w", String(pid)],
-        { stdio: "ignore", detached: true },
-      );
-      helper.on?.("error", () => undefined);
-      helper.unref?.();
-      return {
-        release() {
-          if (helperHasEnded(helper)) return;
-          helper.kill?.("SIGTERM");
-        },
-      };
+      if (platform === "darwin") {
+        const helper = spawnHelper(
+          CAFFEINATE_COMMAND,
+          ["-dimsu", "-w", String(pid)],
+          { stdio: "ignore", detached: true },
+        );
+        return makeHelperHandle(helper);
+      }
+      if (platform === "linux") {
+        const helper = spawnHelper(
+          SYSTEMD_INHIBIT_COMMAND,
+          makeSystemdInhibitArgs(pid),
+          { stdio: "ignore", detached: true },
+        );
+        return makeHelperHandle(helper);
+      }
+      return {};
     },
   };
 }
