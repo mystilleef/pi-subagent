@@ -23,6 +23,12 @@
   - Run `bun coverage` to address test failures
   - Run `bun verify` at your discretion for comprehensive verification.
 
+### Testing rules
+
+- Before writing tests, read relevant `bun` testing guides, on demand,
+  in `./docs/bun/testing`. The agent file in that folder indexes what
+  each guide documents.
+
 ## Gotchas
 
 - Avoid empty lines inside functions.
