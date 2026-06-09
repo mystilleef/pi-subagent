@@ -6,10 +6,12 @@ import type { AgentToolUpdateCallback } from "@earendil-works/pi-agent-core";
 import type {
   AgentToolResult,
   ExtensionAPI,
+  ExtensionCommandContext,
   ExtensionContext,
   ThemeColor,
   ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
+import type { AgentConfig } from "../src/agent/agents.js";
 import registerSubagentExtension, {
   resetAgentCache,
   type SubagentParams,
@@ -170,7 +172,7 @@ export async function setupTest(overrides?: {
   return { binDir, cwd, agentDir, tool };
 }
 
-export type RegisteredTool = Parameters<ExtensionAPI["registerTool"]>[0];
+type RegisteredTool = Parameters<ExtensionAPI["registerTool"]>[0];
 
 export type CapturedSubagentTool = Omit<
   ToolDefinition<typeof SubagentParams, SubagentDetails>,
@@ -279,4 +281,65 @@ export function setupHooks() {
       tempDirs.map((dir) => rm(dir, { recursive: true, force: true })),
     );
   });
+}
+
+export const hangAgent: AgentConfig = {
+  name: "hang",
+  description: "Test agent",
+  thinking: "off",
+  systemPrompt: "Test agent prompt.",
+  source: "user",
+  filePath: "hang.md",
+};
+
+export const makeSubagentDetails = (
+  results: SubagentDetails["results"],
+): SubagentDetails => ({
+  mode: "single",
+  agentScope: "both",
+  projectAgentsDir: null,
+  results,
+});
+
+export function createDefaultFakeTheme(): FakeTheme {
+  return {
+    fg: (color, text) => `[${color}]${text}[/${color}]`,
+    bg: (color, text) => `[${color}]${text}[/${color}]`,
+    bold: (text) => `*${text}*`,
+  };
+}
+
+function createCommandFakeTheme(): FakeTheme {
+  return {
+    fg: (color, text) => `<fg:${color}>${text}</fg:${color}>`,
+    bg: (color, text) => `<bg:${color}>${text}</bg:${color}>`,
+    bold: (text) => `<b>${text}</b>`,
+    italic: (text) => `<i>${text}</i>`,
+  };
+}
+
+export function makeCommandContext(
+  notify: (msg: string) => void,
+  renderWidth = 80,
+): ExtensionCommandContext {
+  const theme = createCommandFakeTheme();
+  return {
+    cwd: "/tmp",
+    ui: {
+      notify,
+      custom: async (factory) => {
+        let result = "";
+        const component = await factory(
+          undefined as never,
+          theme as never,
+          undefined as never,
+          (value) => {
+            result = value as string;
+          },
+        );
+        component.render(renderWidth);
+        return result;
+      },
+    } as ExtensionCommandContext["ui"],
+  } as ExtensionCommandContext;
 }

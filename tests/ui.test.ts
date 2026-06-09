@@ -21,7 +21,7 @@ import type { SubagentProgressState } from "../src/progress/progress.js";
 import { getProgressState } from "../src/progress/progress.js";
 import type { SubagentDetails } from "../src/shared/types.js";
 import {
-  type FakeTheme,
+  createDefaultFakeTheme,
   getSubagentTool,
   makeSubagentToolUpdateLine,
   type RegisteredMessageRenderer,
@@ -44,11 +44,7 @@ function renderToString(component: unknown, width = 10000): string {
 
 test("renderResult output aggregation and truncation", () => {
   const tool = getSubagentTool();
-  const fakeTheme: FakeTheme = {
-    fg: (color, text) => `[${color}]${text}[/${color}]`,
-    bg: (color, text) => `[${color}]${text}[/${color}]`,
-    bold: (text) => `*${text}*`,
-  };
+  const fakeTheme = createDefaultFakeTheme();
   const fakeContext = {} as unknown as ExtensionContext;
   const messages = [
     {
@@ -184,11 +180,7 @@ test("renderResult output aggregation and truncation", () => {
 
 test("renderResult suppresses direct nested result when message rendered it", () => {
   const tool = getSubagentTool();
-  const fakeTheme: FakeTheme = {
-    fg: (color, text) => `[${color}]${text}[/${color}]`,
-    bg: (color, text) => `[${color}]${text}[/${color}]`,
-    bold: (text) => `*${text}*`,
-  };
+  const fakeTheme = createDefaultFakeTheme();
   const fakeContext = {} as unknown as ExtensionContext;
   const rendered = tool.renderResult?.(
     {
@@ -232,11 +224,7 @@ test("renderResult suppresses direct nested result when message rendered it", ()
 
 test("renderResult expanded output", () => {
   const tool = getSubagentTool();
-  const fakeTheme: FakeTheme = {
-    fg: (color, text) => `[${color}]${text}[/${color}]`,
-    bg: (color, text) => `[${color}]${text}[/${color}]`,
-    bold: (text) => `*${text}*`,
-  };
+  const fakeTheme = createDefaultFakeTheme();
   const fakeContext = {} as unknown as ExtensionContext;
   const messages = [
     {
@@ -431,11 +419,7 @@ exit 0
 
 test("renderResult with partial details after tool error does not show error icon", () => {
   const tool = getSubagentTool();
-  const fakeTheme: FakeTheme = {
-    fg: (color, text) => `[${color}]${text}[/${color}]`,
-    bg: (color, text) => `[${color}]${text}[/${color}]`,
-    bold: (text) => `*${text}*`,
-  };
+  const fakeTheme = createDefaultFakeTheme();
   const afterFailedTool: AgentToolResult<SubagentDetails> = {
     content: [{ type: "text" as const, text: "bash: false" }],
     details: {
@@ -535,11 +519,7 @@ test("renderResult with partial details after tool error does not show error ico
 
 test("renderResult subagent and unknown tools", () => {
   const tool = getSubagentTool();
-  const fakeTheme: FakeTheme = {
-    fg: (color, text) => `[${color}]${text}[/${color}]`,
-    bg: (color, text) => `[${color}]${text}[/${color}]`,
-    bold: (text) => `*${text}*`,
-  };
+  const fakeTheme = createDefaultFakeTheme();
   const messages = [
     {
       role: "assistant" as const,
@@ -606,11 +586,7 @@ test("renderResult subagent and unknown tools", () => {
 
 test("renderResult expanded output truncation for > 2000 chars", () => {
   const tool = getSubagentTool();
-  const fakeTheme: FakeTheme = {
-    fg: (color, text) => `[${color}]${text}[/${color}]`,
-    bg: (color, text) => `[${color}]${text}[/${color}]`,
-    bold: (text) => `*${text}*`,
-  };
+  const fakeTheme = createDefaultFakeTheme();
   const messages = [
     {
       role: "assistant" as const,
@@ -657,11 +633,7 @@ test("renderResult expanded output truncation for > 2000 chars", () => {
 
 test("renderCall formats tool execution correctly", () => {
   const tool = getSubagentTool();
-  const fakeTheme: FakeTheme = {
-    fg: (color, text) => `[${color}]${text}[/${color}]`,
-    bg: (color, text) => `[${color}]${text}[/${color}]`,
-    bold: (text) => `*${text}*`,
-  };
+  const fakeTheme = createDefaultFakeTheme();
   const rendered = tool.renderCall?.(
     {
       agent: "test-agent",
@@ -695,11 +667,7 @@ test("renderCall formats tool execution correctly", () => {
 });
 
 test("renderSubagentResult formats units, fallback output, and failed tool results", () => {
-  const fakeTheme: FakeTheme = {
-    fg: (color, text) => `[${color}]${text}[/${color}]`,
-    bg: (color, text) => `[${color}]${text}[/${color}]`,
-    bold: (text) => `*${text}*`,
-  };
+  const fakeTheme = createDefaultFakeTheme();
   expect(formatTokens(999)).toBe("999");
   expect(formatTokens(1500)).toBe("1.5k");
   expect(formatTokens(15_000)).toBe("15k");
@@ -893,11 +861,7 @@ test("renderSubagentResult formats units, fallback output, and failed tool resul
 });
 
 test("subagent result keeps subagent call chrome unchanged", () => {
-  const fakeTheme: FakeTheme = {
-    fg: (color, text) => `[${color}]${text}[/${color}]`,
-    bg: (color, text) => `[${color}]${text}[/${color}]`,
-    bold: (text) => `*${text}*`,
-  };
+  const fakeTheme = createDefaultFakeTheme();
   const call = renderSubagentCall({}, fakeTheme) as unknown as {
     text: string;
     render: (width: number) => string[];
@@ -917,11 +881,7 @@ test("subagent result keeps subagent call chrome unchanged", () => {
   ).toBe(true);
 });
 test("subagent result markdown invokes theme callbacks", () => {
-  const fakeTheme: FakeTheme = {
-    fg: (color, text) => `[${color}]${text}[/${color}]`,
-    bg: (color, text) => `[${color}]${text}[/${color}]`,
-    bold: (text) => `*${text}*`,
-  };
+  const fakeTheme = createDefaultFakeTheme();
   setCapabilities({ images: null, trueColor: false, hyperlinks: false });
   const markdown = `# Heading\n\n[docs](https://example.com) and \`inline\`\n\n\`\`\`ts\nconst x = 1\n\`\`\`\n\n> quoted **bold** and *italic* and ~~gone~~\n\n---\n\n- item`;
   const rendered = renderSubagentResult(
@@ -986,11 +946,7 @@ test("subagent result markdown invokes theme callbacks", () => {
 test("subagent-result message renderer uses summarized content and preserves result chrome", () => {
   const tool = getSubagentTool();
   const renderer = tool.registeredMessageRenderers.get("subagent-result");
-  const fakeTheme: FakeTheme = {
-    fg: (color, text) => `[${color}]${text}[/${color}]`,
-    bg: (color, text) => `[${color}]${text}[/${color}]`,
-    bold: (text) => `*${text}*`,
-  };
+  const fakeTheme = createDefaultFakeTheme();
   const details: SubagentDetails = {
     mode: "single",
     agentScope: "both",
@@ -1047,11 +1003,7 @@ test("subagent-result message renderer uses summarized content and preserves res
 });
 
 test("normal subagent tool rendering continues to use raw final output", () => {
-  const fakeTheme: FakeTheme = {
-    fg: (color, text) => `[${color}]${text}[/${color}]`,
-    bg: (color, text) => `[${color}]${text}[/${color}]`,
-    bold: (text) => `*${text}*`,
-  };
+  const fakeTheme = createDefaultFakeTheme();
   const rendered = renderSubagentResult(
     {
       content: [{ type: "text", text: "formatted parent content" }],
@@ -1096,11 +1048,7 @@ test("normal subagent tool rendering continues to use raw final output", () => {
 });
 
 test("subagent result backgrounds cover representative success and failure cards", () => {
-  const fakeTheme: FakeTheme = {
-    fg: (color, text) => `[${color}]${text}[/${color}]`,
-    bg: (color, text) => `[${color}]${text}[/${color}]`,
-    bold: (text) => `*${text}*`,
-  };
+  const fakeTheme = createDefaultFakeTheme();
   const success = renderSubagentResult(
     {
       content: [{ type: "text", text: "ignored" }],
@@ -1222,11 +1170,7 @@ test("subagent result backgrounds cover representative success and failure cards
 });
 
 test("subagent result renders cancelled result with appropriate icon and error background", () => {
-  const fakeTheme: FakeTheme = {
-    fg: (color, text) => `[${color}]${text}[/${color}]`,
-    bg: (color, text) => `[${color}]${text}[/${color}]`,
-    bold: (text) => `*${text}*`,
-  };
+  const fakeTheme = createDefaultFakeTheme();
   const rendered = renderSubagentResult(
     {
       content: [{ type: "text", text: "ignored" }],
@@ -1275,11 +1219,7 @@ test("subagent result renders cancelled result with appropriate icon and error b
 });
 
 test("subagent result renders outcome-only output instead of no output", () => {
-  const fakeTheme: FakeTheme = {
-    fg: (color, text) => `[${color}]${text}[/${color}]`,
-    bg: (color, text) => `[${color}]${text}[/${color}]`,
-    bold: (text) => `*${text}*`,
-  };
+  const fakeTheme = createDefaultFakeTheme();
   const rendered = renderSubagentResult(
     {
       content: [{ type: "text", text: "ignored" }],
@@ -1317,11 +1257,7 @@ test("subagent result renders outcome-only output instead of no output", () => {
 });
 
 test("subagent result renders compact structured success output", () => {
-  const fakeTheme: FakeTheme = {
-    fg: (color, text) => `[${color}]${text}[/${color}]`,
-    bg: (color, text) => `[${color}]${text}[/${color}]`,
-    bold: (text) => `*${text}*`,
-  };
+  const fakeTheme = createDefaultFakeTheme();
   const rendered = renderSubagentResult(
     {
       content: [{ type: "text", text: "ignored" }],
@@ -1370,11 +1306,7 @@ test("subagent result renders compact structured success output", () => {
 });
 
 test("subagent result suppresses success no-op fields and keeps fallback", () => {
-  const fakeTheme: FakeTheme = {
-    fg: (color, text) => `[${color}]${text}[/${color}]`,
-    bg: (color, text) => `[${color}]${text}[/${color}]`,
-    bold: (text) => `*${text}*`,
-  };
+  const fakeTheme = createDefaultFakeTheme();
   const render = (finalOutput: string) =>
     renderSubagentResult(
       {
@@ -1430,11 +1362,7 @@ test("subagent result suppresses success no-op fields and keeps fallback", () =>
 });
 
 test("subagent result parses labels and normalizes display without mutating raw output", () => {
-  const fakeTheme: FakeTheme = {
-    fg: (color, text) => `[${color}]${text}[/${color}]`,
-    bg: (color, text) => `[${color}]${text}[/${color}]`,
-    bold: (text) => `*${text}*`,
-  };
+  const fakeTheme = createDefaultFakeTheme();
   const longNext = "x".repeat(200);
   const rawOutput = `- outcome: **shipped across\nmultiple lines**\n**Changed:** \`src/ui.ts\`\n### Verification\n\`bun test\`\nNext: \`${longNext}\``;
   const result = {
@@ -1479,11 +1407,7 @@ test("subagent result parses labels and normalizes display without mutating raw 
 });
 
 test("subagent result compacts only clear changed path lists", () => {
-  const fakeTheme: FakeTheme = {
-    fg: (color, text) => `[${color}]${text}[/${color}]`,
-    bg: (color, text) => `[${color}]${text}[/${color}]`,
-    bold: (text) => `*${text}*`,
-  };
+  const fakeTheme = createDefaultFakeTheme();
   const renderChanged = (changed: string) =>
     renderSubagentResult(
       {
@@ -1535,11 +1459,7 @@ test("subagent result compacts only clear changed path lists", () => {
 });
 
 test("subagent result renders compact structured failure output", () => {
-  const fakeTheme: FakeTheme = {
-    fg: (color, text) => `[${color}]${text}[/${color}]`,
-    bg: (color, text) => `[${color}]${text}[/${color}]`,
-    bold: (text) => `*${text}*`,
-  };
+  const fakeTheme = createDefaultFakeTheme();
   const rendered = renderSubagentResult(
     {
       content: [{ type: "text", text: "ignored" }],
@@ -1585,11 +1505,7 @@ test("subagent result renders compact structured failure output", () => {
 });
 
 test("subagent result derives failure cause only when output lacks parsed cause", () => {
-  const fakeTheme: FakeTheme = {
-    fg: (color, text) => `[${color}]${text}[/${color}]`,
-    bg: (color, text) => `[${color}]${text}[/${color}]`,
-    bold: (text) => `*${text}*`,
-  };
+  const fakeTheme = createDefaultFakeTheme();
   const render = (finalOutput: string) =>
     renderSubagentResult(
       {
@@ -1640,11 +1556,7 @@ test("subagent result derives failure cause only when output lacks parsed cause"
 });
 
 test("subagent result suppresses failure no-op fields and keeps fallback", () => {
-  const fakeTheme: FakeTheme = {
-    fg: (color, text) => `[${color}]${text}[/${color}]`,
-    bg: (color, text) => `[${color}]${text}[/${color}]`,
-    bold: (text) => `*${text}*`,
-  };
+  const fakeTheme = createDefaultFakeTheme();
   const rendered = renderSubagentResult(
     {
       content: [{ type: "text", text: "ignored" }],
@@ -1687,11 +1599,7 @@ test("subagent result suppresses failure no-op fields and keeps fallback", () =>
 });
 
 test("subagent result preserves raw output lines in UI", () => {
-  const fakeTheme: FakeTheme = {
-    fg: (color, text) => `[${color}]${text}[/${color}]`,
-    bg: (color, text) => `[${color}]${text}[/${color}]`,
-    bold: (text) => `*${text}*`,
-  };
+  const fakeTheme = createDefaultFakeTheme();
   const rendered = renderSubagentResult(
     {
       content: [{ type: "text", text: "ignored" }],
@@ -1737,11 +1645,7 @@ test("subagent-result renderer uses compact content instead of full final output
   const { registeredMessageRenderers } = getSubagentTool();
   const renderer = registeredMessageRenderers.get("subagent-result");
   if (!renderer) throw new Error("subagent-result renderer missing");
-  const fakeTheme: FakeTheme = {
-    fg: (color, text) => `[${color}]${text}[/${color}]`,
-    bg: (color, text) => `[${color}]${text}[/${color}]`,
-    bold: (text) => `*${text}*`,
-  };
+  const fakeTheme = createDefaultFakeTheme();
   const details: SubagentDetails = {
     mode: "single",
     agentScope: "both",
@@ -1800,11 +1704,7 @@ test("/run final result message renderer hides header and keeps success backgrou
   } as unknown as ExtensionCommandContext);
   const renderer = registeredMessageRenderers.get("subagent-result");
   if (!renderer) throw new Error("subagent-result renderer missing");
-  const fakeTheme: FakeTheme = {
-    fg: (color, text) => `[${color}]${text}[/${color}]`,
-    bg: (color, text) => `[${color}]${text}[/${color}]`,
-    bold: (text) => `*${text}*`,
-  };
+  const fakeTheme = createDefaultFakeTheme();
   const rendered = renderer(
     sentMessages.at(-1) as Parameters<RegisteredMessageRenderer>[0],
     {} as Parameters<RegisteredMessageRenderer>[1],
@@ -1843,11 +1743,7 @@ test("formatResultFooter excludes duration from output", () => {
 });
 
 test("renderSubagentResult includes metadata in header with tools, context, and elapsed time", () => {
-  const fakeTheme: FakeTheme = {
-    fg: (color, text) => `[${color}]${text}[/${color}]`,
-    bg: (color, text) => `[${color}]${text}[/${color}]`,
-    bold: (text) => `*${text}*`,
-  };
+  const fakeTheme = createDefaultFakeTheme();
   const result = renderSubagentResult(
     {
       content: [{ type: "text", text: "test" }],
@@ -1897,11 +1793,7 @@ test("renderSubagentResult includes metadata in header with tools, context, and 
 });
 
 test("renderSubagentResult metadata handles undefined toolCalls", () => {
-  const fakeTheme: FakeTheme = {
-    fg: (color, text) => `[${color}]${text}[/${color}]`,
-    bg: (color, text) => `[${color}]${text}[/${color}]`,
-    bold: (text) => `*${text}*`,
-  };
+  const fakeTheme = createDefaultFakeTheme();
   const result = renderSubagentResult(
     {
       content: [{ type: "text", text: "test" }],
@@ -1941,11 +1833,7 @@ test("renderSubagentResult metadata handles undefined toolCalls", () => {
 });
 
 test("renderSubagentResult metadata handles undefined contextWindowTokens", () => {
-  const fakeTheme: FakeTheme = {
-    fg: (color, text) => `[${color}]${text}[/${color}]`,
-    bg: (color, text) => `[${color}]${text}[/${color}]`,
-    bold: (text) => `*${text}*`,
-  };
+  const fakeTheme = createDefaultFakeTheme();
   const result = renderSubagentResult(
     {
       content: [{ type: "text", text: "test" }],
@@ -1987,11 +1875,7 @@ test("renderSubagentResult metadata handles undefined contextWindowTokens", () =
 });
 
 test("renderSubagentResult metadata handles undefined durationMs", () => {
-  const fakeTheme: FakeTheme = {
-    fg: (color, text) => `[${color}]${text}[/${color}]`,
-    bg: (color, text) => `[${color}]${text}[/${color}]`,
-    bold: (text) => `*${text}*`,
-  };
+  const fakeTheme = createDefaultFakeTheme();
   const result = renderSubagentResult(
     {
       content: [{ type: "text", text: "test" }],
@@ -2033,11 +1917,7 @@ test("renderSubagentResult metadata handles undefined durationMs", () => {
 });
 
 test("renderRunsBoard renders empty board", () => {
-  const fakeTheme: FakeTheme = {
-    fg: (color, text) => `[${color}]${text}[/${color}]`,
-    bg: (color, text) => `[${color}]${text}[/${color}]`,
-    bold: (text) => `*${text}*`,
-  };
+  const fakeTheme = createDefaultFakeTheme();
   const rendered = renderRunsBoard([], fakeTheme as never);
   const text = renderToString(rendered);
   expect(text).toContain("No /run jobs in this session.");
@@ -2095,11 +1975,7 @@ test("renderRunsBoard renders status sections in fixed order", () => {
       errorText: "Cancelled by user",
     },
   ];
-  const fakeTheme: FakeTheme = {
-    fg: (color, text) => `[${color}]${text}[/${color}]`,
-    bg: (color, text) => `[${color}]${text}[/${color}]`,
-    bold: (text) => `*${text}*`,
-  };
+  const fakeTheme = createDefaultFakeTheme();
   const rendered = renderRunsBoard(states, fakeTheme as never, 32);
   const text = renderToString(rendered);
   const lines = text.split("\n");
@@ -2178,11 +2054,7 @@ test("renderRunsBoard omits empty status sections", () => {
     toolCount: 1,
     finalOutput: "working",
   };
-  const fakeTheme: FakeTheme = {
-    fg: (color, text) => `[${color}]${text}[/${color}]`,
-    bg: (color, text) => `[${color}]${text}[/${color}]`,
-    bold: (text) => `*${text}*`,
-  };
+  const fakeTheme = createDefaultFakeTheme();
   const rendered = renderRunsBoard([state], fakeTheme as never);
   const text = renderToString(rendered);
   expect(text).toContain("ACTIVE (1)");
@@ -2217,11 +2089,7 @@ test("renderRunsBoard truncates body preview after 120 chars", () => {
       finalOutput: longOutput,
     },
   ];
-  const fakeTheme: FakeTheme = {
-    fg: (color, text) => `[${color}]${text}[/${color}]`,
-    bg: (color, text) => `[${color}]${text}[/${color}]`,
-    bold: (text) => `*${text}*`,
-  };
+  const fakeTheme = createDefaultFakeTheme();
   const rendered = renderRunsBoard(states, fakeTheme as never);
   const text = renderToString(rendered);
   expect(text).toContain(exactOutput);
@@ -2276,11 +2144,7 @@ test("renderRunsBoard uses body source priority and fallback", () => {
       errorText: " ",
     },
   ];
-  const fakeTheme: FakeTheme = {
-    fg: (color, text) => `[${color}]${text}[/${color}]`,
-    bg: (color, text) => `[${color}]${text}[/${color}]`,
-    bold: (text) => `*${text}*`,
-  };
+  const fakeTheme = createDefaultFakeTheme();
   const rendered = renderRunsBoard(states, fakeTheme as never);
   const text = renderToString(rendered);
   expect(text).toContain("[toolOutput]final output[/toolOutput]");
@@ -2350,11 +2214,7 @@ exit 0
 });
 
 test("renderResult isPartial=true uses content[0].text when finalOutput is empty", () => {
-  const fakeTheme: FakeTheme = {
-    fg: (color, text) => `[${color}]${text}[/${color}]`,
-    bg: (color, text) => `[${color}]${text}[/${color}]`,
-    bold: (text) => `*${text}*`,
-  };
+  const fakeTheme = createDefaultFakeTheme();
   const rendered = renderSubagentResult(
     {
       content: [{ type: "text" as const, text: "bash: ls" }],
@@ -2397,11 +2257,7 @@ test("renderResult isPartial=true uses content[0].text when finalOutput is empty
 });
 
 test("renderResult isPartial=true falls back to activityText when content[0].text is absent", () => {
-  const fakeTheme: FakeTheme = {
-    fg: (color, text) => `[${color}]${text}[/${color}]`,
-    bg: (color, text) => `[${color}]${text}[/${color}]`,
-    bold: (text) => `*${text}*`,
-  };
+  const fakeTheme = createDefaultFakeTheme();
   const rendered = renderSubagentResult(
     {
       content: [{ type: "text" as const }],
@@ -2441,11 +2297,7 @@ test("renderResult isPartial=true falls back to activityText when content[0].tex
 });
 
 test("renderResult isPartial=true falls back to activityText when content[0].text is empty string", () => {
-  const fakeTheme: FakeTheme = {
-    fg: (color, text) => `[${color}]${text}[/${color}]`,
-    bg: (color, text) => `[${color}]${text}[/${color}]`,
-    bold: (text) => `*${text}*`,
-  };
+  const fakeTheme = createDefaultFakeTheme();
   const rendered = renderSubagentResult(
     {
       content: [{ type: "text" as const, text: "" }],
@@ -2485,11 +2337,7 @@ test("renderResult isPartial=true falls back to activityText when content[0].tex
 });
 
 test("renderResult isPartial=true falls back to lastToolPreview when activityText is absent", () => {
-  const fakeTheme: FakeTheme = {
-    fg: (color, text) => `[${color}]${text}[/${color}]`,
-    bg: (color, text) => `[${color}]${text}[/${color}]`,
-    bold: (text) => `*${text}*`,
-  };
+  const fakeTheme = createDefaultFakeTheme();
   const rendered = renderSubagentResult(
     {
       content: [{ type: "text" as const }],
@@ -2529,11 +2377,7 @@ test("renderResult isPartial=true falls back to lastToolPreview when activityTex
 });
 
 test("renderResult isPartial=true falls back to (running...) when all sources are empty", () => {
-  const fakeTheme: FakeTheme = {
-    fg: (color, text) => `[${color}]${text}[/${color}]`,
-    bg: (color, text) => `[${color}]${text}[/${color}]`,
-    bold: (text) => `*${text}*`,
-  };
+  const fakeTheme = createDefaultFakeTheme();
   const rendered = renderSubagentResult(
     {
       content: [{ type: "text" as const }],
@@ -2572,11 +2416,7 @@ test("renderResult isPartial=true falls back to (running...) when all sources ar
 });
 
 test("renderResult isPartial=false keeps using finalOutput as body", () => {
-  const fakeTheme: FakeTheme = {
-    fg: (color, text) => `[${color}]${text}[/${color}]`,
-    bg: (color, text) => `[${color}]${text}[/${color}]`,
-    bold: (text) => `*${text}*`,
-  };
+  const fakeTheme = createDefaultFakeTheme();
   const rendered = renderSubagentResult(
     {
       content: [{ type: "text" as const, text: "bash: ls" }],
@@ -2615,11 +2455,7 @@ test("renderResult isPartial=false keeps using finalOutput as body", () => {
 });
 
 test("renderResult isPartial=true with non-empty finalOutput still uses finalOutput", () => {
-  const fakeTheme: FakeTheme = {
-    fg: (color, text) => `[${color}]${text}[/${color}]`,
-    bg: (color, text) => `[${color}]${text}[/${color}]`,
-    bold: (text) => `*${text}*`,
-  };
+  const fakeTheme = createDefaultFakeTheme();
   const rendered = renderSubagentResult(
     {
       content: [{ type: "text" as const, text: "bash: ls" }],

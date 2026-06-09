@@ -125,6 +125,7 @@ async function defaultCommandExists(command: string): Promise<boolean> {
     await access(command, constants.X_OK);
     return true;
   } catch {
+    /* missing or non-executable commands return false */
     return false;
   }
 }
@@ -150,7 +151,7 @@ function makeHelperHandle(
 
 function makeSystemdInhibitArgs(pid: number): string[] {
   return [
-    "--what=sleep",
+    "--what=sleep:idle",
     "--who=pi-subagent",
     "--why=subagent running",
     "--mode=block",
@@ -230,7 +231,7 @@ export async function acquireChildSleepInhibitor(
       ? makeSleepInhibitorHandle(handle)
       : noopSleepInhibitorHandle;
   } catch {
-    /* acquisition failures degrade to no-op handle */
+    /* unsupported platforms or acquisition failures degrade to no-op handle */
     return noopSleepInhibitorHandle;
   }
 }

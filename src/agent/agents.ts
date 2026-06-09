@@ -83,6 +83,7 @@ function parseAgentConfig(
   try {
     parsed = parseFrontmatter<Record<string, unknown>>(content);
   } catch {
+    /* malformed frontmatter returns null to skip invalid agent files */
     return null;
   }
   const { frontmatter, body } = parsed;
@@ -130,6 +131,7 @@ async function loadAgentEntryAsync(
   try {
     content = await fsPromises.readFile(filePath, "utf-8");
   } catch {
+    /* unreadable files are skipped silently during agent discovery */
     return null;
   }
   return parseAgentConfig(content, source, filePath);
@@ -156,7 +158,7 @@ async function loadAgentsFromDirAsync(
   return { agents, markdownFiles };
 }
 
-export function isMarkdownDirent(entry: Dirent): boolean {
+function isMarkdownDirent(entry: Dirent): boolean {
   return (
     entry.name.endsWith(".md") && (entry.isFile() || entry.isSymbolicLink())
   );
@@ -175,6 +177,7 @@ export async function readMarkdownDirWithStatusAsync(
     const entries = await fsPromises.readdir(dir, { withFileTypes: true });
     return { entries: entries.filter(isMarkdownDirent), ok: true };
   } catch {
+    /* missing or inaccessible directories return empty listing */
     return { entries: [], ok: false };
   }
 }
@@ -187,6 +190,7 @@ export async function isDirectoryAsync(p: string): Promise<boolean> {
   try {
     return (await fsPromises.stat(p)).isDirectory();
   } catch {
+    /* stat failures indicate non-existent or inaccessible paths */
     return false;
   }
 }

@@ -1,5 +1,4 @@
 import { beforeEach, expect, test } from "bun:test";
-import type { ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import { jobsCommandHandler } from "../src/orchestration/jobs-command.js";
 import {
   registerRunJob,
@@ -13,7 +12,7 @@ import {
   patchProgressState,
   resetProgressStore,
 } from "../src/progress/progress.js";
-import { type FakeTheme, setupHooks } from "./helpers.js";
+import { makeCommandContext, setupHooks } from "./helpers.js";
 
 setupHooks();
 
@@ -22,42 +21,10 @@ beforeEach(() => {
   resetProgressStore();
 });
 
-const commandTheme: FakeTheme = {
-  fg: (color, text) => `<fg:${color}>${text}</fg:${color}>`,
-  bg: (color, text) => `<bg:${color}>${text}</bg:${color}>`,
-  bold: (text) => `<b>${text}</b>`,
-  italic: (text) => `<i>${text}</i>`,
-};
-
-function makeCtx(
-  notify: (msg: string) => void,
-  renderWidth = 80,
-): ExtensionCommandContext {
-  return {
-    cwd: "/tmp",
-    ui: {
-      notify,
-      custom: async (factory) => {
-        let result = "";
-        const component = await factory(
-          undefined as never,
-          commandTheme as never,
-          undefined as never,
-          (value) => {
-            result = value as string;
-          },
-        );
-        component.render(renderWidth);
-        return result;
-      },
-    } as ExtensionCommandContext["ui"],
-  } as ExtensionCommandContext;
-}
-
 test("/jobs empty board shows no-jobs message", async () => {
   const notices: string[] = [];
   await jobsCommandHandler(
-    makeCtx((msg) => notices.push(msg)),
+    makeCommandContext((msg) => notices.push(msg)),
     "",
   );
   expect(notices).toEqual(["No /run jobs in this session."]);
@@ -80,7 +47,7 @@ test("/jobs shows active running jobs", async () => {
   });
   const notices: string[] = [];
   await jobsCommandHandler(
-    makeCtx((msg) => notices.push(msg)),
+    makeCommandContext((msg) => notices.push(msg)),
     "",
   );
   expect(notices).toHaveLength(1);
@@ -103,7 +70,7 @@ test("/jobs notification width is two less than board width", async () => {
   });
   const notices: string[] = [];
   await jobsCommandHandler(
-    makeCtx((msg) => notices.push(msg), 122),
+    makeCommandContext((msg) => notices.push(msg), 122),
     "",
   );
   const output = notices[0] ?? "";
@@ -140,7 +107,7 @@ test("/jobs shows status sections after active jobs", async () => {
   });
   const notices: string[] = [];
   await jobsCommandHandler(
-    makeCtx((msg) => notices.push(msg)),
+    makeCommandContext((msg) => notices.push(msg)),
     "",
   );
   expect(notices).toHaveLength(1);
@@ -171,7 +138,7 @@ test("/jobs shows cancelled and error jobs", async () => {
   patchProgressState(cancelRid, { toolCount: 0 });
   const notices: string[] = [];
   await jobsCommandHandler(
-    makeCtx((msg) => notices.push(msg)),
+    makeCommandContext((msg) => notices.push(msg)),
     "",
   );
   expect(notices).toHaveLength(1);
@@ -188,7 +155,7 @@ test("/jobs shows cancelled and error jobs", async () => {
 test("/jobs ignores arguments", async () => {
   const notices: string[] = [];
   await jobsCommandHandler(
-    makeCtx((msg) => notices.push(msg)),
+    makeCommandContext((msg) => notices.push(msg)),
     "some garbage args",
   );
   expect(notices).toEqual(["No /run jobs in this session."]);
@@ -204,7 +171,7 @@ test("/jobs active job not in progress store is skipped", async () => {
   });
   const notices: string[] = [];
   await jobsCommandHandler(
-    makeCtx((msg) => notices.push(msg)),
+    makeCommandContext((msg) => notices.push(msg)),
     "",
   );
   // No progress state for orphan-job, so board should be empty
@@ -224,7 +191,7 @@ test("/jobs completed job also in active registry excluded from completed list",
   });
   const notices: string[] = [];
   await jobsCommandHandler(
-    makeCtx((msg) => notices.push(msg)),
+    makeCommandContext((msg) => notices.push(msg)),
     "",
   );
   expect(notices).toHaveLength(1);
@@ -260,7 +227,7 @@ test("/jobs sorts jobs within same category by startTime descending", async () =
   });
   const notices: string[] = [];
   await jobsCommandHandler(
-    makeCtx((msg) => notices.push(msg)),
+    makeCommandContext((msg) => notices.push(msg)),
     "",
   );
   const output = notices[0] ?? "";
@@ -276,7 +243,7 @@ test("/jobs truncates long final output in board", async () => {
   finalizeProgressState(rid, longText);
   const notices: string[] = [];
   await jobsCommandHandler(
-    makeCtx((msg) => notices.push(msg)),
+    makeCommandContext((msg) => notices.push(msg)),
     "",
   );
   const output = notices[0] ?? "";
@@ -290,7 +257,7 @@ test("/jobs skips zombie running jobs not in active registry", async () => {
   // State is running but NOT in the active job registry — handler must skip it
   const notices: string[] = [];
   await jobsCommandHandler(
-    makeCtx((msg) => notices.push(msg)),
+    makeCommandContext((msg) => notices.push(msg)),
     "",
   );
   expect(notices).toEqual(["No /run jobs in this session."]);
@@ -303,7 +270,7 @@ test("/jobs uses singular 'tool' label when toolCount is 1", async () => {
   finalizeProgressState(rid, "done");
   const notices: string[] = [];
   await jobsCommandHandler(
-    makeCtx((msg) => notices.push(msg), 200),
+    makeCommandContext((msg) => notices.push(msg), 200),
     "",
   );
   const output = notices[0] ?? "";
@@ -318,7 +285,7 @@ test("/jobs uses plural 'tools' label when toolCount is not 1", async () => {
   finalizeProgressState(rid, "done");
   const notices: string[] = [];
   await jobsCommandHandler(
-    makeCtx((msg) => notices.push(msg), 200),
+    makeCommandContext((msg) => notices.push(msg), 200),
     "",
   );
   const output = notices[0] ?? "";
@@ -332,7 +299,7 @@ test("/jobs shows errorText body for error state when no finalOutput", async () 
   patchProgressState(rid, { toolCount: 0 });
   const notices: string[] = [];
   await jobsCommandHandler(
-    makeCtx((msg) => notices.push(msg)),
+    makeCommandContext((msg) => notices.push(msg)),
     "",
   );
   const output = notices[0] ?? "";
@@ -346,7 +313,7 @@ test("/jobs does not truncate body text at exactly 120 chars", async () => {
   finalizeProgressState(rid, exactText);
   const notices: string[] = [];
   await jobsCommandHandler(
-    makeCtx((msg) => notices.push(msg), 200),
+    makeCommandContext((msg) => notices.push(msg), 200),
     "",
   );
   const output = notices[0] ?? "";
@@ -360,7 +327,7 @@ test("/jobs truncates body text at 121 chars", async () => {
   finalizeProgressState(rid, text121);
   const notices: string[] = [];
   await jobsCommandHandler(
-    makeCtx((msg) => notices.push(msg)),
+    makeCommandContext((msg) => notices.push(msg)),
     "",
   );
   const output = notices[0] ?? "";

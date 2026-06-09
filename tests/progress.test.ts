@@ -19,10 +19,13 @@ import {
   resetProgressStore,
 } from "../src/progress/progress.js";
 import {
-  getAllProgressStates,
   renderToolActivity,
   renderToolActivityForDisplay,
   SENSITIVE_PATTERN,
+} from "../src/progress/progress-format.js";
+import {
+  getAllProgressStates,
+  isToolCallPart,
 } from "../src/progress/progress-state.js";
 import {
   patchProgressFromDetails,
@@ -4301,4 +4304,173 @@ test("renderToolActivity depth-2 retains truncation for stored previews", () => 
     expect(result).toContain("parent-summary");
     expect(result).toContain(" - ");
   }
+});
+
+test("isToolCallPart rejects non-objects", () => {
+  expect(isToolCallPart(null)).toBe(false);
+  expect(isToolCallPart(undefined)).toBe(false);
+  expect(isToolCallPart(42)).toBe(false);
+  expect(isToolCallPart("string")).toBe(false);
+  expect(isToolCallPart(true)).toBe(false);
+});
+
+test("isToolCallPart rejects objects missing required fields", () => {
+  expect(isToolCallPart({})).toBe(false);
+  expect(isToolCallPart({ type: "text" })).toBe(false);
+  expect(isToolCallPart({ type: "toolCall" })).toBe(false);
+  expect(isToolCallPart({ type: "toolCall", id: "tc-1" })).toBe(false);
+  expect(isToolCallPart({ type: "toolCall", id: "tc-1", name: 42 })).toBe(
+    false,
+  );
+  expect(isToolCallPart({ type: "toolCall", id: 42, name: "bash" })).toBe(
+    false,
+  );
+});
+
+test("isToolCallPart accepts valid tool call parts", () => {
+  expect(
+    isToolCallPart({
+      type: "toolCall",
+      id: "tc-1",
+      name: "bash",
+      arguments: { command: "ls" },
+    }),
+  ).toBe(true);
+  expect(isToolCallPart({ type: "toolCall", id: "tc-2", name: "read" })).toBe(
+    true,
+  );
+});
+
+test("extractProgressFromDetails skips non-object entries in derived toolCalls", () => {
+  const details: SubagentDetails = {
+    mode: "single",
+    agentScope: "both",
+    projectAgentsDir: null,
+    results: [
+      {
+        agent: "test",
+        agentSource: "user",
+        task: "task",
+        exitCode: 0,
+        finalOutput: "",
+        stderr: "",
+        usage: {
+          input: 0,
+          output: 0,
+          cacheRead: 0,
+          cacheWrite: 0,
+          cost: 0,
+          contextTokens: 0,
+          turns: 0,
+        },
+        progress: {
+          toolCalls: [
+            null,
+            42,
+            "string",
+            { id: "valid-1", preview: "bash: ls" },
+            { id: false, preview: "bad" },
+            { id: "bad", preview: 123 },
+          ] as unknown as { id: string; preview: string }[],
+        },
+      },
+    ],
+  };
+  const seen = new Set<string>();
+  const result = extractProgressFromDetails(details, seen);
+  expect(result.newToolCallIds).toEqual(["valid-1"]);
+  expect(result.lastToolPreview).toBe("bash: ls");
+});
+
+test("extractProgressFromDetails handles toolResultCompleted and activeToolActivity in progress", () => {
+  const details: SubagentDetails = {
+    mode: "single",
+    agentScope: "both",
+    projectAgentsDir: null,
+    results: [
+      {
+        agent: "test",
+        agentSource: "user",
+        task: "task",
+        exitCode: 0,
+        finalOutput: "",
+        stderr: "",
+        usage: {
+          input: 0,
+          output: 0,
+          cacheRead: 0,
+          cacheWrite: 0,
+          cost: 0,
+          contextTokens: 0,
+          turns: 0,
+        },
+        progress: {
+          toolCalls: [],
+          activityText: "bash: running",
+          lastToolPreview: "bash: running",
+          toolResultCompleted: true,
+          activeToolActivity: {
+            toolName: "bash",
+            inputSummary: "bash: running",
+          },
+        },
+      },
+    ],
+  };
+  const seen = new Set<string>();
+  const result = extractProgressFromDetails(details, seen);
+  expect(result.activityText).toBe("bash: running");
+  expect(result.lastToolPreview).toBe("bash: running");
+  expect(result.toolResultCompleted).toBe(true);
+  expect(result.activeToolActivity).toEqual({
+    toolName: "bash",
+    inputSummary: "bash: running",
+  });
+});
+
+test("extractProgressFromDetails skips non-assistant messages and non-array content", () => {
+  const details: SubagentDetails = {
+    mode: "single",
+    agentScope: "both",
+    projectAgentsDir: null,
+    results: [
+      {
+        agent: "test",
+        agentSource: "user",
+        task: "task",
+        exitCode: 0,
+        finalOutput: "",
+        stderr: "",
+        usage: {
+          input: 0,
+          output: 0,
+          cacheRead: 0,
+          cacheWrite: 0,
+          cost: 0,
+          contextTokens: 0,
+          turns: 0,
+        },
+        messages: [
+          { role: "user", content: [{ type: "text", text: "hi" }] },
+          { role: "assistant", content: null },
+          { role: "assistant", content: "not-an-array" },
+          {
+            role: "assistant",
+            content: [
+              { type: "text", text: "hello" },
+              {
+                type: "toolCall",
+                id: "tc-1",
+                name: "bash",
+                arguments: { command: "ls" },
+              },
+            ],
+          },
+        ] as unknown as Message[],
+      },
+    ],
+  };
+  const seen = new Set<string>();
+  const result = extractProgressFromDetails(details, seen);
+  expect(result.newToolCallIds).toEqual(["tc-1"]);
 });

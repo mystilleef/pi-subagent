@@ -21,17 +21,22 @@ import { Box, Text } from "@earendil-works/pi-tui";
 import { formatSubagentTitle, type SubagentTheme } from "../output/ui.js";
 import {
   formatHeaderStats,
-  getProgressState,
-  type ProgressStatus,
   renderToolActivityForDisplay,
+} from "./progress-format.js";
+import {
+  getProgressState,
   STATUS_BG,
   STATUS_COLOR,
   STATUS_ICON,
   type SubagentProgressState,
-  type ThemeBg,
 } from "./progress-state.js";
 
 export { makeToolPreview } from "../output/normalize.js";
+export {
+  formatElapsed,
+  formatHeaderStats,
+  renderToolActivity,
+} from "./progress-format.js";
 export {
   cancelProgressState,
   clearProgressState,
@@ -39,20 +44,11 @@ export {
   extractProgressFromDetails,
   failProgressState,
   finalizeProgressState,
-  formatContextPercent,
-  formatElapsed,
-  formatHeaderStats,
   getProgressState,
   makeTaskPreview,
-  type ProgressStatus,
   patchProgressState,
-  renderToolActivity,
-  renderToolActivityForDisplay,
   resetProgressStore,
-  STATUS_COLOR,
-  STATUS_ICON,
   type SubagentProgressState,
-  type ThemeBg,
 } from "./progress-state.js";
 
 /**
@@ -111,10 +107,6 @@ class DynamicSubagentProgressText implements Component {
   }
 }
 
-function getProgressBackground(status: ProgressStatus): ThemeBg {
-  return STATUS_BG[status];
-}
-
 function renderProgressBox(
   state: SubagentProgressState,
   options: { expanded: boolean },
@@ -124,9 +116,7 @@ function renderProgressBox(
   const status = state.status;
   const title = formatSubagentTitle(state.agent, state.instanceName, theme);
   const header = `${theme.fg(STATUS_COLOR[status], STATUS_ICON[status])} ${title} ${theme.fg("dim", `[${status}]`)} ${theme.fg("muted", formatHeaderStats(state))}`;
-  const box = new Box(1, 1, (line) =>
-    theme.bg(getProgressBackground(status), line),
-  );
+  const box = new Box(1, 1, (line) => theme.bg(STATUS_BG[status], line));
   box.addChild(new Text(header, 0, 0));
   const body = makeProgressBody(state, options, theme, width);
   for (const line of body) box.addChild(line);

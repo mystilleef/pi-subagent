@@ -10,6 +10,7 @@ function tryFirstResult(details: unknown): Record<string, unknown> | null {
     if (typeof nested !== "object" || nested === null) return null;
     return nested as Record<string, unknown>;
   } catch {
+    /* malformed details structure returns null to use fallback preview */
     return null;
   }
 }
@@ -90,6 +91,7 @@ export function parseChildEventLine(line: string): ChildEventParseResult {
   try {
     event = JSON.parse(line);
   } catch {
+    /* malformed JSON lines are marked invalid for diagnostic reporting */
     return { kind: "invalid", line };
   }
   if (

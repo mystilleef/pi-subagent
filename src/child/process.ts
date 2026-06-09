@@ -17,16 +17,15 @@ import {
 import type { AgentConfig, ThinkingLevel } from "../agent/agents.js";
 import { getFinalOutput } from "../output/ui.js";
 import { makeToolPreview, renderToolActivity } from "../progress/progress.js";
+import { SENSITIVE_PATTERN } from "../progress/progress-format.js";
+import { isToolCallPart } from "../progress/progress-state.js";
 import {
-  isToolCallPart,
-  SENSITIVE_PATTERN,
-} from "../progress/progress-state.js";
-import type {
-  OnUpdateCallback,
-  SingleResult,
-  StreamingProgress,
-  SubagentDetails,
-  ToolActivity,
+  type OnUpdateCallback,
+  type SingleResult,
+  type StreamingProgress,
+  type SubagentDetails,
+  TOOL_RESULT_FAILED_MESSAGE,
+  type ToolActivity,
 } from "../shared/types.js";
 import {
   detectMessageError,
@@ -76,8 +75,6 @@ export function resolveThinkingLevel(
   if (clamped === requested) return { level: requested };
   return { level: clamped, warning: mkWarning(clamped) };
 }
-
-export const TOOL_RESULT_FAILED_MESSAGE = "Subagent tool result failed.";
 
 type RuntimeLimits = ReturnType<typeof getSubagentRuntimeLimits>;
 type RuntimeResult = SingleResult & { messages: Message[] };
@@ -151,6 +148,7 @@ function resolveContextWindowTokens(msg: Message): number | undefined {
       ? contextWindow
       : undefined;
   } catch {
+    /* model lookup failures return undefined to skip context window tracking */
     return;
   }
 }
@@ -177,6 +175,7 @@ async function acquireSubagentSleepInhibitor(
   try {
     return await acquireSleepInhibitor(pid);
   } catch {
+    /* acquisition failures degrade gracefully to no inhibitor */
     return undefined;
   }
 }
@@ -411,7 +410,7 @@ async function cleanupTempPrompt(tmpPrompt: TempPrompt): Promise<void> {
     await fs.promises.unlink(tmpPrompt.filePath);
     await fs.promises.rmdir(tmpPrompt.dir);
   } catch {
-    /* ignore */
+    /* temp file cleanup failures are non-fatal; OS will clean up eventually */
   }
 }
 
@@ -476,6 +475,63 @@ function sanitizeProgressPreview(preview: string, toolName: string): string {
   return SENSITIVE_PATTERN.test(preview) ? toolName : preview;
 }
 
+/**
+ * Merge incoming tool activity with existing progress activity.
+ * When tool names match, prefer richer inputSummary from incoming.
+ * Otherwise, replace entirely with incoming activity.
+ */
+function mergeToolActivity(
+  existing: ToolActivity | undefined,
+  incoming: ToolActivity,
+): ToolActivity {
+  if (existing && existing.toolName === incoming.toolName) {
+    const incomingSummary = incoming.inputSummary;
+    const preferIncoming =
+      incomingSummary && incomingSummary !== incoming.toolName;
+    return {
+      ...existing,
+      inputSummary: preferIncoming ? incomingSummary : existing.inputSummary,
+      instanceName: incoming.instanceName ?? existing.instanceName,
+      child: incoming.child ?? existing.child,
+    };
+  }
+  return incoming;
+}
+
+/**
+ * Apply tool activity and result completion updates to progress state.
+ * Handles merging of child events with parent activity tree.
+ */
+function applyActivityUpdates(
+  progress: StreamingProgress,
+  options: { toolActivity?: ToolActivity; toolResultCompleted?: boolean },
+  previousActivity?: ToolActivity,
+): void {
+  // Preserve stored activity tree for tool-result completion signals
+  // so the parent retains nested context until newer activity arrives
+  if (options.toolResultCompleted && previousActivity) {
+    progress.activeToolActivity = previousActivity;
+    const renderedText = renderToolActivity(previousActivity);
+    if (renderedText !== undefined) progress.activityText = renderedText;
+    else delete progress.activityText;
+  }
+  // Handle parsed tool activity from child events
+  // Merge with parent activity if this is a nested update
+  if (options.toolActivity) {
+    progress.activeToolActivity = mergeToolActivity(
+      progress.activeToolActivity,
+      options.toolActivity,
+    );
+    const renderedActivity = renderToolActivity(progress.activeToolActivity);
+    if (renderedActivity !== undefined)
+      progress.activityText = renderedActivity;
+    else delete progress.activityText;
+  }
+  if (options.toolResultCompleted) {
+    progress.toolResultCompleted = true;
+  }
+}
+
 export function makeEmitUpdate(
   result: RuntimeResult,
   onUpdate: OnUpdateCallback | undefined,
@@ -493,46 +549,12 @@ export function makeEmitUpdate(
     const recentMessages =
       anchorIdx >= 0 ? msgs.slice(anchorIdx) : msgs.slice(-5);
     const progress = deriveStreamingProgress(msgs);
-    // Preserve stored activity tree for tool-result completion signals
-    // so the parent retains nested context until newer activity arrives
-    if (options?.toolResultCompleted && result.progress?.activeToolActivity) {
-      progress.activeToolActivity = result.progress.activeToolActivity;
-      const renderedText = renderToolActivity(progress.activeToolActivity);
-      if (renderedText !== undefined) progress.activityText = renderedText;
-      else delete progress.activityText;
-    }
-    // Handle parsed tool activity from child events
-    // Merge with parent activity if this is a nested update
-    if (options?.toolActivity) {
-      if (
-        progress.activeToolActivity &&
-        progress.activeToolActivity.toolName === options.toolActivity.toolName
-      ) {
-        // Merge: prefer parser inputSummary when non-empty and richer than bare toolName fallback
-        const incomingSummary = options.toolActivity.inputSummary;
-        const preferIncoming =
-          incomingSummary && incomingSummary !== options.toolActivity.toolName;
-        progress.activeToolActivity = {
-          ...progress.activeToolActivity,
-          inputSummary: preferIncoming
-            ? incomingSummary
-            : progress.activeToolActivity.inputSummary,
-          instanceName:
-            options.toolActivity.instanceName ??
-            progress.activeToolActivity.instanceName,
-          child:
-            options.toolActivity.child ?? progress.activeToolActivity.child,
-        };
-      } else {
-        progress.activeToolActivity = options.toolActivity;
-      }
-      const renderedActivity = renderToolActivity(progress.activeToolActivity);
-      if (renderedActivity !== undefined)
-        progress.activityText = renderedActivity;
-      else delete progress.activityText;
-    }
-    if (options?.toolResultCompleted) {
-      progress.toolResultCompleted = true;
+    if (options) {
+      applyActivityUpdates(
+        progress,
+        options,
+        result.progress?.activeToolActivity,
+      );
     }
     result.progress = progress;
     onUpdate?.({

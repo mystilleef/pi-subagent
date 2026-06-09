@@ -1,5 +1,5 @@
 import type { AgentToolUpdateCallback } from "@earendil-works/pi-agent-core";
-import { type Message, StringEnum } from "@earendil-works/pi-ai";
+import { StringEnum } from "@earendil-works/pi-ai";
 import type {
   ExtensionAPI,
   ExtensionContext,
@@ -22,12 +22,13 @@ import {
 } from "../progress/progress.js";
 import {
   createSubagentError,
+  type DetailsOptions,
   getFeedbackSummaryText,
   getLatestResult,
   getResultDisplayText,
-  hasSubagentFailed,
   patchProgressFromDetails,
   sanitizeDetailsForDisplay,
+  sanitizeResultDetails,
 } from "../progress/result-details.js";
 import { generateSubagentInstanceName } from "../shared/instance-name.js";
 import type {
@@ -36,7 +37,7 @@ import type {
   SubagentDetails,
   SubagentToolResult,
 } from "../shared/types.js";
-import { getSubagentDepth } from "../shared/utils.js";
+import { getSubagentDepth, hasSubagentFailed } from "../shared/utils.js";
 import {
   listRunJobs,
   type RunJob,
@@ -71,7 +72,6 @@ export const SubagentParams = Type.Object({
 
 export type { SubagentToolResult };
 
-type DetailsOptions = { includeMessages?: boolean; recentMessages?: Message[] };
 type DetailsBuilder = (
   results: SingleResult[],
   options?: DetailsOptions,
@@ -110,63 +110,6 @@ function createDetailsBuilder(
       sanitizeResultDetails(result, includeDebugMessages, options),
     ),
   });
-}
-
-function sanitizeResultDetails(
-  result: SingleResult,
-  includeDebugMessages: boolean,
-  options: DetailsOptions | undefined,
-): SingleResult {
-  const includeMessages =
-    includeDebugMessages && (options?.includeMessages ?? true);
-  const { messages, termination, progress, stderr, usage, ...core } = result;
-  const { contextWindowTokens, ...usageBase } = usage;
-  const sanitized: Record<string, unknown> = {
-    ...core,
-    stderr: includeDebugMessages ? stderr : "",
-    usage: { ...usageBase },
-  };
-  if (contextWindowTokens !== undefined) {
-    (sanitized["usage"] as Record<string, unknown>)["contextWindowTokens"] =
-      contextWindowTokens;
-  }
-  if (progress !== undefined) {
-    const {
-      activityText,
-      activeToolActivity,
-      lastToolPreview,
-      toolResultCompleted,
-      ...progBase
-    } = progress;
-    sanitized["progress"] = {
-      toolCalls: progBase.toolCalls.map((tc) => ({
-        id: tc.id,
-        preview: tc.preview,
-      })),
-      ...(activityText !== undefined && { activityText }),
-      ...(activeToolActivity !== undefined && { activeToolActivity }),
-      ...(lastToolPreview !== undefined && { lastToolPreview }),
-      ...(toolResultCompleted !== undefined && { toolResultCompleted }),
-    };
-  }
-  if (includeMessages) {
-    sanitized["messages"] = options?.recentMessages
-      ? [...options.recentMessages]
-      : messages !== undefined
-        ? [...messages]
-        : undefined;
-    if (includeDebugMessages && termination !== undefined) {
-      const { cancelReason, terminationSignal, fallbackCause, ...termBase } =
-        termination;
-      sanitized["termination"] = {
-        ...termBase,
-        ...(cancelReason !== undefined && { cancelReason }),
-        ...(terminationSignal !== undefined && { terminationSignal }),
-        ...(fallbackCause !== undefined && { fallbackCause }),
-      };
-    }
-  }
-  return sanitized as unknown as SingleResult;
 }
 
 function createProgressRenderRequester(
@@ -272,10 +215,11 @@ function createPayloadFingerprint(payload: {
   const contentText = payload.content[0]?.text ?? "";
   const latestResult = payload.details.results[0];
   const activityText = latestResult?.progress?.activityText ?? "";
-  const toolCallIds =
-    [...new Set(latestResult?.progress?.toolCalls?.map((tc) => tc.id))]
-      .sort()
-      .join(",") ?? "";
+  const toolCallIds = [
+    ...new Set(latestResult?.progress?.toolCalls?.map((tc) => tc.id)),
+  ]
+    .sort()
+    .join(",");
   const exitCode = latestResult?.exitCode ?? 0;
   const stopReason = latestResult?.stopReason ?? "";
   return `${contentText}|${activityText}|${toolCallIds}|${exitCode}|${stopReason}`;
@@ -366,8 +310,7 @@ type PrepareSubagentJobResult =
       hostOnUpdate?: AgentToolUpdateCallback<SubagentDetails> | undefined;
     }
   | { kind: "not_found"; makeDetails: DetailsBuilder }
-  | { kind: "cancelled"; makeDetails: DetailsBuilder }
-  | { kind: "aborted"; makeDetails: DetailsBuilder };
+  | { kind: "cancelled"; makeDetails: DetailsBuilder };
 
 export function formatSubagentToolResult(
   agentName: string,
@@ -479,7 +422,7 @@ async function prepareSubagentJob(
   if (mergedSignal.aborted) {
     cancelStartedJob(job, job.cancelReason ?? "Aborted");
     requestProgressRender();
-    return { kind: "aborted", makeDetails: makeStartedDetails };
+    return { kind: "cancelled", makeDetails: makeStartedDetails };
   }
   return {
     kind: "ready",
@@ -518,11 +461,7 @@ export async function startSubagentJob(
     hostSignal,
     hostOnUpdate,
   );
-  if (prepared.kind !== "ready") {
-    if (prepared.kind === "aborted")
-      return { kind: "cancelled", makeDetails: prepared.makeDetails };
-    return prepared;
-  }
+  if (prepared.kind !== "ready") return prepared;
   const { lc, instanceName, requestProgressRender } = prepared;
   if (getSubagentDepth() > 0) {
     const result = await runSubagentLifecycle(lc);

@@ -123,6 +123,7 @@ async function hashMarkdownFileAsync(
       .update(await fsPromises.readFile(path.join(dir, fileName)))
       .digest("hex");
   } catch {
+    /* missing or unreadable files return null to skip caching */
     return null;
   }
 }

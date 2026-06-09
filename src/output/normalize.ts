@@ -1,4 +1,4 @@
-export const TERMINAL_SENTENCE_MAX_CHARS = 100;
+const TERMINAL_SENTENCE_MAX_CHARS = 100;
 
 export function normalizeSummaryValue(value: string): string {
   const normalized = value.trim().replace(/\s+/g, " ");
@@ -67,7 +67,7 @@ export function normalizeTerminalSentence(
   return truncateText(collapsed, limit);
 }
 
-export const TOOL_PREVIEW_MAX_CHARS = 120;
+const TOOL_PREVIEW_MAX_CHARS = 120;
 
 export function normalizeAndTruncate(
   text: string,

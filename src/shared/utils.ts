@@ -6,13 +6,14 @@ import {
   DefaultResourceLoader,
   getAgentDir,
 } from "@earendil-works/pi-coding-agent";
+import type { SingleResult } from "./types.js";
 
 export const DEFAULT_MAX_OUTPUT_BYTES = 50_000;
 export const DEFAULT_MAX_OUTPUT_LINES = 500;
 export const DEFAULT_AGENT_END_GRACE_MS = 250;
 export const DEFAULT_MAX_STDERR_BYTES = 10_000;
 export const DEFAULT_MAX_SUBAGENT_DEPTH = 3;
-export const MAX_SUBAGENT_DEPTH_CEILING = 10;
+const MAX_SUBAGENT_DEPTH_CEILING = 10;
 
 export interface SubagentOutputLimits {
   maxBytes: number;
@@ -130,6 +131,7 @@ async function canonicalPath(filePath: string): Promise<string> {
   try {
     return await fs.promises.realpath(filePath);
   } catch {
+    /* symlinks or missing paths fall back to absolute path resolution */
     return path.resolve(filePath);
   }
 }
@@ -227,4 +229,14 @@ export function detectMessageError(messages: Message[]): boolean {
     if (msg?.role === "toolResult" && msg.isError) return true;
   }
   return false;
+}
+
+export function hasSubagentFailed(result: SingleResult): boolean {
+  return (
+    result.exitCode !== 0 ||
+    result.stopReason === "error" ||
+    result.stopReason === "aborted" ||
+    Boolean(result.errorMessage?.trim()) ||
+    detectMessageError(result.messages ?? [])
+  );
 }

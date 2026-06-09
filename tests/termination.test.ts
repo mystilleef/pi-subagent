@@ -449,7 +449,7 @@ describe("makeHostSleepInhibitorAdapter", () => {
       {
         command: "/usr/bin/systemd-inhibit",
         args: [
-          "--what=sleep",
+          "--what=sleep:idle",
           "--who=pi-subagent",
           "--why=subagent running",
           "--mode=block",

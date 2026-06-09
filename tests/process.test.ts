@@ -13,12 +13,14 @@ import {
   appendSubagentResultContract,
   SUBAGENT_RESULT_CONTRACT,
 } from "../src/child/prompt-contract.js";
-import type { SingleResult, SubagentDetails } from "../src/shared/types.js";
+import type { SingleResult } from "../src/shared/types.js";
 import {
   resetResolvedAgentSkillArgsCache,
   resolveAgentSkillArgs,
 } from "../src/shared/utils.js";
 import {
+  hangAgent,
+  makeSubagentDetails,
   makeSubagentToolUpdateLine,
   setupHooks,
   setupTest,
@@ -28,22 +30,6 @@ import {
 
 setupHooks();
 
-const makeDetails = (results: SubagentDetails["results"]): SubagentDetails => ({
-  mode: "single",
-  agentScope: "both",
-  projectAgentsDir: null,
-  results,
-});
-
-const hangAgent: AgentConfig = {
-  name: "hang",
-  description: "Test agent",
-  thinking: "off",
-  systemPrompt: "Test agent prompt.",
-  source: "user",
-  filePath: "hang.md",
-};
-
 test("runSingleAgent reports unknown agents with available names", async () => {
   const result = await runSingleAgent(
     "/tmp",
@@ -52,7 +38,7 @@ test("runSingleAgent reports unknown agents with available names", async () => {
     "task",
     undefined,
     undefined,
-    makeDetails,
+    makeSubagentDetails,
     undefined,
     "off",
   );
@@ -72,7 +58,7 @@ test("runSingleAgent reports default depth limit with effective max depth", asyn
     "task",
     undefined,
     undefined,
-    makeDetails,
+    makeSubagentDetails,
     undefined,
     "off",
   );
@@ -91,7 +77,7 @@ test("runSingleAgent uses env-configured max depth", async () => {
     "task",
     undefined,
     undefined,
-    makeDetails,
+    makeSubagentDetails,
     undefined,
     "off",
   );
@@ -109,7 +95,7 @@ test("runSingleAgent reports clamped env max depth", async () => {
     "task",
     undefined,
     undefined,
-    makeDetails,
+    makeSubagentDetails,
     undefined,
     "off",
   );
@@ -134,7 +120,7 @@ exit 0
     "task",
     undefined,
     undefined,
-    makeDetails,
+    makeSubagentDetails,
     undefined,
     "off",
   );
@@ -158,7 +144,7 @@ exit 0
     "task",
     undefined,
     undefined,
-    makeDetails,
+    makeSubagentDetails,
     undefined,
     "off",
   );
@@ -183,7 +169,7 @@ exit 0
     "task",
     undefined,
     undefined,
-    makeDetails,
+    makeSubagentDetails,
     undefined,
     "off",
   );
@@ -205,7 +191,7 @@ test("runSingleAgent caps spawn error stderr by configured byte limit", async ()
       "task",
       undefined,
       undefined,
-      makeDetails,
+      makeSubagentDetails,
       undefined,
       "off",
     );
@@ -229,7 +215,7 @@ test("runSingleAgent attempts one injected sleep inhibitor after normal exit", a
     "task",
     undefined,
     undefined,
-    makeDetails,
+    makeSubagentDetails,
     undefined,
     "off",
     false,
@@ -270,7 +256,7 @@ test("runSingleAgent skips sleep inhibitor acquisition when spawn has no PID", a
       "task",
       undefined,
       undefined,
-      makeDetails,
+      makeSubagentDetails,
       undefined,
       "off",
       false,
@@ -309,7 +295,7 @@ exit 0
     "task",
     undefined,
     undefined,
-    makeDetails,
+    makeSubagentDetails,
     undefined,
     "off",
     false,
@@ -330,7 +316,7 @@ exit 0
     "task",
     undefined,
     undefined,
-    makeDetails,
+    makeSubagentDetails,
     undefined,
     "off",
     false,
@@ -366,7 +352,7 @@ exit 0
     "task",
     undefined,
     undefined,
-    makeDetails,
+    makeSubagentDetails,
     undefined,
     "off",
     false,
@@ -403,7 +389,7 @@ wait $!
     "task",
     controller.signal,
     undefined,
-    makeDetails,
+    makeSubagentDetails,
     undefined,
     "off",
     false,
@@ -450,7 +436,7 @@ wait $!
     "task",
     controller.signal,
     undefined,
-    makeDetails,
+    makeSubagentDetails,
     undefined,
     "off",
     false,
@@ -497,7 +483,7 @@ wait $!
     "task",
     undefined,
     undefined,
-    makeDetails,
+    makeSubagentDetails,
     undefined,
     "off",
     false,
@@ -536,7 +522,7 @@ wait $!
     "task",
     controller.signal,
     undefined,
-    makeDetails,
+    makeSubagentDetails,
     undefined,
     "off",
     false,
@@ -581,7 +567,7 @@ exit 0
     "task",
     undefined,
     undefined,
-    makeDetails,
+    makeSubagentDetails,
     undefined,
     "off",
     false,
@@ -626,7 +612,7 @@ exit 0
       "task",
       undefined,
       undefined,
-      makeDetails,
+      makeSubagentDetails,
       undefined,
       "off",
       false,
@@ -661,7 +647,7 @@ test("runSingleAgent handles repeated release on the same handle silently", asyn
     "task",
     undefined,
     undefined,
-    makeDetails,
+    makeSubagentDetails,
     undefined,
     "off",
     false,
@@ -688,7 +674,7 @@ test("runSingleAgent suppresses release failure on already-resolved handle", asy
     "task",
     undefined,
     undefined,
-    makeDetails,
+    makeSubagentDetails,
     undefined,
     "off",
     false,
@@ -726,7 +712,7 @@ esac
     "cancelled-child",
     controller.signal,
     undefined,
-    makeDetails,
+    makeSubagentDetails,
     undefined,
     "off",
     false,
@@ -748,7 +734,7 @@ esac
     "held-child",
     undefined,
     undefined,
-    makeDetails,
+    makeSubagentDetails,
     undefined,
     "off",
     false,
@@ -798,7 +784,7 @@ exit 0
     "task",
     undefined,
     undefined,
-    makeDetails,
+    makeSubagentDetails,
     undefined,
     "off",
   );
@@ -825,7 +811,7 @@ wait $!
     "task",
     undefined,
     undefined,
-    makeDetails,
+    makeSubagentDetails,
     undefined,
     "off",
   );
@@ -849,7 +835,7 @@ wait $!
     "task",
     controller.signal,
     undefined,
-    makeDetails,
+    makeSubagentDetails,
     undefined,
     "off",
   );
@@ -907,7 +893,7 @@ Use fast skill.
     "task",
     undefined,
     undefined,
-    makeDetails,
+    makeSubagentDetails,
     undefined,
     "off",
   );
@@ -985,7 +971,7 @@ Use warm skill.
       "task",
       undefined,
       undefined,
-      makeDetails,
+      makeSubagentDetails,
       undefined,
       "off",
     );
@@ -1038,7 +1024,7 @@ test("runSingleAgent cleans prompt temp file when skill resolution fails after p
       "task",
       undefined,
       undefined,
-      makeDetails,
+      makeSubagentDetails,
       undefined,
       "off",
     );
@@ -1078,7 +1064,7 @@ exit 0
       const msgCount = partial.details.results[0]?.messages?.length ?? 0;
       updates.push({ text, messageCount: msgCount });
     },
-    makeDetails,
+    makeSubagentDetails,
     undefined,
     "off",
   );
@@ -1109,7 +1095,7 @@ exit 0
     (partial) => {
       capturedText = partial.content[0]?.text ?? "";
     },
-    makeDetails,
+    makeSubagentDetails,
     undefined,
     "off",
   );
@@ -1135,7 +1121,7 @@ exit 0
       const msgCount = partial.details.results[0]?.messages?.length ?? 0;
       updates.push({ text, messageCount: msgCount });
     },
-    makeDetails,
+    makeSubagentDetails,
     undefined,
     "off",
   );
@@ -1167,7 +1153,7 @@ exit 0
     (partial) => {
       texts.push(partial.content[0]?.text ?? "");
     },
-    makeDetails,
+    makeSubagentDetails,
     undefined,
     "off",
   );
@@ -1234,7 +1220,7 @@ test("makeEmitUpdate merge: inputSummary === toolName fallback does not overwrit
     task: "fix bugs",
     agentScope: "project",
   });
-  const emitUpdate = makeEmitUpdate(result, undefined, makeDetails);
+  const emitUpdate = makeEmitUpdate(result, undefined, makeSubagentDetails);
   // Parser sends bare toolName fallback (inputSummary === toolName) — should retain parent's richer value
   emitUpdate({
     toolActivity: { toolName: "subagent", inputSummary: "subagent" },
@@ -1252,7 +1238,7 @@ test("makeEmitUpdate merge: inputSummary !== toolName overwrites parent inputSum
     task: "fix bugs",
     agentScope: "project",
   });
-  const emitUpdate = makeEmitUpdate(result, undefined, makeDetails);
+  const emitUpdate = makeEmitUpdate(result, undefined, makeSubagentDetails);
   // Parser sends richer inputSummary from nested child (different from toolName "subagent")
   emitUpdate({
     toolActivity: { toolName: "subagent", inputSummary: "bash: scan src" },
@@ -1269,7 +1255,7 @@ test("makeEmitUpdate merge: incoming without inputSummary preserves parent input
     task: "fix bugs",
     agentScope: "project",
   });
-  const emitUpdate = makeEmitUpdate(result, undefined, makeDetails);
+  const emitUpdate = makeEmitUpdate(result, undefined, makeSubagentDetails);
   // Incoming has no inputSummary — merge should keep parent's richer semantic value
   emitUpdate({
     toolActivity: {
@@ -1297,7 +1283,7 @@ test("makeEmitUpdate streaming integration: subagent preview starts with semanti
     (partial) => {
       texts.push(partial.content[0]?.text ?? "");
     },
-    makeDetails,
+    makeSubagentDetails,
   );
   // First call triggers deriveStreamingProgress and sets result.progress
   emitUpdate();
@@ -1338,7 +1324,7 @@ exit 1
     "task",
     undefined,
     undefined,
-    makeDetails,
+    makeSubagentDetails,
     undefined,
     "off",
     false,
@@ -1376,7 +1362,7 @@ wait $!
     "task",
     undefined,
     undefined,
-    makeDetails,
+    makeSubagentDetails,
     undefined,
     "off",
   );
@@ -1409,7 +1395,7 @@ exit 0
       "task",
       undefined,
       undefined,
-      makeDetails,
+      makeSubagentDetails,
       undefined,
       "off",
       true,
@@ -1441,7 +1427,7 @@ esac
     "failing-child",
     undefined,
     undefined,
-    makeDetails,
+    makeSubagentDetails,
     undefined,
     "off",
     false,
@@ -1459,7 +1445,7 @@ esac
     "succeeding-child",
     undefined,
     undefined,
-    makeDetails,
+    makeSubagentDetails,
     undefined,
     "off",
     false,
@@ -1497,7 +1483,7 @@ test("runSingleAgent default host adapter returns no-op handle on non-darwin pla
     "task",
     undefined,
     undefined,
-    makeDetails,
+    makeSubagentDetails,
     undefined,
     "off",
   );

@@ -4,7 +4,7 @@ import type {
 } from "@earendil-works/pi-coding-agent";
 import { startSubagentJob } from "./subagent-orchestrator.js";
 
-export function parseRunArgs(
+function parseRunArgs(
   args: string,
 ): { agentName: string; task: string; debug: boolean } | undefined {
   const input = args.trim();

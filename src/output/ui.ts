@@ -11,6 +11,8 @@ import type { AgentScope } from "../agent/agents.js";
 import {
   formatContextPercent,
   formatElapsed,
+} from "../progress/progress-format.js";
+import {
   type ProgressStatus,
   STATUS_BG,
   STATUS_COLOR,
@@ -18,8 +20,8 @@ import {
   type SubagentProgressState,
   type ThemeBg,
 } from "../progress/progress-state.js";
-import { hasSubagentFailed } from "../progress/result-details.js";
 import type { SubagentDetails, UsageStats } from "../shared/types.js";
+import { hasSubagentFailed } from "../shared/utils.js";
 import {
   extractSemanticToolTarget,
   normalizeSummaryValue,
@@ -115,9 +117,6 @@ export function formatResultFooter(usage: UsageStats, model?: string): string {
   return parts.join(" · ");
 }
 
-/**
- * Formats a tool call for the UI, optionally extracting a semantic target for clarity.
- */
 export function formatToolCall(
   toolName: string,
   args: Record<string, unknown>,
@@ -131,9 +130,6 @@ export function formatToolCall(
   return themeFg("accent", toolName) + themeFg("dim", ` ${target}`);
 }
 
-/**
- * Extracts the final text response from an array of assistant messages.
- */
 export function getFinalOutput(messages: Message[]): string {
   const lastAsst = messages.findLast((m) => m.role === "assistant");
   const lastText = lastAsst?.content.findLast((p) => p.type === "text");
@@ -148,9 +144,6 @@ function stripOutcomeLineForResultUi(output: string): string {
   return stripped.trim() ? stripped : output;
 }
 
-/**
- * Maps subagent theme colors to Markdown rendering components.
- */
 function makeMarkdownTheme(theme: SubagentTheme): MarkdownTheme {
   const fg = (c: ThemeColor) => (text: string) => theme.fg(c, text);
   return {
@@ -172,9 +165,6 @@ function makeMarkdownTheme(theme: SubagentTheme): MarkdownTheme {
   };
 }
 
-/**
- * Renders the pending subagent call UI component.
- */
 export function renderSubagentCall(
   args: { agent?: string; task?: string; agentScope?: AgentScope },
   theme: SubagentTheme,
@@ -205,7 +195,7 @@ export function renderSubagentToolResult(
 export function renderSubagentResult(
   result: { content: { type: string; text?: string }[]; details?: unknown },
   theme: SubagentTheme,
-  _display?: { isPartial?: boolean },
+  display?: { isPartial?: boolean },
   bodyOverride?: string,
 ): Component {
   const details = result.details as SubagentDetails | undefined;
@@ -228,7 +218,7 @@ export function renderSubagentResult(
   const finalOutput = r.finalOutput ?? getFinalOutput(r.messages ?? []);
   const title = formatSubagentTitle(r.agent, r.instanceName, theme);
   let effectiveBody = bodyOverride ?? finalOutput;
-  if (_display?.isPartial && !finalOutput?.trim() && !bodyOverride) {
+  if (display?.isPartial && !finalOutput?.trim() && !bodyOverride) {
     effectiveBody =
       result.content[0]?.text ||
       r.progress?.activityText ||
@@ -241,7 +231,7 @@ export function renderSubagentResult(
   const ctxPercent = formatContextPercent({
     contextTokens: r.usage.contextTokens,
     contextWindowTokens: r.usage.contextWindowTokens,
-  } as SubagentProgressState);
+  });
   const metadata = `${toolLabel} · ${ctxPercent} ctx · ${formatElapsed(r.durationMs ?? 0)}`;
   const usageStr = formatResultFooter(r.usage, r.model);
   return renderStatusCard(

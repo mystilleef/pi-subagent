@@ -1,32 +1,29 @@
-import { TOOL_RESULT_FAILED_MESSAGE } from "../child/process.js";
+import type { Message } from "@earendil-works/pi-ai";
+import type { TerminationMetadata } from "../child/termination.js";
 import {
   formatSubagentResultForParent,
   summarizeFeedbackUiFinalOutput,
 } from "../output/summary.js";
-import type {
-  SingleResult,
-  SubagentDetails,
-  SubagentToolResult,
-  ToolActivity,
+import {
+  type SingleResult,
+  type StreamingProgress,
+  type SubagentDetails,
+  type SubagentToolResult,
+  TOOL_RESULT_FAILED_MESSAGE,
+  type ToolActivity,
 } from "../shared/types.js";
-import { detectMessageError } from "../shared/utils.js";
 import {
   extractProgressFromDetails,
   getProgressState,
   patchProgressState,
-  renderToolActivity,
+  type SubagentProgressState,
 } from "./progress.js";
-import { SENSITIVE_PATTERN } from "./progress-state.js";
+import { renderToolActivity, SENSITIVE_PATTERN } from "./progress-format.js";
 
-export function hasSubagentFailed(result: SingleResult): boolean {
-  return (
-    result.exitCode !== 0 ||
-    result.stopReason === "error" ||
-    result.stopReason === "aborted" ||
-    Boolean(result.errorMessage?.trim()) ||
-    detectMessageError(result.messages ?? [])
-  );
-}
+export type DetailsOptions = {
+  includeMessages?: boolean;
+  recentMessages?: Message[];
+};
 
 export function createSubagentError(result: SingleResult): Error {
   const formatted = formatSubagentResultForParent(result);
@@ -82,19 +79,86 @@ function redactSensitiveDebugMessages(messages: unknown): unknown {
   return messages.map(redactSensitiveDebugValue);
 }
 
+export function sanitizeResultDetails(
+  result: SingleResult,
+  includeDebugMessages: boolean,
+  options: DetailsOptions | undefined,
+): SingleResult {
+  const includeMessages =
+    includeDebugMessages && (options?.includeMessages ?? true);
+  const { messages, termination, progress, stderr, usage, ...core } = result;
+  const { contextWindowTokens, ...usageBase } = usage;
+  let progressValue: StreamingProgress | undefined;
+  if (progress) {
+    const {
+      activityText,
+      activeToolActivity,
+      lastToolPreview,
+      toolResultCompleted,
+      ...progBase
+    } = progress;
+    progressValue = {
+      toolCalls: progBase.toolCalls.map((tc) => ({
+        id: tc.id,
+        preview: tc.preview,
+      })),
+      ...(activityText !== undefined && { activityText }),
+      ...(activeToolActivity !== undefined && { activeToolActivity }),
+      ...(lastToolPreview !== undefined && { lastToolPreview }),
+      ...(toolResultCompleted !== undefined && { toolResultCompleted }),
+    };
+  }
+  let terminationValue: TerminationMetadata | undefined;
+  if (includeMessages && includeDebugMessages && termination) {
+    const { cancelReason, terminationSignal, fallbackCause, ...termBase } =
+      termination;
+    terminationValue = {
+      ...termBase,
+      ...(cancelReason !== undefined && { cancelReason }),
+      ...(terminationSignal !== undefined && { terminationSignal }),
+      ...(fallbackCause !== undefined && { fallbackCause }),
+    };
+  }
+  const sanitized: SingleResult = {
+    ...core,
+    stderr: includeDebugMessages ? stderr : "",
+    usage: {
+      ...usageBase,
+      ...(contextWindowTokens !== undefined && { contextWindowTokens }),
+    },
+  };
+  if (progressValue !== undefined) sanitized.progress = progressValue;
+  if (includeMessages) {
+    sanitized.messages = options?.recentMessages
+      ? [...options.recentMessages]
+      : messages !== undefined
+        ? [...messages]
+        : undefined;
+  }
+  if (terminationValue !== undefined) sanitized.termination = terminationValue;
+  return sanitized;
+}
+
 export function sanitizeDetailsForDisplay(
   details: SubagentDetails,
   includeMessages = false,
 ): SubagentDetails {
   return {
     ...details,
-    results: details.results.map(({ messages, termination, ...result }) => ({
-      ...result,
-      stderr: includeMessages ? result.stderr : "",
-      ...(includeMessages
-        ? { messages: redactSensitiveDebugMessages(messages), termination }
-        : {}),
-    })),
+    results: details.results.map((result) => {
+      const sanitized = sanitizeResultDetails(
+        result,
+        includeMessages,
+        undefined,
+      );
+      if (includeMessages && sanitized.messages) {
+        return {
+          ...sanitized,
+          messages: redactSensitiveDebugMessages(sanitized.messages),
+        };
+      }
+      return sanitized;
+    }),
   } as SubagentDetails;
 }
 
@@ -119,7 +183,7 @@ export function patchProgressFromDetails(
   } = extractProgressFromDetails(details, seenToolCallIds);
   const current = getProgressState(requestId);
   if (!current) return;
-  const patch: Record<string, unknown> = {
+  const patch: Partial<SubagentProgressState> = {
     toolCount: current.toolCount + newToolCallIds.length,
   };
   let nextActivity: ToolActivity | undefined;
@@ -133,7 +197,7 @@ export function patchProgressFromDetails(
     nextActivity = current.activeToolActivity;
   }
   if (toolResultCompleted && nextActivity?.child) {
-    const { child: _child, ...rest } = nextActivity;
+    const { child, ...rest } = nextActivity;
     nextActivity = rest;
   } else if (toolResultCompleted) {
     nextActivity = undefined;
@@ -148,20 +212,16 @@ export function patchProgressFromDetails(
   if (toolResultCompleted) {
     patch["toolResultCompleted"] = true;
   }
-  // Token accounting always applies when usage data is available
   if (latestResult?.usage) {
     patch["inputTokens"] = latestResult.usage.input;
     patch["outputTokens"] = latestResult.usage.output;
     patch["contextTokens"] = latestResult.usage.contextTokens;
     patch["contextWindowTokens"] = latestResult.usage.contextWindowTokens;
   }
-  patchProgressState(
-    requestId,
-    patch as Parameters<typeof patchProgressState>[1],
-  );
+  patchProgressState(requestId, patch);
 }
 
-export function getSubagentText(result: SubagentToolResult): string {
+function getSubagentText(result: SubagentToolResult): string {
   return (result.content[0] as { text?: string })?.text ?? "";
 }
 

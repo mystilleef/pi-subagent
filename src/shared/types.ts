@@ -2,6 +2,8 @@ import type { Message } from "@earendil-works/pi-ai";
 import type { AgentScope } from "../agent/agents.js";
 import type { TerminationMetadata } from "../child/termination.js";
 
+export const TOOL_RESULT_FAILED_MESSAGE = "Subagent tool result failed.";
+
 export interface UsageStats {
   input: number;
   output: number;
