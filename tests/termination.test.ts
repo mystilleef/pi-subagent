@@ -822,6 +822,9 @@ describe("terminateChildProcess", () => {
     expect(child.signals).toEqual([]);
     expect(metadata.terminationSignal).toBeUndefined();
   });
+  // sendTreeSignal "missing child PID" throw (line 305) unreachable
+  // through public API: sendTerminationSignal guards with hasPid()
+  // before calling sendTreeSignal. See "settles when PID disappears".
   test("missing PID settles without signals", async () => {
     const child = makeChild();
     delete child.pid;
@@ -842,10 +845,10 @@ describe("terminateChildProcess", () => {
     await promise;
     expect(timers.cleared).toHaveLength(1);
   });
-  test("signals POSIX detached process group with negative PID", () => {
+  test("signals POSIX detached process group with negative PID", async () => {
     const child = makeChild({ pid: 456 });
     const targets: Array<[number, TerminationSignal]> = [];
-    void terminateChildProcess(child as unknown as ChildProcess, {
+    const promise = terminateChildProcess(child as unknown as ChildProcess, {
       tree: true,
       platform: "linux",
       processTreeDetached: true,
@@ -855,14 +858,28 @@ describe("terminateChildProcess", () => {
     });
     expect(targets).toEqual([[-456, "SIGTERM"]]);
     expect(child.signals).toEqual([]);
+    child.emit("exit");
+    const metadata = await promise;
+    expect(metadata.target).toBe("tree");
+    expect(metadata.processTreeKilled).toBe(true);
+    expect(metadata.terminationSignal).toBe("SIGTERM");
+    expect(metadata.escalated).toBe(false);
+    expect(metadata.fallbackCause).toBeUndefined();
   });
-  test("falls back to direct signal when POSIX tree lacks detached group", () => {
+  test("falls back to direct signal when POSIX tree lacks detached group", async () => {
     const child = makeChild({ pid: 789 });
-    void terminateChildProcess(child as unknown as ChildProcess, {
+    const promise = terminateChildProcess(child as unknown as ChildProcess, {
       tree: true,
       platform: "linux",
     });
     expect(child.signals).toEqual(["SIGTERM"]);
+    child.emit("exit");
+    const metadata = await promise;
+    expect(metadata.target).toBe("direct");
+    expect(metadata.processTreeKilled).toBe(false);
+    expect(metadata.fallbackCause).toBe("process tree not detached");
+    expect(metadata.escalated).toBe(false);
+    expect(metadata.terminationSignal).toBe("SIGTERM");
   });
   test("settles when tree fallback direct signal fails", async () => {
     const child = makeChild({ pid: 790 });
@@ -878,12 +895,15 @@ describe("terminateChildProcess", () => {
     );
     expect(metadata.fallbackCause).toBe("process tree not detached");
     expect(metadata.target).toBe("tree");
+    expect(metadata.processTreeKilled).toBe(false);
+    expect(metadata.escalated).toBe(false);
+    expect(metadata.terminationSignal).toBe("SIGTERM");
   });
-  test("runs Windows taskkill command during forceful tree escalation", () => {
+  test("runs Windows taskkill command during forceful tree escalation", async () => {
     const child = makeChild({ pid: 321 });
     const timers = makeTimers();
     const taskkillArgs: string[][] = [];
-    void terminateChildProcess(child as unknown as ChildProcess, {
+    const promise = terminateChildProcess(child as unknown as ChildProcess, {
       tree: true,
       platform: "win32",
       setTimeout: timers.setTimeout,
@@ -894,6 +914,15 @@ describe("terminateChildProcess", () => {
     timers.timers[0]?.();
     expect(child.signals).toEqual(["SIGTERM"]);
     expect(taskkillArgs).toEqual([["/pid", "321", "/t", "/f"]]);
+    child.emit("exit");
+    const metadata = await promise;
+    expect(metadata.target).toBe("tree");
+    expect(metadata.processTreeKilled).toBe(true);
+    expect(metadata.terminationSignal).toBe("SIGKILL");
+    expect(metadata.escalated).toBe(true);
+    expect(metadata.fallbackCause).toBe(
+      "unsupported tree termination platform",
+    );
   });
   test("uses injected process tree killer before scheduling escalation", async () => {
     const child = makeChild({ pid: 432 });
@@ -913,6 +942,9 @@ describe("terminateChildProcess", () => {
     expect(killed).toEqual([{ platform: "linux", signal: "SIGTERM" }]);
     expect(metadata.target).toBe("tree");
     expect(metadata.processTreeKilled).toBe(true);
+    expect(metadata.escalated).toBe(false);
+    expect(metadata.terminationSignal).toBe("SIGTERM");
+    expect(metadata.fallbackCause).toBeUndefined();
   });
   test("settles escalation when PID disappears before timeout", async () => {
     const child = makeChild({ pid: 876 });
@@ -925,6 +957,10 @@ describe("terminateChildProcess", () => {
     const metadata = await promise;
     expect(child.signals).toEqual(["SIGTERM"]);
     expect(metadata.escalated).toBe(true);
+    expect(metadata.target).toBe("direct");
+    expect(metadata.processTreeKilled).toBe(false);
+    expect(metadata.terminationSignal).toBe("SIGTERM");
+    expect(metadata.fallbackCause).toBeUndefined();
   });
   test("settles when child exits before timeout escalation", async () => {
     const child = makeChild({ pid: 987 });
@@ -938,10 +974,10 @@ describe("terminateChildProcess", () => {
     expect(child.signals).toEqual(["SIGTERM"]);
     expect(metadata.escalated).toBe(false);
   });
-  test("falls back to direct signal when Windows taskkill fails", () => {
+  test("falls back to direct signal when Windows taskkill fails", async () => {
     const child = makeChild({ pid: 654 });
     const timers = makeTimers();
-    void terminateChildProcess(child as unknown as ChildProcess, {
+    const promise = terminateChildProcess(child as unknown as ChildProcess, {
       tree: true,
       platform: "win32",
       setTimeout: timers.setTimeout,
@@ -951,6 +987,13 @@ describe("terminateChildProcess", () => {
     });
     timers.timers[0]?.();
     expect(child.signals).toEqual(["SIGTERM", "SIGKILL"]);
+    child.emit("exit");
+    const metadata = await promise;
+    expect(metadata.target).toBe("direct");
+    expect(metadata.processTreeKilled).toBe(false);
+    expect(metadata.fallbackCause).toBe("taskkill failed");
+    expect(metadata.escalated).toBe(true);
+    expect(metadata.terminationSignal).toBe("SIGKILL");
   });
   test("win32 SIGTERM tree falls back to direct signal", async () => {
     const child = makeChild({ pid: 555 });
@@ -965,6 +1008,9 @@ describe("terminateChildProcess", () => {
       "unsupported tree termination platform",
     );
     expect(metadata.target).toBe("direct");
+    expect(metadata.processTreeKilled).toBe(false);
+    expect(metadata.escalated).toBe(false);
+    expect(metadata.terminationSignal).toBe("SIGTERM");
   });
   test("settles via signalCode when exitCode is null", async () => {
     const child = makeChild();
@@ -1037,6 +1083,9 @@ describe("terminateChildProcess", () => {
     const metadata = await promise;
     expect(metadata.fallbackCause).toBeDefined();
     expect(metadata.target).toBe("direct");
+    expect(metadata.processTreeKilled).toBe(false);
+    expect(metadata.escalated).toBe(false);
+    expect(metadata.terminationSignal).toBe("SIGTERM");
   });
   test("uses default runTaskkill for Windows SIGKILL tree escalation", async () => {
     const child = makeChild({ pid: 99999 });
@@ -1053,6 +1102,9 @@ describe("terminateChildProcess", () => {
     const metadata = await promise;
     expect(metadata.escalated).toBe(true);
     expect(metadata.fallbackCause).toBeDefined();
+    expect(metadata.target).toBe("direct");
+    expect(metadata.processTreeKilled).toBe(false);
+    expect(metadata.terminationSignal).toBe("SIGKILL");
   });
   test("falls back to direct when injected killProcessTree throws", async () => {
     const child = makeChild({ pid: 444 });
@@ -1068,6 +1120,9 @@ describe("terminateChildProcess", () => {
     expect(child.signals).toEqual(["SIGTERM"]);
     expect(metadata.fallbackCause).toBe("tree killer failed");
     expect(metadata.target).toBe("direct");
+    expect(metadata.processTreeKilled).toBe(false);
+    expect(metadata.escalated).toBe(false);
+    expect(metadata.terminationSignal).toBe("SIGTERM");
   });
   test("uses default fallbackCause for non-Error tree kill failures", async () => {
     const child = makeChild({ pid: 556 });
@@ -1082,6 +1137,9 @@ describe("terminateChildProcess", () => {
     const metadata = await promise;
     expect(metadata.fallbackCause).toBe("tree termination failed");
     expect(metadata.target).toBe("direct");
+    expect(metadata.processTreeKilled).toBe(false);
+    expect(metadata.escalated).toBe(false);
+    expect(metadata.terminationSignal).toBe("SIGTERM");
   });
   test("populates cancelRequestedAt and cancelReason in metadata", async () => {
     const child = makeChild();
@@ -1096,6 +1154,8 @@ describe("terminateChildProcess", () => {
     expect(metadata.target).toBe("direct");
     expect(metadata.escalated).toBe(false);
     expect(metadata.processTreeKilled).toBe(false);
+    expect(metadata.terminationSignal).toBe("SIGTERM");
+    expect(metadata.fallbackCause).toBeUndefined();
   });
   test("direct termination with explicit tree false and kill injection", async () => {
     const child = makeChild({ pid: 111 });
@@ -1114,5 +1174,8 @@ describe("terminateChildProcess", () => {
     expect(metadata.target).toBe("direct");
     expect(metadata.processTreeKilled).toBe(false);
     expect(metadata.cancelReason).toBe("explicit");
+    expect(metadata.escalated).toBe(false);
+    expect(metadata.terminationSignal).toBe("SIGTERM");
+    expect(metadata.fallbackCause).toBeUndefined();
   });
 });

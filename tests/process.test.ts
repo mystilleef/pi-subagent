@@ -1,4 +1,4 @@
-import { expect, test } from "bun:test";
+import { describe, expect, test } from "bun:test";
 import * as fs from "node:fs";
 import path from "node:path";
 import type { Message } from "@earendil-works/pi-ai";
@@ -1490,4 +1490,306 @@ test("runSingleAgent default host adapter returns no-op handle on non-darwin pla
   expect(result.exitCode).toBe(0);
   expect(result.finalOutput).toBe("done");
   expect(result.stderr).toBe("");
+});
+
+describe("usage accumulation via runSingleAgent", () => {
+  async function runUsageTest(piScript: string, options?: { debug?: boolean }) {
+    const { cwd } = await setupTest({ piScript });
+    return runSingleAgent(
+      cwd,
+      [hangAgent],
+      "hang",
+      "task",
+      undefined,
+      undefined,
+      makeSubagentDetails,
+      undefined,
+      "off",
+      options?.debug,
+    );
+  }
+
+  test("assistant messages increment turns and aggregate usage fields", async () => {
+    const piScript = `#!/bin/sh
+printf '%s\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"first"}],"api":"fake","provider":"fake","model":"fake-model","usage":{"input":10,"output":5,"cacheRead":3,"cacheWrite":2,"totalTokens":15,"cost":{"total":0.5}},"stopReason":"stop","timestamp":0}}'
+printf '%s\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"second"}],"api":"fake","provider":"fake","model":"fake-model-2","usage":{"input":20,"output":10,"cacheRead":7,"cacheWrite":4,"totalTokens":30,"cost":{"total":1.0}},"stopReason":"length","timestamp":0}}'
+printf '%s\n' '{"type":"agent_end","messages":[]}'
+exit 0
+`;
+    const result = await runUsageTest(piScript);
+    expect(result.exitCode).toBe(0);
+    expect(result.usage.turns).toBe(2);
+    expect(result.usage.input).toBe(30);
+    expect(result.usage.output).toBe(15);
+    expect(result.usage.cacheRead).toBe(10);
+    expect(result.usage.cacheWrite).toBe(6);
+    expect(result.usage.cost).toBe(1.5);
+    expect(result.usage.contextTokens).toBe(30);
+    expect(result.model).toBe("thinking:off");
+    expect(result.stopReason).toBe("length");
+  });
+
+  test("messages without usage keep defaults and increment turns", async () => {
+    const piScript = `#!/bin/sh
+printf '%s\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"no usage"}],"api":"fake","provider":"fake","model":"fake","timestamp":0}}'
+printf '%s\n' '{"type":"agent_end","messages":[]}'
+exit 0
+`;
+    const result = await runUsageTest(piScript);
+    expect(result.exitCode).toBe(0);
+    expect(result.usage.turns).toBe(1);
+    expect(result.usage.input).toBe(0);
+    expect(result.usage.output).toBe(0);
+    expect(result.usage.cacheRead).toBe(0);
+    expect(result.usage.cacheWrite).toBe(0);
+    expect(result.usage.cost).toBe(0);
+    expect(result.usage.contextTokens).toBe(0);
+    expect(result.usage.contextWindowTokens).toBeUndefined();
+  });
+
+  test("non-assistant messages do not affect usage", async () => {
+    const piScript = `#!/bin/sh
+printf '%s\n' '{"type":"message_end","message":{"role":"toolResult","content":[{"type":"text","text":"tool result"}],"api":"fake","provider":"fake","model":"fake","usage":{"input":5,"output":5,"cacheRead":0,"cacheWrite":0,"totalTokens":10,"cost":{"total":0.1}},"timestamp":0}}'
+printf '%s\n' '{"type":"agent_end","messages":[]}'
+exit 0
+`;
+    const result = await runUsageTest(piScript);
+    expect(result.exitCode).toBe(0);
+    expect(result.usage.turns).toBe(0);
+    expect(result.usage.input).toBe(0);
+    expect(result.usage.output).toBe(0);
+    expect(result.usage.cacheRead).toBe(0);
+    expect(result.usage.cacheWrite).toBe(0);
+    expect(result.usage.cost).toBe(0);
+    expect(result.usage.contextTokens).toBe(0);
+  });
+
+  test("missing cost keeps cost at zero", async () => {
+    const piScript = `#!/bin/sh
+printf '%s\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"no cost"}],"api":"fake","provider":"fake","model":"fake","usage":{"input":1,"output":2,"cacheRead":0,"cacheWrite":0,"totalTokens":3},"stopReason":"stop","timestamp":0}}'
+printf '%s\n' '{"type":"agent_end","messages":[]}'
+exit 0
+`;
+    const result = await runUsageTest(piScript);
+    expect(result.exitCode).toBe(0);
+    expect(result.usage.turns).toBe(1);
+    expect(result.usage.input).toBe(1);
+    expect(result.usage.output).toBe(2);
+    expect(result.usage.cost).toBe(0);
+  });
+
+  test("missing totalTokens keeps contextTokens at zero", async () => {
+    const piScript = `#!/bin/sh
+printf '%s\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"no totalTokens"}],"api":"fake","provider":"fake","model":"fake","usage":{"input":1,"output":2,"cacheRead":0,"cacheWrite":0},"stopReason":"stop","timestamp":0}}'
+printf '%s\n' '{"type":"agent_end","messages":[]}'
+exit 0
+`;
+    const result = await runUsageTest(piScript);
+    expect(result.exitCode).toBe(0);
+    expect(result.usage.contextTokens).toBe(0);
+  });
+
+  test("contextWindowTokens omitted when model not found", async () => {
+    const piScript = `#!/bin/sh
+printf '%s\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"no context window"}],"api":"fake","provider":"fake","model":"nonexistent","usage":{"input":1,"output":2,"cacheRead":0,"cacheWrite":0,"totalTokens":3,"cost":{"total":0}},"stopReason":"stop","timestamp":0}}'
+printf '%s\n' '{"type":"agent_end","messages":[]}'
+exit 0
+`;
+    const result = await runUsageTest(piScript);
+    expect(result.exitCode).toBe(0);
+    expect(result.usage.contextWindowTokens).toBeUndefined();
+  });
+
+  test("multiple assistant messages accumulate cache and cost correctly", async () => {
+    const piScript = `#!/bin/sh
+printf '%s\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"first"}],"api":"fake","provider":"fake","model":"fake","usage":{"input":100,"output":50,"cacheRead":10,"cacheWrite":5,"totalTokens":150,"cost":{"total":2.5}},"stopReason":"stop","timestamp":0}}'
+printf '%s\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"second"}],"api":"fake","provider":"fake","model":"fake","usage":{"input":200,"output":100,"cacheRead":20,"cacheWrite":10,"totalTokens":300,"cost":{"total":5.0}},"stopReason":"stop","timestamp":0}}'
+printf '%s\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"third"}],"api":"fake","provider":"fake","model":"fake","usage":{"input":50,"output":25,"cacheRead":5,"cacheWrite":2,"totalTokens":75,"cost":{"total":1.25}},"stopReason":"stop","timestamp":0}}'
+printf '%s\n' '{"type":"agent_end","messages":[]}'
+exit 0
+`;
+    const result = await runUsageTest(piScript);
+    expect(result.exitCode).toBe(0);
+    expect(result.usage.turns).toBe(3);
+    expect(result.usage.input).toBe(350);
+    expect(result.usage.output).toBe(175);
+    expect(result.usage.cacheRead).toBe(35);
+    expect(result.usage.cacheWrite).toBe(17);
+    expect(result.usage.cost).toBe(8.75);
+    expect(result.usage.contextTokens).toBe(75);
+  });
+
+  test("model and stopReason set from last assistant message", async () => {
+    const piScript = `#!/bin/sh
+printf '%s\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"first"}],"api":"fake","provider":"fake","model":"model-a","usage":{"input":1,"output":1,"cacheRead":0,"cacheWrite":0,"totalTokens":2,"cost":{"total":0}},"stopReason":"stop","timestamp":0}}'
+printf '%s\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"second"}],"api":"fake","provider":"fake","model":"model-b","usage":{"input":1,"output":1,"cacheRead":0,"cacheWrite":0,"totalTokens":2,"cost":{"total":0}},"stopReason":"length","timestamp":0}}'
+printf '%s\n' '{"type":"agent_end","messages":[]}'
+exit 0
+`;
+    const result = await runUsageTest(piScript);
+    expect(result.exitCode).toBe(0);
+    expect(result.model).toBe("thinking:off");
+    expect(result.stopReason).toBe("length");
+  });
+
+  test("contextWindowTokens set from valid model provider and model", async () => {
+    const piScript = `#!/bin/sh
+printf '%s\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"done"}],"api":"fake","provider":"openai","model":"gpt-4","usage":{"input":1,"output":1,"cacheRead":0,"cacheWrite":0,"totalTokens":2,"cost":{"total":0}},"stopReason":"stop","timestamp":0}}'
+printf '%s\n' '{"type":"agent_end","messages":[]}'
+exit 0
+`;
+    const result = await runUsageTest(piScript);
+    expect(result.exitCode).toBe(0);
+    expect(result.usage.contextWindowTokens).toBe(8192);
+  });
+});
+
+test("tool_result_end event sets toolResultCompleted flag", async () => {
+  const piScript = `#!/bin/sh
+printf '%s\n' '{"type":"tool_result_end","message":{"role":"toolResult","content":[{"type":"text","text":"tool output"}],"api":"fake","provider":"fake","model":"fake","timestamp":0}}'
+printf '%s\n' '{"type":"agent_end","messages":[]}'
+exit 0
+`;
+  const { cwd } = await setupTest({ piScript });
+  const result = await runSingleAgent(
+    cwd,
+    [hangAgent],
+    "hang",
+    "task",
+    undefined,
+    undefined,
+    makeSubagentDetails,
+    undefined,
+    "off",
+  );
+  expect(result.exitCode).toBe(0);
+  expect(result.progress?.toolResultCompleted).toBe(true);
+});
+
+test("tool_execution_update event updates activity text", async () => {
+  const piScript = `#!/bin/sh
+printf '%s\n' '{"type":"tool_execution_update","toolName":"bash","partialResult":{"content":[],"details":{}}}'
+printf '%s\n' '{"type":"agent_end","messages":[]}'
+exit 0
+`;
+  const { cwd } = await setupTest({ piScript });
+  let lastUpdate: unknown;
+  const result = await runSingleAgent(
+    cwd,
+    [hangAgent],
+    "hang",
+    "task",
+    undefined,
+    (update) => {
+      lastUpdate = update;
+    },
+    makeSubagentDetails,
+    undefined,
+    "off",
+  );
+  expect(result.exitCode).toBe(0);
+  expect(lastUpdate).toBeDefined();
+});
+
+test("debug event diagnostics logs malformed JSON", async () => {
+  const piScript = `#!/bin/sh
+printf '%s\n' 'not valid json'
+printf '%s\n' '{"type":"agent_end","messages":[]}'
+exit 0
+`;
+  const { cwd } = await setupTest({ piScript });
+  const stderrChunks: string[] = [];
+  const originalWrite = process.stderr.write;
+  process.stderr.write = ((chunk: string | Uint8Array) => {
+    stderrChunks.push(typeof chunk === "string" ? chunk : chunk.toString());
+    return true;
+  }) as typeof process.stderr.write;
+  try {
+    const result = await runSingleAgent(
+      cwd,
+      [hangAgent],
+      "hang",
+      "task",
+      undefined,
+      undefined,
+      makeSubagentDetails,
+      undefined,
+      "off",
+      true,
+    );
+    expect(result.exitCode).toBe(0);
+    expect(
+      stderrChunks.some((chunk) =>
+        chunk.includes("[pi-subagent:unknown-event] malformed:"),
+      ),
+    ).toBe(true);
+  } finally {
+    process.stderr.write = originalWrite;
+  }
+});
+
+test("debug event diagnostics logs unknown event types", async () => {
+  const piScript = `#!/bin/sh
+printf '%s\n' '{"type":"unknown_type","data":"test"}'
+printf '%s\n' '{"type":"agent_end","messages":[]}'
+exit 0
+`;
+  const { cwd } = await setupTest({ piScript });
+  const stderrChunks: string[] = [];
+  const originalWrite = process.stderr.write;
+  process.stderr.write = ((chunk: string | Uint8Array) => {
+    stderrChunks.push(typeof chunk === "string" ? chunk : chunk.toString());
+    return true;
+  }) as typeof process.stderr.write;
+  try {
+    const result = await runSingleAgent(
+      cwd,
+      [hangAgent],
+      "hang",
+      "task",
+      undefined,
+      undefined,
+      makeSubagentDetails,
+      undefined,
+      "off",
+      true,
+    );
+    expect(result.exitCode).toBe(0);
+    expect(
+      stderrChunks.some((chunk) =>
+        chunk.includes("[pi-subagent:unknown-event] unknown:"),
+      ),
+    ).toBe(true);
+  } finally {
+    process.stderr.write = originalWrite;
+  }
+});
+
+test("pre-aborted signal triggers immediate termination", async () => {
+  const piScript = `#!/bin/sh
+sleep 10
+exit 0
+`;
+  const { cwd } = await setupTest({ piScript });
+  const controller = new AbortController();
+  controller.abort("pre-aborted");
+  try {
+    await runSingleAgent(
+      cwd,
+      [hangAgent],
+      "hang",
+      "task",
+      controller.signal,
+      undefined,
+      makeSubagentDetails,
+      undefined,
+      "off",
+    );
+    throw new Error("Expected SubagentAbortError");
+  } catch (error) {
+    expect(error).toBeInstanceOf(SubagentAbortError);
+    const abortError = error as SubagentAbortError;
+    expect(abortError.result.termination).toBeDefined();
+    expect(abortError.result.termination?.cancelReason).toBe("pre-aborted");
+  }
 });

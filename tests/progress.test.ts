@@ -4474,3 +4474,264 @@ test("extractProgressFromDetails skips non-assistant messages and non-array cont
   const result = extractProgressFromDetails(details, seen);
   expect(result.newToolCallIds).toEqual(["tc-1"]);
 });
+
+test("extractProgressFromDetails blank activityText with valid tool calls uses tool-call preview", () => {
+  const details = makeDetails([]);
+  const firstResult = details.results[0];
+  if (!firstResult) throw new Error("missing result");
+  firstResult.progress = {
+    toolCalls: [
+      { id: "tc-1", preview: "bash: ls" },
+      { id: "tc-2", preview: "read: /tmp/file" },
+    ],
+    activityText: "   ",
+    lastToolPreview: "read: /tmp/file",
+  };
+  const seen = new Set<string>();
+  const result = extractProgressFromDetails(details, seen);
+  expect(result.activityText).toBeUndefined();
+  expect(result.lastToolPreview).toBe("read: /tmp/file");
+  expect(result.newToolCallIds).toEqual(["tc-1", "tc-2"]);
+  expect(result.progressLastToolPreview).toBe("read: /tmp/file");
+});
+
+test("extractProgressFromDetails preview-only progress with tool calls sets progressLastToolPreview", () => {
+  const details = makeDetails([]);
+  const firstResult = details.results[0];
+  if (!firstResult) throw new Error("missing result");
+  firstResult.progress = {
+    toolCalls: [{ id: "tc-1", preview: "bash: echo hello" }],
+    lastToolPreview: "bash: echo hello",
+  };
+  const seen = new Set<string>();
+  const result = extractProgressFromDetails(details, seen);
+  expect(result.progressLastToolPreview).toBe("bash: echo hello");
+  expect(result.lastToolPreview).toBe("bash: echo hello");
+  expect(result.activityText).toBeUndefined();
+  expect(result.newToolCallIds).toEqual(["tc-1"]);
+});
+
+test("extractProgressFromDetails empty toolCalls with lastToolPreview sets lastToolPreview via fallback", () => {
+  const details = makeDetails([]);
+  const firstResult = details.results[0];
+  if (!firstResult) throw new Error("missing result");
+  firstResult.progress = {
+    toolCalls: [],
+    lastToolPreview: "bash: stale preview",
+  };
+  const seen = new Set<string>();
+  const result = extractProgressFromDetails(details, seen);
+  expect(result.lastToolPreview).toBe("bash: stale preview");
+  expect(result.progressLastToolPreview).toBe("bash: stale preview");
+  expect(result.newToolCallIds).toEqual([]);
+  expect(result.activityText).toBeUndefined();
+});
+
+test("extractProgressFromDetails non-string activityText with valid tool calls ignores activity", () => {
+  const details = makeDetails([]);
+  const firstResult = details.results[0];
+  if (!firstResult) throw new Error("missing result");
+  firstResult.progress = {
+    toolCalls: [{ id: "tc-1", preview: "bash: ls" }],
+    activityText: 42 as unknown as string,
+    lastToolPreview: "bash: ls",
+  };
+  const seen = new Set<string>();
+  const result = extractProgressFromDetails(details, seen);
+  expect(result.activityText).toBeUndefined();
+  expect(result.lastToolPreview).toBe("bash: ls");
+  expect(result.newToolCallIds).toEqual(["tc-1"]);
+});
+
+test("extractProgressFromDetails progress with only toolResultCompleted sets completion flag", () => {
+  const details = makeDetails([]);
+  const firstResult = details.results[0];
+  if (!firstResult) throw new Error("missing result");
+  firstResult.progress = {
+    toolCalls: [],
+    toolResultCompleted: true,
+  };
+  const seen = new Set<string>();
+  const result = extractProgressFromDetails(details, seen);
+  expect(result.toolResultCompleted).toBe(true);
+  expect(result.activityText).toBeUndefined();
+  expect(result.lastToolPreview).toBeUndefined();
+  expect(result.newToolCallIds).toEqual([]);
+});
+
+test("extractProgressFromDetails multiple results with mixed progress and messages", () => {
+  const details: SubagentDetails = {
+    mode: "single",
+    agentScope: "both",
+    projectAgentsDir: null,
+    results: [
+      {
+        agent: "agent-a",
+        agentSource: "user",
+        task: "task a",
+        exitCode: 0,
+        finalOutput: "",
+        stderr: "",
+        usage: {
+          input: 0,
+          output: 0,
+          cacheRead: 0,
+          cacheWrite: 0,
+          cost: 0,
+          contextTokens: 0,
+          turns: 0,
+        },
+        progress: {
+          toolCalls: [{ id: "tc-1", preview: "bash: ls" }],
+          activityText: "running ls",
+          lastToolPreview: "bash: ls",
+        },
+      },
+      {
+        agent: "agent-b",
+        agentSource: "user",
+        task: "task b",
+        exitCode: 0,
+        finalOutput: "",
+        stderr: "",
+        usage: {
+          input: 0,
+          output: 0,
+          cacheRead: 0,
+          cacheWrite: 0,
+          cost: 0,
+          contextTokens: 0,
+          turns: 0,
+        },
+        messages: [
+          {
+            role: "assistant",
+            content: [
+              {
+                type: "toolCall",
+                id: "tc-2",
+                name: "read",
+                arguments: { path: "/tmp/file" },
+              },
+            ],
+          },
+        ] as unknown as Message[],
+      },
+    ],
+  };
+  const seen = new Set<string>();
+  const result = extractProgressFromDetails(details, seen);
+  // tc-1 from first result progress; tc-2 from second result messages
+  expect(result.newToolCallIds).toEqual(["tc-1", "tc-2"]);
+  expect(result.activityText).toBe("running ls");
+  // lastToolPreview is set by the last valid tool call processed
+  expect(result.lastToolPreview).toBe("read: /tmp/file");
+  // progressLastToolPreview is set from the first result's progress.lastToolPreview
+  expect(result.progressLastToolPreview).toBe("bash: ls");
+  expect([...seen]).toEqual(["tc-1", "tc-2"]);
+});
+
+test("extractProgressFromDetails falsy progress on result falls through to messages", () => {
+  const details = makeDetails([
+    {
+      role: "assistant",
+      content: [
+        {
+          type: "toolCall",
+          id: "tc-msg",
+          name: "bash",
+          arguments: { command: "echo hi" },
+        },
+      ],
+    },
+  ]);
+  const firstResult = details.results[0];
+  if (!firstResult) throw new Error("missing result");
+  (firstResult as unknown as { progress: unknown }).progress = false;
+  const seen = new Set<string>();
+  const result = extractProgressFromDetails(details, seen);
+  expect(result.newToolCallIds).toEqual(["tc-msg"]);
+  expect(result.lastToolPreview).toBe("bash: echo hi");
+});
+
+test("extractProgressFromDetails valid progress populates all derived fields", () => {
+  const details = makeDetails([]);
+  const firstResult = details.results[0];
+  if (!firstResult) throw new Error("missing result");
+  firstResult.progress = {
+    toolCalls: [
+      { id: "tc-1", preview: "bash: build" },
+      { id: "tc-2", preview: "read: output.log" },
+    ],
+    activityText: "Building project",
+    activeToolActivity: {
+      toolName: "subagent",
+      inputSummary: "subagent: build",
+      child: { toolName: "bash", inputSummary: "bash: build" },
+    },
+    lastToolPreview: "read: output.log",
+    toolResultCompleted: true,
+  };
+  const seen = new Set<string>();
+  const result = extractProgressFromDetails(details, seen);
+  expect(result.activityText).toBe("Building project");
+  expect(result.activeToolActivity).toEqual({
+    toolName: "subagent",
+    inputSummary: "subagent: build",
+    child: { toolName: "bash", inputSummary: "bash: build" },
+  });
+  expect(result.lastToolPreview).toBe("read: output.log");
+  expect(result.progressLastToolPreview).toBe("read: output.log");
+  expect(result.toolResultCompleted).toBe(true);
+  expect(result.newToolCallIds).toEqual(["tc-1", "tc-2"]);
+  expect([...seen]).toEqual(["tc-1", "tc-2"]);
+});
+
+test("extractProgressFromDetails does not set activityText for whitespace-only string", () => {
+  const details = makeDetails([]);
+  const firstResult = details.results[0];
+  if (!firstResult) throw new Error("missing result");
+  firstResult.progress = { toolCalls: [], activityText: "   " };
+  const seen = new Set<string>();
+  const result = extractProgressFromDetails(details, seen);
+  expect(result.activityText).toBeUndefined();
+});
+
+test("extractProgressFromDetails does not set progressLastToolPreview for whitespace-only lastToolPreview", () => {
+  const details = makeDetails([]);
+  const firstResult = details.results[0];
+  if (!firstResult) throw new Error("missing result");
+  firstResult.progress = { toolCalls: [], lastToolPreview: "   " };
+  const seen = new Set<string>();
+  const result = extractProgressFromDetails(details, seen);
+  expect(result.progressLastToolPreview).toBeUndefined();
+  expect(result.lastToolPreview).toBeUndefined();
+});
+
+test("extractProgressFromDetails skips null entries in toolCalls", () => {
+  const details = makeDetails([]) as unknown as SubagentDetails;
+  const firstResult = details.results[0];
+  if (!firstResult) throw new Error("missing result");
+  firstResult.progress = {
+    toolCalls: [null, { id: "tc-1", preview: "bash: ls" }] as unknown as {
+      id: string;
+      preview: string;
+    }[],
+  };
+  const seen = new Set<string>();
+  const result = extractProgressFromDetails(details, seen);
+  expect(result.newToolCallIds).toEqual(["tc-1"]);
+  expect(result.lastToolPreview).toBe("bash: ls");
+});
+
+test("extractProgressFromDetails sets lastToolPreview from progress.lastToolPreview when toolCalls has no derivable entries", () => {
+  const details = makeDetails([]);
+  const firstResult = details.results[0];
+  if (!firstResult) throw new Error("missing result");
+  firstResult.progress = { toolCalls: [], lastToolPreview: "bash: ls" };
+  const seen = new Set<string>();
+  const result = extractProgressFromDetails(details, seen);
+  expect(result.lastToolPreview).toBe("bash: ls");
+  expect(result.progressLastToolPreview).toBe("bash: ls");
+  expect(result.newToolCallIds).toEqual([]);
+});

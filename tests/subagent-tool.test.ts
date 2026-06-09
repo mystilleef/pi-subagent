@@ -1196,6 +1196,48 @@ System prompt`,
   expect(listRunJobs()).toHaveLength(0);
 });
 
+test("pre-aborted host signal cancels after valid agent discovery without side effects", async () => {
+  const sentMessages: SendMessageArg[] = [];
+  const { cwd } = await setupFakePi();
+  const projectAgentsDir = path.join(cwd, ".pi", "agents");
+  await Bun.$`mkdir -p ${projectAgentsDir}`;
+  await writeFile(
+    path.join(projectAgentsDir, "project-agent.md"),
+    `---
+name: project-agent
+description: Project agent
+---
+System prompt`,
+  );
+  const tool = getSubagentTool({
+    sendMessage: (msg) => sentMessages.push(msg),
+  });
+  let confirmed = false;
+  const fakeUI = {
+    confirm: async () => {
+      confirmed = true;
+      return true;
+    },
+  };
+  const controller = new AbortController();
+  controller.abort("pre-aborted");
+  const result = await tool.execute(
+    "test-tool-call",
+    { agent: "project-agent", task: "test", agentScope: "both" },
+    controller.signal,
+    undefined,
+    { cwd, hasUI: true, ui: fakeUI } as unknown as ExtensionContext,
+  );
+  expect(confirmed).toBe(false);
+  expect((result.content[0] as TextContent).text).toBe("Canceled");
+  expect(sentMessages).toHaveLength(0);
+  expect(listRunJobs()).toHaveLength(0);
+  expect(getProgressState("test-tool-call")).toBeUndefined();
+  const details = result.details as SubagentDetails;
+  expect(details.results).toHaveLength(0);
+  expect(details.mode).toBe("single");
+});
+
 test("positive-depth subagent tool preserves scope confirmation and collision semantics", async () => {
   const sentMessages: SendMessageArg[] = [];
   const { agentDir, cwd } = await setupFakePi();
@@ -2925,4 +2967,106 @@ exit 0
   });
   expect(hasLsTool).toBe(true);
   expect(hasReadTool).toBe(true);
+});
+
+test("prepareSubagentJob omits parent model when ctx.model is absent", async () => {
+  const sentMessages: SendMessageArg[] = [];
+  const { tool, cwd } = await setupTest({
+    sendMessage: (msg) => sentMessages.push(msg),
+    piScript: `#!/bin/sh
+printf '%s\n' "$*" > args.txt
+printf '%s\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"done"}],"usage":{"input":1,"output":1,"totalTokens":2,"cost":{"total":0}}}}'
+printf '%s\n' '{"type":"agent_end"}'
+exit 0
+`,
+  });
+  process.env.PI_SUBAGENT_DEPTH = "1";
+  const result = await tool.execute(
+    "test-tool-call",
+    { agent: "hang", task: "no-model" },
+    undefined,
+    undefined,
+    { cwd, hasUI: false } as unknown as ExtensionContext,
+  );
+  expect((result.content[0] as TextContent).text).toBe("done");
+  const argsText = await Bun.file(path.join(cwd, "args.txt")).text();
+  expect(argsText).not.toContain("--provider");
+  expect(argsText).not.toContain("--model");
+  const details = result.details as SubagentDetails;
+  expect(details.results[0]?.model).toBe("thinking:off");
+  expect(listRunJobs()).toHaveLength(0);
+});
+
+test("project agent without user collision sends no collision warning", async () => {
+  const sentMessages: SendMessageArg[] = [];
+  const { cwd } = await setupFakePi();
+  const projectAgentsDir = path.join(cwd, ".pi", "agents");
+  await Bun.$`mkdir -p ${projectAgentsDir}`;
+  await writeFile(
+    path.join(projectAgentsDir, "project-only.md"),
+    `---
+name: project-only
+description: Project only
+---
+Project prompt`,
+  );
+  const tool = getSubagentTool({
+    sendMessage: (msg) => sentMessages.push(msg),
+  });
+  process.env.PI_SUBAGENT_DEPTH = "1";
+  const result = await tool.execute(
+    "test-tool-call",
+    { agent: "project-only", task: "no-collision", agentScope: "both" },
+    undefined,
+    undefined,
+    {
+      cwd,
+      hasUI: true,
+      ui: { confirm: async () => true },
+    } as unknown as ExtensionContext,
+  );
+  expect((result.content[0] as TextContent).text).toBe("done");
+  const collisionWarnings = sentMessages.filter(
+    (msg) =>
+      msg.customType === "subagent-progress" &&
+      typeof msg.content === "string" &&
+      msg.content.includes("user agent with same name"),
+  );
+  expect(collisionWarnings).toHaveLength(0);
+  expect((result.details as SubagentDetails).results[0]?.agentSource).toBe(
+    "project",
+  );
+  expect(listRunJobs()).toHaveLength(0);
+});
+
+test("startSubagentJob depth-0 cancels via cancelStartedJob when signal aborts after registration", async () => {
+  const sentMessages: SendMessageArg[] = [];
+  const controller = new AbortController();
+  const { binDir, cwd } = await setupFakePi();
+  await writeFile(
+    path.join(binDir, "pi"),
+    `#!/bin/sh
+trap 'exit 0' TERM
+sleep 10 &
+wait $!
+`,
+  );
+  const tool = getSubagentTool({
+    sendMessage: (msg) => sentMessages.push(msg),
+  });
+  await tool.execute(
+    "test-tool-call",
+    { agent: "hang", task: "cancel-after-start" },
+    controller.signal,
+    undefined,
+    { cwd, hasUI: false } as unknown as ExtensionContext,
+  );
+  const requestId = (sentMessages[0]?.details as { requestId?: string })
+    ?.requestId;
+  if (!requestId) throw new Error("requestId missing");
+  expect(listRunJobs()).toHaveLength(1);
+  expect(getProgressState(requestId)?.status).toBe("running");
+  controller.abort("host cancel");
+  await waitForRunJobsCleared();
+  expect(getProgressState(requestId)?.status).toBe("cancelled");
 });
