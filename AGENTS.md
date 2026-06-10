@@ -8,7 +8,6 @@
 ## Workflow
 
 - **CI:** Pull requests trigger:
-  - `bun check`
   - `bun verify`
   - `bun pack:smoke`
 
