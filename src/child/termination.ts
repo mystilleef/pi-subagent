@@ -38,6 +38,8 @@ export type SleepInhibitorHelperProcess = {
 
 export type HostSleepInhibitorAdapterOptions = {
   platform?: NodeJS.Platform;
+  environment?: Partial<NodeJS.ProcessEnv>;
+  getEnvironment?: () => Partial<NodeJS.ProcessEnv>;
   commandExists?: (command: string) => boolean | Promise<boolean>;
   spawnHelper?: (
     command: string,
@@ -79,6 +81,8 @@ export type TerminateChildProcessOptions = {
 const DEFAULT_TIMEOUT_MS = 4_000;
 const CAFFEINATE_COMMAND = "/usr/bin/caffeinate";
 const SYSTEMD_INHIBIT_COMMAND = "/usr/bin/systemd-inhibit";
+const GNOME_SESSION_INHIBIT_COMMAND = "/usr/bin/gnome-session-inhibit";
+const KDE_INHIBIT_COMMAND = "/usr/bin/kde-inhibit";
 const POWERSHELL_COMMAND = "powershell.exe";
 const SHELL_COMMAND = "/bin/sh";
 const noopSleepInhibitorHandle: SleepInhibitorHandle = {
@@ -149,16 +153,89 @@ function makeHelperHandle(
   };
 }
 
+function makeCompositeHelperHandle(
+  handles: SleepInhibitorAdapterHandle[],
+): SleepInhibitorAdapterHandle {
+  return {
+    async release() {
+      for (const handle of handles) {
+        try {
+          await handle.release?.();
+        } catch {
+          /* helper release failures are non-fatal */
+        }
+      }
+    },
+  };
+}
+
+function getDesktopTokens(desktop: string | undefined): Set<string> {
+  return new Set(
+    (desktop ?? "")
+      .toLowerCase()
+      .split(/[\s:;,+/]+/u)
+      .filter(Boolean),
+  );
+}
+
+function getLinuxDesktopTokens(
+  getEnvironment: () => Partial<NodeJS.ProcessEnv>,
+): Set<string> {
+  try {
+    return getDesktopTokens(getEnvironment()["XDG_CURRENT_DESKTOP"]);
+  } catch {
+    return new Set<string>();
+  }
+}
+
+function hasGnomeCompatibleDesktop(tokens: Set<string>): boolean {
+  return tokens.has("gnome") || tokens.has("ubuntu");
+}
+
+function hasKdeCompatibleDesktop(tokens: Set<string>): boolean {
+  return tokens.has("kde") || tokens.has("plasma");
+}
+
+async function commandExistsSafely(
+  commandExists: (command: string) => boolean | Promise<boolean>,
+  command: string,
+): Promise<boolean> {
+  try {
+    return await commandExists(command);
+  } catch {
+    return false;
+  }
+}
+
+function makePidPollingShellArgs(pid: number): string[] {
+  return [
+    SHELL_COMMAND,
+    "-c",
+    `while kill -0 ${pid} 2>/dev/null; do sleep 1; done`,
+  ];
+}
+
 function makeSystemdInhibitArgs(pid: number): string[] {
   return [
     "--what=sleep:idle",
     "--who=pi-subagent",
     "--why=subagent running",
     "--mode=block",
-    SHELL_COMMAND,
-    "-c",
-    `while kill -0 ${pid} 2>/dev/null; do sleep 1; done`,
+    ...makePidPollingShellArgs(pid),
   ];
+}
+
+function makeGnomeSessionInhibitArgs(pid: number): string[] {
+  return [
+    "--app-id=pi-subagent",
+    "--inhibit=suspend:idle",
+    "--reason=subagent running",
+    ...makePidPollingShellArgs(pid),
+  ];
+}
+
+function makeKdeInhibitArgs(pid: number): string[] {
+  return ["--power", "--screenSaver", ...makePidPollingShellArgs(pid)];
 }
 
 function makePowerShellInhibitArgs(pid: number): string[] {
@@ -170,19 +247,82 @@ function makePowerShellInhibitArgs(pid: number): string[] {
   return ["-NonInteractive", "-Command", script];
 }
 
+async function acquireLinuxSleepInhibitor(
+  pid: number,
+  getEnvironment: () => Partial<NodeJS.ProcessEnv>,
+  commandExists: (command: string) => boolean | Promise<boolean>,
+  spawnHelper: (
+    command: string,
+    args: string[],
+    options: { stdio: "ignore"; detached: true },
+  ) => SleepInhibitorHelperProcess,
+): Promise<SleepInhibitorAdapterHandle> {
+  const handles: SleepInhibitorAdapterHandle[] = [];
+  const spawnLinuxHelper = (command: string, args: string[]) => {
+    try {
+      handles.push(
+        makeHelperHandle(
+          spawnHelper(command, args, {
+            stdio: "ignore",
+            detached: true,
+          }),
+        ),
+      );
+    } catch {
+      /* individual helper startup failures are non-fatal */
+    }
+  };
+  const tokens = getLinuxDesktopTokens(getEnvironment);
+  if (
+    hasGnomeCompatibleDesktop(tokens) &&
+    (await commandExistsSafely(commandExists, GNOME_SESSION_INHIBIT_COMMAND))
+  )
+    spawnLinuxHelper(
+      GNOME_SESSION_INHIBIT_COMMAND,
+      makeGnomeSessionInhibitArgs(pid),
+    );
+  if (
+    hasKdeCompatibleDesktop(tokens) &&
+    (await commandExistsSafely(commandExists, KDE_INHIBIT_COMMAND))
+  )
+    spawnLinuxHelper(KDE_INHIBIT_COMMAND, makeKdeInhibitArgs(pid));
+  if (await commandExistsSafely(commandExists, SYSTEMD_INHIBIT_COMMAND))
+    spawnLinuxHelper(SYSTEMD_INHIBIT_COMMAND, makeSystemdInhibitArgs(pid));
+  return handles.length > 0 ? makeCompositeHelperHandle(handles) : {};
+}
+
 export function makeHostSleepInhibitorAdapter(
   options: HostSleepInhibitorAdapterOptions = {},
 ): SleepInhibitorAdapter {
   const platform = options.platform ?? process.platform;
   const commandExists = options.commandExists ?? defaultCommandExists;
+  const getEnvironment =
+    options.getEnvironment ?? (() => options.environment ?? process.env);
   const spawnHelper =
     options.spawnHelper ??
     ((command, args, spawnOptions) => spawn(command, args, spawnOptions));
   return {
     async supported() {
       if (platform === "win32") return true;
-      if (platform === "darwin") return commandExists(CAFFEINATE_COMMAND);
-      if (platform === "linux") return commandExists(SYSTEMD_INHIBIT_COMMAND);
+      if (platform === "darwin")
+        return commandExistsSafely(commandExists, CAFFEINATE_COMMAND);
+      if (platform === "linux") {
+        if (await commandExistsSafely(commandExists, SYSTEMD_INHIBIT_COMMAND))
+          return true;
+        const tokens = getLinuxDesktopTokens(getEnvironment);
+        if (
+          hasGnomeCompatibleDesktop(tokens) &&
+          (await commandExistsSafely(
+            commandExists,
+            GNOME_SESSION_INHIBIT_COMMAND,
+          ))
+        )
+          return true;
+        return (
+          hasKdeCompatibleDesktop(tokens) &&
+          (await commandExistsSafely(commandExists, KDE_INHIBIT_COMMAND))
+        );
+      }
       return false;
     },
     acquire(pid) {
@@ -195,12 +335,12 @@ export function makeHostSleepInhibitorAdapter(
         return makeHelperHandle(helper);
       }
       if (platform === "linux") {
-        const helper = spawnHelper(
-          SYSTEMD_INHIBIT_COMMAND,
-          makeSystemdInhibitArgs(pid),
-          { stdio: "ignore", detached: true },
+        return acquireLinuxSleepInhibitor(
+          pid,
+          getEnvironment,
+          commandExists,
+          spawnHelper,
         );
-        return makeHelperHandle(helper);
       }
       if (platform === "win32") {
         const helper = spawnHelper(

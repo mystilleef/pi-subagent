@@ -195,5 +195,17 @@ describe("termination.ts coverage gaps", () => {
       const supported = await adapter.supported?.();
       expect(supported).toBe(true);
     });
+
+    test("linux desktop detection handles mixed delimiters deterministically", async () => {
+      const adapter = makeHostSleepInhibitorAdapter({
+        platform: "linux",
+        environment: { XDG_CURRENT_DESKTOP: "Unity:ubuntu GNOME" },
+        commandExists(command) {
+          return command === "/usr/bin/gnome-session-inhibit";
+        },
+      });
+      const supported = await adapter.supported?.();
+      expect(supported).toBe(true);
+    });
   });
 });
