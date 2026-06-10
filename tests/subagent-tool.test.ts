@@ -2280,10 +2280,10 @@ test("emitCompletionAlert skips absent state", () => {
 });
 
 test("emitCompletionAlert with batch notifications enabled emits bell on TTY", () => {
-  const origDesktop = process.env.PI_DESKTOP_NOTIFICATIONS;
-  const origPerJob = process.env.PI_NOTIFY_PER_JOB;
-  process.env.PI_DESKTOP_NOTIFICATIONS = "1";
-  delete process.env.PI_NOTIFY_PER_JOB;
+  const origDesktop = process.env.PI_SUBAGENT_DESKTOP_NOTIFICATIONS;
+  const origPerJob = process.env.PI_SUBAGENT_NOTIFY_PER_JOB;
+  process.env.PI_SUBAGENT_DESKTOP_NOTIFICATIONS = "1";
+  delete process.env.PI_SUBAGENT_NOTIFY_PER_JOB;
   setDefaultDeliveryDeps({ spawnProcess: () => ({}) });
   const writeCalls: string[] = [];
   const origWrite = process.stdout.write;
@@ -2312,18 +2312,19 @@ test("emitCompletionAlert with batch notifications enabled emits bell on TTY", (
     } else {
       delete (process.stdout as unknown as { isTTY?: boolean }).isTTY;
     }
-    if (origDesktop === undefined) delete process.env.PI_DESKTOP_NOTIFICATIONS;
-    else process.env.PI_DESKTOP_NOTIFICATIONS = origDesktop;
-    if (origPerJob === undefined) delete process.env.PI_NOTIFY_PER_JOB;
-    else process.env.PI_NOTIFY_PER_JOB = origPerJob;
+    if (origDesktop === undefined)
+      delete process.env.PI_SUBAGENT_DESKTOP_NOTIFICATIONS;
+    else process.env.PI_SUBAGENT_DESKTOP_NOTIFICATIONS = origDesktop;
+    if (origPerJob === undefined) delete process.env.PI_SUBAGENT_NOTIFY_PER_JOB;
+    else process.env.PI_SUBAGENT_NOTIFY_PER_JOB = origPerJob;
   }
 });
 
 test("emitCompletionAlert with batch notifications enabled does not bell on non-TTY", () => {
-  const origDesktop = process.env.PI_DESKTOP_NOTIFICATIONS;
-  const origPerJob = process.env.PI_NOTIFY_PER_JOB;
-  process.env.PI_DESKTOP_NOTIFICATIONS = "1";
-  delete process.env.PI_NOTIFY_PER_JOB;
+  const origDesktop = process.env.PI_SUBAGENT_DESKTOP_NOTIFICATIONS;
+  const origPerJob = process.env.PI_SUBAGENT_NOTIFY_PER_JOB;
+  process.env.PI_SUBAGENT_DESKTOP_NOTIFICATIONS = "1";
+  delete process.env.PI_SUBAGENT_NOTIFY_PER_JOB;
   setDefaultDeliveryDeps({ spawnProcess: () => ({}) });
   const writeCalls: string[] = [];
   const origWrite = process.stdout.write;
@@ -2352,34 +2353,36 @@ test("emitCompletionAlert with batch notifications enabled does not bell on non-
     } else {
       delete (process.stdout as unknown as { isTTY?: boolean }).isTTY;
     }
-    if (origDesktop === undefined) delete process.env.PI_DESKTOP_NOTIFICATIONS;
-    else process.env.PI_DESKTOP_NOTIFICATIONS = origDesktop;
-    if (origPerJob === undefined) delete process.env.PI_NOTIFY_PER_JOB;
-    else process.env.PI_NOTIFY_PER_JOB = origPerJob;
+    if (origDesktop === undefined)
+      delete process.env.PI_SUBAGENT_DESKTOP_NOTIFICATIONS;
+    else process.env.PI_SUBAGENT_DESKTOP_NOTIFICATIONS = origDesktop;
+    if (origPerJob === undefined) delete process.env.PI_SUBAGENT_NOTIFY_PER_JOB;
+    else process.env.PI_SUBAGENT_NOTIFY_PER_JOB = origPerJob;
   }
 });
 
 test("emitCompletionAlert with batch notifications handles cancelled by skipping", () => {
-  const origDesktop = process.env.PI_DESKTOP_NOTIFICATIONS;
-  const origPerJob = process.env.PI_NOTIFY_PER_JOB;
-  process.env.PI_DESKTOP_NOTIFICATIONS = "1";
-  delete process.env.PI_NOTIFY_PER_JOB;
+  const origDesktop = process.env.PI_SUBAGENT_DESKTOP_NOTIFICATIONS;
+  const origPerJob = process.env.PI_SUBAGENT_NOTIFY_PER_JOB;
+  process.env.PI_SUBAGENT_DESKTOP_NOTIFICATIONS = "1";
+  delete process.env.PI_SUBAGENT_NOTIFY_PER_JOB;
   try {
     const state = makeProgressState({ status: "cancelled" });
     expect(() => emitCompletionAlert(state)).not.toThrow();
   } finally {
-    if (origDesktop === undefined) delete process.env.PI_DESKTOP_NOTIFICATIONS;
-    else process.env.PI_DESKTOP_NOTIFICATIONS = origDesktop;
-    if (origPerJob === undefined) delete process.env.PI_NOTIFY_PER_JOB;
-    else process.env.PI_NOTIFY_PER_JOB = origPerJob;
+    if (origDesktop === undefined)
+      delete process.env.PI_SUBAGENT_DESKTOP_NOTIFICATIONS;
+    else process.env.PI_SUBAGENT_DESKTOP_NOTIFICATIONS = origDesktop;
+    if (origPerJob === undefined) delete process.env.PI_SUBAGENT_NOTIFY_PER_JOB;
+    else process.env.PI_SUBAGENT_NOTIFY_PER_JOB = origPerJob;
   }
 });
 
 test("per-job notification completes lifecycle without crashing", async () => {
-  const origDesktop = process.env.PI_DESKTOP_NOTIFICATIONS;
-  const origPerJob = process.env.PI_NOTIFY_PER_JOB;
-  process.env.PI_DESKTOP_NOTIFICATIONS = "1";
-  process.env.PI_NOTIFY_PER_JOB = "1";
+  const origDesktop = process.env.PI_SUBAGENT_DESKTOP_NOTIFICATIONS;
+  const origPerJob = process.env.PI_SUBAGENT_NOTIFY_PER_JOB;
+  process.env.PI_SUBAGENT_DESKTOP_NOTIFICATIONS = "1";
+  process.env.PI_SUBAGENT_NOTIFY_PER_JOB = "1";
   setDefaultDeliveryDeps({ spawnProcess: () => ({}) });
   try {
     const sentMessages: SendMessageArg[] = [];
@@ -2404,18 +2407,19 @@ test("per-job notification completes lifecycle without crashing", async () => {
     }
     expect(listRunJobs()).toHaveLength(0);
   } finally {
-    if (origDesktop === undefined) delete process.env.PI_DESKTOP_NOTIFICATIONS;
-    else process.env.PI_DESKTOP_NOTIFICATIONS = origDesktop;
-    if (origPerJob === undefined) delete process.env.PI_NOTIFY_PER_JOB;
-    else process.env.PI_NOTIFY_PER_JOB = origPerJob;
+    if (origDesktop === undefined)
+      delete process.env.PI_SUBAGENT_DESKTOP_NOTIFICATIONS;
+    else process.env.PI_SUBAGENT_DESKTOP_NOTIFICATIONS = origDesktop;
+    if (origPerJob === undefined) delete process.env.PI_SUBAGENT_NOTIFY_PER_JOB;
+    else process.env.PI_SUBAGENT_NOTIFY_PER_JOB = origPerJob;
   }
 });
 
 test("per-job notification completes lifecycle for error jobs", async () => {
-  const origDesktop = process.env.PI_DESKTOP_NOTIFICATIONS;
-  const origPerJob = process.env.PI_NOTIFY_PER_JOB;
-  process.env.PI_DESKTOP_NOTIFICATIONS = "1";
-  process.env.PI_NOTIFY_PER_JOB = "1";
+  const origDesktop = process.env.PI_SUBAGENT_DESKTOP_NOTIFICATIONS;
+  const origPerJob = process.env.PI_SUBAGENT_NOTIFY_PER_JOB;
+  process.env.PI_SUBAGENT_DESKTOP_NOTIFICATIONS = "1";
+  process.env.PI_SUBAGENT_NOTIFY_PER_JOB = "1";
   setDefaultDeliveryDeps({ spawnProcess: () => ({}) });
   try {
     const sentMessages: SendMessageArg[] = [];
@@ -2451,18 +2455,19 @@ exit 1
     expect(result.details.renderedByMessage).toBe(true);
     expect(listRunJobs()).toHaveLength(0);
   } finally {
-    if (origDesktop === undefined) delete process.env.PI_DESKTOP_NOTIFICATIONS;
-    else process.env.PI_DESKTOP_NOTIFICATIONS = origDesktop;
-    if (origPerJob === undefined) delete process.env.PI_NOTIFY_PER_JOB;
-    else process.env.PI_NOTIFY_PER_JOB = origPerJob;
+    if (origDesktop === undefined)
+      delete process.env.PI_SUBAGENT_DESKTOP_NOTIFICATIONS;
+    else process.env.PI_SUBAGENT_DESKTOP_NOTIFICATIONS = origDesktop;
+    if (origPerJob === undefined) delete process.env.PI_SUBAGENT_NOTIFY_PER_JOB;
+    else process.env.PI_SUBAGENT_NOTIFY_PER_JOB = origPerJob;
   }
 });
 
 test("per-job notification with cancelled state does not crash", async () => {
-  const origDesktop = process.env.PI_DESKTOP_NOTIFICATIONS;
-  const origPerJob = process.env.PI_NOTIFY_PER_JOB;
-  process.env.PI_DESKTOP_NOTIFICATIONS = "1";
-  process.env.PI_NOTIFY_PER_JOB = "1";
+  const origDesktop = process.env.PI_SUBAGENT_DESKTOP_NOTIFICATIONS;
+  const origPerJob = process.env.PI_SUBAGENT_NOTIFY_PER_JOB;
+  process.env.PI_SUBAGENT_DESKTOP_NOTIFICATIONS = "1";
+  process.env.PI_SUBAGENT_NOTIFY_PER_JOB = "1";
   try {
     const sentMessages: SendMessageArg[] = [];
     const controller = new AbortController();
@@ -2498,17 +2503,18 @@ wait $!
     }
     expect(listRunJobs()).toHaveLength(0);
   } finally {
-    if (origDesktop === undefined) delete process.env.PI_DESKTOP_NOTIFICATIONS;
-    else process.env.PI_DESKTOP_NOTIFICATIONS = origDesktop;
-    if (origPerJob === undefined) delete process.env.PI_NOTIFY_PER_JOB;
-    else process.env.PI_NOTIFY_PER_JOB = origPerJob;
+    if (origDesktop === undefined)
+      delete process.env.PI_SUBAGENT_DESKTOP_NOTIFICATIONS;
+    else process.env.PI_SUBAGENT_DESKTOP_NOTIFICATIONS = origDesktop;
+    if (origPerJob === undefined) delete process.env.PI_SUBAGENT_NOTIFY_PER_JOB;
+    else process.env.PI_SUBAGENT_NOTIFY_PER_JOB = origPerJob;
   }
 });
 
 test("batch notification skips bell when not last job", async () => {
-  const origDesktop = process.env.PI_DESKTOP_NOTIFICATIONS;
-  process.env.PI_DESKTOP_NOTIFICATIONS = "1";
-  delete process.env.PI_NOTIFY_PER_JOB;
+  const origDesktop = process.env.PI_SUBAGENT_DESKTOP_NOTIFICATIONS;
+  process.env.PI_SUBAGENT_DESKTOP_NOTIFICATIONS = "1";
+  delete process.env.PI_SUBAGENT_NOTIFY_PER_JOB;
   try {
     const sentMessages: SendMessageArg[] = [];
     const { tool, cwd } = await setupTest({
@@ -2546,16 +2552,17 @@ wait $!
     await waitForRunJobsCleared();
     expect(listRunJobs()).toHaveLength(0);
   } finally {
-    if (origDesktop === undefined) delete process.env.PI_DESKTOP_NOTIFICATIONS;
-    else process.env.PI_DESKTOP_NOTIFICATIONS = origDesktop;
+    if (origDesktop === undefined)
+      delete process.env.PI_SUBAGENT_DESKTOP_NOTIFICATIONS;
+    else process.env.PI_SUBAGENT_DESKTOP_NOTIFICATIONS = origDesktop;
   }
 });
 
 test("batch notification does not crash for successful lifecycle completion", async () => {
-  const origDesktop = process.env.PI_DESKTOP_NOTIFICATIONS;
-  const origPerJob = process.env.PI_NOTIFY_PER_JOB;
-  process.env.PI_DESKTOP_NOTIFICATIONS = "1";
-  delete process.env.PI_NOTIFY_PER_JOB;
+  const origDesktop = process.env.PI_SUBAGENT_DESKTOP_NOTIFICATIONS;
+  const origPerJob = process.env.PI_SUBAGENT_NOTIFY_PER_JOB;
+  process.env.PI_SUBAGENT_DESKTOP_NOTIFICATIONS = "1";
+  delete process.env.PI_SUBAGENT_NOTIFY_PER_JOB;
   setDefaultDeliveryDeps({ spawnProcess: () => ({}) });
   try {
     const sentMessages: SendMessageArg[] = [];
@@ -2580,20 +2587,21 @@ test("batch notification does not crash for successful lifecycle completion", as
     }
     expect(listRunJobs()).toHaveLength(0);
   } finally {
-    if (origDesktop === undefined) delete process.env.PI_DESKTOP_NOTIFICATIONS;
-    else process.env.PI_DESKTOP_NOTIFICATIONS = origDesktop;
-    if (origPerJob === undefined) delete process.env.PI_NOTIFY_PER_JOB;
-    else process.env.PI_NOTIFY_PER_JOB = origPerJob;
+    if (origDesktop === undefined)
+      delete process.env.PI_SUBAGENT_DESKTOP_NOTIFICATIONS;
+    else process.env.PI_SUBAGENT_DESKTOP_NOTIFICATIONS = origDesktop;
+    if (origPerJob === undefined) delete process.env.PI_SUBAGENT_NOTIFY_PER_JOB;
+    else process.env.PI_SUBAGENT_NOTIFY_PER_JOB = origPerJob;
   }
 });
 
 // --- deliverDesktopCompletionNotification indirect verification ---
 
-test("emitCompletionAlert with PI_DESKTOP_NOTIFICATIONS=1 calls notification path", () => {
-  const origDesktop = process.env.PI_DESKTOP_NOTIFICATIONS;
-  const origPerJob = process.env.PI_NOTIFY_PER_JOB;
-  process.env.PI_DESKTOP_NOTIFICATIONS = "1";
-  delete process.env.PI_NOTIFY_PER_JOB;
+test("emitCompletionAlert with PI_SUBAGENT_DESKTOP_NOTIFICATIONS=1 calls notification path", () => {
+  const origDesktop = process.env.PI_SUBAGENT_DESKTOP_NOTIFICATIONS;
+  const origPerJob = process.env.PI_SUBAGENT_NOTIFY_PER_JOB;
+  process.env.PI_SUBAGENT_DESKTOP_NOTIFICATIONS = "1";
+  delete process.env.PI_SUBAGENT_NOTIFY_PER_JOB;
   setDefaultDeliveryDeps({ spawnProcess: () => ({}) });
   try {
     const state = makeProgressState({
@@ -2603,16 +2611,17 @@ test("emitCompletionAlert with PI_DESKTOP_NOTIFICATIONS=1 calls notification pat
     });
     expect(() => emitCompletionAlert(state)).not.toThrow();
   } finally {
-    if (origDesktop === undefined) delete process.env.PI_DESKTOP_NOTIFICATIONS;
-    else process.env.PI_DESKTOP_NOTIFICATIONS = origDesktop;
-    if (origPerJob === undefined) delete process.env.PI_NOTIFY_PER_JOB;
-    else process.env.PI_NOTIFY_PER_JOB = origPerJob;
+    if (origDesktop === undefined)
+      delete process.env.PI_SUBAGENT_DESKTOP_NOTIFICATIONS;
+    else process.env.PI_SUBAGENT_DESKTOP_NOTIFICATIONS = origDesktop;
+    if (origPerJob === undefined) delete process.env.PI_SUBAGENT_NOTIFY_PER_JOB;
+    else process.env.PI_SUBAGENT_NOTIFY_PER_JOB = origPerJob;
   }
 });
 
-test("emitCompletionAlert with PI_DESKTOP_NOTIFICATIONS=0 skips notification path", () => {
-  const origDesktop = process.env.PI_DESKTOP_NOTIFICATIONS;
-  process.env.PI_DESKTOP_NOTIFICATIONS = "0";
+test("emitCompletionAlert with PI_SUBAGENT_DESKTOP_NOTIFICATIONS=0 skips notification path", () => {
+  const origDesktop = process.env.PI_SUBAGENT_DESKTOP_NOTIFICATIONS;
+  process.env.PI_SUBAGENT_DESKTOP_NOTIFICATIONS = "0";
   try {
     const writeCalls: string[] = [];
     const origWrite = process.stdout.write;
@@ -2643,16 +2652,17 @@ test("emitCompletionAlert with PI_DESKTOP_NOTIFICATIONS=0 skips notification pat
       }
     }
   } finally {
-    if (origDesktop === undefined) delete process.env.PI_DESKTOP_NOTIFICATIONS;
-    else process.env.PI_DESKTOP_NOTIFICATIONS = origDesktop;
+    if (origDesktop === undefined)
+      delete process.env.PI_SUBAGENT_DESKTOP_NOTIFICATIONS;
+    else process.env.PI_SUBAGENT_DESKTOP_NOTIFICATIONS = origDesktop;
   }
 });
 
-test("emitCompletionAlert with PI_DESKTOP_NOTIFICATIONS=1 and PI_NOTIFY_PER_JOB=1 still emits bell via batch fallback", () => {
-  const origDesktop = process.env.PI_DESKTOP_NOTIFICATIONS;
-  const origPerJob = process.env.PI_NOTIFY_PER_JOB;
-  process.env.PI_DESKTOP_NOTIFICATIONS = "1";
-  process.env.PI_NOTIFY_PER_JOB = "1";
+test("emitCompletionAlert with PI_SUBAGENT_DESKTOP_NOTIFICATIONS=1 and PI_SUBAGENT_NOTIFY_PER_JOB=1 still emits bell via batch fallback", () => {
+  const origDesktop = process.env.PI_SUBAGENT_DESKTOP_NOTIFICATIONS;
+  const origPerJob = process.env.PI_SUBAGENT_NOTIFY_PER_JOB;
+  process.env.PI_SUBAGENT_DESKTOP_NOTIFICATIONS = "1";
+  process.env.PI_SUBAGENT_NOTIFY_PER_JOB = "1";
   try {
     const writeCalls: string[] = [];
     const origWrite = process.stdout.write;
@@ -2683,10 +2693,11 @@ test("emitCompletionAlert with PI_DESKTOP_NOTIFICATIONS=1 and PI_NOTIFY_PER_JOB=
       }
     }
   } finally {
-    if (origDesktop === undefined) delete process.env.PI_DESKTOP_NOTIFICATIONS;
-    else process.env.PI_DESKTOP_NOTIFICATIONS = origDesktop;
-    if (origPerJob === undefined) delete process.env.PI_NOTIFY_PER_JOB;
-    else process.env.PI_NOTIFY_PER_JOB = origPerJob;
+    if (origDesktop === undefined)
+      delete process.env.PI_SUBAGENT_DESKTOP_NOTIFICATIONS;
+    else process.env.PI_SUBAGENT_DESKTOP_NOTIFICATIONS = origDesktop;
+    if (origPerJob === undefined) delete process.env.PI_SUBAGENT_NOTIFY_PER_JOB;
+    else process.env.PI_SUBAGENT_NOTIFY_PER_JOB = origPerJob;
   }
 });
 

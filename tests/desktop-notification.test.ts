@@ -62,37 +62,53 @@ describe("desktop-notification.ts", () => {
 
     test("empty string returns true", () => {
       expect(
-        isDesktopNotificationsEnabled({ PI_DESKTOP_NOTIFICATIONS: "" }),
+        isDesktopNotificationsEnabled({
+          PI_SUBAGENT_DESKTOP_NOTIFICATIONS: "",
+        }),
       ).toBe(true);
     });
 
     test("value '0' returns false (opt-out)", () => {
       expect(
-        isDesktopNotificationsEnabled({ PI_DESKTOP_NOTIFICATIONS: "0" }),
+        isDesktopNotificationsEnabled({
+          PI_SUBAGENT_DESKTOP_NOTIFICATIONS: "0",
+        }),
       ).toBe(false);
     });
 
     test("value '1' returns true", () => {
       expect(
-        isDesktopNotificationsEnabled({ PI_DESKTOP_NOTIFICATIONS: "1" }),
+        isDesktopNotificationsEnabled({
+          PI_SUBAGENT_DESKTOP_NOTIFICATIONS: "1",
+        }),
       ).toBe(true);
     });
 
     test("invalid value keeps notifications enabled", () => {
       expect(
-        isDesktopNotificationsEnabled({ PI_DESKTOP_NOTIFICATIONS: "invalid" }),
+        isDesktopNotificationsEnabled({
+          PI_SUBAGENT_DESKTOP_NOTIFICATIONS: "invalid",
+        }),
       ).toBe(true);
       expect(
-        isDesktopNotificationsEnabled({ PI_DESKTOP_NOTIFICATIONS: "yes" }),
+        isDesktopNotificationsEnabled({
+          PI_SUBAGENT_DESKTOP_NOTIFICATIONS: "yes",
+        }),
       ).toBe(true);
       expect(
-        isDesktopNotificationsEnabled({ PI_DESKTOP_NOTIFICATIONS: "true" }),
+        isDesktopNotificationsEnabled({
+          PI_SUBAGENT_DESKTOP_NOTIFICATIONS: "true",
+        }),
       ).toBe(true);
       expect(
-        isDesktopNotificationsEnabled({ PI_DESKTOP_NOTIFICATIONS: "2" }),
+        isDesktopNotificationsEnabled({
+          PI_SUBAGENT_DESKTOP_NOTIFICATIONS: "2",
+        }),
       ).toBe(true);
       expect(
-        isDesktopNotificationsEnabled({ PI_DESKTOP_NOTIFICATIONS: "-1" }),
+        isDesktopNotificationsEnabled({
+          PI_SUBAGENT_DESKTOP_NOTIFICATIONS: "-1",
+        }),
       ).toBe(true);
     });
 
@@ -107,36 +123,36 @@ describe("desktop-notification.ts", () => {
     });
 
     test("empty string returns false", () => {
-      expect(isPerJobNotificationEnabled({ PI_NOTIFY_PER_JOB: "" })).toBe(
-        false,
-      );
+      expect(
+        isPerJobNotificationEnabled({ PI_SUBAGENT_NOTIFY_PER_JOB: "" }),
+      ).toBe(false);
     });
 
     test("value '1' returns true (opt-in)", () => {
-      expect(isPerJobNotificationEnabled({ PI_NOTIFY_PER_JOB: "1" })).toBe(
-        true,
-      );
+      expect(
+        isPerJobNotificationEnabled({ PI_SUBAGENT_NOTIFY_PER_JOB: "1" }),
+      ).toBe(true);
     });
 
     test("value '0' returns false", () => {
-      expect(isPerJobNotificationEnabled({ PI_NOTIFY_PER_JOB: "0" })).toBe(
-        false,
-      );
+      expect(
+        isPerJobNotificationEnabled({ PI_SUBAGENT_NOTIFY_PER_JOB: "0" }),
+      ).toBe(false);
     });
 
     test("invalid value returns false", () => {
       expect(
-        isPerJobNotificationEnabled({ PI_NOTIFY_PER_JOB: "invalid" }),
+        isPerJobNotificationEnabled({ PI_SUBAGENT_NOTIFY_PER_JOB: "invalid" }),
       ).toBe(false);
-      expect(isPerJobNotificationEnabled({ PI_NOTIFY_PER_JOB: "yes" })).toBe(
-        false,
-      );
-      expect(isPerJobNotificationEnabled({ PI_NOTIFY_PER_JOB: "true" })).toBe(
-        false,
-      );
-      expect(isPerJobNotificationEnabled({ PI_NOTIFY_PER_JOB: "2" })).toBe(
-        false,
-      );
+      expect(
+        isPerJobNotificationEnabled({ PI_SUBAGENT_NOTIFY_PER_JOB: "yes" }),
+      ).toBe(false);
+      expect(
+        isPerJobNotificationEnabled({ PI_SUBAGENT_NOTIFY_PER_JOB: "true" }),
+      ).toBe(false);
+      expect(
+        isPerJobNotificationEnabled({ PI_SUBAGENT_NOTIFY_PER_JOB: "2" }),
+      ).toBe(false);
     });
 
     test("undefined env object returns false", () => {

@@ -9,7 +9,7 @@ declare namespace NodeJS {
     PI_SUBAGENT_AGENT_END_GRACE_MS?: string;
     PI_SUBAGENT_MAX_STDERR_BYTES?: string;
     PI_SUBAGENT_DEBUG_ENABLED?: string;
-    PI_DESKTOP_NOTIFICATIONS?: string;
-    PI_NOTIFY_PER_JOB?: string;
+    PI_SUBAGENT_DESKTOP_NOTIFICATIONS?: string;
+    PI_SUBAGENT_NOTIFY_PER_JOB?: string;
   }
 }

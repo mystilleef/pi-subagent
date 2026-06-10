@@ -31,8 +31,9 @@ const ORIGINAL_AGENT_END_GRACE_MS = process.env.PI_SUBAGENT_AGENT_END_GRACE_MS;
 const ORIGINAL_MAX_STDERR_BYTES = process.env.PI_SUBAGENT_MAX_STDERR_BYTES;
 const ORIGINAL_MAX_DEPTH = process.env.PI_SUBAGENT_MAX_DEPTH;
 const ORIGINAL_DEBUG_ENABLED = process.env.PI_SUBAGENT_DEBUG_ENABLED;
-const ORIGINAL_DESKTOP_NOTIFICATIONS = process.env.PI_DESKTOP_NOTIFICATIONS;
-const ORIGINAL_NOTIFY_PER_JOB = process.env.PI_NOTIFY_PER_JOB;
+const ORIGINAL_DESKTOP_NOTIFICATIONS =
+  process.env.PI_SUBAGENT_DESKTOP_NOTIFICATIONS;
+const ORIGINAL_NOTIFY_PER_JOB = process.env.PI_SUBAGENT_NOTIFY_PER_JOB;
 
 let tempDirs: string[] = [];
 
@@ -258,7 +259,7 @@ export function setupHooks() {
   beforeEach(() => {
     tempDirs = [];
     process.env.PI_SUBAGENT_DEPTH = "0";
-    process.env.PI_DESKTOP_NOTIFICATIONS = "0";
+    process.env.PI_SUBAGENT_DESKTOP_NOTIFICATIONS = "0";
     delete process.env.PI_SUBAGENT_DEBUG_ENABLED;
   });
   afterEach(async () => {
@@ -285,11 +286,13 @@ export function setupHooks() {
       delete process.env.PI_SUBAGENT_DEBUG_ENABLED;
     else process.env.PI_SUBAGENT_DEBUG_ENABLED = ORIGINAL_DEBUG_ENABLED;
     if (ORIGINAL_DESKTOP_NOTIFICATIONS === undefined)
-      delete process.env.PI_DESKTOP_NOTIFICATIONS;
-    else process.env.PI_DESKTOP_NOTIFICATIONS = ORIGINAL_DESKTOP_NOTIFICATIONS;
+      delete process.env.PI_SUBAGENT_DESKTOP_NOTIFICATIONS;
+    else
+      process.env.PI_SUBAGENT_DESKTOP_NOTIFICATIONS =
+        ORIGINAL_DESKTOP_NOTIFICATIONS;
     if (ORIGINAL_NOTIFY_PER_JOB === undefined)
-      delete process.env.PI_NOTIFY_PER_JOB;
-    else process.env.PI_NOTIFY_PER_JOB = ORIGINAL_NOTIFY_PER_JOB;
+      delete process.env.PI_SUBAGENT_NOTIFY_PER_JOB;
+    else process.env.PI_SUBAGENT_NOTIFY_PER_JOB = ORIGINAL_NOTIFY_PER_JOB;
     resetNotifySendCache();
     resetDefaultDeliveryDeps();
     await Promise.all(

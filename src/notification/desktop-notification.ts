@@ -27,7 +27,8 @@ export function isDesktopNotificationsEnabled(
   env?: Partial<NodeJS.ProcessEnv>,
 ): boolean {
   const raw =
-    env?.PI_DESKTOP_NOTIFICATIONS ?? process.env.PI_DESKTOP_NOTIFICATIONS;
+    env?.PI_SUBAGENT_DESKTOP_NOTIFICATIONS ??
+    process.env.PI_SUBAGENT_DESKTOP_NOTIFICATIONS;
   if (raw === undefined || raw === "") return true;
   return raw !== "0";
 }
@@ -35,7 +36,8 @@ export function isDesktopNotificationsEnabled(
 export function isPerJobNotificationEnabled(
   env?: Partial<NodeJS.ProcessEnv>,
 ): boolean {
-  const raw = env?.PI_NOTIFY_PER_JOB ?? process.env.PI_NOTIFY_PER_JOB;
+  const raw =
+    env?.PI_SUBAGENT_NOTIFY_PER_JOB ?? process.env.PI_SUBAGENT_NOTIFY_PER_JOB;
   return raw === "1";
 }
 
