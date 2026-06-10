@@ -20,7 +20,10 @@ import {
   resetDefaultDeliveryDeps,
   resetNotifySendCache,
 } from "../src/notification/delivery.js";
-import { listRunJobs } from "../src/orchestration/run-registry.js";
+import {
+  listRunJobs,
+  resetRunRegistry,
+} from "../src/orchestration/run-registry.js";
 import type { SubagentDetails } from "../src/shared/types.js";
 
 const ORIGINAL_ARGV_1 = process.argv[1] ?? "";
@@ -258,6 +261,7 @@ export function getSubagentTool(overrides?: {
 export function setupHooks() {
   beforeEach(() => {
     tempDirs = [];
+    resetRunRegistry();
     process.env.PI_SUBAGENT_DEPTH = "0";
     process.env.PI_SUBAGENT_DESKTOP_NOTIFICATIONS = "0";
     delete process.env.PI_SUBAGENT_DEBUG_ENABLED;

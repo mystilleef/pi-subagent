@@ -589,8 +589,12 @@ describe("delivery.ts", () => {
 
     test("uses defaultCommandExists when deps.commandExists absent", async () => {
       resetNotifySendCache();
+      const tmpDir = mkdtempSync(join(tmpdir(), "notify-test-"));
+      const fakeNotifySend = join(tmpDir, "notify-send");
+      writeFileSync(fakeNotifySend, "#!/bin/sh\nexit 0\n");
+      chmodSync(fakeNotifySend, 0o755);
       const originalPath = process.env.PATH;
-      process.env.PATH = "/usr/bin";
+      process.env.PATH = tmpDir;
       let spawned = false;
       try {
         await deliverLinuxNotification(makeRequest(), {
@@ -604,6 +608,7 @@ describe("delivery.ts", () => {
       } finally {
         if (originalPath !== undefined) process.env.PATH = originalPath;
         else delete process.env.PATH;
+        rmSync(tmpDir, { recursive: true, force: true });
       }
     });
   });
