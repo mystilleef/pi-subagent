@@ -12,6 +12,12 @@ import type {
   ThinkingLevel,
 } from "../agent/agents.js";
 import { runSingleAgent, SubagentAbortError } from "../child/process.js";
+import { deliverNotification } from "../notification/delivery.js";
+import {
+  buildNotificationRequest,
+  isDesktopNotificationsEnabled,
+  isPerJobNotificationEnabled,
+} from "../notification/desktop-notification.js";
 import { formatSubagentResultForParent } from "../output/summary.js";
 import {
   cancelProgressState,
@@ -141,11 +147,22 @@ function sendSubagentResultMessage(
   });
 }
 
+function deliverDesktopCompletionNotification(
+  state: NonNullable<ReturnType<typeof getProgressState>>,
+): void {
+  if (state.status === "cancelled") return;
+  const request = buildNotificationRequest(state);
+  deliverNotification(request).catch(() => {});
+}
+
 export function emitCompletionAlert(
   state: ReturnType<typeof getProgressState>,
 ): void {
   if (!state) return;
   if (state.status === "cancelled") return;
+  if (isDesktopNotificationsEnabled() && !isPerJobNotificationEnabled()) {
+    deliverDesktopCompletionNotification(state);
+  }
   const tty = (process.stdout as { isTTY?: boolean }).isTTY;
   if (!tty) return;
   process.stdout.write("\x07");
@@ -281,13 +298,19 @@ async function runSubagentLifecycle(
     clearInterval(timerTick);
     requestProgressRender();
     removeRunJob(lc.requestId);
-    if (listRunJobs().length === 0) {
-      const state = getProgressState(lc.requestId);
-      if (state) {
-        emitCompletionAlert(state);
-      }
-    }
+    const state = getProgressState(lc.requestId);
+    if (state) deliverLifecycleCompletionNotification(state);
   }
+}
+
+function deliverLifecycleCompletionNotification(
+  state: NonNullable<ReturnType<typeof getProgressState>>,
+): void {
+  if (isDesktopNotificationsEnabled() && isPerJobNotificationEnabled()) {
+    deliverDesktopCompletionNotification(state);
+    return;
+  }
+  if (listRunJobs().length === 0) emitCompletionAlert(state);
 }
 
 type StartJobResult =

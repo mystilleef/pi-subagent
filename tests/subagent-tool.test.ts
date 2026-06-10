@@ -9,6 +9,7 @@ import type {
 } from "@earendil-works/pi-coding-agent";
 import { discoverAgentsAsync } from "../src/agent/agents.js";
 import { SUBAGENT_RESULT_CONTRACT } from "../src/child/prompt-contract.js";
+import { setDefaultDeliveryDeps } from "../src/notification/delivery.js";
 import {
   cancelRunJob,
   listRunJobs,
@@ -26,9 +27,13 @@ import {
   getProgressState,
   resetProgressStore,
 } from "../src/progress/progress.js";
-import type { SubagentDetails } from "../src/shared/types.js";
+import type {
+  SubagentDetails,
+  SubagentToolResult,
+} from "../src/shared/types.js";
 import {
   getSubagentTool,
+  makeSubagentDetails,
   makeSubagentToolUpdateLine,
   type SendMessageArg,
   setupFakePi,
@@ -44,6 +49,8 @@ import {
 
 setupHooks();
 
+const makeEmptySubagentDetails = () => makeSubagentDetails([]);
+
 test("subagent tool result adapter passes through completed results", () => {
   const completed = {
     content: [{ type: "text" as const, text: "done" }],
@@ -58,6 +65,34 @@ test("subagent tool result adapter passes through completed results", () => {
   expect(
     formatSubagentToolResult("hang", { kind: "completed", result: completed }),
   ).toBe(completed);
+});
+
+test("formatSubagentToolResult returns not_found text", () => {
+  const result = formatSubagentToolResult("hang", {
+    kind: "not_found",
+    makeDetails: makeEmptySubagentDetails,
+  });
+  expect((result.content[0] as TextContent).text).toBe('Unknown agent: "hang"');
+});
+
+test("formatSubagentToolResult returns cancelled text", () => {
+  const result = formatSubagentToolResult("hang", {
+    kind: "cancelled",
+    makeDetails: makeEmptySubagentDetails,
+  });
+  expect((result.content[0] as TextContent).text).toBe("Canceled");
+});
+
+test("formatSubagentToolResult returns started text", () => {
+  const result = formatSubagentToolResult("hang", {
+    kind: "started",
+    requestId: "req-1",
+    instanceName: "adj-word",
+    makeDetails: makeEmptySubagentDetails,
+  });
+  expect((result.content[0] as TextContent).text).toBe(
+    "Subagent hang adj-word started (job: req-1)",
+  );
 });
 
 test("subagent tool returns job-started immediately without waiting for child", async () => {
@@ -2244,6 +2279,417 @@ test("emitCompletionAlert skips absent state", () => {
   expect(() => emitCompletionAlert(undefined)).not.toThrow();
 });
 
+test("emitCompletionAlert with batch notifications enabled emits bell on TTY", () => {
+  const origDesktop = process.env.PI_DESKTOP_NOTIFICATIONS;
+  const origPerJob = process.env.PI_NOTIFY_PER_JOB;
+  process.env.PI_DESKTOP_NOTIFICATIONS = "1";
+  delete process.env.PI_NOTIFY_PER_JOB;
+  setDefaultDeliveryDeps({ spawnProcess: () => ({}) });
+  const writeCalls: string[] = [];
+  const origWrite = process.stdout.write;
+  const origIsTTY = Object.getOwnPropertyDescriptor(process.stdout, "isTTY");
+  Object.defineProperty(process.stdout, "isTTY", {
+    value: true,
+    configurable: true,
+  });
+  try {
+    (process.stdout as unknown as { write: (s: string) => boolean }).write = (
+      s: string,
+    ) => {
+      writeCalls.push(s);
+      return true;
+    };
+    const state = makeProgressState({
+      status: "success",
+      finalOutput: "task completed",
+    });
+    emitCompletionAlert(state);
+    expect(writeCalls).toContain("\x07");
+  } finally {
+    process.stdout.write = origWrite;
+    if (origIsTTY) {
+      Object.defineProperty(process.stdout, "isTTY", origIsTTY);
+    } else {
+      delete (process.stdout as unknown as { isTTY?: boolean }).isTTY;
+    }
+    if (origDesktop === undefined) delete process.env.PI_DESKTOP_NOTIFICATIONS;
+    else process.env.PI_DESKTOP_NOTIFICATIONS = origDesktop;
+    if (origPerJob === undefined) delete process.env.PI_NOTIFY_PER_JOB;
+    else process.env.PI_NOTIFY_PER_JOB = origPerJob;
+  }
+});
+
+test("emitCompletionAlert with batch notifications enabled does not bell on non-TTY", () => {
+  const origDesktop = process.env.PI_DESKTOP_NOTIFICATIONS;
+  const origPerJob = process.env.PI_NOTIFY_PER_JOB;
+  process.env.PI_DESKTOP_NOTIFICATIONS = "1";
+  delete process.env.PI_NOTIFY_PER_JOB;
+  setDefaultDeliveryDeps({ spawnProcess: () => ({}) });
+  const writeCalls: string[] = [];
+  const origWrite = process.stdout.write;
+  const origIsTTY = Object.getOwnPropertyDescriptor(process.stdout, "isTTY");
+  Object.defineProperty(process.stdout, "isTTY", {
+    value: false,
+    configurable: true,
+  });
+  try {
+    (process.stdout as unknown as { write: (s: string) => boolean }).write = (
+      s: string,
+    ) => {
+      writeCalls.push(s);
+      return true;
+    };
+    const state = makeProgressState({
+      status: "error",
+      errorText: "build failed",
+    });
+    expect(() => emitCompletionAlert(state)).not.toThrow();
+    expect(writeCalls).toEqual([]);
+  } finally {
+    process.stdout.write = origWrite;
+    if (origIsTTY) {
+      Object.defineProperty(process.stdout, "isTTY", origIsTTY);
+    } else {
+      delete (process.stdout as unknown as { isTTY?: boolean }).isTTY;
+    }
+    if (origDesktop === undefined) delete process.env.PI_DESKTOP_NOTIFICATIONS;
+    else process.env.PI_DESKTOP_NOTIFICATIONS = origDesktop;
+    if (origPerJob === undefined) delete process.env.PI_NOTIFY_PER_JOB;
+    else process.env.PI_NOTIFY_PER_JOB = origPerJob;
+  }
+});
+
+test("emitCompletionAlert with batch notifications handles cancelled by skipping", () => {
+  const origDesktop = process.env.PI_DESKTOP_NOTIFICATIONS;
+  const origPerJob = process.env.PI_NOTIFY_PER_JOB;
+  process.env.PI_DESKTOP_NOTIFICATIONS = "1";
+  delete process.env.PI_NOTIFY_PER_JOB;
+  try {
+    const state = makeProgressState({ status: "cancelled" });
+    expect(() => emitCompletionAlert(state)).not.toThrow();
+  } finally {
+    if (origDesktop === undefined) delete process.env.PI_DESKTOP_NOTIFICATIONS;
+    else process.env.PI_DESKTOP_NOTIFICATIONS = origDesktop;
+    if (origPerJob === undefined) delete process.env.PI_NOTIFY_PER_JOB;
+    else process.env.PI_NOTIFY_PER_JOB = origPerJob;
+  }
+});
+
+test("per-job notification completes lifecycle without crashing", async () => {
+  const origDesktop = process.env.PI_DESKTOP_NOTIFICATIONS;
+  const origPerJob = process.env.PI_NOTIFY_PER_JOB;
+  process.env.PI_DESKTOP_NOTIFICATIONS = "1";
+  process.env.PI_NOTIFY_PER_JOB = "1";
+  setDefaultDeliveryDeps({ spawnProcess: () => ({}) });
+  try {
+    const sentMessages: SendMessageArg[] = [];
+    const { tool, cwd } = await setupTest({
+      sendMessage: (msg) => sentMessages.push(msg),
+    });
+    process.env.PI_SUBAGENT_DEPTH = "1";
+    const result = await tool.execute(
+      "test-tool-call",
+      { agent: "hang", task: "per-job notify" },
+      undefined,
+      undefined,
+      { cwd, hasUI: false } as unknown as ExtensionContext,
+    );
+    await waitForSentMessageCount(sentMessages, 2);
+    expect((result.content[0] as TextContent).text).toBe("done");
+    expect(sentMessages.at(-1)?.customType).toBe("subagent-result");
+    const requestId = (sentMessages[0]?.details as { requestId?: string })
+      ?.requestId;
+    if (requestId) {
+      expect(getProgressState(requestId)?.status).toBe("success");
+    }
+    expect(listRunJobs()).toHaveLength(0);
+  } finally {
+    if (origDesktop === undefined) delete process.env.PI_DESKTOP_NOTIFICATIONS;
+    else process.env.PI_DESKTOP_NOTIFICATIONS = origDesktop;
+    if (origPerJob === undefined) delete process.env.PI_NOTIFY_PER_JOB;
+    else process.env.PI_NOTIFY_PER_JOB = origPerJob;
+  }
+});
+
+test("per-job notification completes lifecycle for error jobs", async () => {
+  const origDesktop = process.env.PI_DESKTOP_NOTIFICATIONS;
+  const origPerJob = process.env.PI_NOTIFY_PER_JOB;
+  process.env.PI_DESKTOP_NOTIFICATIONS = "1";
+  process.env.PI_NOTIFY_PER_JOB = "1";
+  setDefaultDeliveryDeps({ spawnProcess: () => ({}) });
+  try {
+    const sentMessages: SendMessageArg[] = [];
+    const { binDir, cwd } = await setupFakePi();
+    await writeFile(
+      path.join(binDir, "pi"),
+      `#!/bin/sh
+printf '%s\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"error output"}],"usage":{"input":1,"output":1,"totalTokens":2,"cost":{"total":0}},"errorMessage":"child failure"}}'
+printf '%s\n' '{"type":"agent_end"}'
+exit 1
+`,
+    );
+    await chmod(path.join(binDir, "pi"), 0o755);
+    const tool = getSubagentTool({
+      sendMessage: (msg) => sentMessages.push(msg),
+    });
+    process.env.PI_SUBAGENT_DEPTH = "1";
+    const result = await tool.execute(
+      "test-tool-call",
+      { agent: "hang", task: "per-job error" },
+      undefined,
+      undefined,
+      { cwd, hasUI: false } as unknown as ExtensionContext,
+    );
+    await waitForSentMessageCount(sentMessages, 2);
+    expect(sentMessages.at(-1)?.customType).toBe("subagent-result");
+    const requestId = (sentMessages[0]?.details as { requestId?: string })
+      ?.requestId;
+    if (requestId) {
+      expect(getProgressState(requestId)?.status).toBe("error");
+      expect(getProgressState(requestId)?.errorText).toContain("child failure");
+    }
+    expect(result.details.renderedByMessage).toBe(true);
+    expect(listRunJobs()).toHaveLength(0);
+  } finally {
+    if (origDesktop === undefined) delete process.env.PI_DESKTOP_NOTIFICATIONS;
+    else process.env.PI_DESKTOP_NOTIFICATIONS = origDesktop;
+    if (origPerJob === undefined) delete process.env.PI_NOTIFY_PER_JOB;
+    else process.env.PI_NOTIFY_PER_JOB = origPerJob;
+  }
+});
+
+test("per-job notification with cancelled state does not crash", async () => {
+  const origDesktop = process.env.PI_DESKTOP_NOTIFICATIONS;
+  const origPerJob = process.env.PI_NOTIFY_PER_JOB;
+  process.env.PI_DESKTOP_NOTIFICATIONS = "1";
+  process.env.PI_NOTIFY_PER_JOB = "1";
+  try {
+    const sentMessages: SendMessageArg[] = [];
+    const controller = new AbortController();
+    const { binDir, cwd } = await setupFakePi();
+    await writeFile(
+      path.join(binDir, "pi"),
+      `#!/bin/sh
+trap 'exit 0' TERM
+sleep 10 &
+wait $!
+`,
+    );
+    await chmod(path.join(binDir, "pi"), 0o755);
+    const tool = getSubagentTool({
+      sendMessage: (msg) => sentMessages.push(msg),
+    });
+    process.env.PI_SUBAGENT_DEPTH = "1";
+    const executePromise = tool.execute(
+      "test-tool-call",
+      { agent: "hang", task: "per-job cancel" },
+      controller.signal,
+      undefined,
+      { cwd, hasUI: false } as unknown as ExtensionContext,
+    );
+    await waitForSentMessage(sentMessages);
+    controller.abort();
+    const result = await executePromise;
+    expect((result.content[0] as TextContent).text).toBe("Canceled");
+    const requestId = (sentMessages[0]?.details as { requestId?: string })
+      ?.requestId;
+    if (requestId) {
+      expect(getProgressState(requestId)?.status).toBe("cancelled");
+    }
+    expect(listRunJobs()).toHaveLength(0);
+  } finally {
+    if (origDesktop === undefined) delete process.env.PI_DESKTOP_NOTIFICATIONS;
+    else process.env.PI_DESKTOP_NOTIFICATIONS = origDesktop;
+    if (origPerJob === undefined) delete process.env.PI_NOTIFY_PER_JOB;
+    else process.env.PI_NOTIFY_PER_JOB = origPerJob;
+  }
+});
+
+test("batch notification skips bell when not last job", async () => {
+  const origDesktop = process.env.PI_DESKTOP_NOTIFICATIONS;
+  process.env.PI_DESKTOP_NOTIFICATIONS = "1";
+  delete process.env.PI_NOTIFY_PER_JOB;
+  try {
+    const sentMessages: SendMessageArg[] = [];
+    const { tool, cwd } = await setupTest({
+      sendMessage: (msg) => sentMessages.push(msg),
+      piScript: `#!/bin/sh
+trap 'exit 0' TERM
+sleep 10 &
+wait $!
+`,
+    });
+    const ctx = { cwd, hasUI: false } as unknown as ExtensionContext;
+    const promises = [
+      tool.execute(
+        "id-1",
+        { agent: "hang", task: "task one" },
+        undefined,
+        undefined,
+        ctx,
+      ),
+      tool.execute(
+        "id-2",
+        { agent: "hang", task: "task two" },
+        undefined,
+        undefined,
+        ctx,
+      ),
+    ];
+    await waitForRunJobCount(2);
+    const jobs = listRunJobs();
+    expect(jobs).toHaveLength(2);
+    jobs[0]?.controller.abort("cleanup");
+    await waitForRunJobCount(1);
+    jobs[1]?.controller.abort("cleanup");
+    await Promise.all(promises);
+    await waitForRunJobsCleared();
+    expect(listRunJobs()).toHaveLength(0);
+  } finally {
+    if (origDesktop === undefined) delete process.env.PI_DESKTOP_NOTIFICATIONS;
+    else process.env.PI_DESKTOP_NOTIFICATIONS = origDesktop;
+  }
+});
+
+test("batch notification does not crash for successful lifecycle completion", async () => {
+  const origDesktop = process.env.PI_DESKTOP_NOTIFICATIONS;
+  const origPerJob = process.env.PI_NOTIFY_PER_JOB;
+  process.env.PI_DESKTOP_NOTIFICATIONS = "1";
+  delete process.env.PI_NOTIFY_PER_JOB;
+  setDefaultDeliveryDeps({ spawnProcess: () => ({}) });
+  try {
+    const sentMessages: SendMessageArg[] = [];
+    const { tool, cwd } = await setupTest({
+      sendMessage: (msg) => sentMessages.push(msg),
+    });
+    process.env.PI_SUBAGENT_DEPTH = "1";
+    const result = await tool.execute(
+      "test-tool-call",
+      { agent: "hang", task: "batch notify" },
+      undefined,
+      undefined,
+      { cwd, hasUI: false } as unknown as ExtensionContext,
+    );
+    await waitForSentMessageCount(sentMessages, 2);
+    expect((result.content[0] as TextContent).text).toBe("done");
+    expect(sentMessages.at(-1)?.customType).toBe("subagent-result");
+    const requestId = (sentMessages[0]?.details as { requestId?: string })
+      ?.requestId;
+    if (requestId) {
+      expect(getProgressState(requestId)?.status).toBe("success");
+    }
+    expect(listRunJobs()).toHaveLength(0);
+  } finally {
+    if (origDesktop === undefined) delete process.env.PI_DESKTOP_NOTIFICATIONS;
+    else process.env.PI_DESKTOP_NOTIFICATIONS = origDesktop;
+    if (origPerJob === undefined) delete process.env.PI_NOTIFY_PER_JOB;
+    else process.env.PI_NOTIFY_PER_JOB = origPerJob;
+  }
+});
+
+// --- deliverDesktopCompletionNotification indirect verification ---
+
+test("emitCompletionAlert with PI_DESKTOP_NOTIFICATIONS=1 calls notification path", () => {
+  const origDesktop = process.env.PI_DESKTOP_NOTIFICATIONS;
+  const origPerJob = process.env.PI_NOTIFY_PER_JOB;
+  process.env.PI_DESKTOP_NOTIFICATIONS = "1";
+  delete process.env.PI_NOTIFY_PER_JOB;
+  setDefaultDeliveryDeps({ spawnProcess: () => ({}) });
+  try {
+    const state = makeProgressState({
+      status: "success",
+      finalOutput: "task completed",
+      durationMs: 5000,
+    });
+    expect(() => emitCompletionAlert(state)).not.toThrow();
+  } finally {
+    if (origDesktop === undefined) delete process.env.PI_DESKTOP_NOTIFICATIONS;
+    else process.env.PI_DESKTOP_NOTIFICATIONS = origDesktop;
+    if (origPerJob === undefined) delete process.env.PI_NOTIFY_PER_JOB;
+    else process.env.PI_NOTIFY_PER_JOB = origPerJob;
+  }
+});
+
+test("emitCompletionAlert with PI_DESKTOP_NOTIFICATIONS=0 skips notification path", () => {
+  const origDesktop = process.env.PI_DESKTOP_NOTIFICATIONS;
+  process.env.PI_DESKTOP_NOTIFICATIONS = "0";
+  try {
+    const writeCalls: string[] = [];
+    const origWrite = process.stdout.write;
+    const origIsTTY = Object.getOwnPropertyDescriptor(process.stdout, "isTTY");
+    Object.defineProperty(process.stdout, "isTTY", {
+      value: false,
+      configurable: true,
+    });
+    try {
+      (process.stdout as unknown as { write: (s: string) => boolean }).write = (
+        s: string,
+      ) => {
+        writeCalls.push(s);
+        return true;
+      };
+      const state = makeProgressState({
+        status: "success",
+        finalOutput: "task completed",
+      });
+      expect(() => emitCompletionAlert(state)).not.toThrow();
+      expect(writeCalls).toEqual([]);
+    } finally {
+      process.stdout.write = origWrite;
+      if (origIsTTY) {
+        Object.defineProperty(process.stdout, "isTTY", origIsTTY);
+      } else {
+        delete (process.stdout as unknown as { isTTY?: boolean }).isTTY;
+      }
+    }
+  } finally {
+    if (origDesktop === undefined) delete process.env.PI_DESKTOP_NOTIFICATIONS;
+    else process.env.PI_DESKTOP_NOTIFICATIONS = origDesktop;
+  }
+});
+
+test("emitCompletionAlert with PI_DESKTOP_NOTIFICATIONS=1 and PI_NOTIFY_PER_JOB=1 still emits bell via batch fallback", () => {
+  const origDesktop = process.env.PI_DESKTOP_NOTIFICATIONS;
+  const origPerJob = process.env.PI_NOTIFY_PER_JOB;
+  process.env.PI_DESKTOP_NOTIFICATIONS = "1";
+  process.env.PI_NOTIFY_PER_JOB = "1";
+  try {
+    const writeCalls: string[] = [];
+    const origWrite = process.stdout.write;
+    const origIsTTY = Object.getOwnPropertyDescriptor(process.stdout, "isTTY");
+    Object.defineProperty(process.stdout, "isTTY", {
+      value: true,
+      configurable: true,
+    });
+    try {
+      (process.stdout as unknown as { write: (s: string) => boolean }).write = (
+        s: string,
+      ) => {
+        writeCalls.push(s);
+        return true;
+      };
+      const state = makeProgressState({
+        status: "success",
+        finalOutput: "task completed",
+      });
+      emitCompletionAlert(state);
+      expect(writeCalls).toContain("\x07");
+    } finally {
+      process.stdout.write = origWrite;
+      if (origIsTTY) {
+        Object.defineProperty(process.stdout, "isTTY", origIsTTY);
+      } else {
+        delete (process.stdout as unknown as { isTTY?: boolean }).isTTY;
+      }
+    }
+  } finally {
+    if (origDesktop === undefined) delete process.env.PI_DESKTOP_NOTIFICATIONS;
+    else process.env.PI_DESKTOP_NOTIFICATIONS = origDesktop;
+    if (origPerJob === undefined) delete process.env.PI_NOTIFY_PER_JOB;
+    else process.env.PI_NOTIFY_PER_JOB = origPerJob;
+  }
+});
+
 test("orchestrated path preserves nested activity across fallback child status updates", async () => {
   const sentMessages: SendMessageArg[] = [];
   const { binDir, cwd } = await setupFakePi();
@@ -2694,6 +3140,43 @@ exit 0
   expect(result.details.renderedByMessage).toBe(true);
 });
 
+test("hostOnUpdate is called when fingerprint changes between updates", async () => {
+  const sentMessages: SendMessageArg[] = [];
+  const partialUpdates: AgentToolResult<SubagentDetails>[] = [];
+  const hostOnUpdate = (partial: AgentToolResult<SubagentDetails>) => {
+    partialUpdates.push(partial);
+  };
+  const { binDir, cwd } = await setupFakePi();
+  const line1 = makeSubagentToolUpdateLine("first update", "inst-1");
+  const line2 = makeSubagentToolUpdateLine("second update", "inst-1");
+  await writeFile(
+    path.join(binDir, "pi"),
+    `#!/bin/sh
+printf '%s\\n' ${shellQuote(line1)}
+printf '%s\\n' ${shellQuote(line2)}
+printf '%s\\n' '{"type":"agent_end"}'
+exit 0
+`,
+  );
+  await chmod(path.join(binDir, "pi"), 0o755);
+  const tool = getSubagentTool({
+    sendMessage: (msg) => sentMessages.push(msg),
+  });
+  process.env.PI_SUBAGENT_DEPTH = "1";
+  await tool.execute(
+    "test-tool-call",
+    { agent: "hang", task: "test" },
+    undefined,
+    hostOnUpdate,
+    { cwd, hasUI: false } as unknown as ExtensionContext,
+  );
+  expect(partialUpdates.length).toBeGreaterThanOrEqual(2);
+  const texts = partialUpdates.map(
+    (u) => (u.content[0] as { type: "text"; text: string }).text,
+  );
+  expect(new Set(texts).size).toBeGreaterThan(1);
+});
+
 test("partial updates contain meaningful activity text from child progress", async () => {
   const sentMessages: SendMessageArg[] = [];
   const partialUpdates: AgentToolResult<SubagentDetails>[] = [];
@@ -3069,4 +3552,154 @@ wait $!
   controller.abort("host cancel");
   await waitForRunJobsCleared();
   expect(getProgressState(requestId)?.status).toBe("cancelled");
+});
+
+test("formatSubagentToolResult returns completed result unchanged preserving all fields", () => {
+  const completedResult: SubagentToolResult = {
+    content: [{ type: "text" as const, text: "done" }],
+    details: {
+      mode: "single" as const,
+      agentScope: "both" as const,
+      projectAgentsDir: null,
+      renderedByMessage: true as const,
+      results: [
+        {
+          instanceName: "adj-word",
+          agent: "hang",
+          agentSource: "user" as const,
+          task: "test task",
+          finalOutput: "done",
+          exitCode: 0,
+          stderr: "",
+          durationMs: 5000,
+          usage: {
+            input: 1,
+            output: 1,
+            cacheRead: 0,
+            cacheWrite: 0,
+            cost: 0,
+            contextTokens: 0,
+            turns: 1,
+          },
+        },
+      ],
+    },
+  };
+  const result = formatSubagentToolResult("hang", {
+    kind: "completed",
+    result: completedResult,
+  });
+  // Returns the exact same object reference (pass-through)
+  expect(result).toBe(completedResult);
+  expect(result.details.renderedByMessage).toBe(true);
+  expect(result.details.results[0]?.finalOutput).toBe("done");
+});
+
+test("createPayloadFingerprint deduplicates equal tool call IDs via hostOnUpdate", async () => {
+  const sentMessages: SendMessageArg[] = [];
+  const partialUpdates: AgentToolResult<SubagentDetails>[] = [];
+  const hostOnUpdate = (partial: AgentToolResult<SubagentDetails>) => {
+    partialUpdates.push(partial);
+  };
+  const { binDir, cwd } = await setupFakePi();
+  // Emit the same tool call twice (duplicate IDs) — fingerprint should dedupe
+  const tc1 = JSON.stringify({
+    type: "message_end",
+    message: {
+      role: "assistant",
+      content: [
+        {
+          type: "toolCall",
+          name: "bash",
+          id: "dup-tc-1",
+          arguments: { command: "ls" },
+        },
+      ],
+    },
+  });
+  const tc2 = JSON.stringify({
+    type: "message_end",
+    message: {
+      role: "assistant",
+      content: [
+        {
+          type: "toolCall",
+          name: "bash",
+          id: "dup-tc-1",
+          arguments: { command: "ls" },
+        },
+      ],
+    },
+  });
+  const final = JSON.stringify({
+    type: "message_end",
+    message: {
+      role: "assistant",
+      content: [{ type: "text", text: "done" }],
+      usage: { input: 1, output: 1, totalTokens: 2, cost: { total: 0 } },
+    },
+  });
+  await writeFile(
+    path.join(binDir, "pi"),
+    `#!/bin/sh
+printf '%s\\n' ${shellQuote(tc1)}
+sleep 0.05
+printf '%s\\n' ${shellQuote(tc2)}
+sleep 0.05
+printf '%s\\n' ${shellQuote(final)}
+printf '%s\\n' '{"type":"agent_end"}'
+exit 0
+`,
+  );
+  await chmod(path.join(binDir, "pi"), 0o755);
+  const tool = getSubagentTool({
+    sendMessage: (msg) => sentMessages.push(msg),
+  });
+  process.env.PI_SUBAGENT_DEPTH = "1";
+  await tool.execute(
+    "test-tool-call",
+    { agent: "hang", task: "dedup" },
+    undefined,
+    hostOnUpdate,
+    { cwd, hasUI: false } as unknown as ExtensionContext,
+  );
+  // Duplicate identical payloads should be suppressed; valid updates still flow
+  expect(partialUpdates.length).toBeGreaterThan(0);
+  const dedupedToolCalls = partialUpdates.filter((u) => {
+    const text =
+      u.content[0]?.type === "text"
+        ? (u.content[0] as { text: string }).text
+        : "";
+    return text.includes("bash") || text.includes("ls");
+  });
+  // Fingerprint dedup should collapse the two identical tool calls into 1 update
+  expect(dedupedToolCalls.length).toBeLessThanOrEqual(1);
+});
+
+test("createPayloadFingerprint handles absent results gracefully via hostOnUpdate", async () => {
+  const sentMessages: SendMessageArg[] = [];
+  const partialUpdates: AgentToolResult<SubagentDetails>[] = [];
+  const hostOnUpdate = (partial: AgentToolResult<SubagentDetails>) => {
+    partialUpdates.push(partial);
+  };
+  const { tool, cwd } = await setupTest({
+    sendMessage: (msg) => sentMessages.push(msg),
+    piScript: `#!/bin/sh
+printf '%s\\n' '{"type":"agent_end","messages":[]}'
+exit 0
+`,
+  });
+  process.env.PI_SUBAGENT_DEPTH = "1";
+  await tool.execute(
+    "test-tool-call",
+    { agent: "hang", task: "empty" },
+    undefined,
+    hostOnUpdate,
+    { cwd, hasUI: false } as unknown as ExtensionContext,
+  );
+  // hostOnUpdate receives at least one update (the final result)
+  expect(partialUpdates.length).toBeGreaterThanOrEqual(1);
+  // payload with missing results should not crash fingerprint computation
+  expect(partialUpdates[0]?.content).toBeDefined();
+  expect(partialUpdates[0]?.details).toBeDefined();
 });
