@@ -29,6 +29,7 @@ import {
 } from "../shared/types.js";
 import {
   detectMessageError,
+  findLastAssistantTextMessage,
   getPiInvocation,
   getSubagentDepth,
   getSubagentRuntimeLimits,
@@ -445,18 +446,7 @@ async function cleanupPromptSetupResult(
 }
 
 function findRecentMessagesAnchor(messages: Message[]): number {
-  for (let i = messages.length - 1; i >= 0; i--) {
-    const msg = messages[i];
-    if (
-      msg?.role === "assistant" &&
-      msg.content.some(
-        (c) => c.type === "text" && (c as { text?: string }).text?.trim(),
-      )
-    ) {
-      return i;
-    }
-  }
-  return -1;
+  return findLastAssistantTextMessage(messages);
 }
 
 function deriveStreamingProgress(messages: Message[]): StreamingProgress {

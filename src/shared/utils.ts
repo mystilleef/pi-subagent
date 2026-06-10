@@ -211,18 +211,27 @@ export function subagentDepthEnv(): Record<string, string> {
   return { PI_SUBAGENT_DEPTH: String(getSubagentDepth() + 1) };
 }
 
-export function detectMessageError(messages: Message[]): boolean {
-  let lastAssistantIdx = -1;
+export function findLastAssistantTextMessage(messages: Message[]): number {
   for (let i = messages.length - 1; i >= 0; i--) {
     const msg = messages[i];
     if (
       msg?.role === "assistant" &&
-      msg.content.some((c) => c.type === "text" && c.text.trim().length > 0)
+      Array.isArray(msg.content) &&
+      msg.content.some(
+        (c) =>
+          c.type === "text" &&
+          typeof c.text === "string" &&
+          c.text.trim().length > 0,
+      )
     ) {
-      lastAssistantIdx = i;
-      break;
+      return i;
     }
   }
+  return -1;
+}
+
+export function detectMessageError(messages: Message[]): boolean {
+  const lastAssistantIdx = findLastAssistantTextMessage(messages);
   const from = lastAssistantIdx >= 0 ? lastAssistantIdx + 1 : 0;
   for (let i = messages.length - 1; i >= from; i--) {
     const msg = messages[i];
