@@ -3,14 +3,13 @@
 ## Commands
 
 - **Check:** `bun check`
-- **Test:** `bun coverage`
-- **Verify** `bun verify`
+- **Test** `bun verify`
 
 ## Workflow
 
 - **CI:** Pull requests trigger:
   - `bun check`
-  - `bun coverage`
+  - `bun verify`
   - `bun pack:smoke`
 
 ## Rules
@@ -19,9 +18,8 @@
 - Write code that never blocks the `TUI`/`GUI`.
 - Write testable code.
 - After edits:
-  - Run `bun check` to address lint issues
-  - Run `bun coverage` to address test failures
-  - Run `bun verify` at your discretion for comprehensive verification.
+  - Run `bun check` to fix lint issues and type checking.
+  - Run `bun verify` for full suite comprehensive testing.
 
 ### Testing rules
 
