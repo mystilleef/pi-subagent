@@ -204,10 +204,17 @@ test("runSingleAgent caps spawn error stderr by configured byte limit", async ()
   }
 });
 
-test("runSingleAgent attempts one injected sleep inhibitor after normal exit", async () => {
+test("runSingleAgent routes sleep inhibitor acquisition to the orchestrator PID", async () => {
   const acquired: number[] = [];
   let releases = 0;
-  const { cwd } = await setupTest();
+  const { cwd } = await setupTest({
+    piScript: `#!/bin/sh
+printf 'child pid %s' "$$" >&2
+printf '%s\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"done"}],"api":"fake","provider":"fake","model":"fake","usage":{"input":1,"output":1,"cacheRead":0,"cacheWrite":0,"totalTokens":2,"cost":{"total":0}},"stopReason":"stop","timestamp":0}}'
+printf '%s\n' '{"type":"agent_end","messages":[]}'
+exit 0
+`,
+  });
   const result = await runSingleAgent(
     cwd,
     [hangAgent],
@@ -230,25 +237,26 @@ test("runSingleAgent attempts one injected sleep inhibitor after normal exit", a
       },
     },
   );
-  expect(acquired).toHaveLength(1);
-  expect(Number.isFinite(acquired[0])).toBe(true);
+  const childPid = Number(result.stderr.replace("child pid ", ""));
+  expect(acquired).toEqual([process.pid]);
+  expect(acquired[0]).not.toBe(childPid);
   expect(releases).toBe(1);
   expect(result.exitCode).toBe(0);
   expect(result.finalOutput).toBe("done");
-  expect(result.stderr).toBe("");
+  expect(result.stderr).toMatch(/^child pid \d+$/);
   expect(result.termination).toBeUndefined();
   expect(result.usage.input).toBe(1);
   expect(result.usage.output).toBe(1);
 });
 
-test("runSingleAgent skips sleep inhibitor acquisition when spawn has no PID", async () => {
-  let acquisitionAttempts = 0;
-  const { cwd } = await setupTest();
-  const originalArgv1 = process.argv[1];
-  const originalExecPath = process.execPath;
-  process.argv[1] = "/non/existent/pi";
-  process.execPath = "/non/existent/pi_exec";
-  try {
+test("runSingleAgent rejects invalid orchestrator PIDs before sleep inhibitor acquisition", async () => {
+  for (const orchestratorPid of [
+    undefined,
+    Number.NaN,
+    Number.POSITIVE_INFINITY,
+  ]) {
+    let acquisitionAttempts = 0;
+    const { cwd } = await setupTest();
     const result = await runSingleAgent(
       cwd,
       [hangAgent],
@@ -261,6 +269,9 @@ test("runSingleAgent skips sleep inhibitor acquisition when spawn has no PID", a
       "off",
       false,
       {
+        getOrchestratorPid() {
+          return orchestratorPid;
+        },
         async acquireSleepInhibitor() {
           acquisitionAttempts += 1;
           return {
@@ -270,12 +281,9 @@ test("runSingleAgent skips sleep inhibitor acquisition when spawn has no PID", a
       },
     );
     expect(acquisitionAttempts).toBe(0);
-    expect(result.exitCode).toBe(1);
-    expect(result.finalOutput).toBe("");
+    expect(result.exitCode).toBe(0);
+    expect(result.finalOutput).toBe("done");
     expect(result.termination).toBeUndefined();
-  } finally {
-    if (originalArgv1 !== undefined) process.argv[1] = originalArgv1;
-    process.execPath = originalExecPath;
   }
 });
 
@@ -336,7 +344,8 @@ exit 0
   expect(acquisitionFailure.termination).toBeUndefined();
 });
 
-test("runSingleAgent settles immediate exit before delayed sleep inhibitor acquisition", async () => {
+test("runSingleAgent settles immediate exit before delayed orchestrator sleep inhibitor acquisition", async () => {
+  let acquiredPid: number | undefined;
   const { cwd } = await setupTest({
     piScript: `#!/bin/sh
 printf 'delayed stderr' >&2
@@ -357,7 +366,8 @@ exit 0
     "off",
     false,
     {
-      async acquireSleepInhibitor() {
+      async acquireSleepInhibitor(pid) {
+        acquiredPid = pid;
         return new Promise(() => {});
       },
     },
@@ -367,6 +377,7 @@ exit 0
     Bun.sleep(500).then(() => new Error("timed out waiting for result")),
   ]);
   expect(result).not.toBeInstanceOf(Error);
+  expect(acquiredPid).toBe(process.pid);
   expect((result as SingleResult).exitCode).toBe(0);
   expect((result as SingleResult).finalOutput).toBe("delayed done");
   expect((result as SingleResult).stderr).toBe("delayed stderr");

@@ -82,6 +82,7 @@ type SleepInhibitorAcquirer = (pid: number) => Promise<SleepInhibitorHandle>;
 
 type RunSingleAgentOptions = {
   acquireSleepInhibitor?: SleepInhibitorAcquirer;
+  getOrchestratorPid?: () => unknown;
 };
 
 export class SubagentAbortError extends Error {
@@ -176,6 +177,19 @@ async function acquireSubagentSleepInhibitor(
     return await acquireSleepInhibitor(pid);
   } catch {
     /* acquisition failures degrade gracefully to no inhibitor */
+    return undefined;
+  }
+}
+
+function getValidatedOrchestratorPid(
+  options: RunSingleAgentOptions,
+): number | undefined {
+  try {
+    const pid = options.getOrchestratorPid
+      ? options.getOrchestratorPid()
+      : process.pid;
+    return isFinitePid(pid) ? pid : undefined;
+  } catch {
     return undefined;
   }
 }
@@ -913,12 +927,14 @@ export async function runSingleAgent(
       () => clearGraceTimer(state),
       requestTermination,
     );
-    const sleepInhibitorPromise = isFinitePid(proc.pid)
-      ? acquireSubagentSleepInhibitor(
-          proc.pid,
-          options.acquireSleepInhibitor ?? acquireDefaultSleepInhibitor,
-        )
-      : Promise.resolve(undefined);
+    const orchestratorPid = getValidatedOrchestratorPid(options);
+    const sleepInhibitorPromise =
+      orchestratorPid !== undefined
+        ? acquireSubagentSleepInhibitor(
+            orchestratorPid,
+            options.acquireSleepInhibitor ?? acquireDefaultSleepInhibitor,
+          )
+        : Promise.resolve(undefined);
     try {
       state.result.exitCode = (await processDone) ?? 0;
       return await finalizeResult(state, startedAt);
