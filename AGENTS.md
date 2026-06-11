@@ -13,11 +13,12 @@
 
 ## Rules
 
+- Never make autonomous commits
 - Write asynchronous, non-blocking code.
 - Write code that never blocks the `TUI`/`GUI`.
 - Write testable code.
 - After edits:
-  - Run `bun check` to fix lint issues and type checking.
+  - Run `bun check` for type checking and to fix trivial lint issues.
   - Run `bun verify` for full suite comprehensive testing.
 
 ### Testing rules
