@@ -373,7 +373,7 @@ describe("makeHostSleepInhibitorAdapter", () => {
       platform: "darwin",
       async commandExists(command) {
         checkedCommands.push(command);
-        return command === "/usr/bin/caffeinate";
+        return command === "caffeinate";
       },
       spawnHelper(command, args, options) {
         spawned.push({ command, args, options });
@@ -384,13 +384,10 @@ describe("makeHostSleepInhibitorAdapter", () => {
     const handle = await acquireChildSleepInhibitor(606, adapter);
     await handle.release();
     await handle.release();
-    expect(checkedCommands).toEqual([
-      "/usr/bin/caffeinate",
-      "/usr/bin/caffeinate",
-    ]);
+    expect(checkedCommands).toEqual(["caffeinate", "caffeinate"]);
     expect(spawned).toEqual([
       {
-        command: "/usr/bin/caffeinate",
+        command: "caffeinate",
         args: ["-dimsu", "-w", "606"],
         options: { stdio: "ignore", detached: true },
       },
@@ -429,7 +426,7 @@ describe("makeHostSleepInhibitorAdapter", () => {
       environment: {},
       async commandExists(command) {
         checkedCommands.push(command);
-        return command === "/usr/bin/systemd-inhibit";
+        return command === "systemd-inhibit";
       },
       spawnHelper(command, args, options) {
         spawned.push({ command, args, options });
@@ -443,13 +440,13 @@ describe("makeHostSleepInhibitorAdapter", () => {
     ).not.toThrow();
     await handle.release();
     expect(checkedCommands).toEqual([
-      "/usr/bin/systemd-inhibit",
-      "/usr/bin/systemd-inhibit",
-      "/usr/bin/systemd-inhibit",
+      "systemd-inhibit",
+      "systemd-inhibit",
+      "systemd-inhibit",
     ]);
     expect(spawned).toEqual([
       {
-        command: "/usr/bin/systemd-inhibit",
+        command: "systemd-inhibit",
         args: [
           "--what=sleep:idle",
           "--who=pi-subagent",
@@ -457,7 +454,7 @@ describe("makeHostSleepInhibitorAdapter", () => {
           "--mode=block",
           "/bin/sh",
           "-c",
-          "while kill -0 707 2>/dev/null; do sleep 1; done",
+          'while kill -0 707 2>/dev/null && [ "$(cut -d\' \' -f4 /proc/$$/stat 2>/dev/null)" != "1" ]; do sleep 1; done',
         ],
         options: { stdio: "ignore", detached: true },
       },
@@ -498,7 +495,7 @@ describe("makeHostSleepInhibitorAdapter", () => {
         environment: { XDG_CURRENT_DESKTOP: desktop },
         async commandExists(command) {
           checkedCommands.push(command);
-          return command === "/usr/bin/gnome-session-inhibit";
+          return command === "gnome-session-inhibit";
         },
         spawnHelper(command, args, options) {
           spawned.push({ command, args, options });
@@ -510,17 +507,17 @@ describe("makeHostSleepInhibitorAdapter", () => {
         helper.emit("error", new Error("authorization failure")),
       ).not.toThrow();
       await handle.release();
-      expect(checkedCommands).toContain("/usr/bin/gnome-session-inhibit");
+      expect(checkedCommands).toContain("gnome-session-inhibit");
       expect(spawned).toEqual([
         {
-          command: "/usr/bin/gnome-session-inhibit",
+          command: "gnome-session-inhibit",
           args: [
             "--app-id=pi-subagent",
             "--inhibit=suspend:idle",
             "--reason=subagent running",
             "/bin/sh",
             "-c",
-            "while kill -0 717 2>/dev/null; do sleep 1; done",
+            'while kill -0 717 2>/dev/null && [ "$(cut -d\' \' -f4 /proc/$$/stat 2>/dev/null)" != "1" ]; do sleep 1; done',
           ],
           options: { stdio: "ignore", detached: true },
         },
@@ -529,14 +526,11 @@ describe("makeHostSleepInhibitorAdapter", () => {
       expect(helper.killSignals).toEqual(["SIGTERM"]);
     }
   });
-  test("gnome plus systemd acquisition starts and releases both active helpers", async () => {
+  test("gnome desktop falls back to systemd-inhibit when gnome-session-inhibit is unavailable", async () => {
     const killSignals = new Map<
       string,
       Array<NodeJS.Signals | number | undefined>
-    >([
-      ["/usr/bin/gnome-session-inhibit", []],
-      ["/usr/bin/systemd-inhibit", []],
-    ]);
+    >([["systemd-inhibit", []]]);
     const spawned: string[] = [];
     const adapter = makeHostSleepInhibitorAdapter({
       platform: "linux",
@@ -559,11 +553,8 @@ describe("makeHostSleepInhibitorAdapter", () => {
     const handle = await acquireChildSleepInhibitor(731, adapter);
     await handle.release();
     await handle.release();
-    expect(spawned).toEqual([
-      "/usr/bin/gnome-session-inhibit",
-      "/usr/bin/systemd-inhibit",
-    ]);
-    expect([...killSignals.values()]).toEqual([["SIGTERM"], ["SIGTERM"]]);
+    expect(spawned).toEqual(["systemd-inhibit"]);
+    expect([...killSignals.values()]).toEqual([["SIGTERM"]]);
   });
   test("kde plasma linux sessions spawn a silent detached inhibitor scoped to the child PID", async () => {
     const cases = ["KDE", "plasma:KDE"];
@@ -598,7 +589,7 @@ describe("makeHostSleepInhibitorAdapter", () => {
         environment: { XDG_CURRENT_DESKTOP: desktop },
         async commandExists(command) {
           checkedCommands.push(command);
-          return command === "/usr/bin/kde-inhibit";
+          return command === "kde-inhibit";
         },
         spawnHelper(command, args, options) {
           spawned.push({ command, args, options });
@@ -610,16 +601,16 @@ describe("makeHostSleepInhibitorAdapter", () => {
         helper.emit("error", new Error("authorization failure")),
       ).not.toThrow();
       await handle.release();
-      expect(checkedCommands).toContain("/usr/bin/kde-inhibit");
+      expect(checkedCommands).toContain("kde-inhibit");
       expect(spawned).toEqual([
         {
-          command: "/usr/bin/kde-inhibit",
+          command: "kde-inhibit",
           args: [
             "--power",
             "--screenSaver",
             "/bin/sh",
             "-c",
-            "while kill -0 727 2>/dev/null; do sleep 1; done",
+            'while kill -0 727 2>/dev/null && [ "$(cut -d\' \' -f4 /proc/$$/stat 2>/dev/null)" != "1" ]; do sleep 1; done',
           ],
           options: { stdio: "ignore", detached: true },
         },
@@ -634,7 +625,7 @@ describe("makeHostSleepInhibitorAdapter", () => {
       platform: "linux",
       environment: { XDG_CURRENT_DESKTOP: "KDE" },
       commandExists(command) {
-        return command === "/usr/bin/systemd-inhibit";
+        return command === "systemd-inhibit";
       },
       spawnHelper(command) {
         systemdSpawned.push(command);
@@ -645,26 +636,20 @@ describe("makeHostSleepInhibitorAdapter", () => {
       platform: "linux",
       environment: { XDG_CURRENT_DESKTOP: "KDE" },
       commandExists(command) {
-        return command === "/usr/bin/kde-inhibit";
+        return command === "kde-inhibit";
       },
       spawnHelper() {
         throw new Error("authorization denied");
       },
     });
     await (await acquireChildSleepInhibitor(728, fallbackAdapter)).release();
-    await expect(
-      (await acquireChildSleepInhibitor(729, failingAdapter)).release(),
-    ).resolves.toBeUndefined();
-    expect(systemdSpawned).toEqual(["/usr/bin/systemd-inhibit"]);
+    await (await acquireChildSleepInhibitor(729, failingAdapter)).release();
+    expect(systemdSpawned).toEqual(["systemd-inhibit"]);
   });
-  test("kde plus systemd acquisition releases both active helpers once", async () => {
+  test("kde desktop falls back to systemd-inhibit when kde-inhibit is unavailable", async () => {
     const helpers = [
       {
-        command: "/usr/bin/kde-inhibit",
-        killSignals: [] as Array<NodeJS.Signals | number | undefined>,
-      },
-      {
-        command: "/usr/bin/systemd-inhibit",
+        command: "systemd-inhibit",
         killSignals: [] as Array<NodeJS.Signals | number | undefined>,
       },
     ];
@@ -694,14 +679,8 @@ describe("makeHostSleepInhibitorAdapter", () => {
     const handle = await acquireChildSleepInhibitor(730, adapter);
     await handle.release();
     await handle.release();
-    expect(spawned).toEqual([
-      "/usr/bin/kde-inhibit",
-      "/usr/bin/systemd-inhibit",
-    ]);
-    expect(helpers.map((helper) => helper.killSignals)).toEqual([
-      ["SIGTERM"],
-      ["SIGTERM"],
-    ]);
+    expect(spawned).toEqual(["systemd-inhibit"]);
+    expect(helpers.map((helper) => helper.killSignals)).toEqual([["SIGTERM"]]);
   });
   test("concurrent linux acquisitions keep multiple helper handles independent", async () => {
     const helperSignals = new Map<
@@ -713,10 +692,7 @@ describe("makeHostSleepInhibitorAdapter", () => {
       platform: "linux",
       environment: { XDG_CURRENT_DESKTOP: "GNOME" },
       commandExists(command) {
-        return (
-          command === "/usr/bin/gnome-session-inhibit" ||
-          command === "/usr/bin/systemd-inhibit"
-        );
+        return command === "systemd-inhibit";
       },
       spawnHelper(command, args) {
         const pid = args.at(-1)?.match(/kill -0 (-?\d+)/)?.[1] ?? "missing";
@@ -737,24 +713,15 @@ describe("makeHostSleepInhibitorAdapter", () => {
     const second = await acquireChildSleepInhibitor(802, adapter);
     await first.release();
     expect(Object.fromEntries(helperSignals)).toEqual({
-      "801:/usr/bin/gnome-session-inhibit": ["SIGTERM"],
-      "801:/usr/bin/systemd-inhibit": ["SIGTERM"],
-      "802:/usr/bin/gnome-session-inhibit": [],
-      "802:/usr/bin/systemd-inhibit": [],
+      "801:systemd-inhibit": ["SIGTERM"],
+      "802:systemd-inhibit": [],
     });
     await second.release();
     await second.release();
-    expect(spawned).toEqual([
-      "801:/usr/bin/gnome-session-inhibit",
-      "801:/usr/bin/systemd-inhibit",
-      "802:/usr/bin/gnome-session-inhibit",
-      "802:/usr/bin/systemd-inhibit",
-    ]);
+    expect(spawned).toEqual(["801:systemd-inhibit", "802:systemd-inhibit"]);
     expect(Object.fromEntries(helperSignals)).toEqual({
-      "801:/usr/bin/gnome-session-inhibit": ["SIGTERM"],
-      "801:/usr/bin/systemd-inhibit": ["SIGTERM"],
-      "802:/usr/bin/gnome-session-inhibit": ["SIGTERM"],
-      "802:/usr/bin/systemd-inhibit": ["SIGTERM"],
+      "801:systemd-inhibit": ["SIGTERM"],
+      "802:systemd-inhibit": ["SIGTERM"],
     });
   });
   test("gnome linux acquisition isolates missing commands and spawn failures", async () => {
@@ -763,7 +730,7 @@ describe("makeHostSleepInhibitorAdapter", () => {
       platform: "linux",
       environment: { XDG_CURRENT_DESKTOP: "GNOME" },
       commandExists(command) {
-        return command === "/usr/bin/systemd-inhibit";
+        return command === "systemd-inhibit";
       },
       spawnHelper(command) {
         systemdSpawned.push(command);
@@ -776,33 +743,29 @@ describe("makeHostSleepInhibitorAdapter", () => {
       environment: { XDG_CURRENT_DESKTOP: "GNOME" },
       commandExists(command) {
         return (
-          command === "/usr/bin/gnome-session-inhibit" ||
-          command === "/usr/bin/systemd-inhibit"
+          command === "gnome-session-inhibit" || command === "systemd-inhibit"
         );
       },
       spawnHelper(command) {
         isolatedSpawnFailures.push(command);
-        if (command === "/usr/bin/gnome-session-inhibit")
+        if (command === "gnome-session-inhibit")
           throw new Error("polkit denied");
         return { exitCode: null, signalCode: null };
       },
     });
     await (await acquireChildSleepInhibitor(718, fallbackAdapter)).release();
-    await expect(
-      (await acquireChildSleepInhibitor(719, failingDesktopAdapter)).release(),
-    ).resolves.toBeUndefined();
-    expect(systemdSpawned).toEqual(["/usr/bin/systemd-inhibit"]);
-    expect(isolatedSpawnFailures).toEqual([
-      "/usr/bin/gnome-session-inhibit",
-      "/usr/bin/systemd-inhibit",
-    ]);
+    await (
+      await acquireChildSleepInhibitor(719, failingDesktopAdapter)
+    ).release();
+    expect(systemdSpawned).toEqual(["systemd-inhibit"]);
+    expect(isolatedSpawnFailures).toEqual(["gnome-session-inhibit"]);
   });
   test("linux support accepts independent desktop inhibitor capabilities", async () => {
     const cases = [
-      { desktop: "GNOME", command: "/usr/bin/gnome-session-inhibit" },
-      { desktop: "ubuntu:GNOME", command: "/usr/bin/gnome-session-inhibit" },
-      { desktop: "plasma KDE", command: "/usr/bin/kde-inhibit" },
-      { desktop: "KDE:GNOME", command: "/usr/bin/gnome-session-inhibit" },
+      { desktop: "GNOME", command: "gnome-session-inhibit" },
+      { desktop: "ubuntu:GNOME", command: "gnome-session-inhibit" },
+      { desktop: "plasma KDE", command: "kde-inhibit" },
+      { desktop: "KDE:GNOME", command: "gnome-session-inhibit" },
     ];
     for (const { desktop, command } of cases) {
       const checkedCommands: string[] = [];
@@ -823,7 +786,7 @@ describe("makeHostSleepInhibitorAdapter", () => {
       platform: "linux",
       environment: { XDG_CURRENT_DESKTOP: "" },
       async commandExists(command) {
-        return command === "/usr/bin/gnome-session-inhibit";
+        return command === "gnome-session-inhibit";
       },
     });
     const throwingDesktop = makeHostSleepInhibitorAdapter({
@@ -885,6 +848,7 @@ describe("makeHostSleepInhibitorAdapter", () => {
     ];
     const adapter = makeHostSleepInhibitorAdapter({
       platform: "linux",
+      environment: {},
       async commandExists() {
         return true;
       },
@@ -919,7 +883,7 @@ describe("makeHostSleepInhibitorAdapter", () => {
     const missingDarwinCapability = makeHostSleepInhibitorAdapter({
       platform: "darwin",
       async commandExists(command) {
-        return command !== "/usr/bin/caffeinate";
+        return command !== "caffeinate";
       },
       spawnHelper(command) {
         spawned.push(command);
@@ -930,7 +894,7 @@ describe("makeHostSleepInhibitorAdapter", () => {
       platform: "linux",
       environment: {},
       async commandExists(command) {
-        return command !== "/usr/bin/systemd-inhibit";
+        return command !== "systemd-inhibit";
       },
       spawnHelper(command) {
         spawned.push(command);
@@ -978,7 +942,7 @@ describe("makeHostSleepInhibitorAdapter", () => {
     await (await acquireChildSleepInhibitor(Number.NaN, adapter)).release();
     await (await acquireChildSleepInhibitor("707", adapter)).release();
     await (await acquireChildSleepInhibitor(808, adapter)).release();
-    expect(spawned).toEqual(["/usr/bin/systemd-inhibit"]);
+    expect(spawned).toEqual(["systemd-inhibit"]);
   });
   test("adapter without supported method delegates directly to acquire", async () => {
     const acquired: number[] = [];
@@ -1096,7 +1060,7 @@ describe("makeHostSleepInhibitorAdapter", () => {
     const supported = await adapter.supported?.();
     if (supported) {
       await (await acquireChildSleepInhibitor(505, adapter)).release();
-      expect(spawned).toEqual(["/usr/bin/caffeinate"]);
+      expect(spawned).toEqual(["caffeinate"]);
     } else {
       await (await acquireChildSleepInhibitor(505, adapter)).release();
       expect(spawned).toEqual([]);

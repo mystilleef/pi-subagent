@@ -1,7 +1,5 @@
 import type { ChildProcess } from "node:child_process";
 import { spawn } from "node:child_process";
-import { constants } from "node:fs";
-import { access } from "node:fs/promises";
 
 export type TerminationSignal = "SIGTERM" | "SIGKILL";
 
@@ -79,10 +77,10 @@ export type TerminateChildProcessOptions = {
 };
 
 const DEFAULT_TIMEOUT_MS = 4_000;
-const CAFFEINATE_COMMAND = "/usr/bin/caffeinate";
-const SYSTEMD_INHIBIT_COMMAND = "/usr/bin/systemd-inhibit";
-const GNOME_SESSION_INHIBIT_COMMAND = "/usr/bin/gnome-session-inhibit";
-const KDE_INHIBIT_COMMAND = "/usr/bin/kde-inhibit";
+const CAFFEINATE_COMMAND = "caffeinate";
+const SYSTEMD_INHIBIT_COMMAND = "systemd-inhibit";
+const GNOME_SESSION_INHIBIT_COMMAND = "gnome-session-inhibit";
+const KDE_INHIBIT_COMMAND = "kde-inhibit";
 const POWERSHELL_COMMAND = "powershell.exe";
 const SHELL_COMMAND = "/bin/sh";
 const noopSleepInhibitorHandle: SleepInhibitorHandle = {
@@ -126,10 +124,15 @@ function makeSleepInhibitorHandle(
 
 async function defaultCommandExists(command: string): Promise<boolean> {
   try {
-    await access(command, constants.X_OK);
-    return true;
+    return await new Promise<boolean>((resolve) => {
+      const child = spawn("/bin/sh", ["-c", `command -v ${command}`], {
+        stdio: ["ignore", "ignore", "ignore"],
+      });
+      child.on("error", () => resolve(false));
+      child.on("exit", (code) => resolve(code === 0));
+    });
   } catch {
-    /* missing or non-executable commands return false */
+    /* missing, non-executable, failed, or throwing lookups return false */
     return false;
   }
 }
@@ -149,22 +152,6 @@ function makeHelperHandle(
     release() {
       if (helperHasEnded(helper)) return;
       helper.kill?.("SIGTERM");
-    },
-  };
-}
-
-function makeCompositeHelperHandle(
-  handles: SleepInhibitorAdapterHandle[],
-): SleepInhibitorAdapterHandle {
-  return {
-    async release() {
-      for (const handle of handles) {
-        try {
-          await handle.release?.();
-        } catch {
-          /* helper release failures are non-fatal */
-        }
-      }
     },
   };
 }
@@ -211,7 +198,7 @@ function makePidPollingShellArgs(pid: number): string[] {
   return [
     SHELL_COMMAND,
     "-c",
-    `while kill -0 ${pid} 2>/dev/null; do sleep 1; done`,
+    `while kill -0 ${pid} 2>/dev/null && [ "$(cut -d' ' -f4 /proc/$$/stat 2>/dev/null)" != "1" ]; do sleep 1; done`,
   ];
 }
 
@@ -257,19 +244,20 @@ async function acquireLinuxSleepInhibitor(
     options: { stdio: "ignore"; detached: true },
   ) => SleepInhibitorHelperProcess,
 ): Promise<SleepInhibitorAdapterHandle> {
-  const handles: SleepInhibitorAdapterHandle[] = [];
-  const spawnLinuxHelper = (command: string, args: string[]) => {
+  const spawnSingleHelper = (
+    command: string,
+    args: string[],
+  ): SleepInhibitorAdapterHandle => {
     try {
-      handles.push(
-        makeHelperHandle(
-          spawnHelper(command, args, {
-            stdio: "ignore",
-            detached: true,
-          }),
-        ),
+      return makeHelperHandle(
+        spawnHelper(command, args, {
+          stdio: "ignore",
+          detached: true,
+        }),
       );
     } catch {
-      /* individual helper startup failures are non-fatal */
+      /* chosen-helper spawn failures degrade to empty handle */
+      return {};
     }
   };
   const tokens = getLinuxDesktopTokens(getEnvironment);
@@ -277,7 +265,7 @@ async function acquireLinuxSleepInhibitor(
     hasGnomeCompatibleDesktop(tokens) &&
     (await commandExistsSafely(commandExists, GNOME_SESSION_INHIBIT_COMMAND))
   )
-    spawnLinuxHelper(
+    return spawnSingleHelper(
       GNOME_SESSION_INHIBIT_COMMAND,
       makeGnomeSessionInhibitArgs(pid),
     );
@@ -285,10 +273,13 @@ async function acquireLinuxSleepInhibitor(
     hasKdeCompatibleDesktop(tokens) &&
     (await commandExistsSafely(commandExists, KDE_INHIBIT_COMMAND))
   )
-    spawnLinuxHelper(KDE_INHIBIT_COMMAND, makeKdeInhibitArgs(pid));
+    return spawnSingleHelper(KDE_INHIBIT_COMMAND, makeKdeInhibitArgs(pid));
   if (await commandExistsSafely(commandExists, SYSTEMD_INHIBIT_COMMAND))
-    spawnLinuxHelper(SYSTEMD_INHIBIT_COMMAND, makeSystemdInhibitArgs(pid));
-  return handles.length > 0 ? makeCompositeHelperHandle(handles) : {};
+    return spawnSingleHelper(
+      SYSTEMD_INHIBIT_COMMAND,
+      makeSystemdInhibitArgs(pid),
+    );
+  return {};
 }
 
 export function makeHostSleepInhibitorAdapter(
@@ -307,8 +298,6 @@ export function makeHostSleepInhibitorAdapter(
       if (platform === "darwin")
         return commandExistsSafely(commandExists, CAFFEINATE_COMMAND);
       if (platform === "linux") {
-        if (await commandExistsSafely(commandExists, SYSTEMD_INHIBIT_COMMAND))
-          return true;
         const tokens = getLinuxDesktopTokens(getEnvironment);
         if (
           hasGnomeCompatibleDesktop(tokens) &&
@@ -318,10 +307,12 @@ export function makeHostSleepInhibitorAdapter(
           ))
         )
           return true;
-        return (
+        if (
           hasKdeCompatibleDesktop(tokens) &&
           (await commandExistsSafely(commandExists, KDE_INHIBIT_COMMAND))
-        );
+        )
+          return true;
+        return commandExistsSafely(commandExists, SYSTEMD_INHIBIT_COMMAND);
       }
       return false;
     },
