@@ -160,7 +160,11 @@ export function emitCompletionAlert(
 ): void {
   if (!state) return;
   if (state.status === "cancelled") return;
-  if (isDesktopNotificationsEnabled() && !isPerJobNotificationEnabled()) {
+  if (
+    isDesktopNotificationsEnabled() &&
+    !isPerJobNotificationEnabled() &&
+    getSubagentDepth() === 0
+  ) {
     deliverDesktopCompletionNotification(state);
   }
   const tty = (process.stdout as { isTTY?: boolean }).isTTY;
@@ -306,7 +310,11 @@ async function runSubagentLifecycle(
 function deliverLifecycleCompletionNotification(
   state: NonNullable<ReturnType<typeof getProgressState>>,
 ): void {
-  if (isDesktopNotificationsEnabled() && isPerJobNotificationEnabled()) {
+  if (
+    isDesktopNotificationsEnabled() &&
+    isPerJobNotificationEnabled() &&
+    getSubagentDepth() === 0
+  ) {
     deliverDesktopCompletionNotification(state);
     return;
   }

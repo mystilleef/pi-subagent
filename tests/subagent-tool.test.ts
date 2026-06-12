@@ -2378,6 +2378,75 @@ test("emitCompletionAlert with batch notifications handles cancelled by skipping
   }
 });
 
+test("emitCompletionAlert emits bell on TTY when nested (depth > 0)", () => {
+  const origDepth = process.env.PI_SUBAGENT_DEPTH;
+  const origDesktop = process.env.PI_SUBAGENT_DESKTOP_NOTIFICATIONS;
+  process.env.PI_SUBAGENT_DEPTH = "1";
+  process.env.PI_SUBAGENT_DESKTOP_NOTIFICATIONS = "0";
+  const writeCalls: string[] = [];
+  const origWrite = process.stdout.write;
+  const origIsTTY = Object.getOwnPropertyDescriptor(process.stdout, "isTTY");
+  Object.defineProperty(process.stdout, "isTTY", {
+    value: true,
+    configurable: true,
+  });
+  try {
+    (process.stdout as unknown as { write: (s: string) => boolean }).write = (
+      s: string,
+    ) => {
+      writeCalls.push(s);
+      return true;
+    };
+    const state = makeProgressState({
+      status: "success",
+      finalOutput: "nested task completed",
+    });
+    emitCompletionAlert(state);
+    expect(writeCalls).toContain("\x07");
+  } finally {
+    process.stdout.write = origWrite;
+    if (origIsTTY) {
+      Object.defineProperty(process.stdout, "isTTY", origIsTTY);
+    } else {
+      delete (process.stdout as unknown as { isTTY?: boolean }).isTTY;
+    }
+    if (origDepth === undefined) delete process.env.PI_SUBAGENT_DEPTH;
+    else process.env.PI_SUBAGENT_DEPTH = origDepth;
+    if (origDesktop === undefined)
+      delete process.env.PI_SUBAGENT_DESKTOP_NOTIFICATIONS;
+    else process.env.PI_SUBAGENT_DESKTOP_NOTIFICATIONS = origDesktop;
+  }
+});
+
+test("emitCompletionAlert suppresses desktop notification when nested (depth > 0)", () => {
+  const origDepth = process.env.PI_SUBAGENT_DEPTH;
+  const origDesktop = process.env.PI_SUBAGENT_DESKTOP_NOTIFICATIONS;
+  const origPerJob = process.env.PI_SUBAGENT_NOTIFY_PER_JOB;
+  process.env.PI_SUBAGENT_DEPTH = "1";
+  process.env.PI_SUBAGENT_DESKTOP_NOTIFICATIONS = "1";
+  delete process.env.PI_SUBAGENT_NOTIFY_PER_JOB;
+  let spawned = false;
+  setDefaultDeliveryDeps({
+    spawnProcess: () => {
+      spawned = true;
+      return {};
+    },
+  });
+  try {
+    const state = makeProgressState({ status: "success", finalOutput: "done" });
+    emitCompletionAlert(state);
+    expect(spawned).toBe(false);
+  } finally {
+    if (origDepth === undefined) delete process.env.PI_SUBAGENT_DEPTH;
+    else process.env.PI_SUBAGENT_DEPTH = origDepth;
+    if (origDesktop === undefined)
+      delete process.env.PI_SUBAGENT_DESKTOP_NOTIFICATIONS;
+    else process.env.PI_SUBAGENT_DESKTOP_NOTIFICATIONS = origDesktop;
+    if (origPerJob === undefined) delete process.env.PI_SUBAGENT_NOTIFY_PER_JOB;
+    else process.env.PI_SUBAGENT_NOTIFY_PER_JOB = origPerJob;
+  }
+});
+
 test("per-job notification completes lifecycle without crashing", async () => {
   const origDesktop = process.env.PI_SUBAGENT_DESKTOP_NOTIFICATIONS;
   const origPerJob = process.env.PI_SUBAGENT_NOTIFY_PER_JOB;
@@ -2503,6 +2572,86 @@ wait $!
     }
     expect(listRunJobs()).toHaveLength(0);
   } finally {
+    if (origDesktop === undefined)
+      delete process.env.PI_SUBAGENT_DESKTOP_NOTIFICATIONS;
+    else process.env.PI_SUBAGENT_DESKTOP_NOTIFICATIONS = origDesktop;
+    if (origPerJob === undefined) delete process.env.PI_SUBAGENT_NOTIFY_PER_JOB;
+    else process.env.PI_SUBAGENT_NOTIFY_PER_JOB = origPerJob;
+  }
+});
+
+test("per-job notification delivers at depth 0 via lifecycle", async () => {
+  const origDesktop = process.env.PI_SUBAGENT_DESKTOP_NOTIFICATIONS;
+  const origPerJob = process.env.PI_SUBAGENT_NOTIFY_PER_JOB;
+  process.env.PI_SUBAGENT_DESKTOP_NOTIFICATIONS = "1";
+  process.env.PI_SUBAGENT_NOTIFY_PER_JOB = "1";
+  let spawned = false;
+  setDefaultDeliveryDeps({
+    commandExists: () => true,
+    spawnProcess: () => {
+      spawned = true;
+      return {};
+    },
+  });
+  try {
+    const sentMessages: SendMessageArg[] = [];
+    const { tool, cwd } = await setupTest({
+      sendMessage: (msg) => sentMessages.push(msg),
+    });
+    process.env.PI_SUBAGENT_DEPTH = "0";
+    await tool.execute(
+      "test-tool-call",
+      { agent: "hang", task: "per-job depth-0" },
+      undefined,
+      undefined,
+      { cwd, hasUI: false } as unknown as ExtensionContext,
+    );
+    await waitForSentMessageCount(sentMessages, 2);
+    expect(sentMessages.at(-1)?.customType).toBe("subagent-result");
+    await Bun.sleep(20);
+    expect(spawned).toBe(true);
+    await waitForRunJobsCleared();
+    expect(listRunJobs()).toHaveLength(0);
+  } finally {
+    if (origDesktop === undefined)
+      delete process.env.PI_SUBAGENT_DESKTOP_NOTIFICATIONS;
+    else process.env.PI_SUBAGENT_DESKTOP_NOTIFICATIONS = origDesktop;
+    if (origPerJob === undefined) delete process.env.PI_SUBAGENT_NOTIFY_PER_JOB;
+    else process.env.PI_SUBAGENT_NOTIFY_PER_JOB = origPerJob;
+  }
+});
+
+test("per-job notification skipped when nested (depth > 0)", async () => {
+  const origDepth = process.env.PI_SUBAGENT_DEPTH;
+  const origDesktop = process.env.PI_SUBAGENT_DESKTOP_NOTIFICATIONS;
+  const origPerJob = process.env.PI_SUBAGENT_NOTIFY_PER_JOB;
+  process.env.PI_SUBAGENT_DEPTH = "1";
+  process.env.PI_SUBAGENT_DESKTOP_NOTIFICATIONS = "1";
+  process.env.PI_SUBAGENT_NOTIFY_PER_JOB = "1";
+  let spawned = false;
+  setDefaultDeliveryDeps({
+    spawnProcess: () => {
+      spawned = true;
+      return {};
+    },
+  });
+  try {
+    const sentMessages: SendMessageArg[] = [];
+    const { tool, cwd } = await setupTest({
+      sendMessage: (msg) => sentMessages.push(msg),
+    });
+    await tool.execute(
+      "test-tool-call",
+      { agent: "hang", task: "per-job nested" },
+      undefined,
+      undefined,
+      { cwd, hasUI: false } as unknown as ExtensionContext,
+    );
+    await waitForSentMessageCount(sentMessages, 2);
+    expect(spawned).toBe(false);
+  } finally {
+    if (origDepth === undefined) delete process.env.PI_SUBAGENT_DEPTH;
+    else process.env.PI_SUBAGENT_DEPTH = origDepth;
     if (origDesktop === undefined)
       delete process.env.PI_SUBAGENT_DESKTOP_NOTIFICATIONS;
     else process.env.PI_SUBAGENT_DESKTOP_NOTIFICATIONS = origDesktop;
