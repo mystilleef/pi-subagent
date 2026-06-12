@@ -793,7 +793,10 @@ async function finalizeResult(
   if (agentEndTimeoutExitCode !== undefined) {
     state.result.exitCode = agentEndTimeoutExitCode;
   }
-  if (state.wasAborted) throw new SubagentAbortError(state.result);
+  if (state.wasAborted) {
+    state.result.stderr = "";
+    throw new SubagentAbortError(state.result);
+  }
   return state.result;
 }
 
