@@ -1426,7 +1426,7 @@ exit 0
   expect(argsText).toContain(SUBAGENT_RESULT_CONTRACT);
   expect(promptText).toBe("Runtime prompt");
   expect((result.details as SubagentDetails).results[0]?.model).toBe(
-    "fake-provider/fake-model:high",
+    "fake-provider ･ fake-model ･ high",
   );
   expect(listRunJobs()).toHaveLength(0);
 });
@@ -1549,8 +1549,7 @@ exit 0
   expect(details.results[0]?.messages).toBeUndefined();
   expect(details.results[0]?.instanceName).toMatch(/^[a-z]+-[a-z]+$/);
   expect(details.results[0]?.usage.contextWindowTokens).toBe(128000);
-  if (details.results[0]?.model !== "gpt-4o-mini")
-    expect(details.results[0]?.model).toBe("thinking:off");
+  expect(details.results[0]?.model).toBe("off");
   const sentMessages2: SendMessageArg[] = [];
   const tool2 = getSubagentTool({
     sendMessage: (msg) => sentMessages2.push(msg),
@@ -3636,7 +3635,7 @@ exit 0
   expect(argsText).not.toContain("--provider");
   expect(argsText).not.toContain("--model");
   const details = result.details as SubagentDetails;
-  expect(details.results[0]?.model).toBe("thinking:off");
+  expect(details.results[0]?.model).toBe("off");
   expect(listRunJobs()).toHaveLength(0);
 });
 

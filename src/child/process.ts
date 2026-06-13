@@ -307,12 +307,17 @@ function buildModelDisplay(
   effectiveModel: ChildModelSettings,
   thinking: ThinkingLevel,
 ): string | undefined {
-  const modelText =
-    effectiveModel.provider && effectiveModel.id
-      ? `${effectiveModel.provider}/${effectiveModel.id}`
-      : (effectiveModel.provider ?? effectiveModel.id);
-  if (modelText) return `${modelText}${thinking ? `:${thinking}` : ""}`;
-  return thinking ? `thinking:${thinking}` : undefined;
+  const parts: string[] = [];
+  if (effectiveModel.provider) {
+    parts.push(effectiveModel.provider);
+  }
+  if (effectiveModel.id) {
+    parts.push(effectiveModel.id);
+  }
+  if (thinking) {
+    parts.push(thinking);
+  }
+  return parts.length > 0 ? parts.join(" ･ ") : undefined;
 }
 
 const EMPTY_USAGE = {

@@ -268,7 +268,7 @@ test("runSingleAgent applies effective model settings to thinking resolution", a
     { provider: "anthropic", id: "claude-3-7-sonnet-20250219" },
     "low",
   );
-  expect(result.model).toBe("openai/gpt-4:off");
+  expect(result.model).toBe("openai ･ gpt-4 ･ off");
   expect(result.thinkingWarning).toContain("openai/gpt-4");
   expect(result.thinkingWarning).toContain('using "off" instead');
 });
@@ -281,7 +281,7 @@ test("runSingleAgent treats provider-only agent override as partial model", asyn
   );
   expect(flagValues(args, "--provider")).toEqual([]);
   expect(flagValues(args, "--model")).toEqual([]);
-  expect(result.model).toBe("agent-provider:high");
+  expect(result.model).toBe("agent-provider ･ high");
   expect(result.thinkingWarning).toBeUndefined();
 });
 
@@ -296,7 +296,7 @@ test("runSingleAgent preserves fallback thinking for partial or absent effective
       name: "model only",
       agent: makeModelAgent({ thinking: undefined }),
       parentModel: { id: "parent-model" },
-      expectedModel: "parent-model:high",
+      expectedModel: "parent-model ･ high",
     },
     {
       name: "provider only",
@@ -305,13 +305,13 @@ test("runSingleAgent preserves fallback thinking for partial or absent effective
         thinking: undefined,
       }),
       parentModel: undefined,
-      expectedModel: "agent-provider:high",
+      expectedModel: "agent-provider ･ high",
     },
     {
       name: "absent model",
       agent: makeModelAgent({ thinking: undefined }),
       parentModel: undefined,
-      expectedModel: "thinking:high",
+      expectedModel: "high",
     },
   ];
   for (const testCase of cases) {
@@ -336,25 +336,25 @@ test("runSingleAgent formats result model from effective non-empty parts", async
       name: "inherits full parent model",
       agent: makeModelAgent({}),
       parentModel: { provider: "parent-provider", id: "parent-model" },
-      expectedModel: "parent-provider/parent-model:off",
+      expectedModel: "parent-provider ･ parent-model ･ off",
     },
     {
       name: "overrides model without leading slash",
       agent: makeModelAgent({ model: "agent-model" }),
       parentModel: undefined,
-      expectedModel: "agent-model:off",
+      expectedModel: "agent-model ･ off",
     },
     {
       name: "omits empty provider with model override",
       agent: makeModelAgent({ model: "agent-model" }),
       parentModel: { provider: undefined },
-      expectedModel: "agent-model:off",
+      expectedModel: "agent-model ･ off",
     },
     {
       name: "preserves effective provider and model suffix",
       agent: makeModelAgent({ model: "agent-model" }),
       parentModel: { provider: "parent-provider", id: "parent-model" },
-      expectedModel: "parent-provider/agent-model:off",
+      expectedModel: "parent-provider ･ agent-model ･ off",
     },
   ];
   for (const testCase of cases) {
@@ -387,7 +387,7 @@ test("runSingleAgent reports effective model display on skill resolution failure
   );
   expect(result.exitCode).toBe(1);
   expect(result.stderr).toContain('Unknown skill: "missing-skill"');
-  expect(result.model).toBe("parent-provider/agent-model:off");
+  expect(result.model).toBe("parent-provider ･ agent-model ･ off");
 });
 
 test("runSingleAgent truncates stderr to env-configured byte cap", async () => {
@@ -1852,7 +1852,7 @@ exit 0
     expect(result.usage.cacheWrite).toBe(6);
     expect(result.usage.cost).toBe(1.5);
     expect(result.usage.contextTokens).toBe(30);
-    expect(result.model).toBe("thinking:off");
+    expect(result.model).toBe("off");
     expect(result.stopReason).toBe("length");
   });
 
@@ -1955,7 +1955,7 @@ exit 0
 `;
     const result = await runUsageTest(piScript);
     expect(result.exitCode).toBe(0);
-    expect(result.model).toBe("thinking:off");
+    expect(result.model).toBe("off");
     expect(result.stopReason).toBe("length");
   });
 
