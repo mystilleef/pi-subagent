@@ -76,10 +76,9 @@ commits; use the query agent to summarize the project.
 
 ## _SPAE_ Workflow
 
-`pi-subagent`: the official extension for the
-[SPAE Framework](https://github.com/mystilleef/spae-framework).
-
-`SPAE` provides pre-built agents and skills for a structured, or
+The official extension for the
+[SPAE Framework](https://github.com/mystilleef/spae-framework). The
+framework provides pre-built agents and skills for a structured, or
 orchestrated, workflow.
 
 ### Structured
