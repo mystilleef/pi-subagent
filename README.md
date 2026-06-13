@@ -3,8 +3,9 @@
 `pi-subagent` adds isolated subagent orchestration to
 [Pi](https://github.com/earendil-works/pi). It provides a `subagent`
 tool and `/run` command for delegating work to specialized agents in
-separate child Pi processes. Designed especially for the `SPAE`
-framework, but doesn't require it.
+separate child Pi processes. Designed especially for the
+[`SPAE` framework](https://github.com/mystilleef/spae-framework), but
+doesn't require it.
 
 ## Action
 
