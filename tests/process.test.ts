@@ -30,6 +30,62 @@ import {
 
 setupHooks();
 
+type CapturableParentModel = {
+  provider?: string | undefined;
+  id?: string | undefined;
+};
+
+function makeModelAgent(overrides: Partial<AgentConfig>): AgentConfig {
+  return { ...hangAgent, ...overrides };
+}
+
+async function runCapturedModelAgent(
+  agent: AgentConfig,
+  parentModel: CapturableParentModel | undefined,
+  parentThinking: AgentConfig["thinking"] = "off",
+): Promise<{ args: string[]; result: SingleResult }> {
+  const { cwd } = await setupTest({
+    piScript: `#!/bin/sh
+printf '%s\n' "$@" > args.txt
+printf '%s\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"done"}],"api":"fake","provider":"fake","model":"fake","usage":{"input":1,"output":1,"cacheRead":0,"cacheWrite":0,"totalTokens":2,"cost":{"total":0}},"stopReason":"stop","timestamp":0}}'
+printf '%s\n' '{"type":"agent_end","messages":[]}'
+exit 0
+`,
+  });
+  const result = await runSingleAgent(
+    cwd,
+    [agent],
+    agent.name,
+    "task",
+    undefined,
+    undefined,
+    makeSubagentDetails,
+    parentModel,
+    parentThinking ?? "off",
+  );
+  expect(result.exitCode).toBe(0);
+  return {
+    args: fs
+      .readFileSync(path.join(cwd, "args.txt"), "utf8")
+      .trimEnd()
+      .split("\n"),
+    result,
+  };
+}
+
+async function captureRunSingleAgentArgs(
+  agent: AgentConfig,
+  parentModel: CapturableParentModel | undefined,
+): Promise<string[]> {
+  return (await runCapturedModelAgent(agent, parentModel)).args;
+}
+
+function flagValues(args: string[], flag: string): string[] {
+  return args.flatMap((arg, index) =>
+    arg === flag ? [args[index + 1] ?? ""] : [],
+  );
+}
+
 test("runSingleAgent reports unknown agents with available names", async () => {
   const result = await runSingleAgent(
     "/tmp",
@@ -101,6 +157,237 @@ test("runSingleAgent reports clamped env max depth", async () => {
   );
   expect(result.exitCode).toBe(1);
   expect(result.stderr).toContain("depth 10/10");
+});
+
+test("runSingleAgent resolves child model flags independently from agent and parent settings", async () => {
+  const cases: {
+    name: string;
+    agent: AgentConfig;
+    parentModel: CapturableParentModel | undefined;
+    providerFlags: string[];
+    modelFlags: string[];
+  }[] = [
+    {
+      name: "inherits both parent fields without overrides",
+      agent: makeModelAgent({}),
+      parentModel: { provider: "parent-provider", id: "parent-model" },
+      providerFlags: ["parent-provider"],
+      modelFlags: ["parent-model"],
+    },
+    {
+      name: "omits provider-only flag when agent overrides provider without model",
+      agent: makeModelAgent({ provider: "agent-provider" }),
+      parentModel: { provider: "parent-provider", id: "parent-model" },
+      providerFlags: [],
+      modelFlags: [],
+    },
+    {
+      name: "inherits provider and overrides model",
+      agent: makeModelAgent({ model: "agent-model" }),
+      parentModel: { provider: "parent-provider", id: "parent-model" },
+      providerFlags: ["parent-provider"],
+      modelFlags: ["agent-model"],
+    },
+    {
+      name: "overrides both fields",
+      agent: makeModelAgent({
+        provider: "agent-provider",
+        model: "agent-model",
+      }),
+      parentModel: { provider: "parent-provider", id: "parent-model" },
+      providerFlags: ["agent-provider"],
+      modelFlags: ["agent-model"],
+    },
+    {
+      name: "omits provider flag when parent model id is absent",
+      agent: makeModelAgent({}),
+      parentModel: { provider: "parent-provider" },
+      providerFlags: [],
+      modelFlags: [],
+    },
+    {
+      name: "emits model only when parent provider remains absent",
+      agent: makeModelAgent({}),
+      parentModel: { id: "parent-model" },
+      providerFlags: [],
+      modelFlags: ["parent-model"],
+    },
+    {
+      name: "omits provider flag without model when parent model absent",
+      agent: makeModelAgent({ provider: "agent-provider" }),
+      parentModel: undefined,
+      providerFlags: [],
+      modelFlags: [],
+    },
+    {
+      name: "emits model only without parent provider",
+      agent: makeModelAgent({ model: "agent-model" }),
+      parentModel: undefined,
+      providerFlags: [],
+      modelFlags: ["agent-model"],
+    },
+    {
+      name: "omits both flags without any effective settings",
+      agent: makeModelAgent({ provider: undefined, model: undefined }),
+      parentModel: undefined,
+      providerFlags: [],
+      modelFlags: [],
+    },
+    {
+      name: "inherits parent when blank-normalized agent fields are absent",
+      agent: makeModelAgent({ provider: undefined, model: undefined }),
+      parentModel: { provider: "parent-provider", id: "parent-model" },
+      providerFlags: ["parent-provider"],
+      modelFlags: ["parent-model"],
+    },
+    {
+      name: "passes invalid runtime strings unchanged",
+      agent: makeModelAgent({ provider: "not/a/provider", model: "???" }),
+      parentModel: undefined,
+      providerFlags: ["not/a/provider"],
+      modelFlags: ["???"],
+    },
+  ];
+  for (const testCase of cases) {
+    const args = await captureRunSingleAgentArgs(
+      testCase.agent,
+      testCase.parentModel,
+    );
+    expect(flagValues(args, "--provider"), testCase.name).toEqual(
+      testCase.providerFlags,
+    );
+    expect(flagValues(args, "--model"), testCase.name).toEqual(
+      testCase.modelFlags,
+    );
+  }
+});
+
+test("runSingleAgent applies effective model settings to thinking resolution", async () => {
+  const { result } = await runCapturedModelAgent(
+    makeModelAgent({ provider: "openai", model: "gpt-4", thinking: "high" }),
+    { provider: "anthropic", id: "claude-3-7-sonnet-20250219" },
+    "low",
+  );
+  expect(result.model).toBe("openai/gpt-4:off");
+  expect(result.thinkingWarning).toContain("openai/gpt-4");
+  expect(result.thinkingWarning).toContain('using "off" instead');
+});
+
+test("runSingleAgent treats provider-only agent override as partial model", async () => {
+  const { args, result } = await runCapturedModelAgent(
+    makeModelAgent({ provider: "agent-provider", thinking: "high" }),
+    { provider: "openai", id: "gpt-4" },
+    "low",
+  );
+  expect(flagValues(args, "--provider")).toEqual([]);
+  expect(flagValues(args, "--model")).toEqual([]);
+  expect(result.model).toBe("agent-provider:high");
+  expect(result.thinkingWarning).toBeUndefined();
+});
+
+test("runSingleAgent preserves fallback thinking for partial or absent effective models", async () => {
+  const cases: {
+    name: string;
+    agent: AgentConfig;
+    parentModel: CapturableParentModel | undefined;
+    expectedModel: string;
+  }[] = [
+    {
+      name: "model only",
+      agent: makeModelAgent({ thinking: undefined }),
+      parentModel: { id: "parent-model" },
+      expectedModel: "parent-model:high",
+    },
+    {
+      name: "provider only",
+      agent: makeModelAgent({
+        provider: "agent-provider",
+        thinking: undefined,
+      }),
+      parentModel: undefined,
+      expectedModel: "agent-provider:high",
+    },
+    {
+      name: "absent model",
+      agent: makeModelAgent({ thinking: undefined }),
+      parentModel: undefined,
+      expectedModel: "thinking:high",
+    },
+  ];
+  for (const testCase of cases) {
+    const { result } = await runCapturedModelAgent(
+      testCase.agent,
+      testCase.parentModel,
+      "high",
+    );
+    expect(result.thinkingWarning, testCase.name).toBeUndefined();
+    expect(result.model, testCase.name).toBe(testCase.expectedModel);
+  }
+});
+
+test("runSingleAgent formats result model from effective non-empty parts", async () => {
+  const cases: {
+    name: string;
+    agent: AgentConfig;
+    parentModel: CapturableParentModel | undefined;
+    expectedModel: string;
+  }[] = [
+    {
+      name: "inherits full parent model",
+      agent: makeModelAgent({}),
+      parentModel: { provider: "parent-provider", id: "parent-model" },
+      expectedModel: "parent-provider/parent-model:off",
+    },
+    {
+      name: "overrides model without leading slash",
+      agent: makeModelAgent({ model: "agent-model" }),
+      parentModel: undefined,
+      expectedModel: "agent-model:off",
+    },
+    {
+      name: "omits empty provider with model override",
+      agent: makeModelAgent({ model: "agent-model" }),
+      parentModel: { provider: undefined },
+      expectedModel: "agent-model:off",
+    },
+    {
+      name: "preserves effective provider and model suffix",
+      agent: makeModelAgent({ model: "agent-model" }),
+      parentModel: { provider: "parent-provider", id: "parent-model" },
+      expectedModel: "parent-provider/agent-model:off",
+    },
+  ];
+  for (const testCase of cases) {
+    const { result } = await runCapturedModelAgent(
+      testCase.agent,
+      testCase.parentModel,
+    );
+    expect(result.model, testCase.name).toBe(testCase.expectedModel);
+  }
+});
+
+test("runSingleAgent reports effective model display on skill resolution failure", async () => {
+  const { cwd } = await setupTest();
+  const result = await runSingleAgent(
+    cwd,
+    [
+      makeModelAgent({
+        name: "bad-skill-model",
+        model: "agent-model",
+        skills: ["missing-skill"],
+      }),
+    ],
+    "bad-skill-model",
+    "task",
+    undefined,
+    undefined,
+    makeSubagentDetails,
+    { provider: "parent-provider", id: "parent-model" },
+    "off",
+  );
+  expect(result.exitCode).toBe(1);
+  expect(result.stderr).toContain('Unknown skill: "missing-skill"');
+  expect(result.model).toBe("parent-provider/agent-model:off");
 });
 
 test("runSingleAgent truncates stderr to env-configured byte cap", async () => {
@@ -1379,6 +1666,35 @@ wait $!
   );
   expect(result.exitCode).toBe(1);
   expect(result.finalOutput).toBe("");
+  expect(result.termination?.cancelReason).toBe("agent_end_timeout");
+});
+
+test("runSingleAgent treats earlier assistant text as completed output after agent-end timeout", async () => {
+  process.env.PI_SUBAGENT_AGENT_END_GRACE_MS = "25";
+  const { cwd } = await setupTest({
+    piScript: `#!/bin/sh
+trap 'exit 0' TERM
+printf '%s\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"earlier done"}],"api":"fake","provider":"fake","model":"fake","usage":{"input":1,"output":1,"cacheRead":0,"cacheWrite":0,"totalTokens":2,"cost":{"total":0}},"stopReason":"stop","timestamp":0}}'
+printf '%s\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"toolCall","id":"tc-1","name":"bash","arguments":{"command":"pwd"}}],"api":"fake","provider":"fake","model":"fake","usage":{"input":1,"output":1,"cacheRead":0,"cacheWrite":0,"totalTokens":2,"cost":{"total":0}},"stopReason":"stop","timestamp":0}}'
+printf '%s\n' '{"type":"agent_end","messages":[]}'
+sleep 10 &
+wait $!
+`,
+  });
+  const result = await runSingleAgent(
+    cwd,
+    [hangAgent],
+    "hang",
+    "task",
+    undefined,
+    undefined,
+    makeSubagentDetails,
+    undefined,
+    "off",
+  );
+  expect(result.exitCode).toBe(0);
+  expect(result.finalOutput).toBe("");
+  expect(result.messages).toHaveLength(2);
   expect(result.termination?.cancelReason).toBe("agent_end_timeout");
 });
 

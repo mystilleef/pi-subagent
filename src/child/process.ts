@@ -79,6 +79,10 @@ export function resolveThinkingLevel(
 
 type RuntimeLimits = ReturnType<typeof getSubagentRuntimeLimits>;
 type RuntimeResult = SingleResult & { messages: Message[] };
+type ChildModelSettings = {
+  provider?: string | undefined;
+  id?: string | undefined;
+};
 type SleepInhibitorAcquirer = (pid: number) => Promise<SleepInhibitorHandle>;
 
 type RunSingleAgentOptions = {
@@ -300,12 +304,14 @@ async function waitForSubagentProcess(
 }
 
 function buildModelDisplay(
-  parentModel: { provider: string; id: string } | undefined,
+  effectiveModel: ChildModelSettings,
   thinking: ThinkingLevel,
 ): string | undefined {
-  if (parentModel) {
-    return `${parentModel.provider}/${parentModel.id}${thinking ? `:${thinking}` : ""}`;
-  }
+  const modelText =
+    effectiveModel.provider && effectiveModel.id
+      ? `${effectiveModel.provider}/${effectiveModel.id}`
+      : (effectiveModel.provider ?? effectiveModel.id);
+  if (modelText) return `${modelText}${thinking ? `:${thinking}` : ""}`;
   return thinking ? `thinking:${thinking}` : undefined;
 }
 
@@ -708,18 +714,30 @@ function setupAbortHandler(
   return onAbort;
 }
 
+function resolveEffectiveChildModelSettings(
+  agent: AgentConfig,
+  parentModel: ChildModelSettings | undefined,
+): ChildModelSettings {
+  return {
+    provider: agent.provider ?? parentModel?.provider,
+    id:
+      agent.model ??
+      (agent.provider === undefined ? parentModel?.id : undefined),
+  };
+}
+
 function buildPiArgs(
   agent: AgentConfig,
   task: string,
-  parentModel: { provider: string; id: string } | undefined,
+  effectiveModel: ChildModelSettings,
   thinking: ThinkingLevel,
   resolvedSkills: { args: string[] },
   tmpPrompt: { filePath: string } | null,
 ): string[] {
   const args: string[] = ["--mode", "json", "-p", "--no-session"];
-  if (parentModel) {
-    args.push("--provider", parentModel.provider, "--model", parentModel.id);
-  }
+  if (effectiveModel.provider && effectiveModel.id)
+    args.push("--provider", effectiveModel.provider);
+  if (effectiveModel.id) args.push("--model", effectiveModel.id);
   args.push("--thinking", thinking);
   if (agent.tools?.length) args.push("--tools", agent.tools.join(","));
   if (agent.skills) args.push("--no-skills", ...resolvedSkills.args);
@@ -824,7 +842,7 @@ export async function runSingleAgent(
     results: RuntimeResult[],
     options?: { includeMessages?: boolean; recentMessages?: Message[] },
   ) => SubagentDetails,
-  parentModel: { provider: string; id: string } | undefined,
+  parentModel: ChildModelSettings | undefined,
   parentThinking: ThinkingLevel,
   debugEventDiagnostics = false,
   options: RunSingleAgentOptions = {},
@@ -843,14 +861,16 @@ export async function runSingleAgent(
     );
   }
   const requestedThinking = agent.thinking ?? parentThinking;
-  const { level: thinking, warning: thinkingWarning } = parentModel
-    ? resolveThinkingLevel(
-        requestedThinking,
-        parentModel.provider,
-        parentModel.id,
-      )
-    : { level: requestedThinking };
-  const modelDisplay = buildModelDisplay(parentModel, thinking);
+  const effectiveModel = resolveEffectiveChildModelSettings(agent, parentModel);
+  const { level: thinking, warning: thinkingWarning } =
+    effectiveModel.provider && effectiveModel.id
+      ? resolveThinkingLevel(
+          requestedThinking,
+          effectiveModel.provider,
+          effectiveModel.id,
+        )
+      : { level: requestedThinking };
+  const modelDisplay = buildModelDisplay(effectiveModel, thinking);
   const resolvedSkillsPromise: Promise<{ args: string[] } | { error: string }> =
     agent.skills
       ? resolveAgentSkillArgs(defaultCwd, agent.skills)
@@ -882,7 +902,7 @@ export async function runSingleAgent(
     const args = buildPiArgs(
       agent,
       task,
-      parentModel,
+      effectiveModel,
       thinking,
       resolvedSkills,
       tmpPrompt,
