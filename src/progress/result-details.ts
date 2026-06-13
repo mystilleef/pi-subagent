@@ -218,6 +218,9 @@ export function patchProgressFromDetails(
     patch["contextTokens"] = latestResult.usage.contextTokens;
     patch["contextWindowTokens"] = latestResult.usage.contextWindowTokens;
   }
+  if (latestResult?.model?.trim()) {
+    patch["modelDisplay"] = latestResult.model;
+  }
   patchProgressState(requestId, patch);
 }
 

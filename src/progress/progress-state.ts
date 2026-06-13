@@ -54,6 +54,7 @@ export interface SubagentProgressState {
   outputTokens?: number | undefined;
   contextTokens?: number | undefined;
   contextWindowTokens?: number | undefined;
+  modelDisplay?: string | undefined;
   finalOutput?: string | undefined;
   errorText?: string | undefined;
 }
@@ -105,11 +106,15 @@ export function patchProgressState(
 ): void {
   const state = store.get(requestId);
   if (!state) return;
+  const merged: SubagentProgressState = { ...state, ...patch };
+  if (merged.modelDisplay === undefined || merged.modelDisplay === "") {
+    delete merged.modelDisplay;
+  }
   if (state.status !== "running") {
-    store.set(requestId, stripTransientFields({ ...state, ...patch }));
+    store.set(requestId, stripTransientFields(merged));
     return;
   }
-  store.set(requestId, { ...state, ...patch });
+  store.set(requestId, merged);
 }
 
 function storeTerminalProgressState(

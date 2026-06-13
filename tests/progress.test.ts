@@ -97,8 +97,61 @@ test("createProgressState initializes defaults", () => {
   expect(state?.startTime).toBeGreaterThanOrEqual(before);
   expect(state?.toolCount).toBe(0);
   expect(state?.lastToolPreview).toBeUndefined();
+  expect(state?.modelDisplay).toBeUndefined();
   expect(state?.finalOutput).toBeUndefined();
   expect(state?.errorText).toBeUndefined();
+});
+
+test("patchProgressState sets modelDisplay", () => {
+  createProgressState("req-1", "agent-a", "task a");
+  patchProgressState("req-1", { modelDisplay: "claude-3-5-sonnet" });
+  expect(getProgressState("req-1")?.modelDisplay).toBe("claude-3-5-sonnet");
+});
+
+test("terminal helpers preserve modelDisplay and strip transient tool fields", () => {
+  createProgressState("req-1", "agent-a", "task a");
+  patchProgressState("req-1", {
+    modelDisplay: "claude-3-5-sonnet",
+    lastToolPreview: "bash: ls",
+  });
+  finalizeProgressState("req-1", "all done");
+  const successState = getProgressState("req-1");
+  expect(successState?.modelDisplay).toBe("claude-3-5-sonnet");
+  expect(successState?.lastToolPreview).toBeUndefined();
+
+  createProgressState("req-2", "agent-b", "task b");
+  patchProgressState("req-2", {
+    modelDisplay: "gpt-4o",
+    lastToolPreview: "read: /tmp/file",
+  });
+  failProgressState("req-2", "child failed");
+  const errorState = getProgressState("req-2");
+  expect(errorState?.modelDisplay).toBe("gpt-4o");
+  expect(errorState?.lastToolPreview).toBeUndefined();
+
+  createProgressState("req-3", "agent-c", "task c");
+  patchProgressState("req-3", {
+    modelDisplay: "gemini-1.5-pro",
+    lastToolPreview: "write: safe.txt",
+  });
+  cancelProgressState("req-3", "user aborted");
+  const cancelledState = getProgressState("req-3");
+  expect(cancelledState?.modelDisplay).toBe("gemini-1.5-pro");
+  expect(cancelledState?.lastToolPreview).toBeUndefined();
+});
+
+test("empty or undefined modelDisplay leaves footer data absent", () => {
+  createProgressState("req-1", "agent-a", "task a");
+  patchProgressState("req-1", { modelDisplay: "" });
+  expect(getProgressState("req-1")?.modelDisplay).toBeUndefined();
+  patchProgressState("req-1", { modelDisplay: "claude-3-5-sonnet" });
+  expect(getProgressState("req-1")?.modelDisplay).toBe("claude-3-5-sonnet");
+  patchProgressState("req-1", { modelDisplay: undefined });
+  expect(getProgressState("req-1")?.modelDisplay).toBeUndefined();
+  patchProgressState("req-1", { modelDisplay: "gemini-1.5-pro" });
+  expect(getProgressState("req-1")?.modelDisplay).toBe("gemini-1.5-pro");
+  patchProgressState("req-1", { modelDisplay: "" });
+  expect(getProgressState("req-1")?.modelDisplay).toBeUndefined();
 });
 
 test("getProgressState returns undefined for unknown request id", () => {
@@ -2208,6 +2261,178 @@ test("renderSubagentProgress component reads patched state on later renders", ()
   expect(text).not.toContain("bash: pwd (");
 });
 
+test("renderSubagentProgress renders modelDisplay footer if present", () => {
+  createProgressState("rend-model", "model-agent", "model task");
+  patchProgressState("rend-model", { modelDisplay: "gemini-1.5-pro" });
+  const theme = makeTheme();
+  const result = renderSubagentProgress(
+    {
+      customType: "subagent-progress",
+      content: "",
+      display: true,
+      details: { requestId: "rend-model" },
+    },
+    { expanded: false },
+    theme,
+  );
+  expect(result).toBeDefined();
+  const text = renderText(result);
+  expect(text).toContain("gemini-1.5-pro");
+});
+
+test("renderSubagentProgress renders modelDisplay footer for expanded running state", () => {
+  createProgressState("rend-model-exp", "model-agent", "model task");
+  patchProgressState("rend-model-exp", {
+    modelDisplay: "gemini-1.5-pro",
+    activeToolActivity: { toolName: "bash", inputSummary: "bash: ls" },
+    lastToolPreview: "bash: ls",
+  });
+  const theme = makeTheme();
+  const result = renderSubagentProgress(
+    {
+      customType: "subagent-progress",
+      content: "",
+      display: true,
+      details: { requestId: "rend-model-exp" },
+    },
+    { expanded: true },
+    theme,
+  );
+  expect(result).toBeDefined();
+  const text = renderText(result);
+  expect(text).toContain("gemini-1.5-pro");
+  expect(text).toContain("model task");
+  expect(text).toContain("bash: ls");
+});
+
+test("renderSubagentProgress renders modelDisplay footer for error state", () => {
+  createProgressState("rend-err", "err-agent", "error task");
+  failProgressState("rend-err", "something exploded");
+  patchProgressState("rend-err", { modelDisplay: "claude-3-5-sonnet" });
+  const theme = makeTheme();
+  const result = renderSubagentProgress(
+    {
+      customType: "subagent-progress",
+      content: "",
+      display: true,
+      details: { requestId: "rend-err" },
+    },
+    { expanded: false },
+    theme,
+  );
+  expect(result).toBeDefined();
+  const text = renderText(result);
+  expect(text).toContain("claude-3-5-sonnet");
+  expect(text).toContain("something exploded");
+});
+
+test("renderSubagentProgress renders modelDisplay footer for expanded error state", () => {
+  createProgressState("rend-err-exp", "err-agent", "error task");
+  failProgressState("rend-err-exp", "something exploded");
+  patchProgressState("rend-err-exp", { modelDisplay: "claude-3-5-sonnet" });
+  const theme = makeTheme();
+  const result = renderSubagentProgress(
+    {
+      customType: "subagent-progress",
+      content: "",
+      display: true,
+      details: { requestId: "rend-err-exp" },
+    },
+    { expanded: true },
+    theme,
+  );
+  expect(result).toBeDefined();
+  const text = renderText(result);
+  expect(text).toContain("claude-3-5-sonnet");
+  expect(text).toContain("something exploded");
+  expect(text).toContain("error task");
+});
+
+test("renderSubagentProgress renders modelDisplay footer for cancelled state", () => {
+  createProgressState("rend-cancel", "cancel-agent", "cancel task");
+  cancelProgressState("rend-cancel", "user cancelled");
+  patchProgressState("rend-cancel", { modelDisplay: "gpt-4o" });
+  const theme = makeTheme();
+  const result = renderSubagentProgress(
+    {
+      customType: "subagent-progress",
+      content: "",
+      display: true,
+      details: { requestId: "rend-cancel" },
+    },
+    { expanded: false },
+    theme,
+  );
+  expect(result).toBeDefined();
+  const text = renderText(result);
+  expect(text).toContain("gpt-4o");
+  expect(text).toContain("cancelled");
+});
+
+test("renderSubagentProgress renders modelDisplay footer for expanded cancelled state", () => {
+  createProgressState("rend-cancel-exp", "cancel-agent", "cancel task");
+  cancelProgressState("rend-cancel-exp", "user cancelled");
+  patchProgressState("rend-cancel-exp", { modelDisplay: "gpt-4o" });
+  const theme = makeTheme();
+  const result = renderSubagentProgress(
+    {
+      customType: "subagent-progress",
+      content: "",
+      display: true,
+      details: { requestId: "rend-cancel-exp" },
+    },
+    { expanded: true },
+    theme,
+  );
+  expect(result).toBeDefined();
+  const text = renderText(result);
+  expect(text).toContain("gpt-4o");
+  expect(text).toContain("cancel task");
+});
+
+test("renderSubagentProgress renders modelDisplay footer for success state", () => {
+  createProgressState("rend-ok", "ok-agent", "success task");
+  finalizeProgressState("rend-ok", "all done");
+  patchProgressState("rend-ok", { modelDisplay: "provider/model:compact" });
+  const theme = makeTheme();
+  const result = renderSubagentProgress(
+    {
+      customType: "subagent-progress",
+      content: "",
+      display: true,
+      details: { requestId: "rend-ok" },
+    },
+    { expanded: false },
+    theme,
+  );
+  expect(result).toBeDefined();
+  const text = renderText(result);
+  expect(text).toContain("provider/model:compact");
+  expect(text).toContain("all done");
+});
+
+test("renderSubagentProgress renders modelDisplay footer for expanded success state", () => {
+  createProgressState("rend-ok-exp", "ok-agent", "success task");
+  finalizeProgressState("rend-ok-exp", "all done");
+  patchProgressState("rend-ok-exp", { modelDisplay: "provider/model:compact" });
+  const theme = makeTheme();
+  const result = renderSubagentProgress(
+    {
+      customType: "subagent-progress",
+      content: "",
+      display: true,
+      details: { requestId: "rend-ok-exp" },
+    },
+    { expanded: true },
+    theme,
+  );
+  expect(result).toBeDefined();
+  const text = renderText(result);
+  expect(text).toContain("provider/model:compact");
+  expect(text).toContain("success task");
+  expect(text).toContain("all done");
+});
+
 test("format header stats renders tool count context percent and elapsed", () => {
   const stats = formatHeaderStats({
     requestId: "req-1",
@@ -2223,7 +2448,7 @@ test("format header stats renders tool count context percent and elapsed", () =>
     inputTokens: 7100,
     outputTokens: 890,
   });
-  expect(stats).toBe("3 tools · 8% ctx · 2.5s\n");
+  expect(stats).toBe("3 tools · 8% ctx · 2.5s");
   expect(stats).not.toContain("7.1k in");
   expect(stats).not.toContain("890 out");
 });
@@ -2239,13 +2464,13 @@ test("format header stats pluralizes zero singular and plural tool counts", () =
     durationMs: 2500,
   };
   expect(formatHeaderStats({ ...base, toolCount: 0 })).toBe(
-    "0 tools · --% ctx · 2.5s\n",
+    "0 tools · --% ctx · 2.5s",
   );
   expect(formatHeaderStats({ ...base, toolCount: 1 })).toBe(
-    "1 tool · --% ctx · 2.5s\n",
+    "1 tool · --% ctx · 2.5s",
   );
   expect(formatHeaderStats({ ...base, toolCount: 2 })).toBe(
-    "2 tools · --% ctx · 2.5s\n",
+    "2 tools · --% ctx · 2.5s",
   );
 });
 
@@ -2260,27 +2485,27 @@ test("format header stats handles zero usage and context fallbacks", () => {
     startTime: 1000,
     toolCount: 0,
   };
-  expect(formatHeaderStats(base)).toBe("0 tools · --% ctx · 3.0s\n");
+  expect(formatHeaderStats(base)).toBe("0 tools · --% ctx · 3.0s");
   expect(
     formatHeaderStats({ ...base, contextTokens: -1, contextWindowTokens: 100 }),
-  ).toBe("0 tools · 0% ctx · 3.0s\n");
+  ).toBe("0 tools · 0% ctx · 3.0s");
   expect(
     formatHeaderStats({
       ...base,
       contextTokens: Number.NaN,
       contextWindowTokens: 100,
     }),
-  ).toBe("0 tools · 0% ctx · 3.0s\n");
+  ).toBe("0 tools · 0% ctx · 3.0s");
   expect(
     formatHeaderStats({ ...base, contextTokens: 50, contextWindowTokens: 0 }),
-  ).toBe("0 tools · --% ctx · 3.0s\n");
+  ).toBe("0 tools · --% ctx · 3.0s");
   expect(
     formatHeaderStats({
       ...base,
       contextTokens: 50,
       contextWindowTokens: Number.POSITIVE_INFINITY,
     }),
-  ).toBe("0 tools · --% ctx · 3.0s\n");
+  ).toBe("0 tools · --% ctx · 3.0s");
 });
 
 test("renderSubagentProgress error state shows error text", () => {
@@ -4708,6 +4933,103 @@ test("extractProgressFromDetails does not set progressLastToolPreview for whites
   expect(result.lastToolPreview).toBeUndefined();
 });
 
+test("patchProgressFromDetails copies latestResult.model to modelDisplay", () => {
+  createProgressState("req-1", "agent-a", "task a");
+  const details = makeDetails([]);
+  const firstResult = details.results[0];
+  if (!firstResult) throw new Error("missing result");
+  firstResult.model = "claude-3-5-sonnet";
+  firstResult.usage = {
+    ...firstResult.usage,
+    input: 10,
+    output: 5,
+    contextTokens: 15,
+    contextWindowTokens: 100,
+  };
+  const seen = new Set<string>();
+  patchProgressFromDetails("req-1", details, seen);
+  expect(getProgressState("req-1")?.modelDisplay).toBe("claude-3-5-sonnet");
+  expect(getProgressState("req-1")?.inputTokens).toBe(10);
+  expect(getProgressState("req-1")?.outputTokens).toBe(5);
+});
+
+test("patchProgressFromDetails does not set modelDisplay when model is undefined", () => {
+  createProgressState("req-1", "agent-a", "task a");
+  const details = makeDetails([]);
+  const firstResult = details.results[0];
+  if (!firstResult) throw new Error("missing result");
+  firstResult.model = undefined;
+  firstResult.usage = {
+    ...firstResult.usage,
+    input: 10,
+    output: 5,
+  };
+  const seen = new Set<string>();
+  patchProgressFromDetails("req-1", details, seen);
+  expect(getProgressState("req-1")?.modelDisplay).toBeUndefined();
+  expect(getProgressState("req-1")?.inputTokens).toBe(10);
+});
+
+test("patchProgressFromDetails does not set modelDisplay when model is empty string", () => {
+  createProgressState("req-1", "agent-a", "task a");
+  const details = makeDetails([]);
+  const firstResult = details.results[0];
+  if (!firstResult) throw new Error("missing result");
+  firstResult.model = "";
+  firstResult.usage = {
+    ...firstResult.usage,
+    input: 10,
+    output: 5,
+  };
+  const seen = new Set<string>();
+  patchProgressFromDetails("req-1", details, seen);
+  expect(getProgressState("req-1")?.modelDisplay).toBeUndefined();
+  expect(getProgressState("req-1")?.inputTokens).toBe(10);
+});
+
+test("patchProgressFromDetails does not throw when details have no results", () => {
+  createProgressState("req-1", "agent-a", "task a");
+  const details: SubagentDetails = {
+    mode: "single",
+    agentScope: "both",
+    projectAgentsDir: null,
+    results: [],
+  };
+  const seen = new Set<string>();
+  expect(() => patchProgressFromDetails("req-1", details, seen)).not.toThrow();
+  expect(getProgressState("req-1")?.modelDisplay).toBeUndefined();
+});
+
+test("patchProgressFromDetails updates modelDisplay alongside existing usage metric patching", () => {
+  createProgressState("req-1", "agent-a", "task a");
+  patchProgressState("req-1", {
+    toolCount: 1,
+    inputTokens: 10,
+    outputTokens: 5,
+    contextTokens: 15,
+    contextWindowTokens: 100,
+  });
+  const details = makeDetails([]);
+  const firstResult = details.results[0];
+  if (!firstResult) throw new Error("missing result");
+  firstResult.model = "gpt-4o";
+  firstResult.usage = {
+    ...firstResult.usage,
+    input: 20,
+    output: 10,
+    contextTokens: 30,
+    contextWindowTokens: 200,
+  };
+  const seen = new Set<string>();
+  patchProgressFromDetails("req-1", details, seen);
+  expect(getProgressState("req-1")?.modelDisplay).toBe("gpt-4o");
+  expect(getProgressState("req-1")?.inputTokens).toBe(20);
+  expect(getProgressState("req-1")?.outputTokens).toBe(10);
+  expect(getProgressState("req-1")?.contextTokens).toBe(30);
+  expect(getProgressState("req-1")?.contextWindowTokens).toBe(200);
+  expect(getProgressState("req-1")?.toolCount).toBe(1);
+});
+
 test("extractProgressFromDetails skips null entries in toolCalls", () => {
   const details = makeDetails([]) as unknown as SubagentDetails;
   const firstResult = details.results[0];
@@ -4734,4 +5056,31 @@ test("extractProgressFromDetails sets lastToolPreview from progress.lastToolPrev
   expect(result.lastToolPreview).toBe("bash: ls");
   expect(result.progressLastToolPreview).toBe("bash: ls");
   expect(result.newToolCallIds).toEqual([]);
+});
+
+test("patchProgressFromDetails does not throw when no progress state exists", () => {
+  const details = makeDetails([]);
+  const firstResult = details.results[0];
+  if (!firstResult) throw new Error("missing result");
+  firstResult.model = "claude-3-5-sonnet";
+  const seen = new Set<string>();
+  expect(() => patchProgressFromDetails("req-1", details, seen)).not.toThrow();
+  expect(getProgressState("req-1")).toBeUndefined();
+});
+
+test("patchProgressFromDetails does not set modelDisplay when model is whitespace-only string", () => {
+  createProgressState("req-1", "agent-a", "task a");
+  const details = makeDetails([]);
+  const firstResult = details.results[0];
+  if (!firstResult) throw new Error("missing result");
+  firstResult.model = "   ";
+  firstResult.usage = {
+    ...firstResult.usage,
+    input: 10,
+    output: 5,
+  };
+  const seen = new Set<string>();
+  patchProgressFromDetails("req-1", details, seen);
+  expect(getProgressState("req-1")?.modelDisplay).toBeUndefined();
+  expect(getProgressState("req-1")?.inputTokens).toBe(10);
 });
