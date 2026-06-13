@@ -1,7 +1,12 @@
 import { expect, test } from "bun:test";
 import { symlink, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { discoverAgentsAsync } from "../src/agent/agents.js";
+import {
+  type AgentConfig,
+  discoverAgentsAsync,
+  formatAgentList,
+  readMarkdownDirWithStatusAsync,
+} from "../src/agent/agents.js";
 import { setupFakePi } from "./helpers.js";
 
 test("reachability gate: valid markdown produces agent config through discovery", async () => {
@@ -27,10 +32,232 @@ Valid agent prompt.`,
     tools: ["bash", "read"],
     skills: ["helper", "reviewer"],
     thinking: "medium",
+    model: undefined,
+    provider: undefined,
     systemPrompt: "Valid agent prompt.",
     source: "user",
     filePath: path.join(userDir, "valid.md"),
   });
+});
+
+test("parse model and provider frontmatter without changing existing fields", async () => {
+  const { agentDir, cwd } = await setupFakePi();
+  const userDir = path.join(agentDir, "agents");
+  await writeFile(
+    path.join(userDir, "model-provider.md"),
+    `---
+name: model-provider
+provider: anthropic
+description: Model provider agent
+tools: bash, read
+skills: helper, reviewer
+model: claude-sonnet-4
+thinking: high
+---
+Model provider prompt.`,
+  );
+  const discovery = await discoverAgentsAsync(cwd, "user");
+  const agent = discovery.agents.find((a) => a.name === "model-provider");
+  expect(agent).toMatchObject({
+    name: "model-provider",
+    description: "Model provider agent",
+    tools: ["bash", "read"],
+    skills: ["helper", "reviewer"],
+    thinking: "high",
+    model: "claude-sonnet-4",
+    provider: "anthropic",
+    systemPrompt: "Model provider prompt.",
+    source: "user",
+    filePath: path.join(userDir, "model-provider.md"),
+  });
+});
+
+test("trim model and provider frontmatter before discovery", async () => {
+  const { agentDir, cwd } = await setupFakePi();
+  const userDir = path.join(agentDir, "agents");
+  await writeFile(
+    path.join(userDir, "trimmed-model-provider.md"),
+    `---
+name: trimmed-model-provider
+description: Trimmed model provider
+model: "  claude-sonnet-4  "
+provider: "  anthropic  "
+---
+Prompt`,
+  );
+  const discovery = await discoverAgentsAsync(cwd, "user");
+  const agent = discovery.agents.find(
+    (a) => a.name === "trimmed-model-provider",
+  );
+  expect(agent?.model).toBe("claude-sonnet-4");
+  expect(agent?.provider).toBe("anthropic");
+});
+
+test("parse model-only frontmatter with undefined provider", async () => {
+  const { agentDir, cwd } = await setupFakePi();
+  const userDir = path.join(agentDir, "agents");
+  await writeFile(
+    path.join(userDir, "model-only.md"),
+    `---
+name: model-only
+description: Model only
+model: gpt-5
+---
+Prompt`,
+  );
+  const discovery = await discoverAgentsAsync(cwd, "user");
+  const agent = discovery.agents.find((a) => a.name === "model-only");
+  expect(agent?.model).toBe("gpt-5");
+  expect(agent?.provider).toBeUndefined();
+});
+
+test("blank provider with model frontmatter normalizes to model-only discovery", async () => {
+  const { agentDir, cwd } = await setupFakePi();
+  const userDir = path.join(agentDir, "agents");
+  await writeFile(
+    path.join(userDir, "blank-provider-model.md"),
+    `---
+name: blank-provider-model
+description: Blank provider with model
+model: gpt-5
+provider: "   "
+---
+Prompt`,
+  );
+  const discovery = await discoverAgentsAsync(cwd, "user");
+  const agent = discovery.agents.find((a) => a.name === "blank-provider-model");
+  expect(agent?.model).toBe("gpt-5");
+  expect(agent?.provider).toBeUndefined();
+});
+
+test("provider with whitespace-only model is rejected from discovery", async () => {
+  const { agentDir, cwd } = await setupFakePi();
+  const userDir = path.join(agentDir, "agents");
+  await writeFile(
+    path.join(userDir, "provider-blank-model.md"),
+    `---
+name: provider-blank-model
+description: Provider with blank model
+provider: openai
+model: "   "
+---
+Prompt`,
+  );
+  const discovery = await discoverAgentsAsync(cwd, "user");
+  expect(
+    discovery.agents.find((a) => a.name === "provider-blank-model"),
+  ).toBeUndefined();
+});
+
+test("parse provider-only frontmatter is rejected from discovery", async () => {
+  const { agentDir, cwd } = await setupFakePi();
+  const userDir = path.join(agentDir, "agents");
+  await writeFile(
+    path.join(userDir, "provider-only.md"),
+    `---
+name: provider-only
+description: Provider only
+provider: openai
+---
+Prompt`,
+  );
+  const discovery = await discoverAgentsAsync(cwd, "user");
+  expect(
+    discovery.agents.find((a) => a.name === "provider-only"),
+  ).toBeUndefined();
+});
+
+test("provider-only with empty model string is rejected from discovery", async () => {
+  const { agentDir, cwd } = await setupFakePi();
+  const userDir = path.join(agentDir, "agents");
+  await writeFile(
+    path.join(userDir, "provider-only-empty-model.md"),
+    `---
+name: provider-only-empty-model
+description: Provider only with empty model
+provider: openai
+model: ""
+---
+Prompt`,
+  );
+  const discovery = await discoverAgentsAsync(cwd, "user");
+  expect(
+    discovery.agents.find((a) => a.name === "provider-only-empty-model"),
+  ).toBeUndefined();
+});
+
+test("blank model and provider strings normalize to undefined", async () => {
+  const { agentDir, cwd } = await setupFakePi();
+  const userDir = path.join(agentDir, "agents");
+  await writeFile(
+    path.join(userDir, "blank-model-provider.md"),
+    `---
+name: blank-model-provider
+description: Blank model provider
+model: ""
+provider: "   "
+---
+Prompt`,
+  );
+  const discovery = await discoverAgentsAsync(cwd, "user");
+  const agent = discovery.agents.find((a) => a.name === "blank-model-provider");
+  expect(agent?.model).toBeUndefined();
+  expect(agent?.provider).toBeUndefined();
+});
+
+test("bare model: and provider: with null values normalize to undefined", async () => {
+  const { agentDir, cwd } = await setupFakePi();
+  const userDir = path.join(agentDir, "agents");
+  await writeFile(
+    path.join(userDir, "bare-null.md"),
+    `---
+name: bare-null
+description: Bare null values
+model:
+provider:
+---
+Prompt`,
+  );
+  const discovery = await discoverAgentsAsync(cwd, "user");
+  const agent = discovery.agents.find((a) => a.name === "bare-null");
+  expect(agent).toBeDefined();
+  expect(agent?.model).toBeUndefined();
+  expect(agent?.provider).toBeUndefined();
+});
+
+test("non-string model field is rejected from discovery", async () => {
+  const { agentDir, cwd } = await setupFakePi();
+  const userDir = path.join(agentDir, "agents");
+  await writeFile(
+    path.join(userDir, "bad-model.md"),
+    `---
+name: bad-model
+description: Bad model
+model: 123
+---
+Prompt`,
+  );
+  const discovery = await discoverAgentsAsync(cwd, "user");
+  expect(discovery.agents.find((a) => a.name === "bad-model")).toBeUndefined();
+});
+
+test("non-string provider field is rejected from discovery", async () => {
+  const { agentDir, cwd } = await setupFakePi();
+  const userDir = path.join(agentDir, "agents");
+  await writeFile(
+    path.join(userDir, "bad-provider.md"),
+    `---
+name: bad-provider
+description: Bad provider
+provider:
+  - openai
+---
+Prompt`,
+  );
+  const discovery = await discoverAgentsAsync(cwd, "user");
+  expect(
+    discovery.agents.find((a) => a.name === "bad-provider"),
+  ).toBeUndefined();
 });
 
 test("malformed frontmatter that throws is rejected from discovery", async () => {
@@ -268,6 +495,18 @@ Symlinked prompt.`,
   });
 });
 
+test("broken symlinked markdown entries are skipped during discovery", async () => {
+  const { agentDir, cwd } = await setupFakePi();
+  const userDir = path.join(agentDir, "agents");
+  const brokenSymlinkPath = path.join(userDir, "broken.md");
+  await symlink(path.join(userDir, "missing-target.md"), brokenSymlinkPath);
+  const discovery = await discoverAgentsAsync(cwd, "user");
+  expect(discovery.scopes.user.markdownFiles).toContain("broken.md");
+  expect(
+    discovery.agents.find((a) => a.filePath === brokenSymlinkPath),
+  ).toBeUndefined();
+});
+
 test("non-markdown files are ignored in discovery", async () => {
   const { agentDir, cwd } = await setupFakePi();
   const userDir = path.join(agentDir, "agents");
@@ -282,4 +521,43 @@ Prompt`,
   const discovery = await discoverAgentsAsync(cwd, "user");
   expect(discovery.agents.find((a) => a.name === "text-agent")).toBeUndefined();
   expect(discovery.scopes.user.markdownFiles).not.toContain("agent.txt");
+});
+
+test("readMarkdownDirWithStatusAsync reports missing directories", async () => {
+  const { agentDir } = await setupFakePi();
+  const listing = await readMarkdownDirWithStatusAsync(
+    path.join(agentDir, "missing-agents"),
+  );
+  expect(listing).toEqual({ entries: [], ok: false });
+});
+
+test("formatAgentList formats empty and truncated lists", () => {
+  const agents: AgentConfig[] = [
+    {
+      name: "alpha",
+      description: "First agent",
+      systemPrompt: "Prompt",
+      source: "user",
+      filePath: "alpha.md",
+    },
+    {
+      name: "beta",
+      description: "Second agent",
+      systemPrompt: "Prompt",
+      source: "project",
+      filePath: "beta.md",
+    },
+    {
+      name: "gamma",
+      description: "Third agent",
+      systemPrompt: "Prompt",
+      source: "user",
+      filePath: "gamma.md",
+    },
+  ];
+  expect(formatAgentList([], 2)).toEqual({ text: "none", remaining: 0 });
+  expect(formatAgentList(agents, 2)).toEqual({
+    text: "alpha (user): First agent; beta (project): Second agent",
+    remaining: 1,
+  });
 });

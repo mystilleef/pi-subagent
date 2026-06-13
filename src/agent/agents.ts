@@ -23,6 +23,8 @@ export interface AgentConfig {
   tools?: string[] | undefined;
   skills?: string[] | undefined;
   thinking?: ThinkingLevel | undefined;
+  model?: string | undefined;
+  provider?: string | undefined;
   systemPrompt: string;
   source: AgentSource;
   filePath: string;
@@ -74,6 +76,12 @@ function parseThinkingLevel(raw: unknown): ThinkingLevel | undefined {
     : undefined;
 }
 
+function parseOptionalString(raw: unknown): string | undefined {
+  if (typeof raw !== "string") return undefined;
+  const normalized = raw.trim();
+  return normalized.length > 0 ? normalized : undefined;
+}
+
 function parseAgentConfig(
   content: string,
   source: AgentSource,
@@ -99,22 +107,31 @@ function parseAgentConfig(
     tools: rawTools,
     skills: rawSkills,
     thinking: rawThinking,
+    model: rawModel,
+    provider: rawProvider,
   } = frontmatter;
   if (typeof name !== "string" || typeof description !== "string") return null;
   if (rawTools != null && typeof rawTools !== "string") return null;
   if (rawSkills != null && typeof rawSkills !== "string") return null;
   if (rawThinking != null && typeof rawThinking !== "string") return null;
+  if (rawModel != null && typeof rawModel !== "string") return null;
+  if (rawProvider != null && typeof rawProvider !== "string") return null;
   const tools = parseCommaList(rawTools);
   const skills = Object.hasOwn(frontmatter, "skills")
     ? (parseCommaList(rawSkills) ?? [])
     : undefined;
   const thinking = parseThinkingLevel(rawThinking);
+  const model = parseOptionalString(rawModel);
+  const provider = parseOptionalString(rawProvider);
+  if (provider !== undefined && model === undefined) return null;
   return {
     name,
     description,
     tools,
     skills,
     thinking,
+    model,
+    provider,
     systemPrompt: body,
     source,
     filePath,
