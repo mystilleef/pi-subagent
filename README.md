@@ -1,9 +1,8 @@
 # Subagent
 
 Designed to orchestrate agents for the
-[SPAE framework](https://github.com/mystilleef/spae-framework).
-
-Agents in
+[SPAE framework](https://github.com/mystilleef/spae-framework). Agents
+in
 [action](https://raw.githubusercontent.com/mystilleef/pi-subagent/main/assets/parallel-agents-demo.mp4).
 
 ---
