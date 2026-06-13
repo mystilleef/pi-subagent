@@ -13,7 +13,6 @@
 
 ## Rules
 
-- Never make autonomous commits
 - Write asynchronous, non-blocking code.
 - Write code that never blocks the `TUI`/`GUI`.
 - Write testable code.
