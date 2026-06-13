@@ -2154,6 +2154,373 @@ test("renderRunsBoard uses body source priority and fallback", () => {
   expect(text).toContain("[muted](no output)[/muted]");
 });
 
+test("abridged status cards without footer keep existing line output", () => {
+  const now = Date.now();
+  const state: SubagentProgressState = {
+    requestId: "r1",
+    agent: "builder",
+    taskPreview: "",
+    status: "running",
+    startTime: now - 10000,
+    toolCount: 0,
+  };
+  const fakeTheme = createDefaultFakeTheme();
+  const rendered = renderRunsBoard([state], fakeTheme as never);
+  const text = renderToString(rendered);
+  const lines = text.split("\n");
+  const cardLines = lines.filter((line) =>
+    /^\[tool(Pending|Error|Success)Bg\]/.test(line),
+  );
+  expect(cardLines).toHaveLength(4);
+  expect(text).toContain("[muted](no output)[/muted]");
+});
+
+test("abridged progress job card with modelDisplay renders dim model footer", () => {
+  const now = Date.now();
+  const state: SubagentProgressState = {
+    requestId: "r1",
+    agent: "builder",
+    taskPreview: "do work",
+    status: "running",
+    startTime: now - 10000,
+    toolCount: 3,
+    contextTokens: 10000,
+    contextWindowTokens: 50000,
+    modelDisplay: "provider/model:high",
+  };
+  const fakeTheme = createDefaultFakeTheme();
+  const rendered = renderRunsBoard([state], fakeTheme as never);
+  const text = renderToString(rendered);
+  expect(text).toContain("[dim]provider/model:high[/dim]");
+});
+
+test("abridged progress job card with modelDisplay excludes usage/cost/turn/context footer segments", () => {
+  const now = Date.now();
+  const state: SubagentProgressState = {
+    requestId: "r1",
+    agent: "builder",
+    taskPreview: "do work",
+    status: "running",
+    startTime: now - 10000,
+    toolCount: 4,
+    contextTokens: 5000,
+    contextWindowTokens: 200000,
+    modelDisplay: "provider/model:high",
+  };
+  const fakeTheme = createDefaultFakeTheme();
+  const rendered = renderRunsBoard([state], fakeTheme as never);
+  const text = renderToString(rendered);
+  const footerLine = text
+    .split("\n")
+    .find((l) => l.includes("[dim]") && l.includes("provider/model:high"));
+  expect(footerLine).toBeDefined();
+  expect(footerLine).not.toContain("turn");
+  expect(footerLine).not.toContain("ctx:");
+  expect(footerLine).not.toContain("$");
+  expect(footerLine).not.toContain("↑");
+  expect(footerLine).not.toContain("↓");
+});
+
+test("abridged progress job card with modelDisplay and zero tool count preserves compact body", () => {
+  const now = Date.now();
+  const state: SubagentProgressState = {
+    requestId: "r1",
+    agent: "empty-tool",
+    taskPreview: "",
+    status: "running",
+    startTime: now - 10000,
+    toolCount: 0,
+    modelDisplay: "provider/model:fast",
+  };
+  const fakeTheme = createDefaultFakeTheme();
+  const rendered = renderRunsBoard([state], fakeTheme as never);
+  const text = renderToString(rendered);
+  expect(text).toContain("[dim]provider/model:fast[/dim]");
+  expect(text).toContain("[muted](no output)[/muted]");
+});
+
+test("abridged progress job card with modelDisplay and long body preview truncates and preserves footer", () => {
+  const now = Date.now();
+  const longBody = "X".repeat(200);
+  const state: SubagentProgressState = {
+    requestId: "r1",
+    agent: "verbose",
+    taskPreview: "",
+    status: "running",
+    startTime: now - 10000,
+    toolCount: 1,
+    finalOutput: longBody,
+    modelDisplay: "provider/model:verbose",
+  };
+  const fakeTheme = createDefaultFakeTheme();
+  const rendered = renderRunsBoard([state], fakeTheme as never);
+  const text = renderToString(rendered);
+  expect(text).toContain(`${longBody.slice(0, 119)}…`);
+  expect(text).not.toContain(longBody);
+  expect(text).toContain("[dim]provider/model:verbose[/dim]");
+});
+
+test("abridged progress job card without modelDisplay renders no dim model footer", () => {
+  const now = Date.now();
+  const state: SubagentProgressState = {
+    requestId: "r1",
+    agent: "builder",
+    taskPreview: "do work",
+    status: "running",
+    startTime: now - 10000,
+    toolCount: 2,
+    contextTokens: 5000,
+    contextWindowTokens: 50000,
+    finalOutput: "working on it",
+  };
+  const fakeTheme = createDefaultFakeTheme();
+  const rendered = renderRunsBoard([state], fakeTheme as never);
+  const text = renderToString(rendered);
+  const dimParts = text.match(/\[dim\]([^[]+)\[\/dim\]/g) ?? [];
+  const modelFooter = dimParts.filter((p) => p.includes("model"));
+  expect(modelFooter).toHaveLength(0);
+});
+
+test("abridged progress job card with undefined modelDisplay excludes footer", () => {
+  const now = Date.now();
+  const state: SubagentProgressState = {
+    requestId: "r1",
+    agent: "builder",
+    taskPreview: "",
+    status: "running",
+    startTime: now - 10000,
+    toolCount: 0,
+    modelDisplay: undefined,
+  };
+  const fakeTheme = createDefaultFakeTheme();
+  const rendered = renderRunsBoard([state], fakeTheme as never);
+  const text = renderToString(rendered);
+  expect(text).toContain("[muted](no output)[/muted]");
+  const dimParts = text.match(/\[dim\]([^[]+)\[\/dim\]/g) ?? [];
+  const modelFooter = dimParts.filter((p) => p.includes("model"));
+  expect(modelFooter).toHaveLength(0);
+});
+
+test("progress model footer regression: exact footer line is dim model only", () => {
+  const now = Date.now();
+  const state: SubagentProgressState = {
+    requestId: "r1",
+    agent: "builder",
+    taskPreview: "do work",
+    status: "running",
+    startTime: now - 10000,
+    toolCount: 3,
+    contextTokens: 10000,
+    contextWindowTokens: 50000,
+    modelDisplay: "provider/model:high",
+  };
+  const fakeTheme = createDefaultFakeTheme();
+  const rendered = renderRunsBoard([state], fakeTheme as never);
+  const text = renderToString(rendered);
+  const lines = text.split("\n");
+  const footerLines = lines.filter(
+    (l) => l.includes("[dim]") && l.includes("provider/model:high"),
+  );
+  expect(footerLines).toHaveLength(1);
+  const fl0 = footerLines[0] as string;
+  expect(fl0.trim()).toMatch(
+    /^\[toolPendingBg\] \[dim\]provider\/model:high\[\/dim\]\s+\[\/toolPendingBg\]$/,
+  );
+});
+
+test("progress model footer regression: footer line rejects all completed-card segments", () => {
+  const now = Date.now();
+  const state: SubagentProgressState = {
+    requestId: "r1",
+    agent: "builder",
+    taskPreview: "do work",
+    status: "running",
+    startTime: now - 60000,
+    toolCount: 5,
+    inputTokens: 12000,
+    outputTokens: 8000,
+    contextTokens: 50000,
+    contextWindowTokens: 200000,
+    modelDisplay: "provider/model:high",
+  };
+  const fakeTheme = createDefaultFakeTheme();
+  const rendered = renderRunsBoard([state], fakeTheme as never);
+  const text = renderToString(rendered);
+  const lines = text.split("\n");
+  const footerLine = lines.find(
+    (l) => l.includes("[dim]") && l.includes("provider/model:high"),
+  );
+  expect(footerLine).toBeDefined();
+  const fl = footerLine as string;
+  expect(fl).toContain("[dim]provider/model:high[/dim]");
+  expect(fl).not.toContain("turn");
+  expect(fl).not.toContain("ctx:");
+  expect(fl).not.toContain("$");
+  expect(fl).not.toContain("↑");
+  expect(fl).not.toContain("↓");
+  expect(fl).not.toMatch(/\d+s\b/);
+  expect(fl).not.toMatch(/\dm \d+s/);
+  expect(fl).not.toMatch(/\dtools?\b/);
+});
+
+test("progress model footer regression: empty string modelDisplay excludes footer", () => {
+  const now = Date.now();
+  const state: SubagentProgressState = {
+    requestId: "r1",
+    agent: "builder",
+    taskPreview: "do work",
+    status: "running",
+    startTime: now - 10000,
+    toolCount: 1,
+    modelDisplay: "",
+  };
+  const fakeTheme = createDefaultFakeTheme();
+  const rendered = renderRunsBoard([state], fakeTheme as never);
+  const text = renderToString(rendered);
+  const dimFooters = (text.match(/\[dim\][^[]*\[\/dim\]/g) ?? []).filter((m) =>
+    m.includes("model"),
+  );
+  expect(dimFooters).toHaveLength(0);
+});
+
+test("progress model footer regression: footer exclusive to modelDisplay-bearing cards in mixed board", () => {
+  const now = Date.now();
+  const states: SubagentProgressState[] = [
+    {
+      requestId: "r1",
+      agent: "builder",
+      taskPreview: "build",
+      status: "running",
+      startTime: now - 10000,
+      toolCount: 3,
+      contextTokens: 10000,
+      contextWindowTokens: 50000,
+      modelDisplay: "provider/model:high",
+      finalOutput: "building...",
+    },
+    {
+      requestId: "r2",
+      agent: "reviewer",
+      taskPreview: "review",
+      status: "running",
+      startTime: now - 5000,
+      toolCount: 1,
+      contextTokens: 5000,
+      contextWindowTokens: 50000,
+      finalOutput: "reviewing...",
+    },
+    {
+      requestId: "r3",
+      agent: "tester",
+      taskPreview: "test",
+      status: "error",
+      startTime: now - 20000,
+      durationMs: 15000,
+      toolCount: 2,
+      modelDisplay: undefined,
+      errorText: "tests failed",
+    },
+    {
+      requestId: "r4",
+      agent: "scanner",
+      taskPreview: "scan",
+      status: "running",
+      startTime: now - 30000,
+      toolCount: 0,
+      modelDisplay: "provider/model:fast",
+      finalOutput: " ",
+    },
+  ];
+  const fakeTheme = createDefaultFakeTheme();
+  const rendered = renderRunsBoard(states, fakeTheme as never);
+  const text = renderToString(rendered);
+  const dimModelFooters = (
+    text.match(/\[dim\](provider\/model[^[]+)\[\/dim\]/g) ?? []
+  ).map((m) => m.replace("[dim]", "").replace("[/dim]", ""));
+  expect(dimModelFooters).toHaveLength(2);
+  expect(dimModelFooters).toContain("provider/model:high");
+  expect(dimModelFooters).toContain("provider/model:fast");
+});
+
+test("full status card footer still renders after abridged footer support", () => {
+  const fakeTheme = createDefaultFakeTheme();
+  const rendered = renderSubagentResult(
+    {
+      content: [{ type: "text" as const, text: "ignored" }],
+      details: {
+        mode: "single" as const,
+        agentScope: "both" as const,
+        projectAgentsDir: null,
+        results: [
+          {
+            agent: "builder",
+            agentSource: "project" as const,
+            task: "pass",
+            exitCode: 0,
+            finalOutput: "done",
+            messages: [],
+            stderr: "",
+            model: "provider/model",
+            usage: {
+              input: 0,
+              output: 0,
+              cacheRead: 0,
+              cacheWrite: 0,
+              cost: 0.01,
+              contextTokens: 0,
+              turns: 1,
+            },
+          },
+        ],
+      },
+    },
+    fakeTheme,
+  );
+  const text = renderToString(rendered);
+  expect(text).toContain("[dim]provider/model · 1 turn · $0.0100[/dim]");
+});
+
+test("empty footer text does not render a blank footer line on status card", () => {
+  const fakeTheme = createDefaultFakeTheme();
+  const rendered = renderSubagentResult(
+    {
+      content: [{ type: "text" as const, text: "ignored" }],
+      details: {
+        mode: "single" as const,
+        agentScope: "both" as const,
+        projectAgentsDir: null,
+        results: [
+          {
+            agent: "builder",
+            agentSource: "project" as const,
+            task: "pass",
+            exitCode: 0,
+            finalOutput: "done",
+            messages: [],
+            stderr: "",
+            usage: {
+              input: 0,
+              output: 0,
+              cacheRead: 0,
+              cacheWrite: 0,
+              cost: 0,
+              contextTokens: 0,
+              turns: 0,
+            },
+          },
+        ],
+      },
+    },
+    fakeTheme,
+  );
+  const text = renderToString(rendered);
+  const lines = text.split("\n");
+  const cardLines = lines.filter((line) =>
+    /^\[tool(?:Pending|Error|Success)Bg\]/.test(line),
+  );
+  expect(cardLines).toHaveLength(6);
+});
+
 test("result detail shape compatible with preserved nested activity progress", async () => {
   const sentMessages: SendMessageArg[] = [];
   const { tool, cwd } = await setupTest({
@@ -2491,4 +2858,463 @@ test("renderResult isPartial=true with non-empty finalOutput still uses finalOut
   const renderedText = renderToString(rendered);
   expect(renderedText).toContain("[toolOutput]final result text[/toolOutput]");
   expect(renderedText).not.toContain("bash: ls");
+});
+
+test("formatResultFooter outputs model only when all usage fields are zero", () => {
+  const footer = formatResultFooter(
+    {
+      turns: 0,
+      input: 0,
+      output: 0,
+      cacheRead: 0,
+      cacheWrite: 0,
+      cost: 0,
+      contextTokens: 0,
+    },
+    "provider/model",
+  );
+  expect(footer).toBe("provider/model");
+  expect(footer).not.toContain(" · ");
+});
+
+test("formatResultFooter with model and turns only suppresses context and cost when zero", () => {
+  const footer = formatResultFooter(
+    {
+      turns: 3,
+      input: 0,
+      output: 0,
+      cacheRead: 0,
+      cacheWrite: 0,
+      cost: 0,
+      contextTokens: 0,
+    },
+    "provider/model",
+  );
+  expect(footer).toBe("provider/model · 3 turns");
+  expect(footer).not.toContain("ctx");
+  expect(footer).not.toContain("$");
+});
+
+test("formatResultFooter with model and contextTokens only suppresses turns and cost when zero", () => {
+  const footer = formatResultFooter(
+    {
+      turns: 0,
+      input: 0,
+      output: 0,
+      cacheRead: 0,
+      cacheWrite: 0,
+      cost: 0,
+      contextTokens: 38000,
+    },
+    "provider/model",
+  );
+  expect(footer).toBe("provider/model · ctx:38k");
+  expect(footer).not.toContain("turn");
+  expect(footer).not.toContain("$");
+});
+
+test("formatResultFooter with model and cost only suppresses turns and context when zero", () => {
+  const footer = formatResultFooter(
+    {
+      turns: 0,
+      input: 0,
+      output: 0,
+      cacheRead: 0,
+      cacheWrite: 0,
+      cost: 0.01,
+      contextTokens: 0,
+    },
+    "provider/model",
+  );
+  expect(footer).toBe("provider/model · $0.0100");
+  expect(footer).not.toContain("turn");
+  expect(footer).not.toContain("ctx");
+});
+
+test("formatResultFooter without model but with usage fields keeps correct order", () => {
+  const footer = formatResultFooter(
+    {
+      turns: 2,
+      input: 0,
+      output: 0,
+      cacheRead: 0,
+      cacheWrite: 0,
+      cost: 0.02,
+      contextTokens: 50000,
+    },
+    undefined,
+  );
+  expect(footer).toBe("2 turns · ctx:50k · $0.0200");
+  expect(footer).not.toContain("model");
+});
+
+test("completed result card footer renders model, turns, context, cost in fixed order", () => {
+  const fakeTheme = createDefaultFakeTheme();
+  const rendered = renderSubagentResult(
+    {
+      content: [{ type: "text" as const, text: "ignored" }],
+      details: {
+        mode: "single" as const,
+        agentScope: "both" as const,
+        projectAgentsDir: null,
+        results: [
+          {
+            agent: "builder",
+            agentSource: "project" as const,
+            task: "pass",
+            exitCode: 0,
+            finalOutput: "done",
+            messages: [],
+            stderr: "",
+            model: "claude-sonnet-4-20250514",
+            usage: {
+              input: 0,
+              output: 0,
+              cacheRead: 0,
+              cacheWrite: 0,
+              cost: 0.005,
+              contextTokens: 12400,
+              turns: 3,
+            },
+          },
+        ],
+      },
+    },
+    fakeTheme,
+  );
+  const renderedText = renderToString(rendered);
+  const footerIdx = renderedText.indexOf("[dim]claude-sonnet-4-20250514");
+  expect(footerIdx).toBeGreaterThan(0);
+  const afterFooter = renderedText.slice(footerIdx);
+  const modelIdx = afterFooter.indexOf("claude-sonnet-4-20250514");
+  const turnsIdx = afterFooter.indexOf("3 turns");
+  const ctxIdx = afterFooter.indexOf("ctx:12k");
+  const costIdx = afterFooter.indexOf("$0.0050");
+  expect(modelIdx).toBeGreaterThanOrEqual(0);
+  expect(turnsIdx).toBeGreaterThan(0);
+  expect(ctxIdx).toBeGreaterThan(turnsIdx);
+  expect(costIdx).toBeGreaterThan(ctxIdx);
+  expect(afterFooter).not.toContain("↑");
+  expect(afterFooter).not.toContain("↓");
+  expect(afterFooter).not.toMatch(/\d+(ms|s|m \d+s)/);
+});
+
+test("completed result card footer excludes token arrow metrics", () => {
+  const fakeTheme = createDefaultFakeTheme();
+  const rendered = renderSubagentResult(
+    {
+      content: [{ type: "text" as const, text: "ignored" }],
+      details: {
+        mode: "single" as const,
+        agentScope: "both" as const,
+        projectAgentsDir: null,
+        results: [
+          {
+            agent: "builder",
+            agentSource: "project" as const,
+            task: "pass",
+            exitCode: 0,
+            finalOutput: "done",
+            messages: [],
+            stderr: "",
+            model: "provider/model",
+            usage: {
+              input: 5000,
+              output: 2500,
+              cacheRead: 0,
+              cacheWrite: 0,
+              cost: 0.01,
+              contextTokens: 10000,
+              turns: 2,
+            },
+          },
+        ],
+      },
+    },
+    fakeTheme,
+  );
+  const renderedText = renderToString(rendered);
+  expect(renderedText).toContain(
+    "provider/model · 2 turns · ctx:10k · $0.0100",
+  );
+  expect(renderedText).not.toContain("↑5.0k");
+  expect(renderedText).not.toContain("↓2.5k");
+});
+
+test("completed result card footer suppresses model segment when model is undefined", () => {
+  const fakeTheme = createDefaultFakeTheme();
+  const rendered = renderSubagentResult(
+    {
+      content: [{ type: "text" as const, text: "ignored" }],
+      details: {
+        mode: "single" as const,
+        agentScope: "both" as const,
+        projectAgentsDir: null,
+        results: [
+          {
+            agent: "builder",
+            agentSource: "project" as const,
+            task: "pass",
+            exitCode: 0,
+            finalOutput: "done",
+            messages: [],
+            stderr: "",
+            model: undefined,
+            usage: {
+              input: 0,
+              output: 0,
+              cacheRead: 0,
+              cacheWrite: 0,
+              cost: 0.01,
+              contextTokens: 0,
+              turns: 1,
+            },
+          },
+        ],
+      },
+    },
+    fakeTheme,
+  );
+  const renderedText = renderToString(rendered);
+  expect(renderedText).toContain("[dim]1 turn · $0.0100[/dim]");
+  expect(renderedText).not.toContain("[dim]undefined[/dim]");
+});
+
+test("completed result card footer suppresses context segment when contextTokens is zero", () => {
+  const fakeTheme = createDefaultFakeTheme();
+  const rendered = renderSubagentResult(
+    {
+      content: [{ type: "text" as const, text: "ignored" }],
+      details: {
+        mode: "single" as const,
+        agentScope: "both" as const,
+        projectAgentsDir: null,
+        results: [
+          {
+            agent: "builder",
+            agentSource: "project" as const,
+            task: "pass",
+            exitCode: 0,
+            finalOutput: "done",
+            messages: [],
+            stderr: "",
+            model: "test-model",
+            usage: {
+              input: 0,
+              output: 0,
+              cacheRead: 0,
+              cacheWrite: 0,
+              cost: 0,
+              contextTokens: 0,
+              turns: 1,
+            },
+          },
+        ],
+      },
+    },
+    fakeTheme,
+  );
+  const renderedText = renderToString(rendered);
+  expect(renderedText).toContain("[dim]test-model · 1 turn[/dim]");
+  expect(renderedText).not.toMatch(/\[dim\]test-model · 1 turn · ctx/);
+  expect(renderedText).not.toMatch(/\[dim\]test-model · 1 turn · \$/);
+});
+
+test("completed result card footer suppresses cost segment when cost is zero", () => {
+  const fakeTheme = createDefaultFakeTheme();
+  const rendered = renderSubagentResult(
+    {
+      content: [{ type: "text" as const, text: "ignored" }],
+      details: {
+        mode: "single" as const,
+        agentScope: "both" as const,
+        projectAgentsDir: null,
+        results: [
+          {
+            agent: "builder",
+            agentSource: "project" as const,
+            task: "pass",
+            exitCode: 0,
+            finalOutput: "done",
+            messages: [],
+            stderr: "",
+            model: "test-model",
+            usage: {
+              input: 0,
+              output: 0,
+              cacheRead: 0,
+              cacheWrite: 0,
+              cost: 0,
+              contextTokens: 10000,
+              turns: 1,
+            },
+          },
+        ],
+      },
+    },
+    fakeTheme,
+  );
+  const renderedText = renderToString(rendered);
+  expect(renderedText).toContain("[dim]test-model · 1 turn · ctx:10k[/dim]");
+  expect(renderedText).not.toContain("$");
+});
+
+test("abridged job card renders modelDisplay footer for error state", () => {
+  const now = Date.now();
+  const state: SubagentProgressState = {
+    requestId: "r1",
+    agent: "builder",
+    taskPreview: "build failed",
+    status: "error",
+    startTime: now - 30000,
+    durationMs: 25000,
+    toolCount: 2,
+    errorText: "build collapsed",
+    modelDisplay: "provider/model:err",
+  };
+  const fakeTheme = createDefaultFakeTheme();
+  const rendered = renderRunsBoard([state], fakeTheme as never);
+  const text = renderToString(rendered);
+  expect(text).toContain("[dim]provider/model:err[/dim]");
+  expect(text).toContain("FAILED");
+  expect(text).toContain("build collapsed");
+});
+
+test("abridged job card renders modelDisplay footer for cancelled state", () => {
+  const now = Date.now();
+  const state: SubagentProgressState = {
+    requestId: "r1",
+    agent: "builder",
+    taskPreview: "cancelled task",
+    status: "cancelled",
+    startTime: now - 30000,
+    durationMs: 25000,
+    toolCount: 1,
+    modelDisplay: "provider/model:cancel",
+  };
+  const fakeTheme = createDefaultFakeTheme();
+  const rendered = renderRunsBoard([state], fakeTheme as never);
+  const text = renderToString(rendered);
+  expect(text).toContain("[dim]provider/model:cancel[/dim]");
+  expect(text).toContain("CANCELLED");
+});
+
+test("abridged job card renders modelDisplay footer for success state", () => {
+  const now = Date.now();
+  const state: SubagentProgressState = {
+    requestId: "r1",
+    agent: "builder",
+    taskPreview: "passed tests",
+    status: "success",
+    startTime: now - 30000,
+    durationMs: 25000,
+    toolCount: 3,
+    finalOutput: "all tests pass",
+    modelDisplay: "provider/model:ok",
+  };
+  const fakeTheme = createDefaultFakeTheme();
+  const rendered = renderRunsBoard([state], fakeTheme as never);
+  const text = renderToString(rendered);
+  expect(text).toContain("[dim]provider/model:ok[/dim]");
+  expect(text).toContain("SUCCEEDED");
+  expect(text).toContain("all tests pass");
+});
+
+test("abridged job card with modelDisplay uses errorText as body when finalOutput is empty", () => {
+  const now = Date.now();
+  const state: SubagentProgressState = {
+    requestId: "r1",
+    agent: "builder",
+    taskPreview: "do work",
+    status: "error",
+    startTime: now - 30000,
+    durationMs: 25000,
+    toolCount: 1,
+    errorText: "specific error message",
+    finalOutput: "",
+    modelDisplay: "provider/model",
+  };
+  const fakeTheme = createDefaultFakeTheme();
+  const rendered = renderRunsBoard([state], fakeTheme as never);
+  const text = renderToString(rendered);
+  expect(text).toContain("[toolOutput]specific error message[/toolOutput]");
+  expect(text).toContain("[dim]provider/model[/dim]");
+});
+
+test("abridged job card with modelDisplay falls back body from taskPreview when no finalOutput or errorText", () => {
+  const now = Date.now();
+  const state: SubagentProgressState = {
+    requestId: "r1",
+    agent: "builder",
+    taskPreview: "fallback preview text",
+    status: "running",
+    startTime: now - 30000,
+    toolCount: 1,
+    modelDisplay: "provider/model",
+  };
+  const fakeTheme = createDefaultFakeTheme();
+  const rendered = renderRunsBoard([state], fakeTheme as never);
+  const text = renderToString(rendered);
+  expect(text).toContain("fallback preview text");
+  expect(text).not.toContain("(no output)");
+});
+
+test("abridged job card with modelDisplay shows (no output) when all body sources are empty", () => {
+  const now = Date.now();
+  const state: SubagentProgressState = {
+    requestId: "r1",
+    agent: "builder",
+    taskPreview: "",
+    status: "running",
+    startTime: now - 30000,
+    toolCount: 0,
+    modelDisplay: "provider/model",
+  };
+  const fakeTheme = createDefaultFakeTheme();
+  const rendered = renderRunsBoard([state], fakeTheme as never);
+  const text = renderToString(rendered);
+  expect(text).toContain("[muted](no output)[/muted]");
+});
+
+test("completed result card footer is empty when model and usage all missing", () => {
+  const fakeTheme = createDefaultFakeTheme();
+  const rendered = renderSubagentResult(
+    {
+      content: [{ type: "text" as const, text: "ignored" }],
+      details: {
+        mode: "single" as const,
+        agentScope: "both" as const,
+        projectAgentsDir: null,
+        results: [
+          {
+            agent: "builder",
+            agentSource: "project" as const,
+            task: "pass",
+            exitCode: 0,
+            finalOutput: "done",
+            messages: [],
+            stderr: "",
+            model: undefined,
+            usage: {
+              input: 0,
+              output: 0,
+              cacheRead: 0,
+              cacheWrite: 0,
+              cost: 0,
+              contextTokens: 0,
+              turns: 0,
+            },
+          },
+        ],
+      },
+    },
+    fakeTheme,
+  );
+  const renderedText = renderToString(rendered);
+  const lines = renderedText.split("\n");
+  const cardLines = lines.filter((line) =>
+    /^\[tool(?:Pending|Error|Success)Bg\]/.test(line),
+  );
+  expect(cardLines).toHaveLength(6);
+  expect(renderedText).not.toMatch(/\[dim\].*·.*\[\/dim\]/);
 });

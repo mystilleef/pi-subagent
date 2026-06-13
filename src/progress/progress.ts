@@ -120,6 +120,8 @@ function renderProgressBox(
   box.addChild(new Text(header, 0, 0));
   const body = makeProgressBody(state, options, theme, width);
   for (const line of body) box.addChild(line);
+  if (state.modelDisplay)
+    box.addChild(new Text(theme.fg("dim", state.modelDisplay), 0, 0));
   return box;
 }
 
@@ -139,6 +141,10 @@ function makeProgressBody(
   return [];
 }
 
+function bodyMargin(hasFooter: boolean, expanded: boolean): number {
+  return expanded || !hasFooter ? 0 : 1;
+}
+
 function makeRunningProgressBody(
   state: SubagentProgressState,
   options: { expanded: boolean },
@@ -151,11 +157,14 @@ function makeRunningProgressBody(
     state.activeToolActivity,
     activityBudget,
   );
+  const margin = bodyMargin(!!state.modelDisplay, options.expanded);
   if (activityPreview) {
-    body.push(new Text(formatRunningToolPreview(activityPreview, theme), 2, 0));
+    body.push(
+      new Text(formatRunningToolPreview(activityPreview, theme), 2, margin),
+    );
   }
   if (options.expanded)
-    body.push(new Text(theme.fg("dim", state.taskPreview), 2, 0));
+    body.push(new Text(theme.fg("dim", state.taskPreview), 2, margin));
   return body;
 }
 
@@ -165,10 +174,12 @@ function makeStoppedProgressBody(
   theme: SubagentTheme,
 ): Text[] {
   const body: Text[] = [];
-  if (state.errorText)
-    body.push(new Text(theme.fg("error", state.errorText), 2, 0));
+  const margin = bodyMargin(!!state.modelDisplay, options.expanded);
+  if (state.errorText) {
+    body.push(new Text(theme.fg("error", state.errorText), 2, margin));
+  }
   if (options.expanded)
-    body.push(new Text(theme.fg("dim", state.taskPreview), 2, 0));
+    body.push(new Text(theme.fg("dim", state.taskPreview), 2, margin));
   return body;
 }
 
@@ -178,8 +189,9 @@ function makeSuccessProgressBody(
   theme: SubagentTheme,
 ): Text[] {
   const output = state.finalOutput?.trim().split("\n")[0] ?? "";
+  const margin = bodyMargin(!!state.modelDisplay, options.expanded);
   if (!options.expanded) {
-    return output ? [new Text(theme.fg("toolOutput", output), 2, 0)] : [];
+    return output ? [new Text(theme.fg("toolOutput", output), 2, margin)] : [];
   }
   const body = [new Text(theme.fg("dim", state.taskPreview), 2, 0)];
   body.push(
@@ -187,9 +199,9 @@ function makeSuccessProgressBody(
       ? new Text(
           `${theme.fg("muted", "─── Output ───")}\n${theme.fg("toolOutput", output)}`,
           0,
-          0,
+          margin,
         )
-      : new Text(theme.fg("muted", "(no output)"), 0, 0),
+      : new Text(theme.fg("muted", "(no output)"), 0, margin),
   );
   return body;
 }

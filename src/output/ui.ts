@@ -275,7 +275,7 @@ function renderStatusCard(
     : "";
   box.addChild(new Text(`${icon} ${options.title} ${status}${metadata}`, 0, 0));
   box.addChild(makeStatusCardBody(options, theme));
-  if (options.variant === "full" && options.footer)
+  if (options.footer)
     box.addChild(new Text(theme.fg("dim", options.footer), 0, 0));
   return box;
 }
@@ -284,7 +284,7 @@ function makeStatusCardBody(
   options: StatusCardOptions,
   theme: SubagentTheme,
 ): Box {
-  const body = new Box(2, options.variant === "full" ? 1 : 0);
+  const body = new Box(2, options.variant === "full" || options.footer ? 1 : 0);
   const bodyText = options.body ?? "";
   if (bodyText && options.variant === "full") {
     body.addChild(
@@ -326,16 +326,15 @@ function renderJobCard(
     bodyText.length > BODY_PREVIEW_MAX
       ? `${bodyText.slice(0, BODY_PREVIEW_MAX - 1)}…`
       : bodyText;
-  return renderStatusCard(
-    {
-      status: state.status,
-      title,
-      variant: "abridged",
-      metadata,
-      body: preview,
-    },
-    theme,
-  );
+  const options: StatusCardOptions = {
+    status: state.status,
+    title,
+    variant: "abridged",
+    metadata,
+    body: preview,
+  };
+  if (state.modelDisplay) options.footer = state.modelDisplay;
+  return renderStatusCard(options, theme);
 }
 
 function sortByStartTimeDesc(

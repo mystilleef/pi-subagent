@@ -70,12 +70,12 @@ export function formatContextPercent(state: {
  * When the subagent is still running (`durationMs` unset), elapsed is
  * computed live from `startTime`.
  *
- * @returns Single line ending in `\n`, e.g. `"3 tools · 45% ctx · 12.3s\n"`
+ * @returns Single line, e.g. `"3 tools · 45% ctx · 12.3s"`
  */
 export function formatHeaderStats(state: SubagentProgressState): string {
   const elapsedMs = state.durationMs ?? Date.now() - state.startTime;
   const toolLabel = state.toolCount === 1 ? "tool" : "tools";
-  return `${state.toolCount} ${toolLabel} · ${formatContextPercent(state)} ctx · ${formatElapsed(elapsedMs)}\n`;
+  return `${state.toolCount} ${toolLabel} · ${formatContextPercent(state)} ctx · ${formatElapsed(elapsedMs)}`;
 }
 
 /**
