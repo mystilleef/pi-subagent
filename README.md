@@ -1,4 +1,4 @@
-# Subagent
+# Subagents for pi
 
 Designed to orchestrate agents for the
 [SPAE framework](https://github.com/mystilleef/spae-framework). Agents
