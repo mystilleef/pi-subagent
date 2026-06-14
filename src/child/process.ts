@@ -816,6 +816,9 @@ async function finalizeResult(
   if (agentEndTimeoutExitCode !== undefined) {
     state.result.exitCode = agentEndTimeoutExitCode;
   }
+  if (state.result.termination?.cancelReason === "agent_end_timeout") {
+    state.result.stderr = state.result.stderr.replace(/^Terminated\r?\n/gm, "");
+  }
   if (state.wasAborted) {
     state.result.stderr = "";
     throw new SubagentAbortError(state.result);
