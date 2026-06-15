@@ -739,7 +739,7 @@ function buildPiArgs(
   resolvedSkills: { args: string[] },
   tmpPrompt: { filePath: string } | null,
 ): string[] {
-  const args: string[] = ["--mode", "json", "-p", "--no-session"];
+  const args: string[] = ["--mode", "json", "-p", "--no-session", "--approve"];
   if (effectiveModel.provider && effectiveModel.id)
     args.push("--provider", effectiveModel.provider);
   if (effectiveModel.id) args.push("--model", effectiveModel.id);
