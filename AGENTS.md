@@ -2,33 +2,40 @@
 
 ## Commands
 
-- **Check:** `bun check`
-- **Test** `bun verify`
+- `bun check` — type-check; auto-fix trivial lint
+- `bun coverage` — full test suite
+- `bun verify` — comprehensive verification
+
+Run scripts exactly as named. **Never** expand internals or pipe `bun`
+commands—redirect output to a file first, then inspect:
+
+```sh
+# Forbidden — causes freezes
+bun test 2>&1 | head -n 10
+bun test | tail -n 10
+
+# Approved
+bun test > tmp.txt && cat tmp.txt | head -n 10
+bun verify
+```
 
 ## Workflow
 
-- **CI:** Pull requests trigger:
-  - `bun verify`
-  - `bun pack:smoke`
+**CI:** `bun verify`
 
 ## Rules
 
 - Write asynchronous, non-blocking code.
-- Write code that never blocks the `TUI`/`GUI`.
-- Write testable code.
-- After edits:
-  - Run `bun check` for type checking and to fix trivial lint issues.
-  - Run `bun verify` for full suite comprehensive testing.
+- After edits: run `bun check`.
+- After task completion: run `bun verify`.
 
-### Testing rules
+### Testing
 
-- Before writing tests, read relevant `bun` testing guides, on demand,
-  in `./docs/bun/testing`. The agent file in that folder indexes what
-  each guide documents.
+- Read guides in `./docs/bun/testing` before writing tests. The agent
+  file indexes each guide.
 
 ## Gotchas
 
-- Avoid empty lines inside functions.
-- Maintain exactly one empty line before and after functions and
-  classes.
-- Never commit or track the proposals folder or files.
+- No empty lines inside functions.
+- One empty line before and after functions and classes.
+- Never commit or track `proposals/`.
