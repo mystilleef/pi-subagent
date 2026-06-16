@@ -220,7 +220,11 @@ function finishLifecycleResult(
   const displayDetails = sanitizeDetailsForDisplay(details, lc.debug);
   const content = formatSubagentResultForParent(result) || "(no output)";
   const toolResult = createCompletedToolResult(content, displayDetails);
-  finalizeProgressState(lc.requestId, getFeedbackSummaryText(toolResult));
+  finalizeProgressState(
+    lc.requestId,
+    getFeedbackSummaryText(toolResult),
+    result.outcome,
+  );
   sendSubagentResultMessage(
     lc.pi,
     getResultDisplayText(toolResult),

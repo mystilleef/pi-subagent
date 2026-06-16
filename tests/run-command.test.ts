@@ -778,7 +778,7 @@ exit 0
   expect(state?.outputTokens).toBe(15);
   expect(state?.contextTokens).toBe(13);
   expect(state?.contextWindowTokens).toBe(128000);
-  expect(state?.finalOutput).toBe("shipped fix");
+  expect(state?.finalOutput).toBe("looks good");
   expect(state?.lastToolPreview).toBeUndefined();
   const resultDetails = sentMessages[1]?.details as {
     results?: { messages?: unknown }[];
@@ -1051,7 +1051,7 @@ exit 0
     ?.requestId;
   if (!requestId) throw new Error("requestId missing");
   expect(getProgressState(requestId)?.finalOutput).toBe(
-    "updated src/index.ts from raw final output",
+    "outcome: updated src/index.ts from raw final output",
   );
 });
 
@@ -1088,7 +1088,7 @@ sleep 10
   if (!requestId) throw new Error("requestId missing");
   expect(getProgressState(requestId)?.status).toBe("success");
   expect(getProgressState(requestId)?.finalOutput).toBe(
-    "completed after timeout",
+    "outcome: completed after timeout",
   );
 });
 
@@ -1699,13 +1699,11 @@ exit 0
   expect(sentMessages.at(-1)?.content).toBe(finalOutput);
   expect(renderedText).toContain("Hello! I can help.");
   expect(renderedText).toContain("Error: noisy stack line");
-  expect(renderedText).not.toContain("Outcome: Updated semantic summary");
+  expect(renderedText).toContain("Outcome: Updated semantic summary");
   const requestId = (sentMessages[0]?.details as { requestId?: string })
     ?.requestId;
   if (!requestId) throw new Error("requestId missing");
-  expect(getProgressState(requestId)?.finalOutput).toBe(
-    "updated semantic summary",
-  );
+  expect(getProgressState(requestId)?.finalOutput).toBe("noisy stack line");
 });
 
 test("/run repeated completions reuse cached discovery without redundant scans", async () => {

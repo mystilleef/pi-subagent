@@ -133,10 +133,11 @@ function storeTerminalProgressState(
 export function finalizeProgressState(
   requestId: string,
   finalOutput: string,
+  outcome?: string,
 ): void {
   storeTerminalProgressState(requestId, {
     status: "success",
-    finalOutput: makeProgressFinalOutput(finalOutput),
+    finalOutput: makeProgressFinalOutput(finalOutput, outcome),
   });
 }
 
@@ -167,13 +168,18 @@ export function makeTaskPreview(task: string): string {
   return flat || "(agent default)";
 }
 
-function makeProgressFinalOutput(finalOutput: string): string {
+function makeProgressFinalOutput(
+  finalOutput: string,
+  outcome?: string,
+): string {
+  if (outcome?.trim()) {
+    return normalizeTerminalSentence(outcome);
+  }
   const lines = finalOutput
     .split(/\r?\n/)
     .map((l) => l.trim())
     .filter(Boolean);
-  const outcomeLine = lines.find((line) => /^Outcome:\s*/i.test(line));
-  const selected = outcomeLine ?? lines[0] ?? "";
+  const selected = lines[0] ?? "";
   const normalized = normalizeTerminalSentence(selected);
   if (!normalized) return "";
   if (isStatusOnlySuccess(normalized)) return "completed task";

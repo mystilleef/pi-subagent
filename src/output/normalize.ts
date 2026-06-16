@@ -58,7 +58,7 @@ export function normalizeTerminalSentence(
     "",
   );
   const withoutLabel = withoutStatusPrefix.replace(
-    /^\s*(?:status|summary|result|output|message|error|check|outcome|project summary):\s+/i,
+    /^\s*(?:status|summary|result|output|message|error|check|project summary):\s+/i,
     "",
   );
   const normalizedOnce = normalizeSummaryValue(withoutLabel);

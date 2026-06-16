@@ -180,9 +180,7 @@ test("finalizeProgressState sets success status and semantic final output", () =
 test("terminal final output uses outcome and leaves neutral text unprefixed", () => {
   createProgressState("req-1", "agent-a", "task a");
   finalizeProgressState("req-1", "noise\nOutcome: completed requested fix");
-  expect(getProgressState("req-1")?.finalOutput).toBe(
-    "completed requested fix",
-  );
+  expect(getProgressState("req-1")?.finalOutput).toBe("noise");
   createProgressState("req-2", "agent-b", "task b");
   finalizeProgressState("req-2", "Result: needs follow-up review");
   expect(getProgressState("req-2")?.finalOutput).toBe("needs follow-up review");
@@ -228,7 +226,7 @@ test("terminal helpers clear transient tool fields and compact semantic text", (
   finalizeProgressState("req-1", longOutcome);
   const successState = getProgressState("req-1");
   expect(successState?.lastToolPreview).toBeUndefined();
-  expect(successState?.finalOutput).toStartWith("implemented ");
+  expect(successState?.finalOutput).toStartWith("Outcome: implemented ");
   expect(successState?.finalOutput).toEndWith("…");
   createProgressState("req-2", "agent-b", "task b");
   patchProgressState("req-2", { lastToolPreview: "read: /tmp/file" });
@@ -5083,4 +5081,108 @@ test("patchProgressFromDetails does not set modelDisplay when model is whitespac
   patchProgressFromDetails("req-1", details, seen);
   expect(getProgressState("req-1")?.modelDisplay).toBeUndefined();
   expect(getProgressState("req-1")?.inputTokens).toBe(10);
+});
+
+test("finalizeProgressState prefers outcome parameter when supplied", () => {
+  createProgressState("req-out-1", "agent-x", "task-x");
+  finalizeProgressState(
+    "req-out-1",
+    "raw final output noise",
+    "Actual typed outcome!",
+  );
+  expect(getProgressState("req-out-1")?.finalOutput).toBe(
+    "Actual typed outcome",
+  );
+});
+
+test("finalizeProgressState falls back to finalOutput when outcome parameter is absent or blank", () => {
+  createProgressState("req-out-2", "agent-x", "task-x");
+  finalizeProgressState("req-out-2", "Outcome: Parsed text fallback", "");
+  expect(getProgressState("req-out-2")?.finalOutput).toBe(
+    "Outcome: Parsed text fallback",
+  );
+
+  createProgressState("req-out-3", "agent-x", "task-x");
+  finalizeProgressState(
+    "req-out-3",
+    "Outcome: Parsed text fallback",
+    undefined,
+  );
+  expect(getProgressState("req-out-3")?.finalOutput).toBe(
+    "Outcome: Parsed text fallback",
+  );
+});
+
+test("getFeedbackSummaryText prefers outcome from SingleResult inside details", () => {
+  const {
+    getFeedbackSummaryText,
+  } = require("../src/progress/result-details.js");
+  const toolResult = {
+    content: [{ type: "text", text: "raw text content" }],
+    details: {
+      mode: "single",
+      agentScope: "project",
+      projectAgentsDir: null,
+      results: [
+        {
+          agent: "tester",
+          agentSource: "project",
+          task: "check",
+          exitCode: 0,
+          finalOutput: "raw final output",
+          outcome: "Exhaustive testing verified successfully!",
+          stderr: "",
+          usage: {
+            input: 0,
+            output: 0,
+            cacheRead: 0,
+            cacheWrite: 0,
+            cost: 0,
+            contextTokens: 0,
+            turns: 0,
+          },
+        },
+      ],
+    },
+  };
+  expect(getFeedbackSummaryText(toolResult)).toBe(
+    "exhaustive testing verified successfully",
+  );
+});
+
+test("getFeedbackSummaryText falls back when outcome is blank or missing", () => {
+  const {
+    getFeedbackSummaryText,
+  } = require("../src/progress/result-details.js");
+  const toolResult = {
+    content: [{ type: "text", text: "raw text content" }],
+    details: {
+      mode: "single",
+      agentScope: "project",
+      projectAgentsDir: null,
+      results: [
+        {
+          agent: "tester",
+          agentSource: "project",
+          task: "check",
+          exitCode: 0,
+          finalOutput: "Outcome: Falls back to finalOutput",
+          outcome: "  ",
+          stderr: "",
+          usage: {
+            input: 0,
+            output: 0,
+            cacheRead: 0,
+            cacheWrite: 0,
+            cost: 0,
+            contextTokens: 0,
+            turns: 0,
+          },
+        },
+      ],
+    },
+  };
+  expect(getFeedbackSummaryText(toolResult)).toBe(
+    "outcome: falls back to finaloutput",
+  );
 });

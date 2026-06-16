@@ -17,7 +17,7 @@ const FEEDBACK_UI_GENERIC_CANDIDATES = new Set([
 ]);
 
 const FEEDBACK_UI_LABEL_PATTERN =
-  /^\s*(outcome|project summary|result|summary|status|output|message|error|check):\s*/i;
+  /^\s*(project summary|result|summary|status|output|message|error|check):\s*/i;
 
 export function formatSubagentResultForParent(result: SingleResult): string {
   return result.thinkingWarning
@@ -25,15 +25,21 @@ export function formatSubagentResultForParent(result: SingleResult): string {
     : result.finalOutput;
 }
 
-export function summarizeFeedbackUiFinalOutput(finalOutput: string): string {
+export function summarizeFeedbackUiFinalOutput(
+  finalOutput: string,
+  outcome?: string,
+): string {
+  if (outcome?.trim()) {
+    return normalizeTerminalSentence(
+      outcome,
+      FEEDBACK_UI_SUMMARY_MAX_CHARS,
+    ).toLowerCase();
+  }
   const candidates = finalOutput
     .split(/\r?\n|(?<=[.!?])\s+/)
     .map((candidate) => normalizeFeedbackUiSummaryCandidate(candidate))
     .filter(({ text }) => hasSummaryValue(text));
-  const selected =
-    candidates.find(({ label }) => label === "outcome") ??
-    candidates.find(({ label }) => label) ??
-    candidates[0];
+  const selected = candidates.find(({ label }) => label) ?? candidates[0];
   return (selected?.text ?? "completed task").toLowerCase();
 }
 

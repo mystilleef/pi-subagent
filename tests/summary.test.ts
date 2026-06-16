@@ -5,6 +5,16 @@ import {
   formatSubagentResultForParent,
   summarizeFeedbackUiFinalOutput,
 } from "../src/output/summary.js";
+import {
+  clearProgressState,
+  createProgressState,
+  finalizeProgressState,
+  getProgressState,
+} from "../src/progress/progress-state.js";
+import {
+  getFeedbackSummaryText,
+  sanitizeResultDetails,
+} from "../src/progress/result-details.js";
 import type { SingleResult } from "../src/shared/types.js";
 
 function result(overrides: Partial<SingleResult>): SingleResult {
@@ -71,7 +81,7 @@ test("feedback UI summarizer strips labels and cleans markdown", () => {
     summarizeFeedbackUiFinalOutput(
       "## Summary:\n- Outcome: **Rendered custom card body from message content.**",
     ),
-  ).toBe("rendered custom card body from message content");
+  ).toBe("outcome: **rendered custom card body from message content.**");
   expect(
     summarizeFeedbackUiFinalOutput("```\nResult: `Updated src/ui.ts`.\n```"),
   ).toBe("updated src/ui.ts");
@@ -85,20 +95,20 @@ test("feedback UI summarizer prefers concrete action candidates", () => {
   ).toBe("routed run result cards through summarized message content");
 });
 
-test("feedback UI summarizer prefers later outcome over earlier summary", () => {
+test("feedback UI summarizer does not prefer legacy outcome label, so summary label wins", () => {
   expect(
     summarizeFeedbackUiFinalOutput(
       "Summary: Updated fallback rendering.\nOutcome: Preserved outcome precedence for feedback cards.",
     ),
-  ).toBe("preserved outcome precedence for feedback cards");
+  ).toBe("updated fallback rendering");
 });
 
-test("feedback UI summarizer prefers later outcome over earlier status", () => {
+test("feedback UI summarizer does not prefer legacy outcome label, so status label wins", () => {
   expect(
     summarizeFeedbackUiFinalOutput(
       "Status: Added summary candidates.\nOutcome: Selected outcome before status labels.",
     ),
-  ).toBe("selected outcome before status labels");
+  ).toBe("added summary candidates");
 });
 
 test("feedback UI summarizer prefers new labels over unlabeled candidates", () => {
@@ -109,10 +119,10 @@ test("feedback UI summarizer prefers new labels over unlabeled candidates", () =
   ).toBe("recognized message label first");
 });
 
-test("feedback UI summarizer lower-cases and trims punctuation clutter", () => {
+test("feedback UI summarizer lower-cases and trims punctuation clutter without outcome-specific stripping", () => {
   expect(
     summarizeFeedbackUiFinalOutput("Outcome: Shipped RESULT CARD FIX!!!"),
-  ).toBe("shipped result card fix");
+  ).toBe("outcome: shipped result card fix");
 });
 
 test("feedback UI summarizer truncates compact output", () => {
@@ -307,4 +317,79 @@ test("extractSemanticToolTarget forced JSON bypasses fallback safety", () => {
   expect(extractSemanticToolTarget(secretArgs, true)).toBe(
     JSON.stringify(secretArgs),
   );
+});
+
+test("summarizeFeedbackUiFinalOutput prefers explicit outcome parameter first", () => {
+  expect(
+    summarizeFeedbackUiFinalOutput("some final output", "My Typed Outcome!"),
+  ).toBe("my typed outcome");
+});
+
+test("summarizeFeedbackUiFinalOutput with empty outcome falls back to finalOutput without outcome-specific stripping", () => {
+  expect(summarizeFeedbackUiFinalOutput("Outcome: Some Text", "")).toBe(
+    "outcome: some text",
+  );
+  expect(summarizeFeedbackUiFinalOutput("Outcome: Some Text", undefined)).toBe(
+    "outcome: some text",
+  );
+});
+
+test("summarizeFeedbackUiFinalOutput with long outcome truncates to 120 chars", () => {
+  const longOutcome = `Implemented ${"special result ".repeat(20)}for card display.`;
+  const result = summarizeFeedbackUiFinalOutput(
+    "some final output",
+    longOutcome,
+  );
+  expect(Array.from(result).length).toBe(FEEDBACK_UI_SUMMARY_MAX_CHARS);
+  expect(result.endsWith("…")).toBe(true);
+});
+
+test("sanitized details preserves outcome and fails if dropped", () => {
+  const mockResult = result({
+    outcome: "Preserved outcome here",
+  });
+  const sanitized = sanitizeResultDetails(mockResult, false, undefined);
+  expect(sanitized.outcome).toBe("Preserved outcome here");
+});
+
+test("feedback summary text preserves outcome and fails if dropped", () => {
+  const mockSubagentResult = {
+    content: [{ type: "text" as const, text: "ignored parent content" }],
+    details: {
+      mode: "single" as const,
+      agentScope: "both" as const,
+      projectAgentsDir: null,
+      results: [
+        result({
+          finalOutput: "final output text",
+          outcome: "Preserved outcome details",
+        }),
+      ],
+    },
+  };
+  const summary = getFeedbackSummaryText(
+    mockSubagentResult as unknown as Parameters<
+      typeof getFeedbackSummaryText
+    >[0],
+  );
+  expect(summary).toBe("preserved outcome details");
+});
+
+test("progress state preserves outcome and fails if dropped", () => {
+  const requestId = `test-id-${Date.now()}`;
+  createProgressState(requestId, "test-agent", "user", "test task");
+  finalizeProgressState(
+    requestId,
+    "final output description",
+    "Preserved task outcome",
+  );
+  const state = getProgressState(requestId);
+  expect(state?.finalOutput).toBe("Preserved task outcome");
+  clearProgressState(requestId);
+});
+
+test("UI summary preserves outcome and fails if dropped", () => {
+  const outcomeText = "My explicit outcome";
+  const summary = summarizeFeedbackUiFinalOutput("ignored output", outcomeText);
+  expect(summary).toBe("my explicit outcome");
 });

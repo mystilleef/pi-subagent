@@ -136,14 +136,6 @@ export function getFinalOutput(messages: Message[]): string {
   return lastText?.type === "text" ? lastText.text : "";
 }
 
-/**
- * Removes the "Outcome:" line from subagent output to avoid redundancy in result cards.
- */
-function stripOutcomeLineForResultUi(output: string): string {
-  const stripped = output.replace(/^\s*Outcome:[^\r\n]*(?:\r?\n|$)/gim, "");
-  return stripped.trim() ? stripped : output;
-}
-
 function makeMarkdownTheme(theme: SubagentTheme): MarkdownTheme {
   const fg = (c: ThemeColor) => (text: string) => theme.fg(c, text);
   return {
@@ -191,7 +183,7 @@ export function renderSubagentToolResult(
   return renderSubagentResult(result, theme, display);
 }
 
-// Invariants: Red background = failure, green = success. Trims redundant "Outcome:" lines. Shows usage stats + duration in footer.
+// Invariants: Red background = failure, green = success. Shows usage stats + duration in footer.
 export function renderSubagentResult(
   result: { content: { type: string; text?: string }[]; details?: unknown },
   theme: SubagentTheme,
@@ -225,7 +217,7 @@ export function renderSubagentResult(
       r.progress?.lastToolPreview ||
       "(running...)";
   }
-  const bodyText = stripOutcomeLineForResultUi(effectiveBody);
+  const bodyText = effectiveBody;
   const toolCount = r.progress?.toolCalls?.length ?? 0;
   const toolLabel = `${toolCount} ${toolCount === 1 ? "tool" : "tools"}`;
   const ctxPercent = formatContextPercent({

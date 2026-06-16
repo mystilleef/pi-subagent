@@ -235,8 +235,13 @@ export function getResultDisplayText(result: SubagentToolResult): string {
 }
 
 export function getFeedbackSummaryText(result: SubagentToolResult): string {
-  const rawFinalOutput = getLatestResult(result.details)?.finalOutput;
-  if (rawFinalOutput?.trim())
-    return summarizeFeedbackUiFinalOutput(rawFinalOutput);
+  const latestResult = getLatestResult(result.details);
+  const rawFinalOutput = latestResult?.finalOutput;
+  if (latestResult?.outcome?.trim() || rawFinalOutput?.trim()) {
+    return summarizeFeedbackUiFinalOutput(
+      rawFinalOutput ?? "",
+      latestResult?.outcome,
+    );
+  }
   return getSubagentText(result).trim() || "(no output)";
 }

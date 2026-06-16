@@ -117,9 +117,24 @@ describe("normalize.ts uncovered branches", () => {
       expect(result).toBe("passed");
     });
 
-    test("strips outcome label", () => {
+    test("does not strip outcome label as it is outcome-specific", () => {
       const result = normalizeTerminalSentence("outcome: success");
-      expect(result).toBe("success");
+      expect(result).toBe("outcome: success");
+    });
+
+    test("does not strip Outcome: (uppercase) label as it is outcome-specific", () => {
+      const result = normalizeTerminalSentence("Outcome: success");
+      expect(result).toBe("Outcome: success");
+    });
+
+    test("does not strip OUTCOME: (allcaps) label as it is outcome-specific", () => {
+      const result = normalizeTerminalSentence("OUTCOME: success");
+      expect(result).toBe("OUTCOME: success");
+    });
+
+    test("does not strip Outcome: label with whitespace padding as it is outcome-specific", () => {
+      const result = normalizeTerminalSentence("  Outcome:  success  ");
+      expect(result).toBe("Outcome: success");
     });
 
     test("strips project summary label", () => {

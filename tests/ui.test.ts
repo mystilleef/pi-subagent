@@ -1139,7 +1139,7 @@ test("subagent result backgrounds cover representative success and failure cards
   const successText = renderToString(success);
   expect(successText).toContain("[success]✓[/success]");
   expect(successText).not.toContain("[accent]bash[/accent]");
-  expect(successText).not.toContain("Outcome: shipped");
+  expect(successText).toContain("Outcome: shipped");
   expect(successText).toContain("1 turn · $0.0100");
   expect(successText).not.toContain("↑1.0k");
   expect(successText).not.toContain("↓2.0k");
@@ -1296,7 +1296,7 @@ test("subagent result renders compact structured success output", () => {
   expect(renderedText).toContain("[success]✓[/success]");
   expect(renderedText).toContain("[toolTitle]*builder*[/toolTitle]");
   expect(renderedText).not.toContain("[muted]1.2s[/muted]");
-  expect(renderedText).not.toContain("Outcome: shipped");
+  expect(renderedText).toContain("Outcome: shipped");
   expect(renderedText).toContain("[toolOutput]Changed: src/ui.ts[/toolOutput]");
   expect(renderedText).toContain(
     "provider/model:high · 3 turns · ctx:38k · $0.0120",
@@ -1344,7 +1344,7 @@ test("subagent result suppresses success no-op fields and keeps fallback", () =>
       "Outcome: shipped\nChanged: none\nVerification: bun test\nNext: n/a",
     ),
   );
-  expect(partialText).not.toContain("Outcome: shipped");
+  expect(partialText).toContain("Outcome: shipped");
   expect(partialText).toContain("[toolOutput]Changed: none[/toolOutput]");
   expect(partialText).toContain(
     "[toolOutput]Verification: bun test[/toolOutput]",
@@ -1355,7 +1355,7 @@ test("subagent result suppresses success no-op fields and keeps fallback", () =>
       "Outcome: none\nChanged: no changes\nVerification: not applicable\nNext: unchanged",
     ),
   );
-  expect(fallbackText).not.toContain("Outcome: none");
+  expect(fallbackText).toContain("Outcome: none");
   expect(fallbackText).toContain(
     "[toolOutput]Changed: no changes[/toolOutput]",
   );
@@ -1545,14 +1545,14 @@ test("subagent result derives failure cause only when output lacks parsed cause"
     ),
   );
   expect(withHeadingCauseText).toContain("[error]✗[/error]");
-  expect(withHeadingCauseText).not.toContain("Outcome: failed at build");
+  expect(withHeadingCauseText).toContain("Outcome: failed at build");
   const withoutCauseText = renderToString(
     render(
       "Outcome: failed at build\nVerification: tsc failed\nNext: fix types",
     ),
   );
   expect(withoutCauseText).toContain("[error]✗[/error]");
-  expect(withoutCauseText).not.toContain("Outcome: failed at build");
+  expect(withoutCauseText).toContain("Outcome: failed at build");
 });
 
 test("subagent result suppresses failure no-op fields and keeps fallback", () => {
@@ -3317,4 +3317,43 @@ test("completed result card footer is empty when model and usage all missing", (
   );
   expect(cardLines).toHaveLength(6);
   expect(renderedText).not.toMatch(/\[dim\].*·.*\[\/dim\]/);
+});
+
+test("renderSubagentResult shows finalOutput only from assistant text and performs no hidden outcome synthesis", () => {
+  const fakeTheme = createDefaultFakeTheme();
+  const rendered = renderSubagentResult(
+    {
+      content: [{ type: "text", text: "ignored" }],
+      details: {
+        mode: "single",
+        agentScope: "both",
+        projectAgentsDir: null,
+        results: [
+          {
+            agent: "builder",
+            agentSource: "project",
+            task: "pass",
+            exitCode: 0,
+            finalOutput: "pure assistant text here",
+            outcome: "should-not-be-synthesized-into-body",
+            messages: [],
+            stderr: "",
+            usage: {
+              input: 0,
+              output: 0,
+              cacheRead: 0,
+              cacheWrite: 0,
+              cost: 0,
+              contextTokens: 0,
+              turns: 0,
+            },
+          },
+        ],
+      },
+    },
+    fakeTheme,
+  );
+  const renderedText = renderToString(rendered);
+  expect(renderedText).toContain("pure assistant text here");
+  expect(renderedText).not.toContain("should-not-be-synthesized-into-body");
 });

@@ -3862,3 +3862,177 @@ exit 0
   expect(partialUpdates[0]?.content).toBeDefined();
   expect(partialUpdates[0]?.details).toBeDefined();
 });
+
+test("subagent tool successful run with complete tool preserves outcome in details without finalOutput mutation", async () => {
+  const sentMessages: SendMessageArg[] = [];
+  const asstMessage = JSON.stringify({
+    type: "message_end",
+    message: {
+      role: "assistant",
+      content: [
+        { type: "text", text: "Task completed successfully." },
+        {
+          type: "toolCall",
+          id: "tc-complete-1",
+          name: "complete",
+          arguments: { outcome: "Successfully done" },
+        },
+      ],
+    },
+  });
+  const toolResultMsg = JSON.stringify({
+    type: "tool_result_end",
+    message: {
+      role: "toolResult",
+      toolCallId: "tc-complete-1",
+      details: { outcome: "Successfully done" },
+    },
+  });
+  const agentEndMsg = JSON.stringify({
+    type: "agent_end",
+    messages: [],
+  });
+
+  const { tool, cwd } = await setupTest({
+    sendMessage: (msg) => sentMessages.push(msg),
+    piScript: `#!/bin/sh
+printf '%s\\n' ${shellQuote(asstMessage)}
+printf '%s\\n' ${shellQuote(toolResultMsg)}
+printf '%s\\n' ${shellQuote(agentEndMsg)}
+exit 0
+`,
+  });
+
+  process.env.PI_SUBAGENT_DEPTH = "1";
+  const result = await tool.execute(
+    "test-tool-call",
+    { agent: "hang", task: "test outcome" },
+    undefined,
+    undefined,
+    { cwd, hasUI: false } as unknown as ExtensionContext,
+  );
+
+  // Parent details should expose results[0].outcome
+  expect(result.details.results[0]?.outcome).toBe("Successfully done");
+
+  // finalOutput contains only assistant text and remains unchanged
+  expect(result.details.results[0]?.finalOutput).toBe(
+    "Task completed successfully.",
+  );
+
+  // Result content does not synthesize the outcome text
+  expect((result.content[0] as TextContent).text).toBe(
+    "Task completed successfully.",
+  );
+});
+
+test("subagent tool with tool-only complete preserves outcome with empty finalOutput", async () => {
+  const sentMessages: SendMessageArg[] = [];
+  const asstMessage = JSON.stringify({
+    type: "message_end",
+    message: {
+      role: "assistant",
+      content: [
+        {
+          type: "toolCall",
+          id: "tc-complete-2",
+          name: "complete",
+          arguments: { outcome: "Only completed without text" },
+        },
+      ],
+    },
+  });
+  const toolResultMsg = JSON.stringify({
+    type: "tool_result_end",
+    message: {
+      role: "toolResult",
+      toolCallId: "tc-complete-2",
+      details: { outcome: "Only completed without text" },
+    },
+  });
+  const agentEndMsg = JSON.stringify({
+    type: "agent_end",
+    messages: [],
+  });
+
+  const { tool, cwd } = await setupTest({
+    sendMessage: (msg) => sentMessages.push(msg),
+    piScript: `#!/bin/sh
+printf '%s\\n' ${shellQuote(asstMessage)}
+printf '%s\\n' ${shellQuote(toolResultMsg)}
+printf '%s\\n' ${shellQuote(agentEndMsg)}
+exit 0
+`,
+  });
+
+  process.env.PI_SUBAGENT_DEPTH = "1";
+  const result = await tool.execute(
+    "test-tool-call",
+    { agent: "hang", task: "tool-only outcome" },
+    undefined,
+    undefined,
+    { cwd, hasUI: false } as unknown as ExtensionContext,
+  );
+
+  expect(result.details.results[0]?.outcome).toBe(
+    "Only completed without text",
+  );
+  expect(result.details.results[0]?.finalOutput).toBe("");
+  expect((result.content[0] as TextContent).text).toBe("(no output)");
+});
+
+test("subagent tool failure keeps existing content/error semantics with no outcome field", async () => {
+  const sentMessages: SendMessageArg[] = [];
+  const asstMessage = JSON.stringify({
+    type: "message_end",
+    message: {
+      role: "assistant",
+      content: [
+        { type: "text", text: "Failed with errors." },
+        {
+          type: "toolCall",
+          id: "tc-complete-3",
+          name: "complete",
+          arguments: { outcome: "Failed outcome but it will be ignored" },
+        },
+      ],
+    },
+  });
+  const toolResultMsg = JSON.stringify({
+    type: "tool_result_end",
+    message: {
+      role: "toolResult",
+      toolCallId: "tc-complete-3",
+      isError: true,
+      details: { outcome: "Failed outcome but it will be ignored" },
+    },
+  });
+  const agentEndMsg = JSON.stringify({
+    type: "agent_end",
+    messages: [],
+  });
+
+  const { tool, cwd } = await setupTest({
+    sendMessage: (msg) => sentMessages.push(msg),
+    piScript: `#!/bin/sh
+printf '%s\\n' ${shellQuote(asstMessage)}
+printf '%s\\n' ${shellQuote(toolResultMsg)}
+printf '%s\\n' ${shellQuote(agentEndMsg)}
+exit 1
+`,
+  });
+
+  process.env.PI_SUBAGENT_DEPTH = "1";
+  const result = await tool.execute(
+    "test-tool-call",
+    { agent: "hang", task: "failure outcome" },
+    undefined,
+    undefined,
+    { cwd, hasUI: false } as unknown as ExtensionContext,
+  );
+
+  // In case of non-zero exit code or semantic failure, outcome should be undefined
+  expect(result.details.results[0]?.outcome).toBeUndefined();
+  expect(result.details.results[0]?.finalOutput).toBe("Failed with errors.");
+  expect((result.content[0] as TextContent).text).toBe("Failed with errors.");
+});
