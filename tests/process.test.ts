@@ -1462,14 +1462,12 @@ exit 0
   expect(toolIdx).toBeGreaterThan(nestedIdx);
 });
 
-test("SUBAGENT_RESULT_CONTRACT preserves outcome-only result contract", () => {
+test("SUBAGENT_RESULT_CONTRACT contains complete tool instructions", () => {
   expect(SUBAGENT_RESULT_CONTRACT).toMatch(
-    /End your final response with exactly one line:/,
+    /Call the complete tool as your final action/,
   );
-  expect(SUBAGENT_RESULT_CONTRACT).toMatch(
-    /^\s*- Outcome: <short, single, compact lower-case sentence>\./m,
-  );
-  expect(SUBAGENT_RESULT_CONTRACT).not.toMatch(/standardized result output/i);
+  expect(SUBAGENT_RESULT_CONTRACT).toMatch(/short, single-sentence outcome/i);
+  expect(SUBAGENT_RESULT_CONTRACT).not.toMatch(/Outcome: <short/);
 });
 
 test("appendSubagentResultContract appends contract to prompt", () => {
@@ -2119,4 +2117,198 @@ exit 0
     expect(abortError.result.termination).toBeDefined();
     expect(abortError.result.termination?.cancelReason).toBe("pre-aborted");
   }
+});
+
+test("runSingleAgent injects the complete extension", async () => {
+  const args = await captureRunSingleAgentArgs(makeModelAgent({}), undefined);
+  expect(args).toContain("--extension");
+  const extPaths = flagValues(args, "--extension");
+  expect(extPaths.length).toBe(1);
+  expect(extPaths[0] ?? "").toContain("complete-extension");
+});
+
+test("runSingleAgent omits --tools when agent has no tools", async () => {
+  const args = await captureRunSingleAgentArgs(makeModelAgent({}), undefined);
+  expect(args).not.toContain("--tools");
+});
+
+test("runSingleAgent appends complete to the agent tool allowlist", async () => {
+  const agent = makeModelAgent({ tools: ["read", "write"] });
+  const args = await captureRunSingleAgentArgs(agent, undefined);
+  expect(args).toContain("--tools");
+  const toolsList = flagValues(args, "--tools")[0] ?? "";
+  expect(toolsList.split(",")).toEqual(["read", "write", "complete"]);
+  expect(agent.tools).toEqual(["read", "write"]);
+});
+
+test("runSingleAgent preserves existing complete in the tool allowlist", async () => {
+  const agent = makeModelAgent({ tools: ["read", "complete", "write"] });
+  const args = await captureRunSingleAgentArgs(agent, undefined);
+  expect(args).toContain("--tools");
+  const toolsList = flagValues(args, "--tools")[0] ?? "";
+  expect(toolsList.split(",")).toEqual(["read", "complete", "write"]);
+  expect(agent.tools).toEqual(["read", "complete", "write"]);
+});
+
+test("runSingleAgent injects complete into an empty tool allowlist", async () => {
+  const agent = makeModelAgent({ tools: [] });
+  const args = await captureRunSingleAgentArgs(agent, undefined);
+  expect(args).toContain("--tools");
+  const toolsList = flagValues(args, "--tools")[0] ?? "";
+  expect(toolsList.split(",")).toEqual(["complete"]);
+  expect(agent.tools).toEqual([]);
+});
+
+test("runSingleAgent deduplicates complete in the tool allowlist", async () => {
+  const agent = makeModelAgent({
+    tools: ["read", "complete", "complete", "write", "complete"],
+  });
+  const args = await captureRunSingleAgentArgs(agent, undefined);
+  expect(args).toContain("--tools");
+  const toolsList = flagValues(args, "--tools")[0] ?? "";
+  expect(toolsList.split(",")).toEqual(["read", "complete", "write"]);
+  expect(agent.tools).toEqual([
+    "read",
+    "complete",
+    "complete",
+    "write",
+    "complete",
+  ]);
+});
+
+test("runSingleAgent extracts outcome from toolResult details", async () => {
+  const piScript = `#!/bin/sh
+printf '%s\\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"toolCall","id":"tc-1","name":"complete","arguments":{"outcome":"A beautiful outcome"}}]}}'
+printf '%s\\n' '{"type":"tool_result_end","message":{"role":"toolResult","toolCallId":"tc-1","details":{"outcome":"A beautiful outcome"}}}'
+printf '%s\\n' '{"type":"agent_end","messages":[]}'
+exit 0
+`;
+  const { cwd } = await setupTest({ piScript });
+  const result = await runSingleAgent(
+    cwd,
+    [hangAgent],
+    "hang",
+    "task",
+    undefined,
+    undefined,
+    makeSubagentDetails,
+    undefined,
+    "off",
+  );
+  expect(result.exitCode).toBe(0);
+  expect(result.outcome).toBe("A beautiful outcome");
+});
+
+test("runSingleAgent suppresses outcome from assistant arguments when toolResult is missing", async () => {
+  const piScript = `#!/bin/sh
+printf '%s\\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"toolCall","id":"tc-1","name":"complete","arguments":{"outcome":"Assistant outcome"}}]}}'
+printf '%s\\n' '{"type":"agent_end","messages":[]}'
+exit 0
+`;
+  const { cwd } = await setupTest({ piScript });
+  const result = await runSingleAgent(
+    cwd,
+    [hangAgent],
+    "hang",
+    "task",
+    undefined,
+    undefined,
+    makeSubagentDetails,
+    undefined,
+    "off",
+  );
+  expect(result.exitCode).toBe(0);
+  expect(result.outcome).toBeUndefined();
+});
+
+test("runSingleAgent prefers toolResult details.outcome over assistant arguments.outcome", async () => {
+  const piScript = `#!/bin/sh
+printf '%s\\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"toolCall","id":"tc-1","name":"complete","arguments":{"outcome":"Assistant outcome"}}]}}'
+printf '%s\\n' '{"type":"tool_result_end","message":{"role":"toolResult","toolCallId":"tc-1","details":{"outcome":"Tool outcome beats assistant"}}}'
+printf '%s\\n' '{"type":"agent_end","messages":[]}'
+exit 0
+`;
+  const { cwd } = await setupTest({ piScript });
+  const result = await runSingleAgent(
+    cwd,
+    [hangAgent],
+    "hang",
+    "task",
+    undefined,
+    undefined,
+    makeSubagentDetails,
+    undefined,
+    "off",
+  );
+  expect(result.exitCode).toBe(0);
+  expect(result.outcome).toBe("Tool outcome beats assistant");
+});
+
+test("runSingleAgent ignores blank or malformed outcomes", async () => {
+  const piScript = `#!/bin/sh
+printf '%s\\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"toolCall","id":"tc-1","name":"complete","arguments":{"outcome":"   "}}]}}'
+printf '%s\\n' '{"type":"agent_end","messages":[]}'
+exit 0
+`;
+  const { cwd } = await setupTest({ piScript });
+  const result = await runSingleAgent(
+    cwd,
+    [hangAgent],
+    "hang",
+    "task",
+    undefined,
+    undefined,
+    makeSubagentDetails,
+    undefined,
+    "off",
+  );
+  expect(result.exitCode).toBe(0);
+  expect(result.outcome).toBeUndefined();
+});
+
+test("runSingleAgent ignores outcome on failed complete call", async () => {
+  const piScript = `#!/bin/sh
+printf '%s\\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"toolCall","id":"tc-1","name":"complete","arguments":{"outcome":"Should be ignored"}}]}}'
+printf '%s\\n' '{"type":"tool_result_end","message":{"role":"toolResult","toolCallId":"tc-1","isError":true}}'
+printf '%s\\n' '{"type":"agent_end","messages":[]}'
+exit 0
+`;
+  const { cwd } = await setupTest({ piScript });
+  const result = await runSingleAgent(
+    cwd,
+    [hangAgent],
+    "hang",
+    "task",
+    undefined,
+    undefined,
+    makeSubagentDetails,
+    undefined,
+    "off",
+  );
+  expect(result.outcome).toBeUndefined();
+});
+
+test("runSingleAgent handles multiple complete calls, newer invalid/blank calls do not block older valid outcomes", async () => {
+  const piScript = `#!/bin/sh
+printf '%s\\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"toolCall","id":"tc-1","name":"complete","arguments":{"outcome":"First valid"}}]}}'
+printf '%s\\n' '{"type":"tool_result_end","message":{"role":"toolResult","toolCallId":"tc-1","details":{"outcome":"First valid"}}}'
+printf '%s\\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"toolCall","id":"tc-2","name":"complete","arguments":{"outcome":"   "}}]}}'
+printf '%s\\n' '{"type":"tool_result_end","message":{"role":"toolResult","toolCallId":"tc-2","details":{"outcome":"   "}}}'
+printf '%s\\n' '{"type":"agent_end","messages":[]}'
+exit 0
+`;
+  const { cwd } = await setupTest({ piScript });
+  const result = await runSingleAgent(
+    cwd,
+    [hangAgent],
+    "hang",
+    "task",
+    undefined,
+    undefined,
+    makeSubagentDetails,
+    undefined,
+    "off",
+  );
+  expect(result.exitCode).toBe(0);
+  expect(result.outcome).toBe("First valid");
 });

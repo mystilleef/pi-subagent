@@ -7,13 +7,7 @@
 import { type ChildProcess, spawn } from "node:child_process";
 import * as fs from "node:fs";
 import readline from "node:readline";
-import {
-  clampThinkingLevel,
-  getModel,
-  getSupportedThinkingLevels,
-  type Message,
-  type ModelThinkingLevel,
-} from "@earendil-works/pi-ai";
+import type { Message } from "@earendil-works/pi-ai";
 import type { AgentConfig, ThinkingLevel } from "../agent/agents.js";
 import { getFinalOutput } from "../output/ui.js";
 import { makeToolPreview, renderToolActivity } from "../progress/progress.js";
@@ -44,6 +38,18 @@ import {
   parseChildEventLine,
   TOOL_EXECUTION_UPDATE_EVENT,
 } from "./child-events.js";
+import { getLatestOutcomeFromMessages } from "./complete-outcome.js";
+import {
+  buildModelDisplay,
+  type ChildModelSettings,
+  resolveEffectiveChildModelSettings,
+  resolveThinkingLevel,
+} from "./model-resolution.js";
+import {
+  appendWithByteLimit,
+  resolveCompleteExtensionPath,
+  resolveContextWindowTokens,
+} from "./process-utils.js";
 import { appendSubagentResultContract } from "./prompt-contract.js";
 import {
   acquireChildSleepInhibitor,
@@ -54,35 +60,12 @@ import {
   terminateChildProcess,
 } from "./termination.js";
 
-export function resolveThinkingLevel(
-  requested: ThinkingLevel,
-  provider: string,
-  modelId: string,
-): { level: ThinkingLevel; warning?: string } {
-  const model = getModel(provider as never, modelId as never);
-  if (!model) return { level: requested };
-  const mkWarning = (effective: ThinkingLevel) =>
-    `Thinking level "${requested}" not supported by model "${provider}/${modelId}"; using "${effective}" instead`;
-  if (model.reasoning === false) {
-    return { level: "off", warning: mkWarning("off") };
-  }
-  if (!model.thinkingLevelMap) return { level: requested };
-  const supported = getSupportedThinkingLevels(model);
-  if (supported.length === 0) return { level: requested };
-  const clamped = clampThinkingLevel(
-    model,
-    requested as ModelThinkingLevel,
-  ) as ThinkingLevel;
-  if (clamped === requested) return { level: requested };
-  return { level: clamped, warning: mkWarning(clamped) };
-}
+const COMPLETE_EXTENSION_PATH = resolveCompleteExtensionPath();
+
+export { resolveThinkingLevel } from "./model-resolution.js";
 
 type RuntimeLimits = ReturnType<typeof getSubagentRuntimeLimits>;
 type RuntimeResult = SingleResult & { messages: Message[] };
-type ChildModelSettings = {
-  provider?: string | undefined;
-  id?: string | undefined;
-};
 type SleepInhibitorAcquirer = (pid: number) => Promise<SleepInhibitorHandle>;
 
 type RunSingleAgentOptions = {
@@ -110,53 +93,6 @@ interface SubagentState {
   wasAborted: boolean;
   agentEndGraceTimer?: ReturnType<typeof setTimeout>;
   terminationPromise?: Promise<unknown>;
-}
-
-function appendWithByteLimit(
-  current: string,
-  data: string | Buffer,
-  max: number,
-): string {
-  const currentBytes = Buffer.from(current, "utf-8");
-  if (currentBytes.length >= max) return current;
-  const incomingBytes = Buffer.isBuffer(data)
-    ? data
-    : Buffer.from(data, "utf-8");
-  const combined = Buffer.concat([currentBytes, incomingBytes]);
-  if (combined.length <= max) return combined.toString("utf-8");
-  return truncateValidUtf8(combined, max);
-}
-
-function truncateValidUtf8(buffer: Buffer, max: number): string {
-  let end = Math.min(max, buffer.length);
-  while (end > 0) {
-    const candidate = buffer.subarray(0, end).toString("utf-8");
-    if (!candidate.endsWith("�")) return candidate;
-    end -= 1;
-  }
-  return "";
-}
-
-/**
- * Rationale: Subagent usage reporting needs context window awareness to provide
- * meaningful "context full" indicators to the parent.
- */
-function resolveContextWindowTokens(msg: Message): number | undefined {
-  const m = msg as unknown as Record<string, unknown>;
-  if (typeof m["provider"] !== "string" || typeof m["model"] !== "string")
-    return;
-  try {
-    const contextWindow = getModel(
-      m["provider"] as never,
-      m["model"] as never,
-    )?.contextWindow;
-    return Number.isFinite(contextWindow) && contextWindow > 0
-      ? contextWindow
-      : undefined;
-  } catch {
-    /* model lookup failures return undefined to skip context window tracking */
-    return;
-  }
 }
 
 function getAbortReason(signal: AbortSignal): string {
@@ -301,23 +237,6 @@ async function waitForSubagentProcess(
     proc.stdout?.on("data", onStreamData);
     proc.stderr?.on("data", onStreamData);
   });
-}
-
-function buildModelDisplay(
-  effectiveModel: ChildModelSettings,
-  thinking: ThinkingLevel,
-): string | undefined {
-  const parts: string[] = [];
-  if (effectiveModel.provider) {
-    parts.push(effectiveModel.provider);
-  }
-  if (effectiveModel.id) {
-    parts.push(effectiveModel.id);
-  }
-  if (thinking) {
-    parts.push(thinking);
-  }
-  return parts.length > 0 ? parts.join(" ･ ") : undefined;
 }
 
 const EMPTY_USAGE = {
@@ -719,18 +638,6 @@ function setupAbortHandler(
   return onAbort;
 }
 
-function resolveEffectiveChildModelSettings(
-  agent: AgentConfig,
-  parentModel: ChildModelSettings | undefined,
-): ChildModelSettings {
-  return {
-    provider: agent.provider ?? parentModel?.provider,
-    id:
-      agent.model ??
-      (agent.provider === undefined ? parentModel?.id : undefined),
-  };
-}
-
 function buildPiArgs(
   agent: AgentConfig,
   task: string,
@@ -744,11 +651,24 @@ function buildPiArgs(
     args.push("--provider", effectiveModel.provider);
   if (effectiveModel.id) args.push("--model", effectiveModel.id);
   args.push("--thinking", thinking);
-  if (agent.tools?.length) args.push("--tools", agent.tools.join(","));
+  if (agent.tools) {
+    const tools: string[] = [];
+    let seenComplete = false;
+    for (const tool of agent.tools) {
+      if (tool === "complete") {
+        if (seenComplete) continue;
+        seenComplete = true;
+      }
+      tools.push(tool);
+    }
+    if (!seenComplete) tools.push("complete");
+    args.push("--tools", tools.join(","));
+  }
   if (agent.skills) args.push("--no-skills", ...resolvedSkills.args);
   if (tmpPrompt) {
     args.push("--append-system-prompt", tmpPrompt.filePath);
   }
+  args.push("--extension", COMPLETE_EXTENSION_PATH);
   const taskPrompt = task
     ? `Task: ${task}`
     : "Run according to your system prompt. If no explicit task was provided, use the default context described there.";
@@ -818,6 +738,16 @@ async function finalizeResult(
   }
   if (state.result.termination?.cancelReason === "agent_end_timeout") {
     state.result.stderr = state.result.stderr.replace(/^Terminated\r?\n/gm, "");
+  }
+  const isSemanticallySuccessful =
+    !state.wasAborted &&
+    !state.spawnError &&
+    state.result.exitCode === 0 &&
+    !state.result.errorMessage?.trim() &&
+    !detectMessageError(state.result.messages);
+  if (isSemanticallySuccessful) {
+    const outcome = getLatestOutcomeFromMessages(state.result.messages);
+    if (outcome) state.result.outcome = outcome;
   }
   if (state.wasAborted) {
     state.result.stderr = "";

@@ -52,6 +52,7 @@ export interface SingleResult {
   messages?: Message[] | undefined;
   termination?: TerminationMetadata | undefined;
   thinkingWarning?: string | undefined;
+  outcome?: string | undefined;
 }
 
 export interface SubagentDetails {
