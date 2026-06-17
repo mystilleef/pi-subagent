@@ -13,6 +13,7 @@ import { getFinalOutput } from "../output/ui.js";
 import { makeToolPreview, renderToolActivity } from "../progress/progress.js";
 import { SENSITIVE_PATTERN } from "../progress/progress-format.js";
 import { isToolCallPart } from "../progress/progress-state.js";
+import { serializeSamplingParams } from "../shared/sampling.js";
 import {
   type OnUpdateCallback,
   type SingleResult,
@@ -49,6 +50,7 @@ import {
   appendWithByteLimit,
   resolveCompleteExtensionPath,
   resolveContextWindowTokens,
+  resolveSamplingExtensionPath,
 } from "./process-utils.js";
 import { appendSubagentResultContract } from "./prompt-contract.js";
 import {
@@ -61,6 +63,7 @@ import {
 } from "./termination.js";
 
 const COMPLETE_EXTENSION_PATH = resolveCompleteExtensionPath();
+const SAMPLING_EXTENSION_PATH = resolveSamplingExtensionPath();
 
 export { resolveThinkingLevel } from "./model-resolution.js";
 
@@ -638,6 +641,13 @@ function setupAbortHandler(
   return onAbort;
 }
 
+function buildSamplingEnv(agent: AgentConfig): string | undefined {
+  return serializeSamplingParams({
+    temperature: agent.temperature,
+    topP: agent.topP,
+  });
+}
+
 function buildPiArgs(
   agent: AgentConfig,
   task: string,
@@ -652,17 +662,9 @@ function buildPiArgs(
   if (effectiveModel.id) args.push("--model", effectiveModel.id);
   args.push("--thinking", thinking);
   if (agent.tools) {
-    const tools: string[] = [];
-    let seenComplete = false;
-    for (const tool of agent.tools) {
-      if (tool === "complete") {
-        if (seenComplete) continue;
-        seenComplete = true;
-      }
-      tools.push(tool);
-    }
-    if (!seenComplete) tools.push("complete");
-    args.push("--tools", tools.join(","));
+    const tools = new Set(agent.tools);
+    tools.add("complete");
+    args.push("--tools", [...tools].join(","));
   }
   if (agent.skills) args.push("--no-skills", ...resolvedSkills.args);
   if (tmpPrompt) {
@@ -674,6 +676,15 @@ function buildPiArgs(
     : "Run according to your system prompt. If no explicit task was provided, use the default context described there.";
   args.push(appendSubagentResultContract(taskPrompt));
   return args;
+}
+
+function buildChildEnv(samplingEnv: string | undefined): NodeJS.ProcessEnv {
+  const { PI_SAMPLING_PARAMS: _, ...parentEnv } = process.env;
+  return {
+    ...parentEnv,
+    ...subagentDepthEnv(),
+    ...(samplingEnv ? { PI_SAMPLING_PARAMS: samplingEnv } : {}),
+  };
 }
 
 function setupChildProcess(
@@ -836,6 +847,7 @@ export async function runSingleAgent(
   };
   if (thinkingWarning) state.result.thinkingWarning = thinkingWarning;
   const tmpPrompt = promptSetup.tmpPrompt;
+  const samplingEnv = buildSamplingEnv(agent);
   try {
     const args = buildPiArgs(
       agent,
@@ -845,17 +857,21 @@ export async function runSingleAgent(
       resolvedSkills,
       tmpPrompt,
     );
+    if (samplingEnv) {
+      args.push("--extension", SAMPLING_EXTENSION_PATH);
+    }
     const invocation = getPiInvocation(args);
     const terminateOptions = {
       tree: true,
       platform: process.platform,
       processTreeDetached: process.platform !== "win32",
     };
+    const childEnv = buildChildEnv(samplingEnv);
     const proc = spawn(invocation.command, invocation.args, {
       cwd: defaultCwd,
       shell: invocation.command === "pi" && process.platform === "win32",
       stdio: ["ignore", "pipe", "pipe"],
-      env: { ...process.env, ...subagentDepthEnv() },
+      env: childEnv,
       ...getProcessTreeSpawnOptions(terminateOptions.tree),
     });
     const processDone = waitForSubagentProcess(proc);

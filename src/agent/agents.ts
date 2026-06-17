@@ -2,6 +2,7 @@ import type { Dirent } from "node:fs";
 import * as fsPromises from "node:fs/promises";
 import * as path from "node:path";
 import { getAgentDir, parseFrontmatter } from "@earendil-works/pi-coding-agent";
+import { isValidSamplingValue } from "../shared/sampling.js";
 
 export type AgentSource = "user" | "project";
 export type AgentScope = AgentSource | "both";
@@ -25,6 +26,8 @@ export interface AgentConfig {
   thinking?: ThinkingLevel | undefined;
   model?: string | undefined;
   provider?: string | undefined;
+  temperature?: number | undefined;
+  topP?: number | undefined;
   systemPrompt: string;
   source: AgentSource;
   filePath: string;
@@ -82,6 +85,23 @@ function parseOptionalString(raw: unknown): string | undefined {
   return normalized.length > 0 ? normalized : undefined;
 }
 
+function isNonStringOptional(raw: unknown): boolean {
+  return raw != null && typeof raw !== "string";
+}
+
+function parseSamplingValue(
+  raw: unknown,
+  field: string,
+  agentName: string,
+): number | undefined {
+  if (raw === undefined) return undefined;
+  if (isValidSamplingValue(raw)) return raw;
+  console.warn(
+    `Warning: Agent '${agentName}' has invalid '${field}' value: ${raw}`,
+  );
+  return undefined;
+}
+
 function parseAgentConfig(
   content: string,
   source: AgentSource,
@@ -109,21 +129,24 @@ function parseAgentConfig(
     thinking: rawThinking,
     model: rawModel,
     provider: rawProvider,
+    temperature: rawTemperature,
+    top_p: rawTopP,
   } = frontmatter;
   if (typeof name !== "string" || typeof description !== "string") return null;
-  if (rawTools != null && typeof rawTools !== "string") return null;
-  if (rawSkills != null && typeof rawSkills !== "string") return null;
-  if (rawThinking != null && typeof rawThinking !== "string") return null;
-  if (rawModel != null && typeof rawModel !== "string") return null;
-  if (rawProvider != null && typeof rawProvider !== "string") return null;
+  if (isNonStringOptional(rawTools)) return null;
+  if (isNonStringOptional(rawSkills)) return null;
+  if (isNonStringOptional(rawThinking)) return null;
+  if (isNonStringOptional(rawModel)) return null;
+  if (isNonStringOptional(rawProvider)) return null;
   const tools = parseCommaList(rawTools);
-  const skills = Object.hasOwn(frontmatter, "skills")
-    ? (parseCommaList(rawSkills) ?? [])
-    : undefined;
+  const skills =
+    rawSkills !== undefined ? (parseCommaList(rawSkills) ?? []) : undefined;
   const thinking = parseThinkingLevel(rawThinking);
   const model = parseOptionalString(rawModel);
   const provider = parseOptionalString(rawProvider);
   if (provider !== undefined && model === undefined) return null;
+  const temperature = parseSamplingValue(rawTemperature, "temperature", name);
+  const topP = parseSamplingValue(rawTopP, "top_p", name);
   return {
     name,
     description,
@@ -135,6 +158,8 @@ function parseAgentConfig(
     systemPrompt: body,
     source,
     filePath,
+    ...(temperature !== undefined && { temperature }),
+    ...(topP !== undefined && { topP }),
   };
 }
 

@@ -9,6 +9,22 @@ import {
 } from "../src/agent/agents.js";
 import { setupFakePi } from "./helpers.js";
 
+async function withCapturedWarnings<T>(
+  fn: () => Promise<T>,
+): Promise<{ result: T; warnings: string[] }> {
+  const warnings: string[] = [];
+  const originalWarn = console.warn;
+  console.warn = (...args: unknown[]) => {
+    warnings.push(args.map(String).join(" "));
+  };
+  try {
+    const result = await fn();
+    return { result, warnings };
+  } finally {
+    console.warn = originalWarn;
+  }
+}
+
 test("reachability gate: valid markdown produces agent config through discovery", async () => {
   const { agentDir, cwd } = await setupFakePi();
   const userDir = path.join(agentDir, "agents");
@@ -560,4 +576,293 @@ test("formatAgentList formats empty and truncated lists", () => {
     text: "alpha (user): First agent; beta (project): Second agent",
     remaining: 1,
   });
+});
+
+test("parse valid temperature and top_p sampling values", async () => {
+  const { agentDir, cwd } = await setupFakePi();
+  const userDir = path.join(agentDir, "agents");
+  await writeFile(
+    path.join(userDir, "valid-sampling.md"),
+    `---
+name: valid-sampling
+description: Valid sampling agent
+temperature: 0.5
+top_p: 0.9
+---
+Prompt`,
+  );
+  await writeFile(
+    path.join(userDir, "valid-sampling-bounds.md"),
+    `---
+name: valid-sampling-bounds
+description: Valid sampling agent at bounds
+temperature: 0
+top_p: 1
+---
+Prompt`,
+  );
+  const discovery = await discoverAgentsAsync(cwd, "user");
+  const agent1 = discovery.agents.find((a) => a.name === "valid-sampling");
+  expect(agent1?.temperature).toBe(0.5);
+  expect(agent1?.topP).toBe(0.9);
+  const agent2 = discovery.agents.find(
+    (a) => a.name === "valid-sampling-bounds",
+  );
+  expect(agent2?.temperature).toBe(0);
+  expect(agent2?.topP).toBe(1);
+});
+
+test("ignore invalid sampling fields, emit warning, and leave only that field absent", async () => {
+  const { agentDir, cwd } = await setupFakePi();
+  const userDir = path.join(agentDir, "agents");
+  await writeFile(
+    path.join(userDir, "invalid-sampling-string.md"),
+    `---
+name: invalid-sampling-string
+description: Invalid sampling string
+temperature: "0.5"
+top_p: "0.9"
+---
+Prompt`,
+  );
+  await writeFile(
+    path.join(userDir, "invalid-sampling-out-of-range.md"),
+    `---
+name: invalid-sampling-out-of-range
+description: Invalid sampling out of range
+temperature: 1.5
+top_p: -0.1
+---
+Prompt`,
+  );
+  await writeFile(
+    path.join(userDir, "invalid-sampling-nan.md"),
+    `---
+name: invalid-sampling-nan
+description: Invalid sampling NaN
+temperature: .nan
+top_p: .inf
+---
+Prompt`,
+  );
+  const { result: discovery, warnings } = await withCapturedWarnings(() =>
+    discoverAgentsAsync(cwd, "user"),
+  );
+  const agent1 = discovery.agents.find(
+    (a) => a.name === "invalid-sampling-string",
+  );
+  expect(agent1).toBeDefined();
+  expect(agent1?.temperature).toBeUndefined();
+  expect(agent1?.topP).toBeUndefined();
+  const agent2 = discovery.agents.find(
+    (a) => a.name === "invalid-sampling-out-of-range",
+  );
+  expect(agent2).toBeDefined();
+  expect(agent2?.temperature).toBeUndefined();
+  expect(agent2?.topP).toBeUndefined();
+  const agent3 = discovery.agents.find(
+    (a) => a.name === "invalid-sampling-nan",
+  );
+  expect(agent3).toBeDefined();
+  expect(agent3?.temperature).toBeUndefined();
+  expect(agent3?.topP).toBeUndefined();
+  expect(
+    warnings.some(
+      (w) => w.includes("invalid-sampling-string") && w.includes("temperature"),
+    ),
+  ).toBe(true);
+  expect(
+    warnings.some(
+      (w) => w.includes("invalid-sampling-string") && w.includes("top_p"),
+    ),
+  ).toBe(true);
+  expect(
+    warnings.some(
+      (w) =>
+        w.includes("invalid-sampling-out-of-range") &&
+        w.includes("temperature"),
+    ),
+  ).toBe(true);
+  expect(
+    warnings.some(
+      (w) => w.includes("invalid-sampling-out-of-range") && w.includes("top_p"),
+    ),
+  ).toBe(true);
+  expect(
+    warnings.some(
+      (w) => w.includes("invalid-sampling-nan") && w.includes("temperature"),
+    ),
+  ).toBe(true);
+  expect(
+    warnings.some(
+      (w) => w.includes("invalid-sampling-nan") && w.includes("top_p"),
+    ),
+  ).toBe(true);
+});
+
+test("agents without sampling frontmatter match current discovery behavior", async () => {
+  const { agentDir, cwd } = await setupFakePi();
+  const userDir = path.join(agentDir, "agents");
+  await writeFile(
+    path.join(userDir, "legacy-agent.md"),
+    `---
+name: legacy-agent
+description: Legacy agent without sampling fields
+tools: bash
+skills: helper
+---
+Prompt`,
+  );
+  const discovery = await discoverAgentsAsync(cwd, "user");
+  const agent = discovery.agents.find((a) => a.name === "legacy-agent");
+  expect(agent).toBeDefined();
+  expect(agent?.temperature).toBeUndefined();
+  expect(agent?.topP).toBeUndefined();
+  expect(agent?.tools).toEqual(["bash"]);
+  expect(agent?.skills).toEqual(["helper"]);
+});
+
+test("own-property omission of sampling fields when invalid or absent", async () => {
+  const { agentDir, cwd } = await setupFakePi();
+  const userDir = path.join(agentDir, "agents");
+  await writeFile(
+    path.join(userDir, "only-temp.md"),
+    `---
+name: only-temp
+description: Only temperature
+temperature: 0.5
+---
+Prompt`,
+  );
+  await writeFile(
+    path.join(userDir, "only-top-p.md"),
+    `---
+name: only-top-p
+description: Only top_p
+top_p: 0.8
+---
+Prompt`,
+  );
+  await writeFile(
+    path.join(userDir, "no-sampling.md"),
+    `---
+name: no-sampling
+description: No sampling
+---
+Prompt`,
+  );
+  const discovery = await discoverAgentsAsync(cwd, "user");
+  const tempAgent = discovery.agents.find((a) => a.name === "only-temp");
+  expect(tempAgent).toBeDefined();
+  if (tempAgent) {
+    expect(Object.hasOwn(tempAgent, "temperature")).toBe(true);
+    expect(Object.hasOwn(tempAgent, "topP")).toBe(false);
+  }
+
+  const topPAgent = discovery.agents.find((a) => a.name === "only-top-p");
+  expect(topPAgent).toBeDefined();
+  if (topPAgent) {
+    expect(Object.hasOwn(topPAgent, "temperature")).toBe(false);
+    expect(Object.hasOwn(topPAgent, "topP")).toBe(true);
+  }
+
+  const noSamplingAgent = discovery.agents.find(
+    (a) => a.name === "no-sampling",
+  );
+  expect(noSamplingAgent).toBeDefined();
+  if (noSamplingAgent) {
+    expect(Object.hasOwn(noSamplingAgent, "temperature")).toBe(false);
+    expect(Object.hasOwn(noSamplingAgent, "topP")).toBe(false);
+  }
+});
+
+test("own-property omission and sibling retention for mixed-validity frontmatter", async () => {
+  const { agentDir, cwd } = await setupFakePi();
+  const userDir = path.join(agentDir, "agents");
+  await writeFile(
+    path.join(userDir, "invalid-temp-valid-top-p.md"),
+    `---
+name: invalid-temp-valid-top-p
+description: Invalid temperature and valid top_p
+temperature: 1.5
+top_p: 0.8
+---
+Prompt`,
+  );
+  await writeFile(
+    path.join(userDir, "valid-temp-invalid-top-p.md"),
+    `---
+name: valid-temp-invalid-top-p
+description: Valid temperature and invalid top_p
+temperature: 0.5
+top_p: -0.1
+---
+Prompt`,
+  );
+  const { result: discovery, warnings } = await withCapturedWarnings(() =>
+    discoverAgentsAsync(cwd, "user"),
+  );
+  const agent1 = discovery.agents.find(
+    (a) => a.name === "invalid-temp-valid-top-p",
+  );
+  expect(agent1).toBeDefined();
+  if (agent1) {
+    expect(Object.hasOwn(agent1, "temperature")).toBe(false);
+    expect(Object.hasOwn(agent1, "topP")).toBe(true);
+    expect(agent1.temperature).toBeUndefined();
+    expect(agent1.topP).toBe(0.8);
+  }
+  const agent2 = discovery.agents.find(
+    (a) => a.name === "valid-temp-invalid-top-p",
+  );
+  expect(agent2).toBeDefined();
+  if (agent2) {
+    expect(Object.hasOwn(agent2, "temperature")).toBe(true);
+    expect(Object.hasOwn(agent2, "topP")).toBe(false);
+    expect(agent2.temperature).toBe(0.5);
+    expect(agent2.topP).toBeUndefined();
+  }
+  expect(
+    warnings.some(
+      (w) =>
+        w.includes("invalid-temp-valid-top-p") && w.includes("temperature"),
+    ),
+  ).toBe(true);
+  expect(
+    warnings.some(
+      (w) => w.includes("valid-temp-invalid-top-p") && w.includes("top_p"),
+    ),
+  ).toBe(true);
+});
+
+test("null sampling frontmatter values are rejected with warning and omitted", async () => {
+  const { agentDir, cwd } = await setupFakePi();
+  const userDir = path.join(agentDir, "agents");
+  await writeFile(
+    path.join(userDir, "null-sampling.md"),
+    `---
+name: null-sampling
+description: Null sampling
+temperature: null
+top_p: null
+---
+Prompt`,
+  );
+  const { result: discovery, warnings } = await withCapturedWarnings(() =>
+    discoverAgentsAsync(cwd, "user"),
+  );
+  const agent = discovery.agents.find((a) => a.name === "null-sampling");
+  expect(agent).toBeDefined();
+  if (agent) {
+    expect(Object.hasOwn(agent, "temperature")).toBe(false);
+    expect(Object.hasOwn(agent, "topP")).toBe(false);
+  }
+  expect(
+    warnings.some(
+      (w) => w.includes("null-sampling") && w.includes("temperature"),
+    ),
+  ).toBe(true);
+  expect(
+    warnings.some((w) => w.includes("null-sampling") && w.includes("top_p")),
+  ).toBe(true);
 });

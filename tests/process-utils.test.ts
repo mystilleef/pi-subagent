@@ -139,6 +139,11 @@ describe("truncateValidUtf8", () => {
     const result = truncateValidUtf8(buf, 7);
     expect(result).toBe("€€"); // 6 bytes, 2 chars
   });
+
+  test("returns empty string when the buffer contains no valid truncation point", () => {
+    const buf = Buffer.from([0xff, 0xff, 0xff]);
+    expect(truncateValidUtf8(buf, 2)).toBe("");
+  });
 });
 
 describe("resolveContextWindowTokens", () => {

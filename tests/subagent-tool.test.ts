@@ -4036,3 +4036,252 @@ exit 1
   expect(result.details.results[0]?.finalOutput).toBe("Failed with errors.");
   expect((result.content[0] as TextContent).text).toBe("Failed with errors.");
 });
+
+test("T-005: subagent tool preserves existing model/provider, thinking, skills, extensions, and contracts under both sampling and no-sampling configurations", async () => {
+  const sentMessages: SendMessageArg[] = [];
+  const { agentDir, binDir, cwd } = await setupFakePi();
+
+  const skillDir = path.join(agentDir, "skills", "helper");
+  await mkdir(skillDir, { recursive: true });
+  await writeFile(
+    path.join(skillDir, "SKILL.md"),
+    `---
+name: helper
+description: Helper skill
+---
+Use helper skill.`,
+  );
+
+  await writeFile(
+    path.join(agentDir, "agents", "sampling-agent.md"),
+    `---
+name: sampling-agent
+description: Sampling agent
+skills: helper
+temperature: 0.6
+top_p: 0.8
+---
+Sampling agent prompt`,
+  );
+
+  await writeFile(
+    path.join(agentDir, "agents", "no-sampling-agent.md"),
+    `---
+name: no-sampling-agent
+description: No-sampling agent
+skills: helper
+---
+No-sampling agent prompt`,
+  );
+
+  await writeFile(
+    path.join(binDir, "pi"),
+    `#!/bin/sh
+printf '%s\\n' "$*" > args.txt
+printf '%s\\n' "$PI_SAMPLING_PARAMS" > env_sampling.txt
+while [ "$#" -gt 0 ]; do
+  if [ "$1" = "--append-system-prompt" ]; then
+    shift
+    cat "$1" > prompt.txt
+  fi
+  shift
+done
+printf '%s\\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"done"}],"usage":{"input":1,"output":1,"totalTokens":2,"cost":{"total":0}}}}'
+printf '%s\\n' '{"type":"agent_end"}'
+exit 0
+`,
+  );
+  await chmod(path.join(binDir, "pi"), 0o755);
+
+  const tool = getSubagentTool({
+    sendMessage: (msg) => sentMessages.push(msg),
+    thinkingLevel: "high",
+  });
+
+  process.env.PI_SUBAGENT_DEPTH = "1";
+
+  const resSampling = await tool.execute(
+    "test-tool-call-1",
+    { agent: "sampling-agent", task: "sampling task" },
+    undefined,
+    undefined,
+    {
+      cwd,
+      hasUI: false,
+      model: { provider: "fake-provider", id: "fake-model" },
+    } as unknown as ExtensionContext,
+  );
+
+  expect((resSampling.content[0] as TextContent).text).toBe("done");
+  const argsSampling = await Bun.file(path.join(cwd, "args.txt")).text();
+  const promptSampling = await Bun.file(path.join(cwd, "prompt.txt")).text();
+  const envSampling = await Bun.file(path.join(cwd, "env_sampling.txt")).text();
+
+  expect(argsSampling).toContain("--provider fake-provider --model fake-model");
+  expect(argsSampling).toContain("--thinking high");
+  expect(argsSampling).toContain("--no-skills --skill");
+  expect(argsSampling).toContain(path.join(skillDir, "SKILL.md"));
+  expect(argsSampling).toContain("complete-extension");
+  expect(argsSampling).toContain(SUBAGENT_RESULT_CONTRACT);
+  expect(promptSampling).toBe("Sampling agent prompt");
+  expect((resSampling.details as SubagentDetails).results[0]?.model).toBe(
+    "fake-provider ･ fake-model ･ high",
+  );
+
+  expect(argsSampling).toContain("sampling-extension");
+  expect(JSON.parse(envSampling.trim())).toEqual({
+    temperature: 0.6,
+    topP: 0.8,
+  });
+
+  await writeFile(path.join(cwd, "args.txt"), "");
+  await writeFile(path.join(cwd, "env_sampling.txt"), "");
+  await writeFile(path.join(cwd, "prompt.txt"), "");
+
+  const resNoSampling = await tool.execute(
+    "test-tool-call-2",
+    { agent: "no-sampling-agent", task: "no-sampling task" },
+    undefined,
+    undefined,
+    {
+      cwd,
+      hasUI: false,
+      model: { provider: "fake-provider", id: "fake-model" },
+    } as unknown as ExtensionContext,
+  );
+
+  expect((resNoSampling.content[0] as TextContent).text).toBe("done");
+  const argsNoSampling = await Bun.file(path.join(cwd, "args.txt")).text();
+  const promptNoSampling = await Bun.file(path.join(cwd, "prompt.txt")).text();
+  const envNoSampling = await Bun.file(
+    path.join(cwd, "env_sampling.txt"),
+  ).text();
+
+  expect(argsNoSampling).toContain(
+    "--provider fake-provider --model fake-model",
+  );
+  expect(argsNoSampling).toContain("--thinking high");
+  expect(argsNoSampling).toContain("--no-skills --skill");
+  expect(argsNoSampling).toContain(path.join(skillDir, "SKILL.md"));
+  expect(argsNoSampling).toContain("complete-extension");
+  expect(argsNoSampling).toContain(SUBAGENT_RESULT_CONTRACT);
+  expect(promptNoSampling).toBe("No-sampling agent prompt");
+  expect((resNoSampling.details as SubagentDetails).results[0]?.model).toBe(
+    "fake-provider ･ fake-model ･ high",
+  );
+
+  expect(argsNoSampling).not.toContain("sampling-extension");
+  expect(envNoSampling.trim()).toBe("");
+
+  expect(listRunJobs()).toHaveLength(0);
+});
+
+test("T-005: subagent tool preserves recursion depth handling under both sampling and no-sampling configurations", async () => {
+  const sentMessages: SendMessageArg[] = [];
+  const { agentDir, cwd } = await setupFakePi();
+
+  await writeFile(
+    path.join(agentDir, "agents", "sampling-agent.md"),
+    `---
+name: sampling-agent
+description: Sampling agent
+temperature: 0.5
+---
+Sampling agent prompt`,
+  );
+
+  await writeFile(
+    path.join(agentDir, "agents", "no-sampling-agent.md"),
+    `---
+name: no-sampling-agent
+description: No-sampling agent
+---
+No-sampling agent prompt`,
+  );
+
+  const tool = getSubagentTool({
+    sendMessage: (msg) => sentMessages.push(msg),
+  });
+
+  process.env.PI_SUBAGENT_DEPTH = "3";
+
+  const resSampling = await tool.execute(
+    "test-tool-call-1",
+    { agent: "sampling-agent", task: "sampling task" },
+    undefined,
+    undefined,
+    { cwd, hasUI: false } as unknown as ExtensionContext,
+  );
+
+  expect((resSampling.content[0] as TextContent).text).toBe("(failed)");
+  const directDetailsSampling = resSampling.details as SubagentDetails;
+  expect(directDetailsSampling.results[0]?.exitCode).toBe(1);
+
+  const resNoSampling = await tool.execute(
+    "test-tool-call-2",
+    { agent: "no-sampling-agent", task: "no-sampling task" },
+    undefined,
+    undefined,
+    { cwd, hasUI: false } as unknown as ExtensionContext,
+  );
+
+  expect((resNoSampling.content[0] as TextContent).text).toBe("(failed)");
+  const directDetailsNoSampling = resNoSampling.details as SubagentDetails;
+  expect(directDetailsNoSampling.results[0]?.exitCode).toBe(1);
+
+  expect(listRunJobs()).toHaveLength(0);
+});
+
+test("subagent tool strips inherited PI_SAMPLING_PARAMS when agent has no sampling overrides", async () => {
+  const sentMessages: SendMessageArg[] = [];
+  const { agentDir, binDir, cwd } = await setupFakePi();
+
+  await writeFile(
+    path.join(agentDir, "agents", "no-sampling-agent.md"),
+    `---
+name: no-sampling-agent
+description: No-sampling agent
+---
+No-sampling agent prompt`,
+  );
+
+  await writeFile(
+    path.join(binDir, "pi"),
+    `#!/bin/sh
+printf '%s\\n' "$PI_SAMPLING_PARAMS" > env_sampling.txt
+printf '%s\\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"done"}],"usage":{"input":1,"output":1,"totalTokens":2,"cost":{"total":0}}}}'
+printf '%s\\n' '{"type":"agent_end"}'
+exit 0
+`,
+  );
+  await chmod(path.join(binDir, "pi"), 0o755);
+
+  const tool = getSubagentTool({
+    sendMessage: (msg) => sentMessages.push(msg),
+  });
+
+  process.env.PI_SUBAGENT_DEPTH = "1";
+  process.env["PI_SAMPLING_PARAMS"] = JSON.stringify({
+    temperature: 0.99,
+    topP: 0.99,
+  });
+
+  try {
+    const result = await tool.execute(
+      "test-tool-call",
+      { agent: "no-sampling-agent", task: "no-sampling task" },
+      undefined,
+      undefined,
+      { cwd, hasUI: false } as unknown as ExtensionContext,
+    );
+
+    expect((result.content[0] as TextContent).text).toBe("done");
+    const envSampling = await Bun.file(
+      path.join(cwd, "env_sampling.txt"),
+    ).text();
+    expect(envSampling.trim()).toBe("");
+    expect(listRunJobs()).toHaveLength(0);
+  } finally {
+    delete process.env["PI_SAMPLING_PARAMS"];
+  }
+});

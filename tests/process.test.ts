@@ -1,18 +1,27 @@
 import { describe, expect, test } from "bun:test";
 import * as fs from "node:fs";
+import * as os from "node:os";
 import path from "node:path";
 import type { Message } from "@earendil-works/pi-ai";
-import { DefaultResourceLoader } from "@earendil-works/pi-coding-agent";
+import {
+  DefaultResourceLoader,
+  type ExtensionAPI,
+} from "@earendil-works/pi-coding-agent";
 import type { AgentConfig } from "../src/agent/agents.js";
 import {
   makeEmitUpdate,
   runSingleAgent,
   SubagentAbortError,
 } from "../src/child/process.js";
+import { resolveSamplingExtensionPath } from "../src/child/process-utils.js";
 import {
   appendSubagentResultContract,
   SUBAGENT_RESULT_CONTRACT,
 } from "../src/child/prompt-contract.js";
+import defaultSamplingExtension, {
+  patchPayload,
+} from "../src/child/sampling-extension.js";
+import { parseSamplingParams } from "../src/shared/sampling.js";
 import type { SingleResult } from "../src/shared/types.js";
 import {
   resetResolvedAgentSkillArgsCache,
@@ -2311,4 +2320,477 @@ exit 0
   );
   expect(result.exitCode).toBe(0);
   expect(result.outcome).toBe("First valid");
+});
+
+describe("T-003: parseSamplingParams", () => {
+  test("parses valid full sampling parameters", () => {
+    const res = parseSamplingParams('{"temperature":0.5,"topP":0.8}');
+    expect(res).toEqual({ temperature: 0.5, topP: 0.8 });
+  });
+
+  test("parses valid single temperature parameter", () => {
+    const res = parseSamplingParams('{"temperature":0.7}');
+    expect(res).toEqual({ temperature: 0.7 });
+  });
+
+  test("parses valid single topP parameter", () => {
+    const res = parseSamplingParams('{"topP":0.1}');
+    expect(res).toEqual({ topP: 0.1 });
+  });
+
+  test("returns undefined for missing or empty env val", () => {
+    expect(parseSamplingParams()).toBeUndefined();
+    expect(parseSamplingParams("")).toBeUndefined();
+  });
+
+  test("returns undefined for malformed JSON", () => {
+    expect(parseSamplingParams("{invalid}")).toBeUndefined();
+  });
+
+  test("returns undefined for non-object JSON", () => {
+    expect(parseSamplingParams("42")).toBeUndefined();
+    expect(parseSamplingParams('"string"')).toBeUndefined();
+    expect(parseSamplingParams("[]")).toBeUndefined();
+  });
+
+  test("ignores unsupported keys", () => {
+    const res = parseSamplingParams('{"temperature":0.5,"unsupported":123}');
+    expect(res).toEqual({ temperature: 0.5 });
+  });
+
+  test("ignores invalid temperature values", () => {
+    expect(parseSamplingParams('{"temperature":1.5}')).toBeUndefined();
+    expect(parseSamplingParams('{"temperature":-0.1}')).toBeUndefined();
+    expect(parseSamplingParams('{"temperature":"0.5"}')).toBeUndefined();
+    expect(parseSamplingParams('{"temperature":NaN}')).toBeUndefined();
+    expect(parseSamplingParams('{"temperature":Infinity}')).toBeUndefined();
+  });
+
+  test("ignores invalid topP values", () => {
+    expect(parseSamplingParams('{"topP":1.1}')).toBeUndefined();
+    expect(parseSamplingParams('{"topP":-0.01}')).toBeUndefined();
+    expect(parseSamplingParams('{"topP":null}')).toBeUndefined();
+  });
+
+  test("accepts valid value when other value is invalid in both directions", () => {
+    const res1 = parseSamplingParams('{"temperature":0.5,"topP":1.5}');
+    expect(res1).toEqual({ temperature: 0.5 });
+    const res2 = parseSamplingParams('{"temperature":-0.5,"topP":0.8}');
+    expect(res2).toEqual({ topP: 0.8 });
+  });
+
+  test("returns undefined for unsupported-only and invalid-only inputs", () => {
+    expect(parseSamplingParams('{"unsupported":123}')).toBeUndefined();
+    expect(parseSamplingParams('{"temperature":-1}')).toBeUndefined();
+    expect(parseSamplingParams('{"topP":2}')).toBeUndefined();
+  });
+
+  test("accepts boundary values 0 and 1", () => {
+    const res = parseSamplingParams('{"temperature":0,"topP":1}');
+    expect(res).toEqual({ temperature: 0, topP: 1 });
+  });
+});
+
+describe("T-004: patchPayload", () => {
+  test("patches flat payloads without mutating original", () => {
+    const payload = Object.freeze({ model: "claude-3-5", messages: [] });
+    const params = { temperature: 0.2, topP: 0.9 };
+    const patched = patchPayload(payload, params);
+    expect(patched).toEqual({
+      model: "claude-3-5",
+      messages: [],
+      temperature: 0.2,
+      top_p: 0.9,
+    });
+    expect(patched).not.toBe(payload);
+  });
+
+  test("patches flat payload with temperature only", () => {
+    const payload = { model: "gpt-4", prompt: "hi" };
+    const params = { temperature: 0.5 };
+    const patched = patchPayload(payload, params);
+    expect(patched).toEqual({
+      model: "gpt-4",
+      prompt: "hi",
+      temperature: 0.5,
+    });
+  });
+
+  test("patches flat payload with topP only", () => {
+    const payload = { model: "gpt-4", prompt: "hi" };
+    const params = { topP: 0.3 };
+    const patched = patchPayload(payload, params);
+    expect(patched).toEqual({
+      model: "gpt-4",
+      prompt: "hi",
+      top_p: 0.3,
+    });
+  });
+
+  test("patches generationConfig payloads without mutating original", () => {
+    const innerConfig = Object.freeze({ maxOutputTokens: 100 });
+    const payload = Object.freeze({
+      model: "gemini",
+      generationConfig: innerConfig,
+    });
+    const params = { temperature: 0.4, topP: 0.7 };
+    const patched = patchPayload(payload, params);
+    expect(patched).toEqual({
+      model: "gemini",
+      generationConfig: {
+        maxOutputTokens: 100,
+        temperature: 0.4,
+        topP: 0.7,
+      },
+    });
+    expect(patched).not.toBe(payload);
+    expect(patched["generationConfig"]).not.toBe(innerConfig);
+  });
+
+  test("patches generationConfig payload with single field", () => {
+    const payload = { model: "gemini", generationConfig: { topP: 0.1 } };
+    const params = { temperature: 0.9 };
+    const patched = patchPayload(payload, params);
+    expect(patched).toEqual({
+      model: "gemini",
+      generationConfig: {
+        topP: 0.1,
+        temperature: 0.9,
+      },
+    });
+  });
+
+  test("overwrites existing sampling keys in flat payload", () => {
+    const payload = { model: "gpt-4", temperature: 0.9, top_p: 0.2 };
+    const params = { temperature: 0.5, topP: 0.8 };
+    const patched = patchPayload(payload, params);
+    expect(patched).toEqual({
+      model: "gpt-4",
+      temperature: 0.5,
+      top_p: 0.8,
+    });
+  });
+
+  test("treats non-object generationConfig as empty object", () => {
+    const payload = { model: "gemini", generationConfig: null };
+    const params = { temperature: 0.3, topP: 0.6 };
+    const patched = patchPayload(payload, params);
+    expect(patched).toEqual({
+      model: "gemini",
+      generationConfig: { temperature: 0.3, topP: 0.6 },
+    });
+  });
+});
+
+describe("T-004: sampling extension hook registration and execution", () => {
+  function makeTrackingPi(): {
+    pi: ExtensionAPI;
+    getHandler: () => ((event: { payload: unknown }) => unknown) | undefined;
+  } {
+    let hookHandler: ((event: { payload: unknown }) => unknown) | undefined;
+    const pi = {
+      on(event: string, handler: (event: { payload: unknown }) => unknown) {
+        if (event === "before_provider_request") hookHandler = handler;
+      },
+    } as unknown as ExtensionAPI;
+    return { pi, getHandler: () => hookHandler };
+  }
+
+  function withSamplingEnv(params: string, fn: () => void): void {
+    process.env["PI_SAMPLING_PARAMS"] = params;
+    try {
+      fn();
+    } finally {
+      delete process.env["PI_SAMPLING_PARAMS"];
+    }
+  }
+
+  test("registers before_provider_request and patches when PI_SAMPLING_PARAMS is set", () => {
+    withSamplingEnv(JSON.stringify({ temperature: 0.1 }), () => {
+      const { pi, getHandler } = makeTrackingPi();
+      defaultSamplingExtension(pi);
+      const handler = getHandler();
+      expect(handler).toBeDefined();
+      const patched = handler?.({
+        payload: { model: "claude-3", messages: [] },
+      });
+      expect(patched).toEqual({
+        model: "claude-3",
+        messages: [],
+        temperature: 0.1,
+      });
+    });
+  });
+
+  test("does not register handler when PI_SAMPLING_PARAMS is not set", () => {
+    const { pi, getHandler } = makeTrackingPi();
+    defaultSamplingExtension(pi);
+    expect(getHandler()).toBeUndefined();
+  });
+
+  test("does not register handler when PI_SAMPLING_PARAMS contains invalid JSON", () => {
+    withSamplingEnv("{invalid}", () => {
+      const { pi, getHandler } = makeTrackingPi();
+      defaultSamplingExtension(pi);
+      expect(getHandler()).toBeUndefined();
+    });
+  });
+
+  test("does not mutate original payload in hook execution", () => {
+    withSamplingEnv(JSON.stringify({ temperature: 0.1 }), () => {
+      const { pi, getHandler } = makeTrackingPi();
+      defaultSamplingExtension(pi);
+      const handler = getHandler();
+      expect(handler).toBeDefined();
+      const payload = Object.freeze({
+        model: "claude-3",
+        messages: Object.freeze([]),
+      });
+      const patched = handler?.({ payload });
+      expect(patched).toEqual({
+        model: "claude-3",
+        messages: [],
+        temperature: 0.1,
+      });
+      expect(patched).not.toBe(payload);
+    });
+  });
+
+  test("returns undefined for non-object payload", () => {
+    withSamplingEnv(JSON.stringify({ temperature: 0.1 }), () => {
+      const { pi, getHandler } = makeTrackingPi();
+      defaultSamplingExtension(pi);
+      const handler = getHandler();
+      expect(handler).toBeDefined();
+      expect(handler?.({ payload: null })).toBeUndefined();
+      expect(handler?.({ payload: "string" })).toBeUndefined();
+    });
+  });
+
+  test("returns undefined for array payload", () => {
+    withSamplingEnv(JSON.stringify({ topP: 0.5 }), () => {
+      const { pi, getHandler } = makeTrackingPi();
+      defaultSamplingExtension(pi);
+      const handler = getHandler();
+      expect(handler).toBeDefined();
+      expect(handler?.({ payload: [] })).toBeUndefined();
+    });
+  });
+});
+
+describe("T-002: Wire child-scoped sampling env and extension loading", () => {
+  async function runCapturedAgentWithParams(
+    agent: AgentConfig,
+  ): Promise<{ args: string[]; envSampling: string; result: SingleResult }> {
+    const { cwd } = await setupTest({
+      piScript: `#!/bin/sh
+printf '%s\\n' "$@" > args.txt
+printf '%s\\n' "$PI_SAMPLING_PARAMS" > env_sampling.txt
+printf '%s\\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"done"}],"api":"fake","provider":"fake","model":"fake","usage":{"input":1,"output":1,"cacheRead":0,"cacheWrite":0,"totalTokens":2,"cost":{"total":0}},"stopReason":"stop","timestamp":0}}'
+printf '%s\\n' '{"type":"agent_end","messages":[]}'
+exit 0
+`,
+    });
+    const result = await runSingleAgent(
+      cwd,
+      [agent],
+      agent.name,
+      "task",
+      undefined,
+      undefined,
+      makeSubagentDetails,
+      undefined,
+      "off",
+    );
+    expect(result.exitCode).toBe(0);
+    const args = fs
+      .readFileSync(path.join(cwd, "args.txt"), "utf8")
+      .trimEnd()
+      .split("\n");
+    const envSampling = fs
+      .readFileSync(path.join(cwd, "env_sampling.txt"), "utf8")
+      .trim();
+    return { args, envSampling, result };
+  }
+
+  function getExtensionPaths(args: string[]): string[] {
+    return args.flatMap((arg, i) =>
+      arg === "--extension" ? [args[i + 1] ?? ""] : [],
+    );
+  }
+
+  function expectExtensions(args: string[], count: number): void {
+    const extensions = getExtensionPaths(args);
+    expect(extensions).toHaveLength(count);
+    expect(extensions[0]).toContain("complete-extension");
+    if (count > 1) expect(extensions[1]).toContain("sampling-extension");
+  }
+
+  test("sampling-enabled agent spawn includes correct environment variable and both complete and sampling extension args", async () => {
+    const agent = makeModelAgent({
+      name: "sampling-agent",
+      temperature: 0.7,
+      topP: 0.9,
+    });
+    const { args, envSampling } = await runCapturedAgentWithParams(agent);
+
+    expect(envSampling).toBe('{"temperature":0.7,"topP":0.9}');
+    expectExtensions(args, 2);
+  });
+
+  test("agent with temperature only includes only temperature in environment variable and loads sampling extension", async () => {
+    const agent = makeModelAgent({
+      name: "temp-only-agent",
+      temperature: 0.3,
+    });
+    const { args, envSampling } = await runCapturedAgentWithParams(agent);
+
+    expect(envSampling).toBe('{"temperature":0.3}');
+    expectExtensions(args, 2);
+  });
+
+  test("agent with topP only includes only topP in environment variable and loads sampling extension", async () => {
+    const agent = makeModelAgent({
+      name: "topp-only-agent",
+      topP: 0.25,
+    });
+    const { args, envSampling } = await runCapturedAgentWithParams(agent);
+
+    expect(envSampling).toBe('{"topP":0.25}');
+    expectExtensions(args, 2);
+  });
+
+  test("agent without sampling values omits sampling env and sampling extension args while still loading the complete extension", async () => {
+    const agent = makeModelAgent({
+      name: "no-sampling-agent",
+    });
+    const { args, envSampling } = await runCapturedAgentWithParams(agent);
+
+    expect(envSampling).toBe("");
+    expectExtensions(args, 1);
+    expect(args.join(" ")).not.toContain("sampling-extension");
+  });
+
+  test("concurrent or sequential different agents do not leak sampling values across runs", async () => {
+    const samplingAgent = makeModelAgent({
+      name: "sampling-agent",
+      temperature: 0.5,
+    });
+    const plainAgent = makeModelAgent({
+      name: "plain-agent",
+    });
+
+    const run1 = await runCapturedAgentWithParams(samplingAgent);
+    const run2 = await runCapturedAgentWithParams(plainAgent);
+
+    expect(run1.envSampling).toBe('{"temperature":0.5}');
+    expect(run2.envSampling).toBe("");
+  });
+
+  test("no-sampling agent removes inherited parent PI_SAMPLING_PARAMS from child env", async () => {
+    process.env["PI_SAMPLING_PARAMS"] = '{"temperature":0.1}';
+    try {
+      const agent = makeModelAgent({
+        name: "no-sampling-agent",
+      });
+      const { args, envSampling } = await runCapturedAgentWithParams(agent);
+      expect(envSampling).toBe("");
+      expect(args.join(" ")).not.toContain("sampling-extension");
+    } finally {
+      delete process.env["PI_SAMPLING_PARAMS"];
+    }
+  });
+
+  test("concurrent mixed sampling and no-sampling runs are isolated and do not contaminate or leak", async () => {
+    process.env["PI_SAMPLING_PARAMS"] = '{"temperature":0.8}';
+    try {
+      const samplingAgent = makeModelAgent({
+        name: "sampling-agent",
+        temperature: 0.4,
+      });
+      const noSamplingAgent = makeModelAgent({
+        name: "no-sampling-agent",
+      });
+      const [run1, run2] = await Promise.all([
+        runCapturedAgentWithParams(samplingAgent),
+        runCapturedAgentWithParams(noSamplingAgent),
+      ]);
+      expect(run1.envSampling).toBe('{"temperature":0.4}');
+      expect(run2.envSampling).toBe("");
+    } finally {
+      delete process.env["PI_SAMPLING_PARAMS"];
+    }
+  });
+});
+
+describe("T-006: resolveSamplingExtensionPath", () => {
+  function withTempDir(fn: (dir: string) => void): void {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "sampling-ext-"));
+    try {
+      fn(dir);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  }
+
+  test("returns primary runtime extension when sampling-extension.ts exists", () => {
+    withTempDir((dir) => {
+      const expected = path.join(dir, "sampling-extension.ts");
+      fs.writeFileSync(expected, "");
+      const resolved = resolveSamplingExtensionPath(dir);
+      expect(resolved).toBe(expected);
+    });
+  });
+
+  test("falls back to alternate extension when only sampling-extension.js exists", () => {
+    withTempDir((dir) => {
+      const expected = path.join(dir, "sampling-extension.js");
+      fs.writeFileSync(expected, "");
+      const resolved = resolveSamplingExtensionPath(dir);
+      expect(resolved).toBe(expected);
+    });
+  });
+
+  test("throws when neither sampling-extension.ts nor sampling-extension.js exists", () => {
+    withTempDir((dir) => {
+      expect(() => resolveSamplingExtensionPath(dir)).toThrow(
+        /sampling-extension not found/,
+      );
+    });
+  });
+
+  test("defaults to module directory and returns existing file", () => {
+    const resolved = resolveSamplingExtensionPath();
+    expect(path.isAbsolute(resolved)).toBe(true);
+    expect(resolved).toMatch(/sampling-extension\.ts$/);
+    expect(fs.existsSync(resolved)).toBe(true);
+  });
+});
+
+describe("process cleanup", () => {
+  test("runSingleAgent destroys idle streams when the child exits with an inherited open pipe", async () => {
+    const { cwd } = await setupTest({
+      piScript: `#!/bin/sh
+printf '%s\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"done"}],"api":"fake","provider":"fake","model":"fake","usage":{"input":1,"output":1,"cacheRead":0,"cacheWrite":0,"totalTokens":2,"cost":{"total":0}},"stopReason":"stop","timestamp":0}}'
+printf '%s\n' '{"type":"agent_end","messages":[]}'
+(sleep 0.5 &)
+exit 0
+`,
+    });
+    const startedAt = Date.now();
+    const result = await runSingleAgent(
+      cwd,
+      [hangAgent],
+      "hang",
+      "task",
+      undefined,
+      undefined,
+      makeSubagentDetails,
+      undefined,
+      "off",
+    );
+    expect(Date.now() - startedAt).toBeGreaterThanOrEqual(50);
+    expect(result.exitCode).toBe(0);
+    expect(result.finalOutput).toBe("done");
+  });
 });

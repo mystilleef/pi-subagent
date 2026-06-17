@@ -9,24 +9,38 @@ import { fileURLToPath } from "node:url";
 import type { Message } from "@earendil-works/pi-ai";
 import { getModel } from "@earendil-works/pi-ai";
 
-/**
- * Resolves the absolute path to the complete-extension file.
- * Prefers the extension matching the current runtime (.ts in dev, .js in dist),
- * then falls back to the alternate extension. Throws if neither exists so a
- * missing file surfaces at startup rather than silently at spawn time.
- *
- * Pass `dir` in tests to point at a controlled directory instead of the real one.
- */
-export function resolveCompleteExtensionPath(dir?: string): string {
-  const __filename = fileURLToPath(import.meta.url);
-  const resolvedDir = dir ?? path.dirname(__filename);
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
+function resolveExtensionPath(baseName: string, dir?: string): string {
+  const resolvedDir = dir ?? __dirname;
   const ext = __filename.endsWith(".ts") ? ".ts" : ".js";
-  const primary = path.join(resolvedDir, `complete-extension${ext}`);
+  const primary = path.join(resolvedDir, `${baseName}${ext}`);
   if (fs.existsSync(primary)) return primary;
   const altExt = ext === ".ts" ? ".js" : ".ts";
-  const fallback = path.join(resolvedDir, `complete-extension${altExt}`);
+  const fallback = path.join(resolvedDir, `${baseName}${altExt}`);
   if (fs.existsSync(fallback)) return fallback;
-  throw new Error(`complete-extension not found at ${primary} or ${fallback}`);
+  throw new Error(`${baseName} not found at ${primary} or ${fallback}`);
+}
+
+/**
+ * Resolves the absolute path to the complete-extension file.
+ * Prefers the extension matching the current runtime, then falls back to the
+ * alternate extension. Throws if neither exists.
+ * Pass `dir` in tests to use a controlled directory.
+ */
+export function resolveCompleteExtensionPath(dir?: string): string {
+  return resolveExtensionPath("complete-extension", dir);
+}
+
+/**
+ * Resolves the absolute path to the sampling-extension file.
+ * Prefers the extension matching the current runtime, then falls back to the
+ * alternate extension. Throws if neither exists.
+ * Pass `dir` in tests to use a controlled directory.
+ */
+export function resolveSamplingExtensionPath(dir?: string): string {
+  return resolveExtensionPath("sampling-extension", dir);
 }
 
 /**
