@@ -1,4 +1,5 @@
 export const SUBAGENT_RESULT_CONTRACT = `
+- Always present unmodified result to calling agent.
 - Call the complete tool as your final action with a short, single-sentence outcome.
 `;
 
