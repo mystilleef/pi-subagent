@@ -35,7 +35,7 @@ setupHooks();
 
 test("SUBAGENT_RESULT_CONTRACT includes completion and result preservation instructions", () => {
   expect(SUBAGENT_RESULT_CONTRACT).toContain("complete tool");
-  expect(SUBAGENT_RESULT_CONTRACT).toContain("Always present");
+  expect(SUBAGENT_RESULT_CONTRACT).toContain("Return result verbatim");
 });
 
 test("completeTool parameters require outcome string", () => {
