@@ -126,6 +126,8 @@ skills: code-review
 thinking: medium
 provider: deepseek
 model: deepseek-v4-flash
+temperature: 0.7
+top_p: 0.9
 ```
 
 ### Accepted thinking values
