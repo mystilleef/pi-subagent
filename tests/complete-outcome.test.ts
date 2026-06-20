@@ -89,7 +89,7 @@ describe("getLatestOutcomeFromMessages", () => {
     expect(getLatestOutcomeFromMessages(messages)).toBeUndefined();
   });
 
-  test("extracts outcome from toolResult details", () => {
+  test("returns call arguments outcome when toolResult details also present", () => {
     const messages: Message[] = [
       assistant([
         {
@@ -104,7 +104,7 @@ describe("getLatestOutcomeFromMessages", () => {
         details: { outcome: "From details" },
       }),
     ];
-    expect(getLatestOutcomeFromMessages(messages)).toBe("From details");
+    expect(getLatestOutcomeFromMessages(messages)).toBe("From arguments");
   });
 
   test("falls back to assistant arguments when toolResult has no outcome details", () => {
@@ -137,7 +137,7 @@ describe("getLatestOutcomeFromMessages", () => {
     expect(getLatestOutcomeFromMessages(messages)).toBe("Only in args");
   });
 
-  test("skips errored toolResult and uses earlier valid outcome", () => {
+  test("returns latest complete call arguments regardless of toolResult error status", () => {
     const messages: Message[] = [
       assistant([
         {
@@ -165,7 +165,7 @@ describe("getLatestOutcomeFromMessages", () => {
         details: { outcome: "Second errored" },
       }),
     ];
-    expect(getLatestOutcomeFromMessages(messages)).toBe("First valid");
+    expect(getLatestOutcomeFromMessages(messages)).toBe("Second errored");
   });
 
   test("uses latest valid complete call when multiple exist", () => {
@@ -194,6 +194,26 @@ describe("getLatestOutcomeFromMessages", () => {
         toolCallId: "call-2",
         details: { outcome: "Second outcome" },
       }),
+    ];
+    expect(getLatestOutcomeFromMessages(messages)).toBe("Second outcome");
+  });
+
+  test("uses latest same-message complete call when multiple exist", () => {
+    const messages: Message[] = [
+      assistant([
+        {
+          type: "toolCall",
+          id: "call-1",
+          name: "complete",
+          arguments: { outcome: "First outcome" },
+        },
+        {
+          type: "toolCall",
+          id: "call-2",
+          name: "complete",
+          arguments: { outcome: "Second outcome" },
+        },
+      ]),
     ];
     expect(getLatestOutcomeFromMessages(messages)).toBe("Second outcome");
   });
@@ -261,6 +281,49 @@ describe("getLatestOutcomeFromMessages", () => {
     expect(getLatestOutcomeFromMessages(messages)).toBe("Real complete");
   });
 
+  test("ignores complete tool calls without id", () => {
+    const messages: Message[] = [
+      assistant([
+        {
+          type: "toolCall",
+          name: "complete",
+          arguments: { outcome: "Missing id" },
+        },
+      ]),
+      assistant([
+        {
+          type: "toolCall",
+          id: "call-1",
+          name: "complete",
+          arguments: { outcome: "Valid id" },
+        },
+      ]),
+    ];
+    expect(getLatestOutcomeFromMessages(messages)).toBe("Valid id");
+  });
+
+  test("falls back to earlier valid complete call when latest has whitespace outcome", () => {
+    const messages: Message[] = [
+      assistant([
+        {
+          type: "toolCall",
+          id: "call-1",
+          name: "complete",
+          arguments: { outcome: "First valid" },
+        },
+      ]),
+      assistant([
+        {
+          type: "toolCall",
+          id: "call-2",
+          name: "complete",
+          arguments: { outcome: "   " },
+        },
+      ]),
+    ];
+    expect(getLatestOutcomeFromMessages(messages)).toBe("First valid");
+  });
+
   test("handles assistant messages with non-array content", () => {
     const messages: Message[] = [
       msg({ role: "assistant", content: "plain text" }),
@@ -280,7 +343,7 @@ describe("getLatestOutcomeFromMessages", () => {
     expect(getLatestOutcomeFromMessages(messages)).toBe("Valid outcome");
   });
 
-  test("handles complete call with whitespace-only outcome in arguments", () => {
+  test("returns undefined when complete call arguments outcome is whitespace-only", () => {
     const messages: Message[] = [
       assistant([
         {
@@ -295,7 +358,7 @@ describe("getLatestOutcomeFromMessages", () => {
         details: { outcome: "Real from details" },
       }),
     ];
-    expect(getLatestOutcomeFromMessages(messages)).toBe("Real from details");
+    expect(getLatestOutcomeFromMessages(messages)).toBeUndefined();
   });
 
   test("toolResult with id field instead of toolCallId still matches", () => {

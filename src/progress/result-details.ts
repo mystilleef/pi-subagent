@@ -228,12 +228,6 @@ function getSubagentText(result: SubagentToolResult): string {
   return (result.content[0] as { text?: string })?.text ?? "";
 }
 
-export function getResultDisplayText(result: SubagentToolResult): string {
-  return (
-    getLatestResult(result.details)?.finalOutput || getSubagentText(result)
-  );
-}
-
 export function getFeedbackSummaryText(result: SubagentToolResult): string {
   const latestResult = getLatestResult(result.details);
   const rawFinalOutput = latestResult?.finalOutput;

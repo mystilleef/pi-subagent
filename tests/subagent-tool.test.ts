@@ -1,4 +1,4 @@
-import { afterEach, expect, test } from "bun:test";
+import { afterEach, expect, spyOn, test } from "bun:test";
 import { chmod, mkdir, symlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import type { AgentToolUpdateCallback } from "@earendil-works/pi-agent-core";
@@ -9,6 +9,7 @@ import type {
 } from "@earendil-works/pi-coding-agent";
 import { discoverAgentsAsync } from "../src/agent/agents.js";
 import { SUBAGENT_RESULT_CONTRACT } from "../src/child/prompt-contract.js";
+import * as delivery from "../src/notification/delivery.js";
 import { setDefaultDeliveryDeps } from "../src/notification/delivery.js";
 import {
   cancelRunJob,
@@ -2849,6 +2850,53 @@ test("emitCompletionAlert with PI_SUBAGENT_DESKTOP_NOTIFICATIONS=1 and PI_SUBAGE
   }
 });
 
+test("emitCompletionAlert swallows desktop notification rejection", () => {
+  const origDesktop = process.env.PI_SUBAGENT_DESKTOP_NOTIFICATIONS;
+  const origPerJob = process.env.PI_SUBAGENT_NOTIFY_PER_JOB;
+  process.env.PI_SUBAGENT_DESKTOP_NOTIFICATIONS = "1";
+  delete process.env.PI_SUBAGENT_NOTIFY_PER_JOB;
+  const spy = spyOn(delivery, "deliverNotification").mockImplementation(() =>
+    Promise.reject(new Error("notification delivery failed")),
+  );
+  try {
+    const writeCalls: string[] = [];
+    const origWrite = process.stdout.write;
+    const origIsTTY = Object.getOwnPropertyDescriptor(process.stdout, "isTTY");
+    Object.defineProperty(process.stdout, "isTTY", {
+      value: true,
+      configurable: true,
+    });
+    try {
+      (process.stdout as unknown as { write: (s: string) => boolean }).write = (
+        s: string,
+      ) => {
+        writeCalls.push(s);
+        return true;
+      };
+      const state = makeProgressState({
+        status: "success",
+        finalOutput: "task completed",
+      });
+      expect(() => emitCompletionAlert(state)).not.toThrow();
+      expect(writeCalls).toContain("\x07");
+    } finally {
+      process.stdout.write = origWrite;
+      if (origIsTTY) {
+        Object.defineProperty(process.stdout, "isTTY", origIsTTY);
+      } else {
+        delete (process.stdout as unknown as { isTTY?: boolean }).isTTY;
+      }
+    }
+  } finally {
+    spy.mockRestore();
+    if (origDesktop === undefined)
+      delete process.env.PI_SUBAGENT_DESKTOP_NOTIFICATIONS;
+    else process.env.PI_SUBAGENT_DESKTOP_NOTIFICATIONS = origDesktop;
+    if (origPerJob === undefined) delete process.env.PI_SUBAGENT_NOTIFY_PER_JOB;
+    else process.env.PI_SUBAGENT_NOTIFY_PER_JOB = origPerJob;
+  }
+});
+
 test("orchestrated path preserves nested activity across fallback child status updates", async () => {
   const sentMessages: SendMessageArg[] = [];
   const { binDir, cwd } = await setupFakePi();
@@ -3835,7 +3883,7 @@ exit 0
   expect(dedupedToolCalls.length).toBeLessThanOrEqual(1);
 });
 
-test("createPayloadFingerprint handles absent results gracefully via hostOnUpdate", async () => {
+test("empty agent_end messages do not emit synthetic hostOnUpdate", async () => {
   const sentMessages: SendMessageArg[] = [];
   const partialUpdates: AgentToolResult<SubagentDetails>[] = [];
   const hostOnUpdate = (partial: AgentToolResult<SubagentDetails>) => {
@@ -3856,11 +3904,7 @@ exit 0
     hostOnUpdate,
     { cwd, hasUI: false } as unknown as ExtensionContext,
   );
-  // hostOnUpdate receives at least one update (the final result)
-  expect(partialUpdates.length).toBeGreaterThanOrEqual(1);
-  // payload with missing results should not crash fingerprint computation
-  expect(partialUpdates[0]?.content).toBeDefined();
-  expect(partialUpdates[0]?.details).toBeDefined();
+  expect(partialUpdates).toHaveLength(0);
 });
 
 test("subagent tool successful run with complete tool preserves outcome in details without finalOutput mutation", async () => {

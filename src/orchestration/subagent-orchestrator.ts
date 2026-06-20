@@ -31,7 +31,6 @@ import {
   type DetailsOptions,
   getFeedbackSummaryText,
   getLatestResult,
-  getResultDisplayText,
   patchProgressFromDetails,
   sanitizeDetailsForDisplay,
   sanitizeResultDetails,
@@ -225,11 +224,7 @@ function finishLifecycleResult(
     getFeedbackSummaryText(toolResult),
     result.outcome,
   );
-  sendSubagentResultMessage(
-    lc.pi,
-    getResultDisplayText(toolResult),
-    displayDetails,
-  );
+  sendSubagentResultMessage(lc.pi, content, displayDetails);
   return toolResult;
 }
 

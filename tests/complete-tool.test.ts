@@ -21,7 +21,6 @@ import {
 } from "../src/progress/progress-state.js";
 import {
   getFeedbackSummaryText,
-  getResultDisplayText,
   sanitizeDetailsForDisplay,
   sanitizeResultDetails,
 } from "../src/progress/result-details.js";
@@ -37,10 +36,10 @@ setupHooks();
 test("SUBAGENT_RESULT_CONTRACT includes completion and result preservation instructions", () => {
   expect(SUBAGENT_RESULT_CONTRACT).toContain("complete tool");
   expect(SUBAGENT_RESULT_CONTRACT).toContain(
-    "**NEVER** wrap results in code blocks.",
+    "**NEVER** wrap result in code blocks.",
   );
   expect(SUBAGENT_RESULT_CONTRACT).toContain(
-    "Return result; add no commentary.",
+    "Emit result to the calling agent without commentary.",
   );
 });
 
@@ -179,7 +178,7 @@ exit 0
     expect(result.outcome).toBe("A beautiful outcome");
   });
 
-  test("suppresses outcome from assistant arguments when toolResult is missing", async () => {
+  test("extracts outcome from call arguments without requiring toolResult", async () => {
     const piScript = `#!/bin/sh
 printf '%s\\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"toolCall","id":"tc-1","name":"complete","arguments":{"outcome":"Assistant outcome"}}]}}'
 printf '%s\\n' '{"type":"agent_end","messages":[]}'
@@ -198,7 +197,7 @@ exit 0
       "off",
     );
     expect(result.exitCode).toBe(0);
-    expect(result.outcome).toBeUndefined();
+    expect(result.outcome).toBe("Assistant outcome");
   });
 
   test("extracts tool-only completion (no assistant companion text message)", async () => {
@@ -296,7 +295,7 @@ exit 0
     expect(result.outcome).toBeUndefined();
   });
 
-  test("ignores outcome on complete call when tool result is error", async () => {
+  test("extracts outcome from call arguments even when complete toolResult is isError", async () => {
     const piScript = `#!/bin/sh
 printf '%s\\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"toolCall","id":"tc-1","name":"complete","arguments":{"outcome":"Errored outcome"}}]}}'
 printf '%s\\n' '{"type":"tool_result_end","message":{"role":"toolResult","toolCallId":"tc-1","isError":true,"details":{"outcome":"Errored outcome"}}}'
@@ -316,7 +315,7 @@ exit 0
       "off",
     );
     expect(result.exitCode).toBe(0);
-    expect(result.outcome).toBeUndefined();
+    expect(result.outcome).toBe("Errored outcome");
   });
 
   test("latest successful blank/missing details uses same-call valid arguments instead of older outcomes", async () => {
@@ -344,7 +343,7 @@ exit 0
     expect(result.outcome).toBe("Second outcome");
   });
 
-  test("tool-result errors suppress fallback and choose latest call with valid outcome", async () => {
+  test("returns latest complete call arguments even when toolResult is error", async () => {
     const piScript = `#!/bin/sh
 printf '%s\\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"toolCall","id":"tc-1","name":"complete","arguments":{"outcome":"First valid outcome"}}]}}'
 printf '%s\\n' '{"type":"tool_result_end","message":{"role":"toolResult","toolCallId":"tc-1","details":{"outcome":"First valid outcome"}}}'
@@ -367,7 +366,7 @@ exit 0
       "off",
     );
     expect(result.exitCode).toBe(0);
-    expect(result.outcome).toBe("First valid outcome");
+    expect(result.outcome).toBe("Second errored outcome");
   });
 });
 
@@ -499,48 +498,6 @@ describe("Progress & Feedback Preference and Normalization", () => {
       toolResult as unknown as Parameters<typeof getFeedbackSummaryText>[0],
     );
     expect(summary).toBe("raw final output");
-  });
-
-  test("getResultDisplayText prefers finalOutput and falls back to subagent text", () => {
-    const makeTool = (finalOutput: string | undefined, text: string) => ({
-      content: [{ type: "text" as const, text }],
-      details: {
-        mode: "single" as const,
-        agentScope: "project" as const,
-        projectAgentsDir: null,
-        results: [
-          {
-            agent: "tester",
-            agentSource: "project",
-            task: "check",
-            exitCode: 0,
-            finalOutput,
-            stderr: "",
-          },
-        ],
-      },
-    });
-    expect(
-      getResultDisplayText(
-        makeTool("final output", "subagent text") as unknown as Parameters<
-          typeof getResultDisplayText
-        >[0],
-      ),
-    ).toBe("final output");
-    expect(
-      getResultDisplayText(
-        makeTool("", "subagent text") as unknown as Parameters<
-          typeof getResultDisplayText
-        >[0],
-      ),
-    ).toBe("subagent text");
-    expect(
-      getResultDisplayText(
-        makeTool(undefined, "subagent text") as unknown as Parameters<
-          typeof getResultDisplayText
-        >[0],
-      ),
-    ).toBe("subagent text");
   });
 });
 
