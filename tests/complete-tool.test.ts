@@ -36,7 +36,12 @@ setupHooks();
 
 test("SUBAGENT_RESULT_CONTRACT includes completion and result preservation instructions", () => {
   expect(SUBAGENT_RESULT_CONTRACT).toContain("complete tool");
-  expect(SUBAGENT_RESULT_CONTRACT).toContain("Return result alone");
+  expect(SUBAGENT_RESULT_CONTRACT).toContain(
+    "**NEVER** wrap results in code blocks.",
+  );
+  expect(SUBAGENT_RESULT_CONTRACT).toContain(
+    "Return result; add no commentary.",
+  );
 });
 
 test("completeTool parameters require outcome string", () => {
