@@ -760,7 +760,6 @@ wait $!
   );
   await waitFor(() => acquired || undefined, "sleep inhibitor acquisition");
   controller.abort("cancelled");
-  await expect(promise).rejects.toThrow("Subagent was aborted");
   await promise.catch((error: unknown) => {
     expect(error).toBeInstanceOf(SubagentAbortError);
     expect((error as SubagentAbortError).result.termination?.cancelReason).toBe(
@@ -843,7 +842,6 @@ wait $!
       },
     },
   );
-  await expect(promise).rejects.toThrow("Subagent was aborted");
   await promise.catch((error: unknown) => {
     expect(error).toBeInstanceOf(SubagentAbortError);
     expect((error as SubagentAbortError).result.termination?.cancelReason).toBe(
@@ -1061,7 +1059,9 @@ esac
     "concurrent sleep inhibitor acquisition",
   );
   controller.abort("cancelled child only");
-  await expect(cancelledPromise).rejects.toThrow("Subagent was aborted");
+  await cancelledPromise.catch((error: unknown) => {
+    expect(error).toBeInstanceOf(SubagentAbortError);
+  });
   expect(releaseCounts.cancelled).toBe(1);
   expect(releaseCounts.held).toBe(0);
   await fs.promises.writeFile(path.join(cwd, releasePath), "release");
@@ -1147,7 +1147,9 @@ wait $!
     "off",
   );
   controller.abort(null);
-  await expect(promise).rejects.toThrow("Subagent was aborted");
+  await promise.catch((error: unknown) => {
+    expect(error).toBeInstanceOf(SubagentAbortError);
+  });
 });
 
 test("runSingleAgent starts skill resolution and prompt setup concurrently", async () => {
@@ -1243,7 +1245,7 @@ Use warm skill.
 `,
   );
   resetResolvedAgentSkillArgsCache();
-  await expect(resolveAgentSkillArgs(cwd, ["warm"])).resolves.toEqual({
+  expect(await resolveAgentSkillArgs(cwd, ["warm"])).toEqual({
     args: ["--skill", skillPath],
   });
   const originalReload = DefaultResourceLoader.prototype.reload;
@@ -1472,6 +1474,9 @@ exit 0
 });
 
 test("SUBAGENT_RESULT_CONTRACT contains complete tool instructions", () => {
+  expect(SUBAGENT_RESULT_CONTRACT).toContain(
+    "Write your result as a text response.",
+  );
   expect(SUBAGENT_RESULT_CONTRACT).toMatch(
     /Call the complete tool as your final action/,
   );
@@ -1700,7 +1705,7 @@ wait $!
     "off",
   );
   expect(result.exitCode).toBe(0);
-  expect(result.finalOutput).toBe("");
+  expect(result.finalOutput).toBe("earlier done");
   expect(result.messages).toHaveLength(2);
   expect(result.termination?.cancelReason).toBe("agent_end_timeout");
 });
@@ -2320,6 +2325,92 @@ exit 0
   );
   expect(result.exitCode).toBe(0);
   expect(result.outcome).toBe("First valid");
+});
+
+test("runSingleAgent preserves outcome during agent-end timeout with no assistant text", async () => {
+  process.env.PI_SUBAGENT_AGENT_END_GRACE_MS = "25";
+  const { cwd } = await setupTest({
+    piScript: `#!/bin/sh
+trap 'exit 0' TERM
+printf '%s\\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"toolCall","id":"tc-1","name":"complete","arguments":{"outcome":"Timed out outcome"}}]}}'
+printf '%s\\n' '{"type":"tool_result_end","message":{"role":"toolResult","toolCallId":"tc-1","details":{"outcome":"Timed out outcome"}}}'
+printf '%s\\n' '{"type":"agent_end","messages":[]}'
+sleep 10 &
+wait $!
+`,
+  });
+  const result = await runSingleAgent(
+    cwd,
+    [hangAgent],
+    "hang",
+    "task",
+    undefined,
+    undefined,
+    makeSubagentDetails,
+    undefined,
+    "off",
+  );
+  expect(result.exitCode).toBe(0);
+  expect(result.outcome).toBe("Timed out outcome");
+  expect(result.termination?.cancelReason).toBe("agent_end_timeout");
+});
+
+test("runSingleAgent deletes extracted outcome when child exits non-zero", async () => {
+  const { cwd } = await setupTest({
+    piScript: `#!/bin/sh
+printf '%s\\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"toolCall","id":"tc-1","name":"complete","arguments":{"outcome":"Should be deleted"}}]}}'
+printf '%s\\n' '{"type":"tool_result_end","message":{"role":"toolResult","toolCallId":"tc-1","details":{"outcome":"Should be deleted"}}}'
+printf '%s\\n' '{"type":"agent_end","messages":[]}'
+exit 1
+`,
+  });
+  const result = await runSingleAgent(
+    cwd,
+    [hangAgent],
+    "hang",
+    "task",
+    undefined,
+    undefined,
+    makeSubagentDetails,
+    undefined,
+    "off",
+  );
+  expect(result.exitCode).toBe(1);
+  expect(result.outcome).toBeUndefined();
+});
+
+test("runSingleAgent deletes extracted outcome when host aborts after outcome", async () => {
+  const { cwd } = await setupTest({
+    piScript: `#!/bin/sh
+trap 'exit 0' TERM
+printf '%s\\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"toolCall","id":"tc-1","name":"complete","arguments":{"outcome":"Aborted outcome"}}]}}'
+printf '%s\\n' '{"type":"tool_result_end","message":{"role":"toolResult","toolCallId":"tc-1","details":{"outcome":"Aborted outcome"}}}'
+printf '%s\\n' '{"type":"agent_end","messages":[]}'
+sleep 10 &
+wait $!
+`,
+  });
+  const controller = new AbortController();
+  const promise = runSingleAgent(
+    cwd,
+    [hangAgent],
+    "hang",
+    "task",
+    controller.signal,
+    undefined,
+    makeSubagentDetails,
+    undefined,
+    "off",
+  );
+  controller.abort("host abort after outcome");
+  const error = await promise.then(
+    () => undefined,
+    (value: unknown) => value,
+  );
+  expect(error).toBeInstanceOf(SubagentAbortError);
+  const result = (error as SubagentAbortError).result;
+  expect(result.outcome).toBeUndefined();
+  expect(result.termination?.cancelReason).toBe("host abort after outcome");
 });
 
 describe("T-003: parseSamplingParams", () => {

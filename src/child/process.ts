@@ -155,15 +155,13 @@ function startSleepInhibitorRelease(
   return acquisitionPromise.then(releaseSleepInhibitor, () => {});
 }
 
-function hasCompletedAgentOutput(result: RuntimeResult): boolean {
+function hasCompletedAgentOutput(
+  result: RuntimeResult,
+  outcome?: string,
+): boolean {
   if (result.finalOutput.trim()) return true;
-  return result.messages.some(
-    (msg) =>
-      msg.role === "assistant" &&
-      msg.content.some(
-        (part) => part.type === "text" && Boolean(part.text?.trim()),
-      ),
-  );
+  if (outcome?.trim()) return true;
+  return getFinalOutput(result.messages).trim().length > 0;
 }
 
 /**
@@ -174,12 +172,13 @@ function hasCompletedAgentOutput(result: RuntimeResult): boolean {
 function getAgentEndTimeoutExitCode(
   result: RuntimeResult,
   spawnError: Error | undefined,
+  outcome: string | undefined,
 ): number | undefined {
   if (result.termination?.cancelReason !== "agent_end_timeout") return;
   if (spawnError) return;
   if (result.stopReason === "error" || result.stopReason === "aborted") return;
   if (result.errorMessage?.trim()) return;
-  return hasCompletedAgentOutput(result) ? 0 : 1;
+  return hasCompletedAgentOutput(result, outcome) ? 0 : 1;
 }
 
 /**
@@ -740,9 +739,11 @@ async function finalizeResult(
   if (detectMessageError(state.result.messages)) {
     state.result.errorMessage ||= TOOL_RESULT_FAILED_MESSAGE;
   }
+  const outcome = getLatestOutcomeFromMessages(state.result.messages);
   const agentEndTimeoutExitCode = getAgentEndTimeoutExitCode(
     state.result,
     state.spawnError,
+    outcome,
   );
   if (agentEndTimeoutExitCode !== undefined) {
     state.result.exitCode = agentEndTimeoutExitCode;
@@ -756,9 +757,8 @@ async function finalizeResult(
     state.result.exitCode === 0 &&
     !state.result.errorMessage?.trim() &&
     !detectMessageError(state.result.messages);
-  if (isSemanticallySuccessful) {
-    const outcome = getLatestOutcomeFromMessages(state.result.messages);
-    if (outcome) state.result.outcome = outcome;
+  if (isSemanticallySuccessful && outcome) {
+    state.result.outcome = outcome;
   }
   if (state.wasAborted) {
     state.result.stderr = "";
