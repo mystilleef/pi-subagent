@@ -131,8 +131,15 @@ export function formatToolCall(
 }
 
 export function getFinalOutput(messages: Message[]): string {
-  const lastAsst = messages.findLast((m) => m.role === "assistant");
-  const lastText = lastAsst?.content.findLast((p) => p.type === "text");
+  const lastAsstWithText = messages.findLast(
+    (m) =>
+      m.role === "assistant" &&
+      Array.isArray(m.content) &&
+      m.content.some((p) => p.type === "text"),
+  );
+  const content = lastAsstWithText?.content;
+  if (!Array.isArray(content)) return "";
+  const lastText = content.findLast((p) => p.type === "text");
   return lastText?.type === "text" ? lastText.text : "";
 }
 
@@ -207,7 +214,7 @@ export function renderSubagentResult(
     : failed
       ? "error"
       : "success";
-  const finalOutput = r.finalOutput ?? getFinalOutput(r.messages ?? []);
+  const finalOutput = r.finalOutput || getFinalOutput(r.messages ?? []);
   const title = formatSubagentTitle(r.agent, r.instanceName, theme);
   let effectiveBody = bodyOverride ?? finalOutput;
   if (display?.isPartial && !finalOutput?.trim() && !bodyOverride) {

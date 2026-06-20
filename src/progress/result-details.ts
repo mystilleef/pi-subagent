@@ -230,7 +230,7 @@ function getSubagentText(result: SubagentToolResult): string {
 
 export function getResultDisplayText(result: SubagentToolResult): string {
   return (
-    getLatestResult(result.details)?.finalOutput ?? getSubagentText(result)
+    getLatestResult(result.details)?.finalOutput || getSubagentText(result)
   );
 }
 

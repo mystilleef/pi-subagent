@@ -1,4 +1,5 @@
 import { expect, test } from "bun:test";
+import type { Message } from "@earendil-works/pi-ai";
 import type {
   AgentToolResult,
   ExtensionCommandContext,
@@ -13,6 +14,7 @@ import {
   formatTokens,
   formatToolCall,
   formatUsageStats,
+  getFinalOutput,
   renderRunsBoard,
   renderSubagentCall,
   renderSubagentResult,
@@ -3356,4 +3358,64 @@ test("renderSubagentResult shows finalOutput only from assistant text and perfor
   const renderedText = renderToString(rendered);
   expect(renderedText).toContain("pure assistant text here");
   expect(renderedText).not.toContain("should-not-be-synthesized-into-body");
+});
+
+test("getFinalOutput returns last assistant text and tolerates non-array content", () => {
+  const fakeTheme = createDefaultFakeTheme();
+  expect(getFinalOutput([])).toBe("");
+  const stringContent = [
+    { role: "assistant", content: "plain string" },
+  ] as unknown as Message[];
+  expect(getFinalOutput(stringContent)).toBe("");
+  const toolOnly = [
+    {
+      role: "assistant",
+      content: [{ type: "toolCall", name: "bash", arguments: {}, id: "1" }],
+    },
+  ] as unknown as Message[];
+  expect(getFinalOutput(toolOnly)).toBe("");
+  const textMessages = [
+    { role: "user", content: [{ type: "text", text: "user" }] },
+    {
+      role: "assistant",
+      content: [
+        { type: "text", text: "first" },
+        { type: "toolCall", name: "bash", arguments: {}, id: "1" },
+        { type: "text", text: "last" },
+      ],
+    },
+  ] as unknown as Message[];
+  expect(getFinalOutput(textMessages)).toBe("last");
+  const fallbackResult = renderSubagentResult(
+    {
+      content: [{ type: "text", text: "subagent text" }],
+      details: {
+        mode: "single",
+        agentScope: "both",
+        projectAgentsDir: null,
+        results: [
+          {
+            agent: "fallback",
+            agentSource: "project",
+            task: "task",
+            exitCode: 0,
+            finalOutput: "",
+            messages: textMessages,
+            stderr: "",
+            usage: {
+              input: 0,
+              output: 0,
+              cacheRead: 0,
+              cacheWrite: 0,
+              cost: 0,
+              contextTokens: 0,
+              turns: 0,
+            },
+          },
+        ],
+      },
+    },
+    fakeTheme,
+  ) as unknown as { render: (width: number) => string[] };
+  expect(renderToString(fallbackResult)).toContain("last");
 });

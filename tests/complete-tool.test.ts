@@ -21,6 +21,7 @@ import {
 } from "../src/progress/progress-state.js";
 import {
   getFeedbackSummaryText,
+  getResultDisplayText,
   sanitizeDetailsForDisplay,
   sanitizeResultDetails,
 } from "../src/progress/result-details.js";
@@ -493,6 +494,48 @@ describe("Progress & Feedback Preference and Normalization", () => {
       toolResult as unknown as Parameters<typeof getFeedbackSummaryText>[0],
     );
     expect(summary).toBe("raw final output");
+  });
+
+  test("getResultDisplayText prefers finalOutput and falls back to subagent text", () => {
+    const makeTool = (finalOutput: string | undefined, text: string) => ({
+      content: [{ type: "text" as const, text }],
+      details: {
+        mode: "single" as const,
+        agentScope: "project" as const,
+        projectAgentsDir: null,
+        results: [
+          {
+            agent: "tester",
+            agentSource: "project",
+            task: "check",
+            exitCode: 0,
+            finalOutput,
+            stderr: "",
+          },
+        ],
+      },
+    });
+    expect(
+      getResultDisplayText(
+        makeTool("final output", "subagent text") as unknown as Parameters<
+          typeof getResultDisplayText
+        >[0],
+      ),
+    ).toBe("final output");
+    expect(
+      getResultDisplayText(
+        makeTool("", "subagent text") as unknown as Parameters<
+          typeof getResultDisplayText
+        >[0],
+      ),
+    ).toBe("subagent text");
+    expect(
+      getResultDisplayText(
+        makeTool(undefined, "subagent text") as unknown as Parameters<
+          typeof getResultDisplayText
+        >[0],
+      ),
+    ).toBe("subagent text");
   });
 });
 
