@@ -3068,7 +3068,13 @@ printf '%s\\n' '{"type":"agent_end","messages":[]}'
 exit 0
 `,
   });
-  const writeSpy = spyOn(process.stderr, "write");
+  const stderrChunks: string[] = [];
+  const writeSpy = spyOn(process.stderr, "write").mockImplementation(((
+    chunk: string | Uint8Array,
+  ) => {
+    stderrChunks.push(typeof chunk === "string" ? chunk : chunk.toString());
+    return true;
+  }) as typeof process.stderr.write);
   try {
     const result = await runSingleAgent(
       cwd,
@@ -3083,10 +3089,7 @@ exit 0
       true,
     );
     expect(result.exitCode).toBe(0);
-    const calls = writeSpy.mock.calls as unknown[][];
-    const diagnostic = calls
-      .map((c) => (typeof c[0] === "string" ? c[0] : ""))
-      .join("");
+    const diagnostic = stderrChunks.join("");
     expect(diagnostic).toContain("[pi-subagent:unknown-event]");
     expect(diagnostic).toContain("malformed:");
     expect(diagnostic).toContain("unknown:");
