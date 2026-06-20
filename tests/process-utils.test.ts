@@ -1,7 +1,8 @@
-import { describe, expect, mock, test } from "bun:test";
+import { describe, expect, spyOn, test } from "bun:test";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import * as piAi from "@earendil-works/pi-ai";
 import {
   appendWithByteLimit,
   resolveCompleteExtensionPath,
@@ -202,17 +203,14 @@ describe("resolveContextWindowTokens", () => {
     expect(Number.isFinite(tokens)).toBe(true);
   });
 
-  test("returns undefined when getModel throws an error", async () => {
-    mock.module("@earendil-works/pi-ai", () => ({
-      getModel: () => {
-        throw new Error("Mocked model lookup failure");
-      },
-    }));
-    const mod = await import("../src/child/process-utils.js");
+  test("returns undefined when getModel throws an error", () => {
+    const spy = spyOn(piAi, "getModel").mockImplementation(() => {
+      throw new Error("Mocked model lookup failure");
+    });
     const msg = { provider: "openai", model: "gpt-4" } as unknown as Parameters<
       typeof resolveContextWindowTokens
     >[0];
-    expect(mod.resolveContextWindowTokens(msg)).toBeUndefined();
-    mock.restore();
+    expect(resolveContextWindowTokens(msg)).toBeUndefined();
+    spy.mockRestore();
   });
 });

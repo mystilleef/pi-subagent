@@ -5,33 +5,24 @@
  */
 
 import { type ChildProcess, spawn } from "node:child_process";
-import * as fs from "node:fs";
 import readline from "node:readline";
 import type { Message } from "@earendil-works/pi-ai";
 import type { AgentConfig, ThinkingLevel } from "../agent/agents.js";
 import { getFinalOutput } from "../output/ui.js";
-import { makeToolPreview, renderToolActivity } from "../progress/progress.js";
-import { SENSITIVE_PATTERN } from "../progress/progress-format.js";
-import { isToolCallPart } from "../progress/progress-state.js";
 import { serializeSamplingParams } from "../shared/sampling.js";
 import {
   type OnUpdateCallback,
   type SingleResult,
-  type StreamingProgress,
   type SubagentDetails,
   TOOL_RESULT_FAILED_MESSAGE,
-  type ToolActivity,
 } from "../shared/types.js";
 import {
   detectMessageError,
-  findLastAssistantTextMessage,
   getPiInvocation,
   getSubagentDepth,
   getSubagentRuntimeLimits,
   resolveAgentSkillArgs,
   subagentDepthEnv,
-  truncateOutput,
-  writePromptToTempFile,
 } from "../shared/utils.js";
 import {
   type ChildEventParseResult,
@@ -49,10 +40,24 @@ import {
 import {
   appendWithByteLimit,
   resolveCompleteExtensionPath,
-  resolveContextWindowTokens,
   resolveSamplingExtensionPath,
 } from "./process-utils.js";
 import { appendSubagentResultContract } from "./prompt-contract.js";
+import {
+  beginPromptSetup,
+  cleanupPromptSetupResult,
+  cleanupTempPrompt,
+} from "./prompt-setup.js";
+import {
+  addMessageToResult,
+  createErrorResult,
+  errorForDepthLimit,
+  errorForUnknownAgent,
+  initRuntimeResult,
+  type RuntimeResult,
+  rebuildResultFromMessages,
+} from "./result-builder.js";
+import { type EmitUpdateFn, makeEmitUpdate } from "./streaming-progress.js";
 import {
   acquireChildSleepInhibitor,
   getProcessTreeSpawnOptions,
@@ -66,9 +71,9 @@ const COMPLETE_EXTENSION_PATH = resolveCompleteExtensionPath();
 const SAMPLING_EXTENSION_PATH = resolveSamplingExtensionPath();
 
 export { resolveThinkingLevel } from "./model-resolution.js";
+export { makeEmitUpdate } from "./streaming-progress.js";
 
 type RuntimeLimits = ReturnType<typeof getSubagentRuntimeLimits>;
-type RuntimeResult = SingleResult & { messages: Message[] };
 type SleepInhibitorAcquirer = (pid: number) => Promise<SleepInhibitorHandle>;
 
 type RunSingleAgentOptions = {
@@ -84,10 +89,6 @@ export class SubagentAbortError extends Error {
     this.result = result;
   }
 }
-
-type TempPrompt = { dir: string; filePath: string };
-
-type PromptSetupResult = { tmpPrompt: TempPrompt | null } | { error: unknown };
 
 interface SubagentState {
   result: RuntimeResult;
@@ -155,7 +156,7 @@ function startSleepInhibitorRelease(
   return acquisitionPromise.then(releaseSleepInhibitor, () => {});
 }
 
-function hasCompletedAgentOutput(
+export function hasCompletedAgentOutput(
   result: RuntimeResult,
   outcome?: string,
 ): boolean {
@@ -169,7 +170,7 @@ function hasCompletedAgentOutput(
  * we force-kill them after a grace period and treat it as success (0) if they
  * actually produced output.
  */
-function getAgentEndTimeoutExitCode(
+export function getAgentEndTimeoutExitCode(
   result: RuntimeResult,
   spawnError: Error | undefined,
   outcome: string | undefined,
@@ -241,270 +242,6 @@ async function waitForSubagentProcess(
   });
 }
 
-const EMPTY_USAGE = {
-  input: 0,
-  output: 0,
-  cacheRead: 0,
-  cacheWrite: 0,
-  cost: 0,
-  contextTokens: 0,
-  turns: 0,
-};
-
-function initRuntimeResult(
-  agentName: string,
-  source: "user" | "project" | "unknown",
-  task: string,
-  modelDisplay: string | undefined,
-): RuntimeResult {
-  return {
-    agent: agentName,
-    agentSource: source,
-    task,
-    exitCode: 0,
-    finalOutput: "",
-    messages: [],
-    stderr: "",
-    usage: { ...EMPTY_USAGE },
-    model: modelDisplay,
-  };
-}
-
-function accumulateUsage(result: RuntimeResult, msg: Message): void {
-  if (msg.role !== "assistant") return;
-  result.usage.turns++;
-  const { usage } = msg;
-  if (!usage) return;
-  result.usage.input += usage.input || 0;
-  result.usage.output += usage.output || 0;
-  result.usage.cacheRead += usage.cacheRead || 0;
-  result.usage.cacheWrite += usage.cacheWrite || 0;
-  result.usage.cost += usage.cost?.total || 0;
-  result.usage.contextTokens = usage.totalTokens || 0;
-  const ctxWindowTokens = resolveContextWindowTokens(msg);
-  if (ctxWindowTokens !== undefined)
-    result.usage.contextWindowTokens = ctxWindowTokens;
-}
-
-function addMessageToResult(result: RuntimeResult, msg: Message): void {
-  result.messages.push(msg);
-  result.finalOutput = truncateOutput(getFinalOutput(result.messages));
-  if (msg.role === "toolResult" && msg.isError) {
-    result.errorMessage ||= TOOL_RESULT_FAILED_MESSAGE;
-  } else if (result.errorMessage === TOOL_RESULT_FAILED_MESSAGE) {
-    delete result.errorMessage;
-  }
-  if (msg.role === "assistant") {
-    accumulateUsage(result, msg);
-    if (!result.model && msg.model) result.model = msg.model;
-    if (msg.stopReason) result.stopReason = msg.stopReason;
-    if (msg.errorMessage) result.errorMessage = msg.errorMessage;
-  }
-}
-
-function createErrorResult(
-  agent: string,
-  source: "user" | "project" | "unknown",
-  task: string,
-  error: string,
-  model?: string,
-): SingleResult {
-  return {
-    agent,
-    agentSource: source,
-    task,
-    exitCode: 1,
-    finalOutput: "",
-    stderr: error,
-    usage: { ...EMPTY_USAGE },
-    model,
-  };
-}
-
-function errorForUnknownAgent(
-  agentName: string,
-  agents: AgentConfig[],
-  task: string,
-): SingleResult {
-  const available = agents.map((a) => `"${a.name}"`).join(", ") || "none";
-  return createErrorResult(
-    agentName,
-    "unknown",
-    task,
-    `Unknown agent: "${agentName}". Available agents: ${available}.`,
-  );
-}
-
-function errorForDepthLimit(
-  agentName: string,
-  source: "user" | "project" | "unknown",
-  task: string,
-  depth: number,
-  maxDepth: number,
-  model?: string,
-): SingleResult {
-  return createErrorResult(
-    agentName,
-    source,
-    task,
-    `Subagent nesting limit reached (depth ${depth}/${maxDepth}).`,
-    model,
-  );
-}
-
-async function cleanupTempPrompt(tmpPrompt: TempPrompt): Promise<void> {
-  try {
-    await fs.promises.unlink(tmpPrompt.filePath);
-    await fs.promises.rmdir(tmpPrompt.dir);
-  } catch {
-    /* temp file cleanup failures are non-fatal; OS will clean up eventually */
-  }
-}
-
-function beginPromptSetup(agent: AgentConfig): Promise<PromptSetupResult> {
-  if (!agent.systemPrompt.trim()) return Promise.resolve({ tmpPrompt: null });
-  return writePromptToTempFile(agent.name, agent.systemPrompt).then(
-    (tmpPrompt) => ({ tmpPrompt }),
-    (error: unknown) => ({ error }),
-  );
-}
-
-async function cleanupPromptSetupResult(
-  setup: PromptSetupResult,
-): Promise<void> {
-  if ("tmpPrompt" in setup && setup.tmpPrompt) {
-    await cleanupTempPrompt(setup.tmpPrompt);
-  }
-}
-
-function findRecentMessagesAnchor(messages: Message[]): number {
-  return findLastAssistantTextMessage(messages);
-}
-
-function deriveStreamingProgress(messages: Message[]): StreamingProgress {
-  const toolCalls: { id: string; preview: string }[] = [];
-  let lastToolPreview: string | undefined;
-  let activeToolActivity: ToolActivity | undefined;
-  for (const msg of messages) {
-    if (msg.role !== "assistant" || !Array.isArray(msg.content)) continue;
-    for (const part of msg.content) {
-      if (!isToolCallPart(part)) continue;
-      const preview = sanitizeProgressPreview(
-        makeToolPreview(part.name, part.arguments),
-        part.name,
-      );
-      toolCalls.push({ id: part.id, preview });
-      lastToolPreview = preview;
-      activeToolActivity = { toolName: part.name, inputSummary: preview };
-    }
-  }
-  const activityText = renderToolActivity(activeToolActivity);
-  return {
-    activeToolActivity,
-    activityText,
-    toolCalls,
-    lastToolPreview,
-  };
-}
-
-function sanitizeProgressPreview(preview: string, toolName: string): string {
-  return SENSITIVE_PATTERN.test(preview) ? toolName : preview;
-}
-
-/**
- * Merge incoming tool activity with existing progress activity.
- * When tool names match, prefer richer inputSummary from incoming.
- * Otherwise, replace entirely with incoming activity.
- */
-function mergeToolActivity(
-  existing: ToolActivity | undefined,
-  incoming: ToolActivity,
-): ToolActivity {
-  if (existing && existing.toolName === incoming.toolName) {
-    const incomingSummary = incoming.inputSummary;
-    const preferIncoming =
-      incomingSummary && incomingSummary !== incoming.toolName;
-    return {
-      ...existing,
-      inputSummary: preferIncoming ? incomingSummary : existing.inputSummary,
-      instanceName: incoming.instanceName ?? existing.instanceName,
-      child: incoming.child ?? existing.child,
-    };
-  }
-  return incoming;
-}
-
-/**
- * Apply tool activity and result completion updates to progress state.
- * Handles merging of child events with parent activity tree.
- */
-function applyActivityUpdates(
-  progress: StreamingProgress,
-  options: { toolActivity?: ToolActivity; toolResultCompleted?: boolean },
-  previousActivity?: ToolActivity,
-): void {
-  // Preserve stored activity tree for tool-result completion signals
-  // so the parent retains nested context until newer activity arrives
-  if (options.toolResultCompleted && previousActivity) {
-    progress.activeToolActivity = previousActivity;
-    const renderedText = renderToolActivity(previousActivity);
-    if (renderedText !== undefined) progress.activityText = renderedText;
-    else delete progress.activityText;
-  }
-  // Handle parsed tool activity from child events
-  // Merge with parent activity if this is a nested update
-  if (options.toolActivity) {
-    progress.activeToolActivity = mergeToolActivity(
-      progress.activeToolActivity,
-      options.toolActivity,
-    );
-    const renderedActivity = renderToolActivity(progress.activeToolActivity);
-    if (renderedActivity !== undefined)
-      progress.activityText = renderedActivity;
-    else delete progress.activityText;
-  }
-  if (options.toolResultCompleted) {
-    progress.toolResultCompleted = true;
-  }
-}
-
-export function makeEmitUpdate(
-  result: RuntimeResult,
-  onUpdate: OnUpdateCallback | undefined,
-  makeDetails: (
-    results: RuntimeResult[],
-    options?: { includeMessages?: boolean; recentMessages?: Message[] },
-  ) => SubagentDetails,
-): (options?: {
-  toolActivity?: ToolActivity;
-  toolResultCompleted?: boolean;
-}) => void {
-  return (options) => {
-    const msgs = result.messages;
-    const anchorIdx = findRecentMessagesAnchor(msgs);
-    const recentMessages =
-      anchorIdx >= 0 ? msgs.slice(anchorIdx) : msgs.slice(-5);
-    const progress = deriveStreamingProgress(msgs);
-    if (options) {
-      applyActivityUpdates(
-        progress,
-        options,
-        result.progress?.activeToolActivity,
-      );
-    }
-    result.progress = progress;
-    onUpdate?.({
-      content: [
-        { type: "text", text: progress.activityText ?? "(running...)" },
-      ],
-      details: makeDetails([result], {
-        includeMessages: true,
-        recentMessages,
-      }),
-    });
-  };
-}
-
 function makeRequestTerminator(
   proc: ChildProcess,
   terminateOptions: {
@@ -534,10 +271,7 @@ function clearGraceTimer(state: SubagentState): void {
 function handleMessageEvent(
   event: ChildKnownEvent,
   state: SubagentState,
-  emitUpdate: (options?: {
-    toolActivity?: ToolActivity;
-    toolResultCompleted?: boolean;
-  }) => void,
+  emitUpdate: EmitUpdateFn,
 ): void {
   if (event.type !== "message_end" && event.type !== "tool_result_end") return;
   if (event.message) {
@@ -549,10 +283,7 @@ function handleMessageEvent(
 
 function handleToolExecutionUpdateEvent(
   event: ChildKnownEvent,
-  emitUpdate: (options?: {
-    toolActivity?: ToolActivity;
-    toolResultCompleted?: boolean;
-  }) => void,
+  emitUpdate: EmitUpdateFn,
 ): void {
   if (event.type !== TOOL_EXECUTION_UPDATE_EVENT) return;
   emitUpdate({ toolActivity: event.toolActivity });
@@ -561,17 +292,12 @@ function handleToolExecutionUpdateEvent(
 function handleAgentEndEvent(
   event: ChildKnownEvent,
   state: SubagentState,
-  emitUpdate: (options?: {
-    toolActivity?: ToolActivity;
-    toolResultCompleted?: boolean;
-  }) => void,
+  emitUpdate: EmitUpdateFn,
   requestTermination: (reason: string) => Promise<unknown>,
 ): void {
   if (event.type !== "agent_end") return;
-  if (state.result.messages.length === 0 && Array.isArray(event.messages)) {
-    for (const msg of event.messages as Message[]) {
-      addMessageToResult(state.result, msg);
-    }
+  if (Array.isArray(event.messages) && event.messages.length > 0) {
+    rebuildResultFromMessages(state.result, event.messages as Message[]);
     emitUpdate();
   }
   if (state.agentEndGraceTimer || state.terminationPromise) return;
@@ -598,10 +324,7 @@ function formatUnknownEventDiagnostic(
 function processEventLine(
   line: string,
   state: SubagentState,
-  emitUpdate: (options?: {
-    toolActivity?: ToolActivity;
-    toolResultCompleted?: boolean;
-  }) => void,
+  emitUpdate: EmitUpdateFn,
   requestTermination: (reason: string) => Promise<unknown>,
   debugEventDiagnostics: boolean,
 ): void {
@@ -689,10 +412,7 @@ function buildChildEnv(samplingEnv: string | undefined): NodeJS.ProcessEnv {
 function setupChildProcess(
   proc: ChildProcess,
   state: SubagentState,
-  emitUpdate: (options?: {
-    toolActivity?: ToolActivity;
-    toolResultCompleted?: boolean;
-  }) => void,
+  emitUpdate: EmitUpdateFn,
   requestTermination: (reason: string) => Promise<unknown>,
   debugEventDiagnostics: boolean,
 ): void {
@@ -736,9 +456,6 @@ async function finalizeResult(
   clearGraceTimer(state);
   if (state.terminationPromise) await state.terminationPromise;
   if (state.spawnError) state.result.exitCode = 1;
-  if (detectMessageError(state.result.messages)) {
-    state.result.errorMessage ||= TOOL_RESULT_FAILED_MESSAGE;
-  }
   const outcome = getLatestOutcomeFromMessages(state.result.messages);
   const agentEndTimeoutExitCode = getAgentEndTimeoutExitCode(
     state.result,
@@ -751,12 +468,18 @@ async function finalizeResult(
   if (state.result.termination?.cancelReason === "agent_end_timeout") {
     state.result.stderr = state.result.stderr.replace(/^Terminated\r?\n/gm, "");
   }
+  // Skip unresolved-error detection when complete succeeded: intermediate tool
+  // errors (e.g. a linter exiting non-zero) are expected and already addressed.
+  if (!outcome && detectMessageError(state.result.messages)) {
+    state.result.errorMessage ||= TOOL_RESULT_FAILED_MESSAGE;
+  }
   const isSemanticallySuccessful =
     !state.wasAborted &&
     !state.spawnError &&
     state.result.exitCode === 0 &&
-    !state.result.errorMessage?.trim() &&
-    !detectMessageError(state.result.messages);
+    (Boolean(outcome) ||
+      (!state.result.errorMessage?.trim() &&
+        !detectMessageError(state.result.messages)));
   if (isSemanticallySuccessful && outcome) {
     state.result.outcome = outcome;
   }

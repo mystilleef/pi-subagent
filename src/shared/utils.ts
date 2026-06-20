@@ -241,6 +241,7 @@ export function detectMessageError(messages: Message[]): boolean {
 }
 
 export function hasSubagentFailed(result: SingleResult): boolean {
+  if (result.outcome?.trim()) return false;
   return (
     result.exitCode !== 0 ||
     result.stopReason === "error" ||

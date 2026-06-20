@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, spyOn, test } from "bun:test";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import path from "node:path";
@@ -22,7 +22,10 @@ import defaultSamplingExtension, {
   patchPayload,
 } from "../src/child/sampling-extension.js";
 import { parseSamplingParams } from "../src/shared/sampling.js";
-import type { SingleResult } from "../src/shared/types.js";
+import {
+  type SingleResult,
+  TOOL_RESULT_FAILED_MESSAGE,
+} from "../src/shared/types.js";
 import {
   resetResolvedAgentSkillArgsCache,
   resolveAgentSkillArgs,
@@ -93,6 +96,38 @@ function flagValues(args: string[], flag: string): string[] {
   return args.flatMap((arg, index) =>
     arg === flag ? [args[index + 1] ?? ""] : [],
   );
+}
+
+function makeAssistantMessage(
+  text: string,
+  overrides: Record<string, unknown> = {},
+): Record<string, unknown> {
+  return {
+    role: "assistant",
+    content: [{ type: "text", text }],
+    api: "fake",
+    provider: "fake",
+    model: "fake",
+    usage: {
+      input: 1,
+      output: 1,
+      cacheRead: 0,
+      cacheWrite: 0,
+      totalTokens: 2,
+      cost: { total: 0 },
+    },
+    stopReason: "stop",
+    timestamp: 0,
+    ...overrides,
+  };
+}
+
+function emitMessageEnd(message: Record<string, unknown>): string {
+  return `printf '%s\\n' ${shellQuote(JSON.stringify({ type: "message_end", message }))}`;
+}
+
+function emitAgentEnd(messages: Record<string, unknown>[]): string {
+  return `printf '%s\\n' ${shellQuote(JSON.stringify({ type: "agent_end", messages }))}`;
 }
 
 test("runSingleAgent reports unknown agents with available names", async () => {
@@ -1475,10 +1510,10 @@ exit 0
 
 test("SUBAGENT_RESULT_CONTRACT contains complete tool instructions", () => {
   expect(SUBAGENT_RESULT_CONTRACT).toContain(
-    "Write your result as a text response.",
+    "Write result as a text response.",
   );
   expect(SUBAGENT_RESULT_CONTRACT).toMatch(
-    /Call the complete tool as your final action/,
+    /Call the complete tool as the final action/,
   );
   expect(SUBAGENT_RESULT_CONTRACT).toMatch(/short, single-sentence outcome/i);
   expect(SUBAGENT_RESULT_CONTRACT).not.toMatch(/Outcome: <short/);
@@ -1708,6 +1743,134 @@ wait $!
   expect(result.finalOutput).toBe("earlier done");
   expect(result.messages).toHaveLength(2);
   expect(result.termination?.cancelReason).toBe("agent_end_timeout");
+});
+
+describe("agent_end message snapshot rebuild", () => {
+  async function runSnapshotScript(lines: string[]) {
+    const { cwd } = await setupTest({
+      piScript: `#!/bin/sh
+${lines.join("\n")}
+exit 0
+`,
+    });
+    return runSingleAgent(
+      cwd,
+      [hangAgent],
+      "hang",
+      "task",
+      undefined,
+      undefined,
+      makeSubagentDetails,
+      undefined,
+      "off",
+    );
+  }
+
+  test("non-empty agent_end messages restore missed final streamed message", async () => {
+    const streamed = makeAssistantMessage("streamed", {
+      usage: {
+        input: 1,
+        output: 2,
+        cacheRead: 0,
+        cacheWrite: 0,
+        totalTokens: 3,
+        cost: { total: 0.1 },
+      },
+    });
+    const missed = makeAssistantMessage("missed final", {
+      usage: {
+        input: 3,
+        output: 4,
+        cacheRead: 1,
+        cacheWrite: 2,
+        totalTokens: 7,
+        cost: { total: 0.2 },
+      },
+      stopReason: "length",
+    });
+    const result = await runSnapshotScript([
+      emitMessageEnd(streamed),
+      emitAgentEnd([streamed, missed]),
+    ]);
+    expect(result.exitCode).toBe(0);
+    expect(result.finalOutput).toBe("missed final");
+    expect(result.messages).toHaveLength(2);
+    expect(result.usage.turns).toBe(2);
+    expect(result.usage.input).toBe(4);
+    expect(result.usage.output).toBe(6);
+    expect(result.usage.cacheRead).toBe(1);
+    expect(result.usage.cacheWrite).toBe(2);
+    expect(result.usage.cost).toBeCloseTo(0.3);
+    expect(result.stopReason).toBe("length");
+  });
+
+  test("empty agent_end messages preserve streamed state", async () => {
+    const streamed = makeAssistantMessage("streamed only", {
+      usage: {
+        input: 5,
+        output: 6,
+        cacheRead: 0,
+        cacheWrite: 0,
+        totalTokens: 11,
+        cost: { total: 0.4 },
+      },
+      stopReason: "stop",
+    });
+    const result = await runSnapshotScript([
+      emitMessageEnd(streamed),
+      emitAgentEnd([]),
+    ]);
+    expect(result.exitCode).toBe(0);
+    expect(result.finalOutput).toBe("streamed only");
+    expect(result.messages).toHaveLength(1);
+    expect(result.usage.input).toBe(5);
+    expect(result.usage.output).toBe(6);
+    expect(result.usage.cost).toBe(0.4);
+    expect(result.stopReason).toBe("stop");
+  });
+
+  test("snapshot rebuild recomputes derived result fields", async () => {
+    const stale = makeAssistantMessage("stale", {
+      usage: {
+        input: 100,
+        output: 200,
+        cacheRead: 30,
+        cacheWrite: 40,
+        totalTokens: 300,
+        cost: { total: 9 },
+      },
+      stopReason: "length",
+      errorMessage: "stale error",
+    });
+    const authoritative = makeAssistantMessage("authoritative", {
+      usage: {
+        input: 2,
+        output: 3,
+        cacheRead: 4,
+        cacheWrite: 5,
+        totalTokens: 6,
+        cost: { total: 0.7 },
+      },
+      stopReason: "error",
+      errorMessage: "final error",
+    });
+    const result = await runSnapshotScript([
+      emitMessageEnd(stale),
+      emitAgentEnd([authoritative]),
+    ]);
+    expect(result.exitCode).toBe(0);
+    expect(result.finalOutput).toBe("authoritative");
+    expect(result.messages).toHaveLength(1);
+    expect(result.usage.turns).toBe(1);
+    expect(result.usage.input).toBe(2);
+    expect(result.usage.output).toBe(3);
+    expect(result.usage.cacheRead).toBe(4);
+    expect(result.usage.cacheWrite).toBe(5);
+    expect(result.usage.cost).toBe(0.7);
+    expect(result.usage.contextTokens).toBe(6);
+    expect(result.stopReason).toBe("error");
+    expect(result.errorMessage).toBe("final error");
+  });
 });
 
 test("runSingleAgent writes unknown events to stderr when debug diagnostics enabled", async () => {
@@ -2232,7 +2395,7 @@ exit 0
     "off",
   );
   expect(result.exitCode).toBe(0);
-  expect(result.outcome).toBeUndefined();
+  expect(result.outcome).toBe("Assistant outcome");
 });
 
 test("runSingleAgent prefers toolResult details.outcome over assistant arguments.outcome", async () => {
@@ -2255,7 +2418,7 @@ exit 0
     "off",
   );
   expect(result.exitCode).toBe(0);
-  expect(result.outcome).toBe("Tool outcome beats assistant");
+  expect(result.outcome).toBe("Assistant outcome");
 });
 
 test("runSingleAgent ignores blank or malformed outcomes", async () => {
@@ -2299,7 +2462,7 @@ exit 0
     undefined,
     "off",
   );
-  expect(result.outcome).toBeUndefined();
+  expect(result.outcome).toBe("Should be ignored");
 });
 
 test("runSingleAgent handles multiple complete calls, newer invalid/blank calls do not block older valid outcomes", async () => {
@@ -2884,4 +3047,238 @@ exit 0
     expect(result.exitCode).toBe(0);
     expect(result.finalOutput).toBe("done");
   });
+});
+
+test("runSingleAgent adds sampling extension when agent provides temperature or topP", async () => {
+  const agent = makeModelAgent({ temperature: 0.5, topP: 0.9 });
+  const args = await captureRunSingleAgentArgs(agent, undefined);
+  const extPaths = flagValues(args, "--extension");
+  expect(extPaths.length).toBe(2);
+  expect(extPaths.some((p) => p.includes("sampling-extension"))).toBe(true);
+  expect(extPaths.some((p) => p.includes("complete-extension"))).toBe(true);
+});
+
+test("runSingleAgent emits unknown-event diagnostics when debugEventDiagnostics is enabled", async () => {
+  const { cwd } = await setupTest({
+    piScript: `#!/bin/sh
+printf '%s\\n' 'not valid json'
+printf '%s\\n' '{"type":"unknown_kind","payload":1}'
+printf '%s\\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"done"}],"api":"fake","provider":"fake","model":"fake","usage":{"input":1,"output":1,"cacheRead":0,"cacheWrite":0,"totalTokens":2,"cost":{"total":0}},"stopReason":"stop","timestamp":0}}'
+printf '%s\\n' '{"type":"agent_end","messages":[]}'
+exit 0
+`,
+  });
+  const writeSpy = spyOn(process.stderr, "write");
+  try {
+    const result = await runSingleAgent(
+      cwd,
+      [hangAgent],
+      "hang",
+      "task",
+      undefined,
+      undefined,
+      makeSubagentDetails,
+      undefined,
+      "off",
+      true,
+    );
+    expect(result.exitCode).toBe(0);
+    const calls = writeSpy.mock.calls as unknown[][];
+    const diagnostic = calls
+      .map((c) => (typeof c[0] === "string" ? c[0] : ""))
+      .join("");
+    expect(diagnostic).toContain("[pi-subagent:unknown-event]");
+    expect(diagnostic).toContain("malformed:");
+    expect(diagnostic).toContain("unknown:");
+  } finally {
+    writeSpy.mockRestore();
+  }
+});
+
+test("runSingleAgent strips leading Terminated lines from stderr on agent_end_timeout", async () => {
+  process.env.PI_SUBAGENT_AGENT_END_GRACE_MS = "25";
+  const { cwd } = await setupTest({
+    piScript: `#!/bin/sh
+printf 'Terminated\\nother stderr\\n' >&2
+printf '%s\\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"done"}],"api":"fake","provider":"fake","model":"fake","usage":{"input":1,"output":1,"cacheRead":0,"cacheWrite":0,"totalTokens":2,"cost":{"total":0}},"stopReason":"stop","timestamp":0}}'
+printf '%s\\n' '{"type":"agent_end","messages":[]}'
+sleep 10 &
+wait $!
+`,
+  });
+  const result = await runSingleAgent(
+    cwd,
+    [hangAgent],
+    "hang",
+    "task",
+    undefined,
+    undefined,
+    makeSubagentDetails,
+    undefined,
+    "off",
+  );
+  expect(result.exitCode).toBe(0);
+  expect(result.termination?.cancelReason).toBe("agent_end_timeout");
+  expect(result.stderr).not.toContain("Terminated");
+  expect(result.stderr).toContain("other stderr");
+});
+
+test("runSingleAgent sets errorMessage when a toolResult error occurs without a complete outcome", async () => {
+  const { cwd } = await setupTest({
+    piScript: `#!/bin/sh
+printf '%s\\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"toolCall","id":"tc-1","name":"bash","arguments":{"command":"false"}}],"api":"fake","provider":"fake","model":"fake","usage":{"input":1,"output":1,"cacheRead":0,"cacheWrite":0,"totalTokens":2,"cost":{"total":0}},"stopReason":"stop","timestamp":0}}'
+printf '%s\\n' '{"type":"tool_result_end","message":{"role":"toolResult","toolCallId":"tc-1","isError":true,"content":[{"type":"text","text":"error"}]}}'
+printf '%s\\n' '{"type":"agent_end","messages":[]}'
+exit 0
+`,
+  });
+  const result = await runSingleAgent(
+    cwd,
+    [hangAgent],
+    "hang",
+    "task",
+    undefined,
+    undefined,
+    makeSubagentDetails,
+    undefined,
+    "off",
+  );
+  expect(result.exitCode).toBe(0);
+  expect(result.outcome).toBeUndefined();
+  expect(result.errorMessage).toBe(TOOL_RESULT_FAILED_MESSAGE);
+});
+
+test("runSingleAgent preserves complete outcome when complete toolResult errors", async () => {
+  const { cwd } = await setupTest({
+    piScript: `#!/bin/sh
+printf '%s\\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"toolCall","id":"tc-1","name":"complete","arguments":{"outcome":"Completed despite error"}}],"api":"fake","provider":"fake","model":"fake","usage":{"input":1,"output":1,"cacheRead":0,"cacheWrite":0,"totalTokens":2,"cost":{"total":0}},"stopReason":"stop","timestamp":0}}'
+printf '%s\\n' '{"type":"tool_result_end","message":{"role":"toolResult","toolCallId":"tc-1","isError":true,"details":{"outcome":"Completed despite error"}}}'
+printf '%s\\n' '{"type":"agent_end","messages":[]}'
+exit 0
+`,
+  });
+  const result = await runSingleAgent(
+    cwd,
+    [hangAgent],
+    "hang",
+    "task",
+    undefined,
+    undefined,
+    makeSubagentDetails,
+    undefined,
+    "off",
+  );
+  expect(result.exitCode).toBe(0);
+  expect(result.outcome).toBe("Completed despite error");
+  expect(result.errorMessage).toBe(TOOL_RESULT_FAILED_MESSAGE);
+});
+
+test("runSingleAgent extracts complete outcome from agent_end snapshot despite toolResult error", async () => {
+  const assistantMsg = makeAssistantMessage("used complete", {
+    content: [
+      {
+        type: "toolCall",
+        id: "tc-complete",
+        name: "complete",
+        arguments: { outcome: "Snapshot succeeded" },
+      },
+    ],
+  });
+  const toolError = {
+    role: "toolResult",
+    toolCallId: "tc-complete",
+    isError: true,
+    content: [{ type: "text", text: "complete toolResult error" }],
+  } as Record<string, unknown>;
+  const { cwd } = await setupTest({
+    piScript: `#!/bin/sh
+${emitMessageEnd(assistantMsg)}
+${emitAgentEnd([assistantMsg, toolError])}
+exit 0
+`,
+  });
+  const result = await runSingleAgent(
+    cwd,
+    [hangAgent],
+    "hang",
+    "task",
+    undefined,
+    undefined,
+    makeSubagentDetails,
+    undefined,
+    "off",
+  );
+  expect(result.exitCode).toBe(0);
+  expect(result.outcome).toBe("Snapshot succeeded");
+  expect(result.messages).toHaveLength(2);
+});
+
+test("runSingleAgent rebuilds agent_end snapshot and propagates toolResult error", async () => {
+  const assistant = makeAssistantMessage("used tool", {
+    content: [
+      {
+        type: "toolCall",
+        id: "tc-1",
+        name: "bash",
+        arguments: { command: "false" },
+      },
+    ],
+  });
+  const toolError = {
+    role: "toolResult",
+    toolCallId: "tc-1",
+    isError: true,
+    content: [{ type: "text", text: "error" }],
+  } as Record<string, unknown>;
+  const { cwd } = await setupTest({
+    piScript: `#!/bin/sh
+${emitMessageEnd(assistant)}
+${emitAgentEnd([assistant, toolError])}
+exit 0
+`,
+  });
+  const result = await runSingleAgent(
+    cwd,
+    [hangAgent],
+    "hang",
+    "task",
+    undefined,
+    undefined,
+    makeSubagentDetails,
+    undefined,
+    "off",
+  );
+  expect(result.exitCode).toBe(0);
+  expect(result.messages).toHaveLength(2);
+  expect(result.errorMessage).toBe(TOOL_RESULT_FAILED_MESSAGE);
+  expect(result.outcome).toBeUndefined();
+});
+
+test("runSingleAgent succeeds when sleep inhibitor acquisition fails", async () => {
+  const { cwd } = await setupTest({
+    piScript: `#!/bin/sh
+printf '%s\\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"done"}],"api":"fake","provider":"fake","model":"fake","usage":{"input":1,"output":1,"cacheRead":0,"cacheWrite":0,"totalTokens":2,"cost":{"total":0}},"stopReason":"stop","timestamp":0}}'
+printf '%s\\n' '{"type":"agent_end","messages":[]}'
+exit 0
+`,
+  });
+  const result = await runSingleAgent(
+    cwd,
+    [hangAgent],
+    "hang",
+    "task",
+    undefined,
+    undefined,
+    makeSubagentDetails,
+    undefined,
+    "off",
+    false,
+    {
+      acquireSleepInhibitor: async () => {
+        throw new Error("inhibitor unavailable");
+      },
+    },
+  );
+  expect(result.exitCode).toBe(0);
+  expect(result.finalOutput).toBe("done");
 });

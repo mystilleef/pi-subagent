@@ -25,6 +25,7 @@ import {
   getSubagentDepth,
   getSubagentOutputLimits,
   getSubagentRuntimeLimits,
+  hasSubagentFailed,
   resetResolvedAgentSkillArgsCache,
   resolveAgentSkillArgs,
   subagentDepthEnv,
@@ -137,6 +138,95 @@ test("utility helpers cover truncation, invocation, prompt files, depth, and mes
     detectMessageError([
       { role: "toolResult", content: [], isError: true },
       { role: "assistant", content: [{ type: "text", text: "recovered" }] },
+    ] as unknown as Message[]),
+  ).toBe(false);
+});
+
+test("hasSubagentFailed is false when outcome is set, even with detectMessageError true", () => {
+  const messages = [
+    {
+      role: "assistant",
+      content: [{ type: "text", text: "running..." }],
+    },
+    { role: "toolResult", content: [], isError: true },
+  ] as unknown as Message[];
+  expect(detectMessageError(messages)).toBe(true);
+  expect(
+    hasSubagentFailed({
+      agent: "test",
+      agentSource: "user",
+      task: "task",
+      exitCode: 0,
+      stopReason: "toolUse",
+      outcome: "Task complete.",
+      messages,
+      stderr: "",
+      finalOutput: "",
+      usage: {
+        input: 0,
+        output: 0,
+        cacheRead: 0,
+        cacheWrite: 0,
+        cost: 0,
+        contextTokens: 0,
+        turns: 0,
+      },
+    }),
+  ).toBe(false);
+});
+
+test("hasSubagentFailed is false when outcome is set despite non-zero exitCode", () => {
+  const messages = [
+    { role: "assistant", content: [{ type: "text", text: "done" }] },
+  ] as unknown as Message[];
+  expect(
+    hasSubagentFailed({
+      agent: "test",
+      agentSource: "user",
+      task: "task",
+      exitCode: 1,
+      stopReason: "stop",
+      outcome: "Completed anyway.",
+      messages,
+      stderr: "",
+      finalOutput: "",
+      usage: {
+        input: 0,
+        output: 0,
+        cacheRead: 0,
+        cacheWrite: 0,
+        cost: 0,
+        contextTokens: 0,
+        turns: 0,
+      },
+    }),
+  ).toBe(false);
+});
+
+test("detectMessageError is true when error follows the final assistant message", () => {
+  expect(
+    detectMessageError([
+      {
+        role: "assistant",
+        content: [{ type: "toolCall", id: "t1", name: "bash", arguments: {} }],
+      },
+      { role: "toolResult", content: [], isError: true },
+    ] as unknown as Message[]),
+  ).toBe(true);
+});
+
+test("detectMessageError is false when text assistant message follows error and no subsequent error", () => {
+  expect(
+    detectMessageError([
+      {
+        role: "assistant",
+        content: [{ type: "toolCall", id: "t1", name: "bash", arguments: {} }],
+      },
+      { role: "toolResult", content: [], isError: true },
+      {
+        role: "assistant",
+        content: [{ type: "text", text: "Recovered." }],
+      },
     ] as unknown as Message[]),
   ).toBe(false);
 });
@@ -1780,6 +1870,42 @@ description: Helps tests
   } finally {
     Date.now = originalNow;
     DefaultResourceLoader.prototype.reload = originalReload;
+    resetResolvedAgentSkillArgsCache();
+  }
+});
+
+test("resolveAgentSkillArgs falls back to absolute path when realpath fails", async () => {
+  const root = await makeTempDir("pi-subagent-realpath-fallback-");
+  const cwd = path.join(root, "work");
+  const skillDir = path.join(cwd, ".pi", "skills", "helper");
+  await mkdir(skillDir, { recursive: true });
+  await writeFile(
+    path.join(skillDir, "SKILL.md"),
+    `---
+name: helper
+description: Helper
+---
+# Helper
+`,
+  );
+  const originalRealpath = fsPromises.realpath;
+  const realpathSpy = spyOn(fsPromises, "realpath").mockImplementation((async (
+    p: string,
+  ) => {
+    if (p === cwd) throw new Error("broken symlink");
+    return originalRealpath(p);
+  }) as typeof fsPromises.realpath);
+  try {
+    const resolved = await resolveAgentSkillArgs(cwd, ["helper"]);
+    expect("args" in resolved).toBe(true);
+    if ("args" in resolved) {
+      expect(resolved.args).toEqual([
+        "--skill",
+        path.join(skillDir, "SKILL.md"),
+      ]);
+    }
+  } finally {
+    realpathSpy.mockRestore();
     resetResolvedAgentSkillArgsCache();
   }
 });
