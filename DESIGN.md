@@ -38,3 +38,13 @@ sendSubagentResultMessage(lc.pi, content, displayDetails);
 - Do not reuse progress-specific text formatters for the result card message payload.
 - Display raw subagent output directly on the result card; do not fall back to the complete tool outcome.
 
+## Subagent Result Contract
+
+The system appends the result contract from [prompt-contract.ts](file:///home/lateef/Projects/pi-subagent/src/child/prompt-contract.ts) to each subagent task prompt. This contract enforces structured result output from subagents.
+
+### Directives & Constraints
+
+- **Mandatory Completion**: The subagent must emit the task result upon completion.
+- **Format**: Write result as a text response. Never wrap result in code blocks.
+- **Commentary**: Emit result directly to the calling agent without additional commentary.
+- **Outcome Summary**: Call the complete tool as the final action, providing a short, single-sentence outcome.
