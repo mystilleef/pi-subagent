@@ -36,6 +36,7 @@ import type {
   SubagentDetails,
   ToolActivity,
 } from "../src/shared/types.js";
+import { CANONICAL_SUMMARY_FIXTURES } from "./fixtures.js";
 
 const realDateNow = Date.now;
 
@@ -177,31 +178,23 @@ test("finalizeProgressState sets success status and semantic final output", () =
   expect(state?.errorText).toBeUndefined();
 });
 
-test("terminal final output uses outcome and leaves neutral text unprefixed", () => {
-  createProgressState("req-1", "agent-a", "task a");
-  finalizeProgressState("req-1", "noise\nOutcome: completed requested fix");
-  expect(getProgressState("req-1")?.finalOutput).toBe("noise");
-  createProgressState("req-2", "agent-b", "task b");
-  finalizeProgressState("req-2", "Result: needs follow-up review");
-  expect(getProgressState("req-2")?.finalOutput).toBe("needs follow-up review");
-});
+for (const fixture of CANONICAL_SUMMARY_FIXTURES) {
+  test(`progress final output matches canonical summary for ${fixture.name}`, () => {
+    createProgressState("req-fixture", "agent-fixture", "task fixture");
+    finalizeProgressState("req-fixture", fixture.finalOutput, fixture.outcome);
+    expect(getProgressState("req-fixture")?.finalOutput).toBe(
+      fixture.expectedProgress,
+    );
+  });
+}
 
-test("terminal success normalizes status prefixes labels and status-only output", () => {
+test("progress final output substitutes status-only success after canonical derivation", () => {
   createProgressState("req-1", "agent-a", "task a");
-  finalizeProgressState("req-1", "SUCCESS: SUCCESS");
+  finalizeProgressState("req-1", "ignored output", "done");
   expect(getProgressState("req-1")?.finalOutput).toBe("completed task");
   createProgressState("req-2", "agent-b", "task b");
-  finalizeProgressState("req-2", "SUCCESS");
+  finalizeProgressState("req-2", "ignored output", "Success");
   expect(getProgressState("req-2")?.finalOutput).toBe("completed task");
-  createProgressState("iso-success", "agent-c", "task c");
-  finalizeProgressState("iso-success", "DONE");
-  expect(getProgressState("iso-success")?.finalOutput).toBe("completed task");
-  createProgressState("iso-running", "agent-d", "task d");
-  finalizeProgressState("iso-running", "Status: DONE");
-  expect(getProgressState("iso-running")?.finalOutput).toBe("completed task");
-  createProgressState("iso-error", "agent-e", "task e");
-  finalizeProgressState("iso-error", "SUCCESS: Result: implemented fix");
-  expect(getProgressState("iso-error")?.finalOutput).toBe("implemented fix");
 });
 
 test("terminal failure normalizes status prefixes and status-only text", () => {
@@ -226,7 +219,7 @@ test("terminal helpers clear transient tool fields and compact semantic text", (
   finalizeProgressState("req-1", longOutcome);
   const successState = getProgressState("req-1");
   expect(successState?.lastToolPreview).toBeUndefined();
-  expect(successState?.finalOutput).toStartWith("Outcome: implemented ");
+  expect(successState?.finalOutput).toStartWith("outcome: implemented ");
   expect(successState?.finalOutput).toEndWith("…");
   createProgressState("req-2", "agent-b", "task b");
   patchProgressState("req-2", { lastToolPreview: "read: /tmp/file" });
@@ -5091,7 +5084,7 @@ test("finalizeProgressState prefers outcome parameter when supplied", () => {
     "Actual typed outcome!",
   );
   expect(getProgressState("req-out-1")?.finalOutput).toBe(
-    "Actual typed outcome",
+    "actual typed outcome",
   );
 });
 
@@ -5099,7 +5092,7 @@ test("finalizeProgressState falls back to finalOutput when outcome parameter is 
   createProgressState("req-out-2", "agent-x", "task-x");
   finalizeProgressState("req-out-2", "Outcome: Parsed text fallback", "");
   expect(getProgressState("req-out-2")?.finalOutput).toBe(
-    "Outcome: Parsed text fallback",
+    "outcome: parsed text fallback",
   );
 
   createProgressState("req-out-3", "agent-x", "task-x");
@@ -5109,7 +5102,7 @@ test("finalizeProgressState falls back to finalOutput when outcome parameter is 
     undefined,
   );
   expect(getProgressState("req-out-3")?.finalOutput).toBe(
-    "Outcome: Parsed text fallback",
+    "outcome: parsed text fallback",
   );
 });
 
