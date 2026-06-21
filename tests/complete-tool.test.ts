@@ -36,7 +36,7 @@ setupHooks();
 test("SUBAGENT_RESULT_CONTRACT includes completion and result preservation instructions", () => {
   expect(SUBAGENT_RESULT_CONTRACT).toContain("complete tool");
   expect(SUBAGENT_RESULT_CONTRACT).toContain(
-    "**NEVER** wrap result in code blocks.",
+    "**NEVER** wrap the entire result in one code block.",
   );
   expect(SUBAGENT_RESULT_CONTRACT).toContain(
     "Emit result to the calling agent without commentary.",
@@ -379,7 +379,7 @@ describe("Progress & Feedback Preference and Normalization", () => {
       "Awesome outcome text",
     );
     expect(getProgressState("req-pref-1")?.finalOutput).toBe(
-      "Awesome outcome text",
+      "awesome outcome text",
     );
   });
 
@@ -387,7 +387,7 @@ describe("Progress & Feedback Preference and Normalization", () => {
     createProgressState("req-pref-2", "agent-x", "task-x");
     finalizeProgressState("req-pref-2", "Outcome: Fallback parsed text", "");
     expect(getProgressState("req-pref-2")?.finalOutput).toBe(
-      "Outcome: Fallback parsed text",
+      "outcome: fallback parsed text",
     );
     createProgressState("req-pref-3", "agent-x", "task-x");
     finalizeProgressState(
@@ -396,7 +396,7 @@ describe("Progress & Feedback Preference and Normalization", () => {
       undefined,
     );
     expect(getProgressState("req-pref-3")?.finalOutput).toBe(
-      "Outcome: Fallback parsed text",
+      "outcome: fallback parsed text",
     );
   });
 
@@ -444,7 +444,7 @@ describe("Progress & Feedback Preference and Normalization", () => {
     );
   });
 
-  test("finalizeProgressState truncates long outcomes to 100 characters", () => {
+  test("finalizeProgressState truncates long outcomes to 120 characters", () => {
     createProgressState("req-pref-long", "agent-x", "task-x");
     const longOutcome = "A".repeat(150);
     finalizeProgressState(
@@ -453,7 +453,7 @@ describe("Progress & Feedback Preference and Normalization", () => {
       longOutcome,
     );
     expect(getProgressState("req-pref-long")?.finalOutput).toBe(
-      `${"A".repeat(99)}…`,
+      `${"a".repeat(119)}…`,
     );
   });
 
@@ -470,7 +470,7 @@ describe("Progress & Feedback Preference and Normalization", () => {
     createProgressState("req-pref-ws", "agent-x", "task-x");
     finalizeProgressState("req-pref-ws", "Fallback parsed text", "   \n  ");
     expect(getProgressState("req-pref-ws")?.finalOutput).toBe(
-      "Fallback parsed text",
+      "fallback parsed text",
     );
   });
 
@@ -498,6 +498,32 @@ describe("Progress & Feedback Preference and Normalization", () => {
       toolResult as unknown as Parameters<typeof getFeedbackSummaryText>[0],
     );
     expect(summary).toBe("raw final output");
+  });
+
+  test("getFeedbackSummaryText returns (no output) when outcome and finalOutput are blank", () => {
+    const toolResult = {
+      content: [{ type: "text", text: "stale streaming activity" }],
+      details: {
+        mode: "single",
+        agentScope: "project",
+        projectAgentsDir: null,
+        results: [
+          {
+            agent: "tester",
+            agentSource: "project",
+            task: "check",
+            exitCode: 0,
+            finalOutput: "   \n  ",
+            outcome: " \t\r\n ",
+            stderr: "",
+          },
+        ],
+      },
+    };
+    const summary = getFeedbackSummaryText(
+      toolResult as unknown as Parameters<typeof getFeedbackSummaryText>[0],
+    );
+    expect(summary).toBe("(no output)");
   });
 });
 
