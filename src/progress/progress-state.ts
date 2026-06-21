@@ -7,6 +7,7 @@ import {
   normalizeSummaryValue,
   normalizeTerminalSentence,
 } from "../output/normalize.js";
+import { summarizeFeedbackUiFinalOutput } from "../output/summary.js";
 import type {
   SingleResult,
   SubagentDetails,
@@ -172,18 +173,9 @@ function makeProgressFinalOutput(
   finalOutput: string,
   outcome?: string,
 ): string {
-  if (outcome?.trim()) {
-    return normalizeTerminalSentence(outcome);
-  }
-  const lines = finalOutput
-    .split(/\r?\n/)
-    .map((l) => l.trim())
-    .filter(Boolean);
-  const selected = lines[0] ?? "";
-  const normalized = normalizeTerminalSentence(selected);
-  if (!normalized) return "";
-  if (isStatusOnlySuccess(normalized)) return "completed task";
-  return normalized;
+  const summary = summarizeFeedbackUiFinalOutput(finalOutput, outcome);
+  if (isStatusOnlySuccess(summary)) return "completed task";
+  return summary;
 }
 
 function deriveFailureTerminalSentence(errorText: string): string {

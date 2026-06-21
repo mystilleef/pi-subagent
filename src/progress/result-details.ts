@@ -79,6 +79,47 @@ function redactSensitiveDebugMessages(messages: unknown): unknown {
   return messages.map(redactSensitiveDebugValue);
 }
 
+function sanitizeProgressObject(
+  progress: SingleResult["progress"],
+  _includeDebugMessages: boolean,
+): StreamingProgress | undefined {
+  if (!progress) return undefined;
+  const {
+    activityText,
+    activeToolActivity,
+    lastToolPreview,
+    toolResultCompleted,
+    ...progBase
+  } = progress;
+  return {
+    toolCalls: progBase.toolCalls.map((tc) => ({
+      id: tc.id,
+      preview: tc.preview,
+    })),
+    ...(activityText !== undefined && { activityText }),
+    ...(activeToolActivity !== undefined && { activeToolActivity }),
+    ...(lastToolPreview !== undefined && { lastToolPreview }),
+    ...(toolResultCompleted !== undefined && { toolResultCompleted }),
+  };
+}
+
+function sanitizeTerminationObject(
+  termination: TerminationMetadata | undefined,
+  includeMessages: boolean,
+  includeDebugMessages: boolean,
+): TerminationMetadata | undefined {
+  if (!includeMessages || !includeDebugMessages || !termination)
+    return undefined;
+  const { cancelReason, terminationSignal, fallbackCause, ...termBase } =
+    termination;
+  return {
+    ...termBase,
+    ...(cancelReason !== undefined && { cancelReason }),
+    ...(terminationSignal !== undefined && { terminationSignal }),
+    ...(fallbackCause !== undefined && { fallbackCause }),
+  };
+}
+
 export function sanitizeResultDetails(
   result: SingleResult,
   includeDebugMessages: boolean,
@@ -88,37 +129,6 @@ export function sanitizeResultDetails(
     includeDebugMessages && (options?.includeMessages ?? true);
   const { messages, termination, progress, stderr, usage, ...core } = result;
   const { contextWindowTokens, ...usageBase } = usage;
-  let progressValue: StreamingProgress | undefined;
-  if (progress) {
-    const {
-      activityText,
-      activeToolActivity,
-      lastToolPreview,
-      toolResultCompleted,
-      ...progBase
-    } = progress;
-    progressValue = {
-      toolCalls: progBase.toolCalls.map((tc) => ({
-        id: tc.id,
-        preview: tc.preview,
-      })),
-      ...(activityText !== undefined && { activityText }),
-      ...(activeToolActivity !== undefined && { activeToolActivity }),
-      ...(lastToolPreview !== undefined && { lastToolPreview }),
-      ...(toolResultCompleted !== undefined && { toolResultCompleted }),
-    };
-  }
-  let terminationValue: TerminationMetadata | undefined;
-  if (includeMessages && includeDebugMessages && termination) {
-    const { cancelReason, terminationSignal, fallbackCause, ...termBase } =
-      termination;
-    terminationValue = {
-      ...termBase,
-      ...(cancelReason !== undefined && { cancelReason }),
-      ...(terminationSignal !== undefined && { terminationSignal }),
-      ...(fallbackCause !== undefined && { fallbackCause }),
-    };
-  }
   const sanitized: SingleResult = {
     ...core,
     stderr: includeDebugMessages ? stderr : "",
@@ -127,6 +137,7 @@ export function sanitizeResultDetails(
       ...(contextWindowTokens !== undefined && { contextWindowTokens }),
     },
   };
+  const progressValue = sanitizeProgressObject(progress, includeDebugMessages);
   if (progressValue !== undefined) sanitized.progress = progressValue;
   if (includeMessages) {
     sanitized.messages = options?.recentMessages
@@ -135,6 +146,11 @@ export function sanitizeResultDetails(
         ? [...messages]
         : undefined;
   }
+  const terminationValue = sanitizeTerminationObject(
+    termination,
+    includeMessages,
+    includeDebugMessages,
+  );
   if (terminationValue !== undefined) sanitized.termination = terminationValue;
   return sanitized;
 }
@@ -224,18 +240,12 @@ export function patchProgressFromDetails(
   patchProgressState(requestId, patch);
 }
 
-function getSubagentText(result: SubagentToolResult): string {
-  return (result.content[0] as { text?: string })?.text ?? "";
-}
-
 export function getFeedbackSummaryText(result: SubagentToolResult): string {
   const latestResult = getLatestResult(result.details);
-  const rawFinalOutput = latestResult?.finalOutput;
-  if (latestResult?.outcome?.trim() || rawFinalOutput?.trim()) {
-    return summarizeFeedbackUiFinalOutput(
-      rawFinalOutput ?? "",
-      latestResult?.outcome,
-    );
+  const rawFinalOutput = latestResult?.finalOutput ?? "";
+  const outcome = latestResult?.outcome;
+  if (!outcome?.trim() && !rawFinalOutput.trim()) {
+    return "(no output)";
   }
-  return getSubagentText(result).trim() || "(no output)";
+  return summarizeFeedbackUiFinalOutput(rawFinalOutput, outcome);
 }
