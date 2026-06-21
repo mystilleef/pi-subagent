@@ -239,7 +239,7 @@ test("/jobs sorts jobs within same category by startTime descending", async () =
 test("/jobs truncates long final output in board", async () => {
   const rid = "long-output-job";
   createProgressState(rid, "long-agent", "task", "inst");
-  const longText = "A".repeat(121);
+  const longText = "charlie ".repeat(30);
   finalizeProgressState(rid, longText);
   const notices: string[] = [];
   await jobsCommandHandler(
@@ -309,7 +309,7 @@ test("/jobs shows errorText body for error state when no finalOutput", async () 
 test("/jobs does not truncate body text at exactly 120 chars", async () => {
   const rid = "exact-120-job";
   createProgressState(rid, "agent-120", "task", "inst");
-  const exactText = "B".repeat(120);
+  const exactText = "alpha ".repeat(20);
   finalizeProgressState(rid, exactText);
   const notices: string[] = [];
   await jobsCommandHandler(
@@ -317,13 +317,13 @@ test("/jobs does not truncate body text at exactly 120 chars", async () => {
     "",
   );
   const output = notices[0] ?? "";
-  expect(output).toContain("B".repeat(60));
+  expect(output).toContain("alpha ".repeat(10));
 });
 
 test("/jobs truncates body text at 121 chars", async () => {
   const rid = "121-char-job";
   createProgressState(rid, "agent-121", "task", "inst");
-  const text121 = "C".repeat(121);
+  const text121 = `${"b ".repeat(60)}b`;
   finalizeProgressState(rid, text121);
   const notices: string[] = [];
   await jobsCommandHandler(
