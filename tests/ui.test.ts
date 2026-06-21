@@ -148,6 +148,8 @@ test("renderResult output aggregation and truncation", () => {
           task: "some task",
           exitCode: 0,
           stopReason: "stop",
+          finalOutput:
+            "final text line 1\nfinal text line 2\nfinal text line 3\nfinal text line 4",
           messages: messages,
           usage: {
             input: 0,
@@ -268,6 +270,8 @@ test("renderResult expanded output", () => {
           exitCode: 1,
           stopReason: "error",
           errorMessage: "some error",
+          finalOutput:
+            "final output line\nvery long output that would be truncated if it was collapsed",
           messages: messages,
           usage: {
             input: 0,
@@ -608,6 +612,7 @@ test("renderResult expanded output truncation for > 2000 chars", () => {
           task: "some task",
           exitCode: 0,
           stopReason: "stop",
+          finalOutput: "A".repeat(2005),
           messages: messages,
           usage: {
             input: 0,
@@ -3417,5 +3422,172 @@ test("getFinalOutput returns last assistant text and tolerates non-array content
     },
     fakeTheme,
   ) as unknown as { render: (width: number) => string[] };
-  expect(renderToString(fallbackResult)).toContain("last");
+  const fallbackText = renderToString(fallbackResult);
+  expect(fallbackText).toContain("[muted](no output)[/muted]");
+  expect(fallbackText).not.toContain("last");
+});
+
+test("completed result card renders from finalOutput and ignores stale messages", () => {
+  const fakeTheme = createDefaultFakeTheme();
+  const rendered = renderSubagentResult(
+    {
+      content: [{ type: "text" as const, text: "ignored" }],
+      details: {
+        mode: "single" as const,
+        agentScope: "both" as const,
+        projectAgentsDir: null,
+        results: [
+          {
+            agent: "builder",
+            agentSource: "project" as const,
+            task: "pass",
+            exitCode: 0,
+            finalOutput: "preserved final output",
+            messages: [
+              {
+                role: "assistant" as const,
+                content: [
+                  { type: "text" as const, text: "stale message output" },
+                ],
+              },
+            ],
+            stderr: "",
+            usage: {
+              input: 0,
+              output: 0,
+              cacheRead: 0,
+              cacheWrite: 0,
+              cost: 0,
+              contextTokens: 0,
+              turns: 0,
+            },
+          },
+        ],
+      },
+    },
+    fakeTheme,
+  );
+  const text = renderToString(rendered);
+  expect(text).toContain("[toolOutput]preserved final output[/toolOutput]");
+  expect(text).not.toContain("stale message output");
+});
+
+test("completed result card shows (no output) when finalOutput is blank even with messages", () => {
+  const fakeTheme = createDefaultFakeTheme();
+  const rendered = renderSubagentResult(
+    {
+      content: [{ type: "text" as const, text: "ignored" }],
+      details: {
+        mode: "single" as const,
+        agentScope: "both" as const,
+        projectAgentsDir: null,
+        results: [
+          {
+            agent: "builder",
+            agentSource: "project" as const,
+            task: "pass",
+            exitCode: 0,
+            finalOutput: "   ",
+            messages: [
+              {
+                role: "assistant" as const,
+                content: [{ type: "text" as const, text: "message text" }],
+              },
+            ],
+            stderr: "",
+            usage: {
+              input: 0,
+              output: 0,
+              cacheRead: 0,
+              cacheWrite: 0,
+              cost: 0,
+              contextTokens: 0,
+              turns: 0,
+            },
+          },
+        ],
+      },
+    },
+    fakeTheme,
+  );
+  const text = renderToString(rendered);
+  expect(text).toContain("[muted](no output)[/muted]");
+  expect(text).not.toContain("message text");
+});
+
+test("completed result card renders sanitized details without messages from finalOutput", () => {
+  const fakeTheme = createDefaultFakeTheme();
+  const rendered = renderSubagentResult(
+    {
+      content: [{ type: "text" as const, text: "ignored" }],
+      details: {
+        mode: "single" as const,
+        agentScope: "both" as const,
+        projectAgentsDir: null,
+        results: [
+          {
+            agent: "builder",
+            agentSource: "project" as const,
+            task: "pass",
+            exitCode: 0,
+            finalOutput: "sanitized final output",
+            stderr: "",
+            usage: {
+              input: 0,
+              output: 0,
+              cacheRead: 0,
+              cacheWrite: 0,
+              cost: 0,
+              contextTokens: 0,
+              turns: 0,
+            },
+          },
+        ],
+      },
+    },
+    fakeTheme,
+  );
+  const text = renderToString(rendered);
+  expect(text).toContain("[toolOutput]sanitized final output[/toolOutput]");
+});
+
+test("partial result card still prefers finalOutput over live content", () => {
+  const fakeTheme = createDefaultFakeTheme();
+  const rendered = renderSubagentResult(
+    {
+      content: [{ type: "text" as const, text: "live content text" }],
+      details: {
+        mode: "single" as const,
+        agentScope: "both" as const,
+        projectAgentsDir: null,
+        results: [
+          {
+            agent: "builder",
+            agentSource: "project" as const,
+            task: "pass",
+            exitCode: 0,
+            finalOutput: "existing final output",
+            progress: { activityText: "running activity" },
+            stderr: "",
+            usage: {
+              input: 0,
+              output: 0,
+              cacheRead: 0,
+              cacheWrite: 0,
+              cost: 0,
+              contextTokens: 0,
+              turns: 0,
+            },
+            messages: [],
+          },
+        ],
+      },
+    },
+    fakeTheme,
+    { isPartial: true },
+  );
+  const text = renderToString(rendered);
+  expect(text).toContain("[toolOutput]existing final output[/toolOutput]");
+  expect(text).not.toContain("live content text");
+  expect(text).not.toContain("running activity");
 });
