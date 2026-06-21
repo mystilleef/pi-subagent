@@ -11,7 +11,7 @@ export const SUBAGENT_RESULT_CONTRACT = `
 
 ### Constraints
 
-- **NEVER** wrap result in code blocks.
+- **NEVER** wrap the entire result in one code block.
 `;
 
 export function appendSubagentResultContract(prompt: string): string {
