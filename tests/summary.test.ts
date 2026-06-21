@@ -2,6 +2,7 @@ import { expect, test } from "bun:test";
 import { extractSemanticToolTarget } from "../src/output/normalize.js";
 import {
   FEEDBACK_UI_SUMMARY_MAX_CHARS,
+  formatSubagentFailureForParent,
   formatSubagentResultForParent,
   summarizeFeedbackUiFinalOutput,
 } from "../src/output/summary.js";
@@ -16,26 +17,11 @@ import {
   sanitizeResultDetails,
 } from "../src/progress/result-details.js";
 import type { SingleResult } from "../src/shared/types.js";
+import { CANONICAL_SUMMARY_FIXTURES } from "./fixtures.js";
+import { makeSingleResult } from "./helpers.js";
 
 function result(overrides: Partial<SingleResult>): SingleResult {
-  return {
-    agent: "tester",
-    agentSource: "project",
-    task: "check",
-    exitCode: 0,
-    finalOutput: "",
-    stderr: "",
-    usage: {
-      input: 0,
-      output: 0,
-      cacheRead: 0,
-      cacheWrite: 0,
-      cost: 0,
-      contextTokens: 0,
-      turns: 0,
-    },
-    ...overrides,
-  };
+  return makeSingleResult(overrides);
 }
 
 test("parent formatter returns all non-noise lines", () => {
@@ -384,7 +370,7 @@ test("progress state preserves outcome and fails if dropped", () => {
     "Preserved task outcome",
   );
   const state = getProgressState(requestId);
-  expect(state?.finalOutput).toBe("Preserved task outcome");
+  expect(state?.finalOutput).toBe("preserved task outcome");
   clearProgressState(requestId);
 });
 
@@ -392,4 +378,84 @@ test("UI summary preserves outcome and fails if dropped", () => {
   const outcomeText = "My explicit outcome";
   const summary = summarizeFeedbackUiFinalOutput("ignored output", outcomeText);
   expect(summary).toBe("my explicit outcome");
+});
+
+for (const fixture of CANONICAL_SUMMARY_FIXTURES) {
+  test(`feedback summary matches canonical summary for ${fixture.name}`, () => {
+    const toolResult = {
+      content: [{ type: "text" as const, text: "stale streaming text" }],
+      details: {
+        mode: "single" as const,
+        agentScope: "both" as const,
+        projectAgentsDir: null,
+        results: [
+          result({
+            finalOutput: fixture.finalOutput,
+            outcome: fixture.outcome,
+          }),
+        ],
+      },
+    };
+    const summary = getFeedbackSummaryText(
+      toolResult as unknown as Parameters<typeof getFeedbackSummaryText>[0],
+    );
+    expect(summary).toBe(fixture.expectedSummary);
+  });
+}
+
+test("feedback summary returns (no output) when result has no content", () => {
+  const toolResult = {
+    content: [{ type: "text" as const, text: "stale streaming text" }],
+    details: {
+      mode: "single" as const,
+      agentScope: "both" as const,
+      projectAgentsDir: null,
+      results: [
+        result({
+          finalOutput: "   \n  ",
+          outcome: " \t\r\n ",
+        }),
+      ],
+    },
+  };
+  const summary = getFeedbackSummaryText(
+    toolResult as unknown as Parameters<typeof getFeedbackSummaryText>[0],
+  );
+  expect(summary).toBe("(no output)");
+});
+
+test("failure formatter returns error message unchanged without latest result", () => {
+  expect(formatSubagentFailureForParent("spawn failed")).toBe("spawn failed");
+});
+
+test("failure formatter returns only prefix for whitespace-only formatted output", () => {
+  expect(
+    formatSubagentFailureForParent(
+      "child failed",
+      result({ finalOutput: "  \n\n  " }),
+    ),
+  ).toBe("(failed) child failed");
+});
+
+test("failure formatter appends formatted final output after one blank line", () => {
+  expect(
+    formatSubagentFailureForParent(
+      "child failed",
+      result({ finalOutput: "partial output\nmore output" }),
+    ),
+  ).toBe("(failed) child failed\n\npartial output\nmore output");
+});
+
+test("failure formatter includes thinking warning in appended formatted output", () => {
+  expect(
+    formatSubagentFailureForParent(
+      "child failed",
+      result({
+        finalOutput: "partial output",
+        thinkingWarning: 'Thinking level "xhigh" not supported',
+      }),
+    ),
+  ).toBe(
+    '(failed) child failed\n\n[thinking] Thinking level "xhigh" not supported\n\npartial output',
+  );
 });
