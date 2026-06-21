@@ -25,6 +25,16 @@ export function formatSubagentResultForParent(result: SingleResult): string {
     : result.finalOutput;
 }
 
+export function formatSubagentFailureForParent(
+  errorMessage: string,
+  result?: SingleResult,
+): string {
+  if (!result) return errorMessage;
+  const formatted = formatSubagentResultForParent(result);
+  if (!formatted.trim()) return `(failed) ${errorMessage}`;
+  return `(failed) ${errorMessage}\n\n${formatted}`;
+}
+
 export function summarizeFeedbackUiFinalOutput(
   finalOutput: string,
   outcome?: string,

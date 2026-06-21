@@ -18,7 +18,10 @@ import {
   isDesktopNotificationsEnabled,
   isPerJobNotificationEnabled,
 } from "../notification/desktop-notification.js";
-import { formatSubagentResultForParent } from "../output/summary.js";
+import {
+  formatSubagentFailureForParent,
+  formatSubagentResultForParent,
+} from "../output/summary.js";
 import {
   cancelProgressState,
   createProgressState,
@@ -197,9 +200,7 @@ function finishLifecycleFailure(
   failProgressState(lc.requestId, errorMessage);
   lc.ctx.ui?.notify(errorMessage, "error");
   const latestResult = getLatestResult(details);
-  const content = latestResult
-    ? formatSubagentResultForParent(latestResult) || "(failed)"
-    : errorMessage;
+  const content = formatSubagentFailureForParent(errorMessage, latestResult);
   sendSubagentResultMessage(lc.pi, content, displayDetails);
   return createCompletedToolResult(content, displayDetails);
 }
