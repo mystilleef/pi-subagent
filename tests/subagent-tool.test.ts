@@ -33,6 +33,7 @@ import type {
   SubagentToolResult,
 } from "../src/shared/types.js";
 import {
+  captureStdout,
   getSubagentTool,
   makeSubagentDetails,
   makeSubagentToolUpdateLine,
@@ -46,6 +47,7 @@ import {
   waitForRunJobsCleared,
   waitForSentMessage,
   waitForSentMessageCount,
+  withEnv,
 } from "./helpers.js";
 
 setupHooks();
@@ -353,8 +355,12 @@ exit 0
     undefined,
     { cwd, hasUI: false } as unknown as ExtensionContext,
   );
-  expect((result.content[0] as TextContent).text).toBe(finalOutput);
+  const resultText = (result.content[0] as TextContent).text;
+  expect(resultText).toStartWith("(failed) ");
+  expect(resultText).toContain(finalOutput);
+  expect(resultText).toMatch(/\n\nOutcome: failed at verify/);
   expect(sentMessages).toHaveLength(2);
+  expect(sentMessages.at(-1)?.content).toBe(resultText);
   const startDetails = sentMessages[0]?.details as {
     instanceName?: string;
     requestId?: string;
@@ -397,7 +403,9 @@ Prompt`,
     undefined,
     { cwd, hasUI: false } as unknown as ExtensionContext,
   );
-  expect((result.content[0] as TextContent).text).toBe("(failed)");
+  const resultText = (result.content[0] as TextContent).text;
+  expect(resultText).toStartWith("(failed) ");
+  expect(resultText).toContain("missing-skill");
   expect(sentMessages).toHaveLength(2);
   const requestId = (sentMessages[0]?.details as { requestId?: string })
     ?.requestId;
@@ -436,7 +444,9 @@ exit 7
     undefined,
     { cwd, hasUI: false } as unknown as ExtensionContext,
   );
-  expect((result.content[0] as TextContent).text).toBe("(failed)");
+  const resultText = (result.content[0] as TextContent).text;
+  expect(resultText).toStartWith("(failed) ");
+  expect(resultText).toContain("boom from stderr");
   expect(sentMessages).toHaveLength(2);
   const requestId = (sentMessages[0]?.details as { requestId?: string })
     ?.requestId;
@@ -701,7 +711,10 @@ sleep 10
     { cwd, hasUI: false } as unknown as ExtensionContext,
   );
   await waitForSentMessageCount(sentMessages, 2);
-  expect(sentMessages.at(-1)?.content).toBe("(failed)");
+  const finalContent = sentMessages.at(-1)?.content;
+  expect(finalContent).toStartWith("(failed) ");
+  expect(finalContent).toContain("Agent failed:");
+  expect(finalContent).not.toMatch(/\n\n/);
   const details = sentMessages.at(-1)?.details as SubagentDetails;
   expect(details.results[0]?.exitCode).toBe(1);
   expect(details.results[0]?.termination?.cancelReason).toBe(
@@ -1738,7 +1751,9 @@ test("subagent tool reports depth limit synchronously via sent messages", async 
     ?.requestId;
   if (!requestId) throw new Error("requestId missing");
   const directDetails = result.details as SubagentDetails;
-  expect((result.content[0] as TextContent).text).toBe("(failed)");
+  const depthText = (result.content[0] as TextContent).text;
+  expect(depthText).toStartWith("(failed) ");
+  expect(depthText).toContain("Subagent nesting limit reached");
   expect(directDetails.renderedByMessage).toBe(true);
   expect(directDetails.results[0]?.exitCode).toBe(1);
   expect(directDetails.results[0]?.stderr).toBe("");
@@ -1747,6 +1762,90 @@ test("subagent tool reports depth limit synchronously via sent messages", async 
   expect(getProgressState(requestId)?.status).toBe("error");
   expect(getProgressState(requestId)?.errorText).toContain("depth");
   expect(listRunJobs()).toHaveLength(0);
+});
+
+test("subagent tool lifecycle failure with no latest result preserves raw error message", async () => {
+  const sentMessages: SendMessageArg[] = [];
+  let threw = false;
+  const { tool, cwd } = await setupTest({
+    sendMessage: (msg) => {
+      if (msg.customType === "subagent-result" && !threw) {
+        threw = true;
+        throw new Error("send rejected");
+      }
+      sentMessages.push(msg);
+    },
+  });
+  process.env.PI_SUBAGENT_DEPTH = "1";
+  const result = await tool.execute(
+    "test-tool-call",
+    { agent: "hang", task: "send fails" },
+    undefined,
+    undefined,
+    { cwd, hasUI: false } as unknown as ExtensionContext,
+  );
+  expect((result.content[0] as TextContent).text).toBe("send rejected");
+  expect((result.details as SubagentDetails).results).toHaveLength(0);
+  const resultMessages = sentMessages.filter(
+    (msg) => msg.customType === "subagent-result",
+  );
+  expect(resultMessages).toHaveLength(1);
+  expect(resultMessages[0]?.content).toBe("send rejected");
+});
+
+test("subagent tool lifecycle failure with thinking warning includes warning in parent content", async () => {
+  const sentMessages: SendMessageArg[] = [];
+  const { agentDir, binDir, cwd } = await setupFakePi();
+  await writeFile(
+    path.join(agentDir, "agents", "think-agent.md"),
+    `---
+name: think-agent
+description: Think agent
+---
+Prompt`,
+  );
+  const finalOutput = "Outcome: failed with thinking";
+  const messageEnd = JSON.stringify({
+    type: "message_end",
+    message: {
+      role: "assistant",
+      content: [{ type: "text", text: finalOutput }],
+    },
+  });
+  const toolResultEnd = JSON.stringify({
+    type: "message_end",
+    message: { role: "toolResult", content: [], isError: true },
+  });
+  await writeFile(
+    path.join(binDir, "pi"),
+    `#!/bin/sh
+printf '%s\n' ${shellQuote(messageEnd)}
+printf '%s\n' ${shellQuote(toolResultEnd)}
+printf '%s\n' '{"type":"agent_end"}'
+exit 0
+`,
+  );
+  await chmod(path.join(binDir, "pi"), 0o755);
+  const tool = getSubagentTool({
+    sendMessage: (msg) => sentMessages.push(msg),
+    thinkingLevel: "high",
+  });
+  process.env.PI_SUBAGENT_DEPTH = "1";
+  const result = await tool.execute(
+    "test-tool-call",
+    { agent: "think-agent", task: "thinking failure" },
+    undefined,
+    undefined,
+    {
+      cwd,
+      hasUI: false,
+      model: { provider: "openai", id: "gpt-4o-mini" },
+    } as unknown as ExtensionContext,
+  );
+  const resultText = (result.content[0] as TextContent).text;
+  expect(resultText).toStartWith("(failed) ");
+  expect(resultText).toContain("[thinking]");
+  expect(resultText).toContain(finalOutput);
 });
 
 test("positive-depth subagent tool completes successfully at depth 2 (max-depth-minus-one)", async () => {
@@ -2155,124 +2254,44 @@ afterEach(() => {
 });
 
 test("emitCompletionAlert emits bell on TTY", () => {
-  const writeCalls: string[] = [];
-  const origWrite = process.stdout.write;
-  const origIsTTY = Object.getOwnPropertyDescriptor(process.stdout, "isTTY");
-  Object.defineProperty(process.stdout, "isTTY", {
-    value: true,
-    configurable: true,
-  });
-  try {
-    (process.stdout as unknown as { write: (s: string) => boolean }).write = (
-      s: string,
-    ) => {
-      writeCalls.push(s);
-      return true;
-    };
+  captureStdout(true, (writeCalls) => {
     const state = makeProgressState({
       status: "success",
       finalOutput: "all tests pass",
     });
     emitCompletionAlert(state);
     expect(writeCalls).toContain("\x07");
-  } finally {
-    process.stdout.write = origWrite;
-    if (origIsTTY) {
-      Object.defineProperty(process.stdout, "isTTY", origIsTTY);
-    } else {
-      delete (process.stdout as unknown as { isTTY?: boolean }).isTTY;
-    }
-  }
+  });
 });
 
 test("emitCompletionAlert skips on non-TTY", () => {
-  const writeCalls: string[] = [];
-  const origWrite = process.stdout.write;
-  const origIsTTY = Object.getOwnPropertyDescriptor(process.stdout, "isTTY");
-  Object.defineProperty(process.stdout, "isTTY", {
-    value: false,
-    configurable: true,
-  });
-  try {
-    (process.stdout as unknown as { write: (s: string) => boolean }).write = (
-      s: string,
-    ) => {
-      writeCalls.push(s);
-      return true;
-    };
+  captureStdout(false, (writeCalls) => {
     const state = makeProgressState({
       status: "success",
       finalOutput: "all tests pass",
     });
     emitCompletionAlert(state);
     expect(writeCalls).toEqual([]);
-  } finally {
-    process.stdout.write = origWrite;
-    if (origIsTTY) {
-      Object.defineProperty(process.stdout, "isTTY", origIsTTY);
-    } else {
-      delete (process.stdout as unknown as { isTTY?: boolean }).isTTY;
-    }
-  }
+  });
 });
 
 test("emitCompletionAlert skips for cancelled jobs", () => {
-  const writeCalls: string[] = [];
-  const origWrite = process.stdout.write;
-  const origIsTTY = Object.getOwnPropertyDescriptor(process.stdout, "isTTY");
-  Object.defineProperty(process.stdout, "isTTY", {
-    value: true,
-    configurable: true,
-  });
-  try {
-    (process.stdout as unknown as { write: (s: string) => boolean }).write = (
-      s: string,
-    ) => {
-      writeCalls.push(s);
-      return true;
-    };
+  captureStdout(true, (writeCalls) => {
     const state = makeProgressState({ status: "cancelled" });
     emitCompletionAlert(state);
     expect(writeCalls).toEqual([]);
-  } finally {
-    process.stdout.write = origWrite;
-    if (origIsTTY) {
-      Object.defineProperty(process.stdout, "isTTY", origIsTTY);
-    } else {
-      delete (process.stdout as unknown as { isTTY?: boolean }).isTTY;
-    }
-  }
+  });
 });
 
 test("emitCompletionAlert emits bell for error jobs", () => {
-  const writeCalls: string[] = [];
-  const origWrite = process.stdout.write;
-  const origIsTTY = Object.getOwnPropertyDescriptor(process.stdout, "isTTY");
-  Object.defineProperty(process.stdout, "isTTY", {
-    value: true,
-    configurable: true,
-  });
-  try {
-    (process.stdout as unknown as { write: (s: string) => boolean }).write = (
-      s: string,
-    ) => {
-      writeCalls.push(s);
-      return true;
-    };
+  captureStdout(true, (writeCalls) => {
     const state = makeProgressState({
       status: "error",
       errorText: "child process crashed",
     });
     emitCompletionAlert(state);
     expect(writeCalls).toContain("\x07");
-  } finally {
-    process.stdout.write = origWrite;
-    if (origIsTTY) {
-      Object.defineProperty(process.stdout, "isTTY", origIsTTY);
-    } else {
-      delete (process.stdout as unknown as { isTTY?: boolean }).isTTY;
-    }
-  }
+  });
 });
 
 test("emitCompletionAlert skips absent state", () => {
@@ -2280,621 +2299,454 @@ test("emitCompletionAlert skips absent state", () => {
 });
 
 test("emitCompletionAlert with batch notifications enabled emits bell on TTY", () => {
-  const origDesktop = process.env.PI_SUBAGENT_DESKTOP_NOTIFICATIONS;
-  const origPerJob = process.env.PI_SUBAGENT_NOTIFY_PER_JOB;
-  process.env.PI_SUBAGENT_DESKTOP_NOTIFICATIONS = "1";
-  delete process.env.PI_SUBAGENT_NOTIFY_PER_JOB;
-  setDefaultDeliveryDeps({ spawnProcess: () => ({}) });
-  const writeCalls: string[] = [];
-  const origWrite = process.stdout.write;
-  const origIsTTY = Object.getOwnPropertyDescriptor(process.stdout, "isTTY");
-  Object.defineProperty(process.stdout, "isTTY", {
-    value: true,
-    configurable: true,
-  });
-  try {
-    (process.stdout as unknown as { write: (s: string) => boolean }).write = (
-      s: string,
-    ) => {
-      writeCalls.push(s);
-      return true;
-    };
-    const state = makeProgressState({
-      status: "success",
-      finalOutput: "task completed",
-    });
-    emitCompletionAlert(state);
-    expect(writeCalls).toContain("\x07");
-  } finally {
-    process.stdout.write = origWrite;
-    if (origIsTTY) {
-      Object.defineProperty(process.stdout, "isTTY", origIsTTY);
-    } else {
-      delete (process.stdout as unknown as { isTTY?: boolean }).isTTY;
-    }
-    if (origDesktop === undefined)
-      delete process.env.PI_SUBAGENT_DESKTOP_NOTIFICATIONS;
-    else process.env.PI_SUBAGENT_DESKTOP_NOTIFICATIONS = origDesktop;
-    if (origPerJob === undefined) delete process.env.PI_SUBAGENT_NOTIFY_PER_JOB;
-    else process.env.PI_SUBAGENT_NOTIFY_PER_JOB = origPerJob;
-  }
+  withEnv(
+    {
+      PI_SUBAGENT_DESKTOP_NOTIFICATIONS: "1",
+      PI_SUBAGENT_NOTIFY_PER_JOB: undefined,
+    },
+    () => {
+      setDefaultDeliveryDeps({ spawnProcess: () => ({}) });
+      captureStdout(true, (writeCalls) => {
+        const state = makeProgressState({
+          status: "success",
+          finalOutput: "task completed",
+        });
+        emitCompletionAlert(state);
+        expect(writeCalls).toContain("\x07");
+      });
+    },
+  );
 });
 
 test("emitCompletionAlert with batch notifications enabled does not bell on non-TTY", () => {
-  const origDesktop = process.env.PI_SUBAGENT_DESKTOP_NOTIFICATIONS;
-  const origPerJob = process.env.PI_SUBAGENT_NOTIFY_PER_JOB;
-  process.env.PI_SUBAGENT_DESKTOP_NOTIFICATIONS = "1";
-  delete process.env.PI_SUBAGENT_NOTIFY_PER_JOB;
-  setDefaultDeliveryDeps({ spawnProcess: () => ({}) });
-  const writeCalls: string[] = [];
-  const origWrite = process.stdout.write;
-  const origIsTTY = Object.getOwnPropertyDescriptor(process.stdout, "isTTY");
-  Object.defineProperty(process.stdout, "isTTY", {
-    value: false,
-    configurable: true,
-  });
-  try {
-    (process.stdout as unknown as { write: (s: string) => boolean }).write = (
-      s: string,
-    ) => {
-      writeCalls.push(s);
-      return true;
-    };
-    const state = makeProgressState({
-      status: "error",
-      errorText: "build failed",
-    });
-    expect(() => emitCompletionAlert(state)).not.toThrow();
-    expect(writeCalls).toEqual([]);
-  } finally {
-    process.stdout.write = origWrite;
-    if (origIsTTY) {
-      Object.defineProperty(process.stdout, "isTTY", origIsTTY);
-    } else {
-      delete (process.stdout as unknown as { isTTY?: boolean }).isTTY;
-    }
-    if (origDesktop === undefined)
-      delete process.env.PI_SUBAGENT_DESKTOP_NOTIFICATIONS;
-    else process.env.PI_SUBAGENT_DESKTOP_NOTIFICATIONS = origDesktop;
-    if (origPerJob === undefined) delete process.env.PI_SUBAGENT_NOTIFY_PER_JOB;
-    else process.env.PI_SUBAGENT_NOTIFY_PER_JOB = origPerJob;
-  }
+  withEnv(
+    {
+      PI_SUBAGENT_DESKTOP_NOTIFICATIONS: "1",
+      PI_SUBAGENT_NOTIFY_PER_JOB: undefined,
+    },
+    () => {
+      setDefaultDeliveryDeps({ spawnProcess: () => ({}) });
+      captureStdout(false, (writeCalls) => {
+        const state = makeProgressState({
+          status: "error",
+          errorText: "build failed",
+        });
+        expect(() => emitCompletionAlert(state)).not.toThrow();
+        expect(writeCalls).toEqual([]);
+      });
+    },
+  );
 });
 
 test("emitCompletionAlert with batch notifications handles cancelled by skipping", () => {
-  const origDesktop = process.env.PI_SUBAGENT_DESKTOP_NOTIFICATIONS;
-  const origPerJob = process.env.PI_SUBAGENT_NOTIFY_PER_JOB;
-  process.env.PI_SUBAGENT_DESKTOP_NOTIFICATIONS = "1";
-  delete process.env.PI_SUBAGENT_NOTIFY_PER_JOB;
-  try {
-    const state = makeProgressState({ status: "cancelled" });
-    expect(() => emitCompletionAlert(state)).not.toThrow();
-  } finally {
-    if (origDesktop === undefined)
-      delete process.env.PI_SUBAGENT_DESKTOP_NOTIFICATIONS;
-    else process.env.PI_SUBAGENT_DESKTOP_NOTIFICATIONS = origDesktop;
-    if (origPerJob === undefined) delete process.env.PI_SUBAGENT_NOTIFY_PER_JOB;
-    else process.env.PI_SUBAGENT_NOTIFY_PER_JOB = origPerJob;
-  }
+  withEnv(
+    {
+      PI_SUBAGENT_DESKTOP_NOTIFICATIONS: "1",
+      PI_SUBAGENT_NOTIFY_PER_JOB: undefined,
+    },
+    () => {
+      const state = makeProgressState({ status: "cancelled" });
+      expect(() => emitCompletionAlert(state)).not.toThrow();
+    },
+  );
 });
 
 test("emitCompletionAlert emits bell on TTY when nested (depth > 0)", () => {
-  const origDepth = process.env.PI_SUBAGENT_DEPTH;
-  const origDesktop = process.env.PI_SUBAGENT_DESKTOP_NOTIFICATIONS;
-  process.env.PI_SUBAGENT_DEPTH = "1";
-  process.env.PI_SUBAGENT_DESKTOP_NOTIFICATIONS = "0";
-  const writeCalls: string[] = [];
-  const origWrite = process.stdout.write;
-  const origIsTTY = Object.getOwnPropertyDescriptor(process.stdout, "isTTY");
-  Object.defineProperty(process.stdout, "isTTY", {
-    value: true,
-    configurable: true,
-  });
-  try {
-    (process.stdout as unknown as { write: (s: string) => boolean }).write = (
-      s: string,
-    ) => {
-      writeCalls.push(s);
-      return true;
-    };
-    const state = makeProgressState({
-      status: "success",
-      finalOutput: "nested task completed",
-    });
-    emitCompletionAlert(state);
-    expect(writeCalls).toContain("\x07");
-  } finally {
-    process.stdout.write = origWrite;
-    if (origIsTTY) {
-      Object.defineProperty(process.stdout, "isTTY", origIsTTY);
-    } else {
-      delete (process.stdout as unknown as { isTTY?: boolean }).isTTY;
-    }
-    if (origDepth === undefined) delete process.env.PI_SUBAGENT_DEPTH;
-    else process.env.PI_SUBAGENT_DEPTH = origDepth;
-    if (origDesktop === undefined)
-      delete process.env.PI_SUBAGENT_DESKTOP_NOTIFICATIONS;
-    else process.env.PI_SUBAGENT_DESKTOP_NOTIFICATIONS = origDesktop;
-  }
+  withEnv(
+    {
+      PI_SUBAGENT_DEPTH: "1",
+      PI_SUBAGENT_DESKTOP_NOTIFICATIONS: "0",
+    },
+    () => {
+      captureStdout(true, (writeCalls) => {
+        const state = makeProgressState({
+          status: "success",
+          finalOutput: "nested task completed",
+        });
+        emitCompletionAlert(state);
+        expect(writeCalls).toContain("\x07");
+      });
+    },
+  );
 });
 
 test("emitCompletionAlert suppresses desktop notification when nested (depth > 0)", () => {
-  const origDepth = process.env.PI_SUBAGENT_DEPTH;
-  const origDesktop = process.env.PI_SUBAGENT_DESKTOP_NOTIFICATIONS;
-  const origPerJob = process.env.PI_SUBAGENT_NOTIFY_PER_JOB;
-  process.env.PI_SUBAGENT_DEPTH = "1";
-  process.env.PI_SUBAGENT_DESKTOP_NOTIFICATIONS = "1";
-  delete process.env.PI_SUBAGENT_NOTIFY_PER_JOB;
-  let spawned = false;
-  setDefaultDeliveryDeps({
-    spawnProcess: () => {
-      spawned = true;
-      return {};
+  withEnv(
+    {
+      PI_SUBAGENT_DEPTH: "1",
+      PI_SUBAGENT_DESKTOP_NOTIFICATIONS: "1",
+      PI_SUBAGENT_NOTIFY_PER_JOB: undefined,
     },
-  });
-  try {
-    const state = makeProgressState({ status: "success", finalOutput: "done" });
-    emitCompletionAlert(state);
-    expect(spawned).toBe(false);
-  } finally {
-    if (origDepth === undefined) delete process.env.PI_SUBAGENT_DEPTH;
-    else process.env.PI_SUBAGENT_DEPTH = origDepth;
-    if (origDesktop === undefined)
-      delete process.env.PI_SUBAGENT_DESKTOP_NOTIFICATIONS;
-    else process.env.PI_SUBAGENT_DESKTOP_NOTIFICATIONS = origDesktop;
-    if (origPerJob === undefined) delete process.env.PI_SUBAGENT_NOTIFY_PER_JOB;
-    else process.env.PI_SUBAGENT_NOTIFY_PER_JOB = origPerJob;
-  }
+    () => {
+      let spawned = false;
+      setDefaultDeliveryDeps({
+        spawnProcess: () => {
+          spawned = true;
+          return {};
+        },
+      });
+      const state = makeProgressState({
+        status: "success",
+        finalOutput: "done",
+      });
+      emitCompletionAlert(state);
+      expect(spawned).toBe(false);
+    },
+  );
 });
 
 test("per-job notification completes lifecycle without crashing", async () => {
-  const origDesktop = process.env.PI_SUBAGENT_DESKTOP_NOTIFICATIONS;
-  const origPerJob = process.env.PI_SUBAGENT_NOTIFY_PER_JOB;
-  process.env.PI_SUBAGENT_DESKTOP_NOTIFICATIONS = "1";
-  process.env.PI_SUBAGENT_NOTIFY_PER_JOB = "1";
-  setDefaultDeliveryDeps({ spawnProcess: () => ({}) });
-  try {
-    const sentMessages: SendMessageArg[] = [];
-    const { tool, cwd } = await setupTest({
-      sendMessage: (msg) => sentMessages.push(msg),
-    });
-    process.env.PI_SUBAGENT_DEPTH = "1";
-    const result = await tool.execute(
-      "test-tool-call",
-      { agent: "hang", task: "per-job notify" },
-      undefined,
-      undefined,
-      { cwd, hasUI: false } as unknown as ExtensionContext,
-    );
-    await waitForSentMessageCount(sentMessages, 2);
-    expect((result.content[0] as TextContent).text).toBe("done");
-    expect(sentMessages.at(-1)?.customType).toBe("subagent-result");
-    const requestId = (sentMessages[0]?.details as { requestId?: string })
-      ?.requestId;
-    if (requestId) {
-      expect(getProgressState(requestId)?.status).toBe("success");
-    }
-    expect(listRunJobs()).toHaveLength(0);
-  } finally {
-    if (origDesktop === undefined)
-      delete process.env.PI_SUBAGENT_DESKTOP_NOTIFICATIONS;
-    else process.env.PI_SUBAGENT_DESKTOP_NOTIFICATIONS = origDesktop;
-    if (origPerJob === undefined) delete process.env.PI_SUBAGENT_NOTIFY_PER_JOB;
-    else process.env.PI_SUBAGENT_NOTIFY_PER_JOB = origPerJob;
-  }
+  await withEnv(
+    {
+      PI_SUBAGENT_DESKTOP_NOTIFICATIONS: "1",
+      PI_SUBAGENT_NOTIFY_PER_JOB: "1",
+    },
+    async () => {
+      setDefaultDeliveryDeps({ spawnProcess: () => ({}) });
+      const sentMessages: SendMessageArg[] = [];
+      const { tool, cwd } = await setupTest({
+        sendMessage: (msg) => sentMessages.push(msg),
+      });
+      process.env.PI_SUBAGENT_DEPTH = "1";
+      const result = await tool.execute(
+        "test-tool-call",
+        { agent: "hang", task: "per-job notify" },
+        undefined,
+        undefined,
+        { cwd, hasUI: false } as unknown as ExtensionContext,
+      );
+      await waitForSentMessageCount(sentMessages, 2);
+      expect((result.content[0] as TextContent).text).toBe("done");
+      expect(sentMessages.at(-1)?.customType).toBe("subagent-result");
+      const requestId = (sentMessages[0]?.details as { requestId?: string })
+        ?.requestId;
+      if (requestId) {
+        expect(getProgressState(requestId)?.status).toBe("success");
+      }
+      expect(listRunJobs()).toHaveLength(0);
+    },
+  );
 });
 
 test("per-job notification completes lifecycle for error jobs", async () => {
-  const origDesktop = process.env.PI_SUBAGENT_DESKTOP_NOTIFICATIONS;
-  const origPerJob = process.env.PI_SUBAGENT_NOTIFY_PER_JOB;
-  process.env.PI_SUBAGENT_DESKTOP_NOTIFICATIONS = "1";
-  process.env.PI_SUBAGENT_NOTIFY_PER_JOB = "1";
-  setDefaultDeliveryDeps({ spawnProcess: () => ({}) });
-  try {
-    const sentMessages: SendMessageArg[] = [];
-    const { binDir, cwd } = await setupFakePi();
-    await writeFile(
-      path.join(binDir, "pi"),
-      `#!/bin/sh
+  await withEnv(
+    {
+      PI_SUBAGENT_DESKTOP_NOTIFICATIONS: "1",
+      PI_SUBAGENT_NOTIFY_PER_JOB: "1",
+    },
+    async () => {
+      setDefaultDeliveryDeps({ spawnProcess: () => ({}) });
+      const sentMessages: SendMessageArg[] = [];
+      const { binDir, cwd } = await setupFakePi();
+      await writeFile(
+        path.join(binDir, "pi"),
+        `#!/bin/sh
 printf '%s\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"error output"}],"usage":{"input":1,"output":1,"totalTokens":2,"cost":{"total":0}},"errorMessage":"child failure"}}'
 printf '%s\n' '{"type":"agent_end"}'
 exit 1
 `,
-    );
-    await chmod(path.join(binDir, "pi"), 0o755);
-    const tool = getSubagentTool({
-      sendMessage: (msg) => sentMessages.push(msg),
-    });
-    process.env.PI_SUBAGENT_DEPTH = "1";
-    const result = await tool.execute(
-      "test-tool-call",
-      { agent: "hang", task: "per-job error" },
-      undefined,
-      undefined,
-      { cwd, hasUI: false } as unknown as ExtensionContext,
-    );
-    await waitForSentMessageCount(sentMessages, 2);
-    expect(sentMessages.at(-1)?.customType).toBe("subagent-result");
-    const requestId = (sentMessages[0]?.details as { requestId?: string })
-      ?.requestId;
-    if (requestId) {
-      expect(getProgressState(requestId)?.status).toBe("error");
-      expect(getProgressState(requestId)?.errorText).toContain("child failure");
-    }
-    expect(result.details.renderedByMessage).toBe(true);
-    expect(listRunJobs()).toHaveLength(0);
-  } finally {
-    if (origDesktop === undefined)
-      delete process.env.PI_SUBAGENT_DESKTOP_NOTIFICATIONS;
-    else process.env.PI_SUBAGENT_DESKTOP_NOTIFICATIONS = origDesktop;
-    if (origPerJob === undefined) delete process.env.PI_SUBAGENT_NOTIFY_PER_JOB;
-    else process.env.PI_SUBAGENT_NOTIFY_PER_JOB = origPerJob;
-  }
+      );
+      await chmod(path.join(binDir, "pi"), 0o755);
+      const tool = getSubagentTool({
+        sendMessage: (msg) => sentMessages.push(msg),
+      });
+      process.env.PI_SUBAGENT_DEPTH = "1";
+      const result = await tool.execute(
+        "test-tool-call",
+        { agent: "hang", task: "per-job error" },
+        undefined,
+        undefined,
+        { cwd, hasUI: false } as unknown as ExtensionContext,
+      );
+      await waitForSentMessageCount(sentMessages, 2);
+      expect(sentMessages.at(-1)?.customType).toBe("subagent-result");
+      const requestId = (sentMessages[0]?.details as { requestId?: string })
+        ?.requestId;
+      if (requestId) {
+        expect(getProgressState(requestId)?.status).toBe("error");
+        expect(getProgressState(requestId)?.errorText).toContain(
+          "child failure",
+        );
+      }
+      expect(result.details.renderedByMessage).toBe(true);
+      expect(listRunJobs()).toHaveLength(0);
+    },
+  );
 });
 
 test("per-job notification with cancelled state does not crash", async () => {
-  const origDesktop = process.env.PI_SUBAGENT_DESKTOP_NOTIFICATIONS;
-  const origPerJob = process.env.PI_SUBAGENT_NOTIFY_PER_JOB;
-  process.env.PI_SUBAGENT_DESKTOP_NOTIFICATIONS = "1";
-  process.env.PI_SUBAGENT_NOTIFY_PER_JOB = "1";
-  try {
-    const sentMessages: SendMessageArg[] = [];
-    const controller = new AbortController();
-    const { binDir, cwd } = await setupFakePi();
-    await writeFile(
-      path.join(binDir, "pi"),
-      `#!/bin/sh
+  await withEnv(
+    {
+      PI_SUBAGENT_DESKTOP_NOTIFICATIONS: "1",
+      PI_SUBAGENT_NOTIFY_PER_JOB: "1",
+    },
+    async () => {
+      const sentMessages: SendMessageArg[] = [];
+      const controller = new AbortController();
+      const { binDir, cwd } = await setupFakePi();
+      await writeFile(
+        path.join(binDir, "pi"),
+        `#!/bin/sh
 trap 'exit 0' TERM
 sleep 10 &
 wait $!
 `,
-    );
-    await chmod(path.join(binDir, "pi"), 0o755);
-    const tool = getSubagentTool({
-      sendMessage: (msg) => sentMessages.push(msg),
-    });
-    process.env.PI_SUBAGENT_DEPTH = "1";
-    const executePromise = tool.execute(
-      "test-tool-call",
-      { agent: "hang", task: "per-job cancel" },
-      controller.signal,
-      undefined,
-      { cwd, hasUI: false } as unknown as ExtensionContext,
-    );
-    await waitForSentMessage(sentMessages);
-    controller.abort();
-    const result = await executePromise;
-    expect((result.content[0] as TextContent).text).toBe("Canceled");
-    const requestId = (sentMessages[0]?.details as { requestId?: string })
-      ?.requestId;
-    if (requestId) {
-      expect(getProgressState(requestId)?.status).toBe("cancelled");
-    }
-    expect(listRunJobs()).toHaveLength(0);
-  } finally {
-    if (origDesktop === undefined)
-      delete process.env.PI_SUBAGENT_DESKTOP_NOTIFICATIONS;
-    else process.env.PI_SUBAGENT_DESKTOP_NOTIFICATIONS = origDesktop;
-    if (origPerJob === undefined) delete process.env.PI_SUBAGENT_NOTIFY_PER_JOB;
-    else process.env.PI_SUBAGENT_NOTIFY_PER_JOB = origPerJob;
-  }
+      );
+      await chmod(path.join(binDir, "pi"), 0o755);
+      const tool = getSubagentTool({
+        sendMessage: (msg) => sentMessages.push(msg),
+      });
+      process.env.PI_SUBAGENT_DEPTH = "1";
+      const executePromise = tool.execute(
+        "test-tool-call",
+        { agent: "hang", task: "per-job cancel" },
+        controller.signal,
+        undefined,
+        { cwd, hasUI: false } as unknown as ExtensionContext,
+      );
+      await waitForSentMessage(sentMessages);
+      controller.abort();
+      const result = await executePromise;
+      expect((result.content[0] as TextContent).text).toBe("Canceled");
+      const requestId = (sentMessages[0]?.details as { requestId?: string })
+        ?.requestId;
+      if (requestId) {
+        expect(getProgressState(requestId)?.status).toBe("cancelled");
+      }
+      expect(listRunJobs()).toHaveLength(0);
+    },
+  );
 });
 
 test("per-job notification delivers at depth 0 via lifecycle", async () => {
-  const origDesktop = process.env.PI_SUBAGENT_DESKTOP_NOTIFICATIONS;
-  const origPerJob = process.env.PI_SUBAGENT_NOTIFY_PER_JOB;
-  process.env.PI_SUBAGENT_DESKTOP_NOTIFICATIONS = "1";
-  process.env.PI_SUBAGENT_NOTIFY_PER_JOB = "1";
-  let spawned = false;
-  setDefaultDeliveryDeps({
-    commandExists: () => true,
-    spawnProcess: () => {
-      spawned = true;
-      return {};
+  await withEnv(
+    {
+      PI_SUBAGENT_DESKTOP_NOTIFICATIONS: "1",
+      PI_SUBAGENT_NOTIFY_PER_JOB: "1",
     },
-  });
-  try {
-    const sentMessages: SendMessageArg[] = [];
-    const { tool, cwd } = await setupTest({
-      sendMessage: (msg) => sentMessages.push(msg),
-    });
-    process.env.PI_SUBAGENT_DEPTH = "0";
-    await tool.execute(
-      "test-tool-call",
-      { agent: "hang", task: "per-job depth-0" },
-      undefined,
-      undefined,
-      { cwd, hasUI: false } as unknown as ExtensionContext,
-    );
-    await waitForSentMessageCount(sentMessages, 2);
-    expect(sentMessages.at(-1)?.customType).toBe("subagent-result");
-    await Bun.sleep(20);
-    expect(spawned).toBe(true);
-    await waitForRunJobsCleared();
-    expect(listRunJobs()).toHaveLength(0);
-  } finally {
-    if (origDesktop === undefined)
-      delete process.env.PI_SUBAGENT_DESKTOP_NOTIFICATIONS;
-    else process.env.PI_SUBAGENT_DESKTOP_NOTIFICATIONS = origDesktop;
-    if (origPerJob === undefined) delete process.env.PI_SUBAGENT_NOTIFY_PER_JOB;
-    else process.env.PI_SUBAGENT_NOTIFY_PER_JOB = origPerJob;
-  }
+    async () => {
+      let spawned = false;
+      setDefaultDeliveryDeps({
+        commandExists: () => true,
+        spawnProcess: () => {
+          spawned = true;
+          return {};
+        },
+      });
+      const sentMessages: SendMessageArg[] = [];
+      const { tool, cwd } = await setupTest({
+        sendMessage: (msg) => sentMessages.push(msg),
+      });
+      process.env.PI_SUBAGENT_DEPTH = "0";
+      await tool.execute(
+        "test-tool-call",
+        { agent: "hang", task: "per-job depth-0" },
+        undefined,
+        undefined,
+        { cwd, hasUI: false } as unknown as ExtensionContext,
+      );
+      await waitForSentMessageCount(sentMessages, 2);
+      expect(sentMessages.at(-1)?.customType).toBe("subagent-result");
+      await Bun.sleep(20);
+      expect(spawned).toBe(true);
+      await waitForRunJobsCleared();
+      expect(listRunJobs()).toHaveLength(0);
+    },
+  );
 });
 
 test("per-job notification skipped when nested (depth > 0)", async () => {
-  const origDepth = process.env.PI_SUBAGENT_DEPTH;
-  const origDesktop = process.env.PI_SUBAGENT_DESKTOP_NOTIFICATIONS;
-  const origPerJob = process.env.PI_SUBAGENT_NOTIFY_PER_JOB;
-  process.env.PI_SUBAGENT_DEPTH = "1";
-  process.env.PI_SUBAGENT_DESKTOP_NOTIFICATIONS = "1";
-  process.env.PI_SUBAGENT_NOTIFY_PER_JOB = "1";
-  let spawned = false;
-  setDefaultDeliveryDeps({
-    spawnProcess: () => {
-      spawned = true;
-      return {};
+  await withEnv(
+    {
+      PI_SUBAGENT_DEPTH: "1",
+      PI_SUBAGENT_DESKTOP_NOTIFICATIONS: "1",
+      PI_SUBAGENT_NOTIFY_PER_JOB: "1",
     },
-  });
-  try {
-    const sentMessages: SendMessageArg[] = [];
-    const { tool, cwd } = await setupTest({
-      sendMessage: (msg) => sentMessages.push(msg),
-    });
-    await tool.execute(
-      "test-tool-call",
-      { agent: "hang", task: "per-job nested" },
-      undefined,
-      undefined,
-      { cwd, hasUI: false } as unknown as ExtensionContext,
-    );
-    await waitForSentMessageCount(sentMessages, 2);
-    expect(spawned).toBe(false);
-  } finally {
-    if (origDepth === undefined) delete process.env.PI_SUBAGENT_DEPTH;
-    else process.env.PI_SUBAGENT_DEPTH = origDepth;
-    if (origDesktop === undefined)
-      delete process.env.PI_SUBAGENT_DESKTOP_NOTIFICATIONS;
-    else process.env.PI_SUBAGENT_DESKTOP_NOTIFICATIONS = origDesktop;
-    if (origPerJob === undefined) delete process.env.PI_SUBAGENT_NOTIFY_PER_JOB;
-    else process.env.PI_SUBAGENT_NOTIFY_PER_JOB = origPerJob;
-  }
+    async () => {
+      let spawned = false;
+      setDefaultDeliveryDeps({
+        spawnProcess: () => {
+          spawned = true;
+          return {};
+        },
+      });
+      const sentMessages: SendMessageArg[] = [];
+      const { tool, cwd } = await setupTest({
+        sendMessage: (msg) => sentMessages.push(msg),
+      });
+      await tool.execute(
+        "test-tool-call",
+        { agent: "hang", task: "per-job nested" },
+        undefined,
+        undefined,
+        { cwd, hasUI: false } as unknown as ExtensionContext,
+      );
+      await waitForSentMessageCount(sentMessages, 2);
+      expect(spawned).toBe(false);
+    },
+  );
 });
 
 test("batch notification skips bell when not last job", async () => {
-  const origDesktop = process.env.PI_SUBAGENT_DESKTOP_NOTIFICATIONS;
-  process.env.PI_SUBAGENT_DESKTOP_NOTIFICATIONS = "1";
-  delete process.env.PI_SUBAGENT_NOTIFY_PER_JOB;
-  try {
-    const sentMessages: SendMessageArg[] = [];
-    const { tool, cwd } = await setupTest({
-      sendMessage: (msg) => sentMessages.push(msg),
-      piScript: `#!/bin/sh
+  await withEnv(
+    {
+      PI_SUBAGENT_DESKTOP_NOTIFICATIONS: "1",
+      PI_SUBAGENT_NOTIFY_PER_JOB: undefined,
+    },
+    async () => {
+      const sentMessages: SendMessageArg[] = [];
+      const { tool, cwd } = await setupTest({
+        sendMessage: (msg) => sentMessages.push(msg),
+        piScript: `#!/bin/sh
 trap 'exit 0' TERM
 sleep 10 &
 wait $!
 `,
-    });
-    const ctx = { cwd, hasUI: false } as unknown as ExtensionContext;
-    const promises = [
-      tool.execute(
-        "id-1",
-        { agent: "hang", task: "task one" },
-        undefined,
-        undefined,
-        ctx,
-      ),
-      tool.execute(
-        "id-2",
-        { agent: "hang", task: "task two" },
-        undefined,
-        undefined,
-        ctx,
-      ),
-    ];
-    await waitForRunJobCount(2);
-    const jobs = listRunJobs();
-    expect(jobs).toHaveLength(2);
-    jobs[0]?.controller.abort("cleanup");
-    await waitForRunJobCount(1);
-    jobs[1]?.controller.abort("cleanup");
-    await Promise.all(promises);
-    await waitForRunJobsCleared();
-    expect(listRunJobs()).toHaveLength(0);
-  } finally {
-    if (origDesktop === undefined)
-      delete process.env.PI_SUBAGENT_DESKTOP_NOTIFICATIONS;
-    else process.env.PI_SUBAGENT_DESKTOP_NOTIFICATIONS = origDesktop;
-  }
+      });
+      const ctx = { cwd, hasUI: false } as unknown as ExtensionContext;
+      const promises = [
+        tool.execute(
+          "id-1",
+          { agent: "hang", task: "task one" },
+          undefined,
+          undefined,
+          ctx,
+        ),
+        tool.execute(
+          "id-2",
+          { agent: "hang", task: "task two" },
+          undefined,
+          undefined,
+          ctx,
+        ),
+      ];
+      await waitForRunJobCount(2);
+      const jobs = listRunJobs();
+      expect(jobs).toHaveLength(2);
+      jobs[0]?.controller.abort("cleanup");
+      await waitForRunJobCount(1);
+      jobs[1]?.controller.abort("cleanup");
+      await Promise.all(promises);
+      await waitForRunJobsCleared();
+      expect(listRunJobs()).toHaveLength(0);
+    },
+  );
 });
 
 test("batch notification does not crash for successful lifecycle completion", async () => {
-  const origDesktop = process.env.PI_SUBAGENT_DESKTOP_NOTIFICATIONS;
-  const origPerJob = process.env.PI_SUBAGENT_NOTIFY_PER_JOB;
-  process.env.PI_SUBAGENT_DESKTOP_NOTIFICATIONS = "1";
-  delete process.env.PI_SUBAGENT_NOTIFY_PER_JOB;
-  setDefaultDeliveryDeps({ spawnProcess: () => ({}) });
-  try {
-    const sentMessages: SendMessageArg[] = [];
-    const { tool, cwd } = await setupTest({
-      sendMessage: (msg) => sentMessages.push(msg),
-    });
-    process.env.PI_SUBAGENT_DEPTH = "1";
-    const result = await tool.execute(
-      "test-tool-call",
-      { agent: "hang", task: "batch notify" },
-      undefined,
-      undefined,
-      { cwd, hasUI: false } as unknown as ExtensionContext,
-    );
-    await waitForSentMessageCount(sentMessages, 2);
-    expect((result.content[0] as TextContent).text).toBe("done");
-    expect(sentMessages.at(-1)?.customType).toBe("subagent-result");
-    const requestId = (sentMessages[0]?.details as { requestId?: string })
-      ?.requestId;
-    if (requestId) {
-      expect(getProgressState(requestId)?.status).toBe("success");
-    }
-    expect(listRunJobs()).toHaveLength(0);
-  } finally {
-    if (origDesktop === undefined)
-      delete process.env.PI_SUBAGENT_DESKTOP_NOTIFICATIONS;
-    else process.env.PI_SUBAGENT_DESKTOP_NOTIFICATIONS = origDesktop;
-    if (origPerJob === undefined) delete process.env.PI_SUBAGENT_NOTIFY_PER_JOB;
-    else process.env.PI_SUBAGENT_NOTIFY_PER_JOB = origPerJob;
-  }
+  await withEnv(
+    {
+      PI_SUBAGENT_DESKTOP_NOTIFICATIONS: "1",
+      PI_SUBAGENT_NOTIFY_PER_JOB: undefined,
+    },
+    async () => {
+      setDefaultDeliveryDeps({ spawnProcess: () => ({}) });
+      const sentMessages: SendMessageArg[] = [];
+      const { tool, cwd } = await setupTest({
+        sendMessage: (msg) => sentMessages.push(msg),
+      });
+      process.env.PI_SUBAGENT_DEPTH = "1";
+      const result = await tool.execute(
+        "test-tool-call",
+        { agent: "hang", task: "batch notify" },
+        undefined,
+        undefined,
+        { cwd, hasUI: false } as unknown as ExtensionContext,
+      );
+      await waitForSentMessageCount(sentMessages, 2);
+      expect((result.content[0] as TextContent).text).toBe("done");
+      expect(sentMessages.at(-1)?.customType).toBe("subagent-result");
+      const requestId = (sentMessages[0]?.details as { requestId?: string })
+        ?.requestId;
+      if (requestId) {
+        expect(getProgressState(requestId)?.status).toBe("success");
+      }
+      expect(listRunJobs()).toHaveLength(0);
+    },
+  );
 });
 
 // --- deliverDesktopCompletionNotification indirect verification ---
 
 test("emitCompletionAlert with PI_SUBAGENT_DESKTOP_NOTIFICATIONS=1 calls notification path", () => {
-  const origDesktop = process.env.PI_SUBAGENT_DESKTOP_NOTIFICATIONS;
-  const origPerJob = process.env.PI_SUBAGENT_NOTIFY_PER_JOB;
-  process.env.PI_SUBAGENT_DESKTOP_NOTIFICATIONS = "1";
-  delete process.env.PI_SUBAGENT_NOTIFY_PER_JOB;
-  setDefaultDeliveryDeps({ spawnProcess: () => ({}) });
-  try {
-    const state = makeProgressState({
-      status: "success",
-      finalOutput: "task completed",
-      durationMs: 5000,
-    });
-    expect(() => emitCompletionAlert(state)).not.toThrow();
-  } finally {
-    if (origDesktop === undefined)
-      delete process.env.PI_SUBAGENT_DESKTOP_NOTIFICATIONS;
-    else process.env.PI_SUBAGENT_DESKTOP_NOTIFICATIONS = origDesktop;
-    if (origPerJob === undefined) delete process.env.PI_SUBAGENT_NOTIFY_PER_JOB;
-    else process.env.PI_SUBAGENT_NOTIFY_PER_JOB = origPerJob;
-  }
+  withEnv(
+    {
+      PI_SUBAGENT_DESKTOP_NOTIFICATIONS: "1",
+      PI_SUBAGENT_NOTIFY_PER_JOB: undefined,
+    },
+    () => {
+      setDefaultDeliveryDeps({ spawnProcess: () => ({}) });
+      const state = makeProgressState({
+        status: "success",
+        finalOutput: "task completed",
+        durationMs: 5000,
+      });
+      expect(() => emitCompletionAlert(state)).not.toThrow();
+    },
+  );
 });
 
 test("emitCompletionAlert with PI_SUBAGENT_DESKTOP_NOTIFICATIONS=0 skips notification path", () => {
-  const origDesktop = process.env.PI_SUBAGENT_DESKTOP_NOTIFICATIONS;
-  process.env.PI_SUBAGENT_DESKTOP_NOTIFICATIONS = "0";
-  try {
-    const writeCalls: string[] = [];
-    const origWrite = process.stdout.write;
-    const origIsTTY = Object.getOwnPropertyDescriptor(process.stdout, "isTTY");
-    Object.defineProperty(process.stdout, "isTTY", {
-      value: false,
-      configurable: true,
-    });
-    try {
-      (process.stdout as unknown as { write: (s: string) => boolean }).write = (
-        s: string,
-      ) => {
-        writeCalls.push(s);
-        return true;
-      };
-      const state = makeProgressState({
-        status: "success",
-        finalOutput: "task completed",
+  withEnv(
+    {
+      PI_SUBAGENT_DESKTOP_NOTIFICATIONS: "0",
+    },
+    () => {
+      captureStdout(false, (writeCalls) => {
+        const state = makeProgressState({
+          status: "success",
+          finalOutput: "task completed",
+        });
+        expect(() => emitCompletionAlert(state)).not.toThrow();
+        expect(writeCalls).toEqual([]);
       });
-      expect(() => emitCompletionAlert(state)).not.toThrow();
-      expect(writeCalls).toEqual([]);
-    } finally {
-      process.stdout.write = origWrite;
-      if (origIsTTY) {
-        Object.defineProperty(process.stdout, "isTTY", origIsTTY);
-      } else {
-        delete (process.stdout as unknown as { isTTY?: boolean }).isTTY;
-      }
-    }
-  } finally {
-    if (origDesktop === undefined)
-      delete process.env.PI_SUBAGENT_DESKTOP_NOTIFICATIONS;
-    else process.env.PI_SUBAGENT_DESKTOP_NOTIFICATIONS = origDesktop;
-  }
+    },
+  );
 });
 
 test("emitCompletionAlert with PI_SUBAGENT_DESKTOP_NOTIFICATIONS=1 and PI_SUBAGENT_NOTIFY_PER_JOB=1 still emits bell via batch fallback", () => {
-  const origDesktop = process.env.PI_SUBAGENT_DESKTOP_NOTIFICATIONS;
-  const origPerJob = process.env.PI_SUBAGENT_NOTIFY_PER_JOB;
-  process.env.PI_SUBAGENT_DESKTOP_NOTIFICATIONS = "1";
-  process.env.PI_SUBAGENT_NOTIFY_PER_JOB = "1";
-  try {
-    const writeCalls: string[] = [];
-    const origWrite = process.stdout.write;
-    const origIsTTY = Object.getOwnPropertyDescriptor(process.stdout, "isTTY");
-    Object.defineProperty(process.stdout, "isTTY", {
-      value: true,
-      configurable: true,
-    });
-    try {
-      (process.stdout as unknown as { write: (s: string) => boolean }).write = (
-        s: string,
-      ) => {
-        writeCalls.push(s);
-        return true;
-      };
-      const state = makeProgressState({
-        status: "success",
-        finalOutput: "task completed",
+  withEnv(
+    {
+      PI_SUBAGENT_DESKTOP_NOTIFICATIONS: "1",
+      PI_SUBAGENT_NOTIFY_PER_JOB: "1",
+    },
+    () => {
+      captureStdout(true, (writeCalls) => {
+        const state = makeProgressState({
+          status: "success",
+          finalOutput: "task completed",
+        });
+        emitCompletionAlert(state);
+        expect(writeCalls).toContain("\x07");
       });
-      emitCompletionAlert(state);
-      expect(writeCalls).toContain("\x07");
-    } finally {
-      process.stdout.write = origWrite;
-      if (origIsTTY) {
-        Object.defineProperty(process.stdout, "isTTY", origIsTTY);
-      } else {
-        delete (process.stdout as unknown as { isTTY?: boolean }).isTTY;
-      }
-    }
-  } finally {
-    if (origDesktop === undefined)
-      delete process.env.PI_SUBAGENT_DESKTOP_NOTIFICATIONS;
-    else process.env.PI_SUBAGENT_DESKTOP_NOTIFICATIONS = origDesktop;
-    if (origPerJob === undefined) delete process.env.PI_SUBAGENT_NOTIFY_PER_JOB;
-    else process.env.PI_SUBAGENT_NOTIFY_PER_JOB = origPerJob;
-  }
+    },
+  );
 });
 
 test("emitCompletionAlert swallows desktop notification rejection", () => {
-  const origDesktop = process.env.PI_SUBAGENT_DESKTOP_NOTIFICATIONS;
-  const origPerJob = process.env.PI_SUBAGENT_NOTIFY_PER_JOB;
-  process.env.PI_SUBAGENT_DESKTOP_NOTIFICATIONS = "1";
-  delete process.env.PI_SUBAGENT_NOTIFY_PER_JOB;
-  const spy = spyOn(delivery, "deliverNotification").mockImplementation(() =>
-    Promise.reject(new Error("notification delivery failed")),
-  );
-  try {
-    const writeCalls: string[] = [];
-    const origWrite = process.stdout.write;
-    const origIsTTY = Object.getOwnPropertyDescriptor(process.stdout, "isTTY");
-    Object.defineProperty(process.stdout, "isTTY", {
-      value: true,
-      configurable: true,
-    });
-    try {
-      (process.stdout as unknown as { write: (s: string) => boolean }).write = (
-        s: string,
-      ) => {
-        writeCalls.push(s);
-        return true;
-      };
-      const state = makeProgressState({
-        status: "success",
-        finalOutput: "task completed",
-      });
-      expect(() => emitCompletionAlert(state)).not.toThrow();
-      expect(writeCalls).toContain("\x07");
-    } finally {
-      process.stdout.write = origWrite;
-      if (origIsTTY) {
-        Object.defineProperty(process.stdout, "isTTY", origIsTTY);
-      } else {
-        delete (process.stdout as unknown as { isTTY?: boolean }).isTTY;
+  withEnv(
+    {
+      PI_SUBAGENT_DESKTOP_NOTIFICATIONS: "1",
+      PI_SUBAGENT_NOTIFY_PER_JOB: undefined,
+    },
+    () => {
+      const spy = spyOn(delivery, "deliverNotification").mockImplementation(
+        () => Promise.reject(new Error("notification delivery failed")),
+      );
+      try {
+        captureStdout(true, (writeCalls) => {
+          const state = makeProgressState({
+            status: "success",
+            finalOutput: "task completed",
+          });
+          expect(() => emitCompletionAlert(state)).not.toThrow();
+          expect(writeCalls).toContain("\x07");
+        });
+      } finally {
+        spy.mockRestore();
       }
-    }
-  } finally {
-    spy.mockRestore();
-    if (origDesktop === undefined)
-      delete process.env.PI_SUBAGENT_DESKTOP_NOTIFICATIONS;
-    else process.env.PI_SUBAGENT_DESKTOP_NOTIFICATIONS = origDesktop;
-    if (origPerJob === undefined) delete process.env.PI_SUBAGENT_NOTIFY_PER_JOB;
-    else process.env.PI_SUBAGENT_NOTIFY_PER_JOB = origPerJob;
-  }
+    },
+  );
 });
 
 test("orchestrated path preserves nested activity across fallback child status updates", async () => {
@@ -4078,7 +3930,9 @@ exit 1
   // In case of non-zero exit code or semantic failure, outcome should be undefined
   expect(result.details.results[0]?.outcome).toBeUndefined();
   expect(result.details.results[0]?.finalOutput).toBe("Failed with errors.");
-  expect((result.content[0] as TextContent).text).toBe("Failed with errors.");
+  const resultText = (result.content[0] as TextContent).text;
+  expect(resultText).toStartWith("(failed) ");
+  expect(resultText).toContain("Failed with errors.");
 });
 
 test("T-005: subagent tool preserves existing model/provider, thinking, skills, extensions, and contracts under both sampling and no-sampling configurations", async () => {
@@ -4257,7 +4111,9 @@ No-sampling agent prompt`,
     { cwd, hasUI: false } as unknown as ExtensionContext,
   );
 
-  expect((resSampling.content[0] as TextContent).text).toBe("(failed)");
+  const samplingText = (resSampling.content[0] as TextContent).text;
+  expect(samplingText).toStartWith("(failed) ");
+  expect(samplingText).toContain("depth");
   const directDetailsSampling = resSampling.details as SubagentDetails;
   expect(directDetailsSampling.results[0]?.exitCode).toBe(1);
 
@@ -4269,7 +4125,9 @@ No-sampling agent prompt`,
     { cwd, hasUI: false } as unknown as ExtensionContext,
   );
 
-  expect((resNoSampling.content[0] as TextContent).text).toBe("(failed)");
+  const noSamplingText = (resNoSampling.content[0] as TextContent).text;
+  expect(noSamplingText).toStartWith("(failed) ");
+  expect(noSamplingText).toContain("depth");
   const directDetailsNoSampling = resNoSampling.details as SubagentDetails;
   expect(directDetailsNoSampling.results[0]?.exitCode).toBe(1);
 
