@@ -1,11 +1,13 @@
 import type { Message } from "@earendil-works/pi-ai";
 import type { AgentConfig } from "../agent/agents.js";
-import { getFinalOutput } from "../output/ui.js";
 import {
   type SingleResult,
   TOOL_RESULT_FAILED_MESSAGE,
 } from "../shared/types.js";
-import { truncateOutput } from "../shared/utils.js";
+import {
+  extractFinalOutputFromMessages,
+  truncateOutput,
+} from "../shared/utils.js";
 import { resolveContextWindowTokens } from "./process-utils.js";
 
 export type RuntimeResult = SingleResult & { messages: Message[] };
@@ -57,7 +59,9 @@ function accumulateUsage(result: RuntimeResult, msg: Message): void {
 
 export function addMessageToResult(result: RuntimeResult, msg: Message): void {
   result.messages.push(msg);
-  result.finalOutput = truncateOutput(getFinalOutput(result.messages));
+  result.finalOutput = truncateOutput(
+    extractFinalOutputFromMessages(result.messages),
+  );
   if (msg.role === "toolResult" && msg.isError) {
     result.errorMessage ||= TOOL_RESULT_FAILED_MESSAGE;
   } else if (result.errorMessage === TOOL_RESULT_FAILED_MESSAGE) {

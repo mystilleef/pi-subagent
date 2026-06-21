@@ -1,4 +1,3 @@
-import type { Message } from "@earendil-works/pi-ai";
 import type { ThemeColor } from "@earendil-works/pi-coding-agent";
 import {
   Box,
@@ -130,18 +129,7 @@ export function formatToolCall(
   return themeFg("accent", toolName) + themeFg("dim", ` ${target}`);
 }
 
-export function getFinalOutput(messages: Message[]): string {
-  const lastAsstWithText = messages.findLast(
-    (m) =>
-      m.role === "assistant" &&
-      Array.isArray(m.content) &&
-      m.content.some((p) => p.type === "text"),
-  );
-  const content = lastAsstWithText?.content;
-  if (!Array.isArray(content)) return "";
-  const lastText = content.findLast((p) => p.type === "text");
-  return lastText?.type === "text" ? lastText.text : "";
-}
+export { extractFinalOutputFromMessages as getFinalOutput } from "../shared/utils.js";
 
 function makeMarkdownTheme(theme: SubagentTheme): MarkdownTheme {
   const fg = (c: ThemeColor) => (text: string) => theme.fg(c, text);
@@ -214,7 +202,7 @@ export function renderSubagentResult(
     : failed
       ? "error"
       : "success";
-  const finalOutput = r.finalOutput || getFinalOutput(r.messages ?? []);
+  const finalOutput = r.finalOutput ?? "";
   const title = formatSubagentTitle(r.agent, r.instanceName, theme);
   let effectiveBody = bodyOverride ?? finalOutput;
   if (display?.isPartial && !finalOutput?.trim() && !bodyOverride) {
@@ -224,14 +212,17 @@ export function renderSubagentResult(
       r.progress?.lastToolPreview ||
       "(running...)";
   }
-  const bodyText = effectiveBody;
+  const bodyText = effectiveBody.trim();
   const toolCount = r.progress?.toolCalls?.length ?? 0;
-  const toolLabel = `${toolCount} ${toolCount === 1 ? "tool" : "tools"}`;
   const ctxPercent = formatContextPercent({
     contextTokens: r.usage.contextTokens,
     contextWindowTokens: r.usage.contextWindowTokens,
   });
-  const metadata = `${toolLabel} · ${ctxPercent} ctx · ${formatElapsed(r.durationMs ?? 0)}`;
+  const metadata = formatProgressMetadata(
+    toolCount,
+    ctxPercent,
+    formatElapsed(r.durationMs ?? 0),
+  );
   const usageStr = formatResultFooter(r.usage, r.model);
   return renderStatusCard(
     {
@@ -309,6 +300,15 @@ function selectRunsBoardBody(state: SubagentProgressState): string {
   );
 }
 
+function formatProgressMetadata(
+  toolCount: number,
+  ctxPercent: string,
+  elapsed: string,
+): string {
+  const toolLabel = toolCount === 1 ? "tool" : "tools";
+  return `${toolCount} ${toolLabel} · ${ctxPercent} ctx · ${elapsed}`;
+}
+
 function renderJobCard(
   state: SubagentProgressState,
   theme: SubagentTheme,
@@ -318,8 +318,7 @@ function renderJobCard(
     state.durationMs ?? Date.now() - state.startTime,
   );
   const ctxPercent = formatContextPercent(state);
-  const toolLabel = state.toolCount === 1 ? "tool" : "tools";
-  const metadata = `${state.toolCount} ${toolLabel} · ${ctxPercent} ctx · ${elapsed}`;
+  const metadata = formatProgressMetadata(state.toolCount, ctxPercent, elapsed);
   const bodyText = selectRunsBoardBody(state);
   const preview =
     bodyText.length > BODY_PREVIEW_MAX
