@@ -24,7 +24,7 @@ import {
   listRunJobs,
   resetRunRegistry,
 } from "../src/orchestration/run-registry.js";
-import type { SubagentDetails } from "../src/shared/types.js";
+import type { SingleResult, SubagentDetails } from "../src/shared/types.js";
 
 const ORIGINAL_ARGV_1 = process.argv[1] ?? "";
 const ORIGINAL_PATH = process.env.PATH;
@@ -256,6 +256,88 @@ export function getSubagentTool(overrides?: {
     registeredEventHandlers,
     registeredMessageRenderers,
   });
+}
+
+export function captureStdout<T>(
+  ttyMode: boolean,
+  callback: (writeCalls: string[]) => T | Promise<T>,
+): T | Promise<T> {
+  const writeCalls: string[] = [];
+  const origWrite = process.stdout.write;
+  const origIsTTY = Object.getOwnPropertyDescriptor(process.stdout, "isTTY");
+  Object.defineProperty(process.stdout, "isTTY", {
+    value: ttyMode,
+    configurable: true,
+  });
+  (process.stdout as unknown as { write: (s: string) => boolean }).write = (
+    s: string,
+  ) => {
+    writeCalls.push(s);
+    return true;
+  };
+  const restore = () => {
+    process.stdout.write = origWrite;
+    if (origIsTTY) {
+      Object.defineProperty(process.stdout, "isTTY", origIsTTY);
+    } else {
+      delete (process.stdout as unknown as { isTTY?: boolean }).isTTY;
+    }
+  };
+  const result = callback(writeCalls);
+  if (result instanceof Promise) {
+    return result.finally(restore) as T;
+  }
+  restore();
+  return result;
+}
+
+export function withEnv<T>(
+  vars: Record<string, string | undefined>,
+  callback: () => T | Promise<T>,
+): T | Promise<T> {
+  const originals = new Map<string, string | undefined>();
+  for (const key of Object.keys(vars)) {
+    originals.set(key, process.env[key]);
+  }
+  const restore = () => {
+    for (const [key, value] of originals) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  };
+  for (const [key, value] of Object.entries(vars)) {
+    if (value === undefined) delete process.env[key];
+    else process.env[key] = value;
+  }
+  const result = callback();
+  if (result instanceof Promise) {
+    return result.finally(restore) as T;
+  }
+  restore();
+  return result;
+}
+
+export function makeSingleResult(
+  overrides: Partial<SingleResult> = {},
+): SingleResult {
+  return {
+    agent: "test-agent",
+    agentSource: "project",
+    task: "test task",
+    exitCode: 0,
+    finalOutput: "",
+    stderr: "",
+    usage: {
+      input: 0,
+      output: 0,
+      cacheRead: 0,
+      cacheWrite: 0,
+      cost: 0,
+      contextTokens: 0,
+      turns: 0,
+    },
+    ...overrides,
+  };
 }
 
 export function setupHooks() {
