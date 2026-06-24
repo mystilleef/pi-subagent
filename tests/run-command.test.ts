@@ -853,7 +853,7 @@ test("/run success marks state success with trimmed finalOutput and clears trans
   expect(state?.lastToolPreview).toBeUndefined();
 });
 
-test("/run empty success preserves result whitespace and stores no-output final state", async () => {
+test("/run whitespace-only output treats as no-output for result and progress state", async () => {
   const sentMessages: SendMessageArg[] = [];
   const { tool, cwd } = await setupTest({
     sendMessage: (msg) => sentMessages.push(msg),
@@ -871,7 +871,7 @@ exit 0
   await waitForSentMessageCount(sentMessages, 2);
   expect(sentMessages).toHaveLength(2);
   expect(sentMessages.at(-1)?.customType).toBe("subagent-result");
-  expect(sentMessages.at(-1)?.content).toBe("   ");
+  expect(sentMessages.at(-1)?.content).toBe("(no output)");
   const requestId = (sentMessages[0]?.details as { requestId?: string })
     ?.requestId;
   if (!requestId) throw new Error("requestId missing");

@@ -231,16 +231,12 @@ export function findLastAssistantTextMessage(messages: Message[]): number {
 }
 
 export function extractFinalOutputFromMessages(messages: Message[]): string {
-  const lastAsstWithText = messages.findLast(
-    (m) =>
-      m.role === "assistant" &&
-      Array.isArray(m.content) &&
-      m.content.some((p) => p.type === "text"),
-  );
-  const content = lastAsstWithText?.content;
+  const lastAsstIdx = findLastAssistantTextMessage(messages);
+  if (lastAsstIdx < 0) return "";
+  const content = messages[lastAsstIdx]?.content;
   if (!Array.isArray(content)) return "";
   const lastText = content.findLast((p) => p.type === "text");
-  return lastText?.type === "text" ? lastText.text : "";
+  return lastText?.type === "text" ? (lastText.text ?? "") : "";
 }
 
 export function detectMessageError(messages: Message[]): boolean {
