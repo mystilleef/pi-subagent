@@ -1,6 +1,15 @@
 import { defineTool, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 
+export const completeParams = Type.Object({
+  outcome: Type.String({
+    description:
+      "A short, single-sentence summary of the task outcome. Keep it concise, brief, and under 100 characters.",
+    minLength: 1,
+    pattern: "^[\\s\\S]*\\S[\\s\\S]*$",
+  }),
+});
+
 export const completeTool = defineTool({
   name: "complete",
   label: "Complete",
@@ -10,14 +19,7 @@ export const completeTool = defineTool({
   promptGuidelines: [
     "Call complete as your final action to report the outcome after completing the task.",
   ],
-  parameters: Type.Object({
-    outcome: Type.String({
-      description:
-        "A short, single-sentence summary of the task outcome. Keep it concise, brief, and under 100 characters.",
-      minLength: 1,
-      pattern: "^[\\s\\S]*\\S[\\s\\S]*$",
-    }),
-  }),
+  parameters: completeParams,
   async execute(_toolCallId, params) {
     return {
       content: [{ type: "text", text: params.outcome }],

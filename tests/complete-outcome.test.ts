@@ -1,9 +1,33 @@
 import { describe, expect, test } from "bun:test";
 import type { Message } from "@earendil-works/pi-ai";
+import { Value } from "typebox/value";
+import { completeParams } from "../src/child/complete-extension.js";
 import {
   getLatestOutcomeFromMessages,
   getOutcomeString,
 } from "../src/child/complete-outcome.js";
+
+test("getOutcomeString uses completeParams schema — passes and rejects per TypeBox validation", () => {
+  // Valid: non-empty, non-whitespace string outcome
+  expect(getOutcomeString({ outcome: "Valid" })).toBe("Valid");
+  // Rejected by completeParams pattern: whitespace-only
+  expect(getOutcomeString({ outcome: "   " })).toBeUndefined();
+  // Rejected by completeParams minLength: empty string
+  expect(getOutcomeString({ outcome: "" })).toBeUndefined();
+  // Rejected by completeParams: missing outcome property
+  expect(getOutcomeString({})).toBeUndefined();
+  // Rejected by completeParams: non-object
+  expect(getOutcomeString(null)).toBeUndefined();
+  // Rejected by completeParams: non-string outcome type
+  expect(getOutcomeString({ outcome: 42 })).toBeUndefined();
+  // Rejected by completeParams: array
+  expect(getOutcomeString([])).toBeUndefined();
+  // Direct schema check confirms alignment
+  expect(Value.Check(completeParams, { outcome: "Valid" })).toBe(true);
+  expect(Value.Check(completeParams, { outcome: "" })).toBe(false);
+  expect(Value.Check(completeParams, { outcome: "   " })).toBe(false);
+  expect(Value.Check(completeParams, null)).toBe(false);
+});
 
 function msg(partial: Record<string, unknown>): Message {
   return partial as unknown as Message;

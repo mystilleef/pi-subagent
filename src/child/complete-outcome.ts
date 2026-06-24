@@ -1,18 +1,10 @@
 import type { Message } from "@earendil-works/pi-ai";
+import { Value } from "typebox/value";
+import { completeParams } from "./complete-extension.js";
 
-/**
- * Safely extracts a trimmed outcome string from an unknown source object.
- * Returns undefined if the source is not an object with a string "outcome" property,
- * or if the outcome is whitespace-only.
- */
 export function getOutcomeString(source: unknown): string | undefined {
-  if (
-    source &&
-    typeof source === "object" &&
-    typeof (source as Record<string, unknown>)["outcome"] === "string"
-  ) {
-    const outcome = (source as Record<string, unknown>)["outcome"] as string;
-    return outcome.trim() || undefined;
+  if (Value.Check(completeParams, source)) {
+    return source.outcome.trim();
   }
   return undefined;
 }
