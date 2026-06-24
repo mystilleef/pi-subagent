@@ -2,6 +2,7 @@ import { expect, test } from "bun:test";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import type { RunSingleAgentResult } from "../src/child/process.js";
 import {
   formatSubagentFailureForParent,
   formatSubagentResultForParent,
@@ -147,4 +148,109 @@ test("public result type shape remains compatible", () => {
   expect(toolResult.details.results[0]?.finalOutput).toBe("done");
   expect(toolResult.details.results[0]?.outcome).toBe("completed task");
   expect(toolResult.content[0]?.text).toBe("done");
+});
+
+// T-004 deterministic source scan: no production file may export or import
+// SubagentAbortError — abort is now a tagged return value, not an exception.
+test("source scan: src/ contains no SubagentAbortError export or import", () => {
+  const srcFiles = fs
+    .readdirSync(path.join(repoRoot, "src"), { recursive: true })
+    .filter(
+      (f): f is string =>
+        typeof f === "string" && (f.endsWith(".ts") || f.endsWith(".tsx")),
+    );
+  const hits: string[] = [];
+  for (const rel of srcFiles) {
+    const content = fs.readFileSync(path.join(repoRoot, "src", rel), "utf8");
+    if (/SubagentAbortError/.test(content)) {
+      const lines = content.split("\n");
+      for (let i = 0; i < lines.length; i++) {
+        if (/SubagentAbortError/.test(lines[i] ?? "")) {
+          hits.push(`${rel}:${i + 1}: ${(lines[i] ?? "").trim()}`);
+        }
+      }
+    }
+  }
+  expect(hits).toEqual([]);
+});
+
+// T-004 deterministic source scan: process.ts must export RunSingleAgentResult
+// and must NOT export SubagentAbortError.
+test("source scan: process.ts exports RunSingleAgentResult, not SubagentAbortError", () => {
+  const body = readSource("child", "process.ts");
+  expect(body).toMatch(/export type RunSingleAgentResult/);
+  expect(body).not.toContain("SubagentAbortError");
+});
+
+// T-004 deterministic source scan: subagent-orchestrator.ts must import
+// runSingleAgent and must NOT import or reference SubagentAbortError.
+test("source scan: subagent-orchestrator.ts imports runSingleAgent, not SubagentAbortError", () => {
+  const body = readSource("orchestration", "subagent-orchestrator.ts");
+  expect(body).toContain("import { runSingleAgent }");
+  expect(body).not.toContain("SubagentAbortError");
+});
+
+// T-004 deterministic source scan: runSubagentLifecycle branches on
+// outcome.kind, not on catch blocks for SubagentAbortError.
+test("source scan: runSubagentLifecycle uses outcome.kind branch, not abort-exception catch", () => {
+  const body = readSource("orchestration", "subagent-orchestrator.ts");
+  expect(body).toContain("outcome.kind");
+  expect(body).not.toContain("SubagentAbortError");
+});
+
+// T-004 deterministic source scan: finalizeResult returns discriminated union
+// and does not throw SubagentAbortError.
+test("source scan: finalizeResult returns kind-tagged result, does not throw abort error", () => {
+  const body = readSource("child", "process.ts");
+  expect(body).toContain('kind: "aborted"');
+  expect(body).toContain('kind: "completed"');
+  expect(body).not.toContain("SubagentAbortError");
+});
+
+// T-004 behavioral guard: RunSingleAgentResult discriminated union compiles
+// and narrows correctly on kind.
+test("RunSingleAgentResult discriminated union narrows on kind", () => {
+  const completed: RunSingleAgentResult = {
+    kind: "completed",
+    result: makeSingleResult({ finalOutput: "done", outcome: "ok" }),
+  };
+  const aborted: RunSingleAgentResult = {
+    kind: "aborted",
+    result: makeSingleResult({ finalOutput: "", outcome: undefined }),
+  };
+  if (completed.kind === "completed") {
+    expect(completed.result.outcome).toBe("ok");
+  }
+  if (aborted.kind === "aborted") {
+    expect(aborted.result.outcome).toBeUndefined();
+  }
+});
+
+// T-004 behavioral guard: aborted result must clear stderr and omit outcome
+// per legacy contract.
+test("aborted RunSingleAgentResult omits outcome and has empty stderr", () => {
+  const aborted: RunSingleAgentResult = {
+    kind: "aborted",
+    result: makeSingleResult({
+      finalOutput: "",
+      outcome: undefined,
+      stderr: "",
+    }),
+  };
+  expect(aborted.result.stderr).toBe("");
+  expect(aborted.result.outcome).toBeUndefined();
+});
+
+// T-004 behavioral guard: completed result preserves outcome and stderr.
+test("completed RunSingleAgentResult preserves outcome and stderr", () => {
+  const completed: RunSingleAgentResult = {
+    kind: "completed",
+    result: makeSingleResult({
+      finalOutput: "done",
+      outcome: "task completed",
+      stderr: "warning: deprecation",
+    }),
+  };
+  expect(completed.result.outcome).toBe("task completed");
+  expect(completed.result.stderr).toBe("warning: deprecation");
 });

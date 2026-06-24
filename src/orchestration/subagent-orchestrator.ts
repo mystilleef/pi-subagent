@@ -11,7 +11,7 @@ import type {
   AgentScope,
   ThinkingLevel,
 } from "../agent/agents.js";
-import { runSingleAgent, SubagentAbortError } from "../child/process.js";
+import { runSingleAgent } from "../child/process.js";
 import { deliverNotification } from "../notification/delivery.js";
 import {
   buildNotificationRequest,
@@ -277,7 +277,7 @@ async function runSubagentLifecycle(
   };
   const timerTick = setInterval(requestProgressRender, 500);
   try {
-    const result = await runSingleAgent(
+    const outcome = await runSingleAgent(
       lc.ctx.cwd,
       lc.agents,
       lc.agentName,
@@ -289,14 +289,18 @@ async function runSubagentLifecycle(
       lc.parentThinking,
       lc.debug,
     );
-    return finishLifecycleResult(lc, result);
+    if (outcome.kind === "aborted") {
+      const details = lc.makeDetails([outcome.result]);
+      const cancelReason =
+        outcome.result.termination?.cancelReason ?? "Aborted";
+      return finishLifecycleFailure(lc, cancelReason, details);
+    }
+    return finishLifecycleResult(lc, outcome.result);
   } catch (error) {
-    const abortResult =
-      error instanceof SubagentAbortError ? error.result : undefined;
     return finishLifecycleFailure(
       lc,
       error instanceof Error ? error.message : String(error),
-      abortResult ? lc.makeDetails([abortResult]) : lc.makeDetails([]),
+      lc.makeDetails([]),
     );
   } finally {
     clearInterval(timerTick);

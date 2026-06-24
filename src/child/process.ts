@@ -81,14 +81,9 @@ type RunSingleAgentOptions = {
   getOrchestratorPid?: () => unknown;
 };
 
-export class SubagentAbortError extends Error {
-  readonly result: SingleResult;
-  constructor(result: SingleResult) {
-    super("Subagent was aborted");
-    this.name = "SubagentAbortError";
-    this.result = result;
-  }
-}
+export type RunSingleAgentResult =
+  | { kind: "completed"; result: SingleResult }
+  | { kind: "aborted"; result: SingleResult };
 
 interface SubagentState {
   result: RuntimeResult;
@@ -451,7 +446,7 @@ function setupChildProcess(
 async function finalizeResult(
   state: SubagentState,
   startedAt: number,
-): Promise<SingleResult> {
+): Promise<RunSingleAgentResult> {
   state.result.durationMs = Date.now() - startedAt;
   clearGraceTimer(state);
   if (state.terminationPromise) await state.terminationPromise;
@@ -473,8 +468,11 @@ async function finalizeResult(
   if (!outcome && detectMessageError(state.result.messages)) {
     state.result.errorMessage ||= TOOL_RESULT_FAILED_MESSAGE;
   }
+  if (state.wasAborted) {
+    state.result.stderr = "";
+    return { kind: "aborted", result: state.result };
+  }
   const isSemanticallySuccessful =
-    !state.wasAborted &&
     !state.spawnError &&
     state.result.exitCode === 0 &&
     (Boolean(outcome) ||
@@ -483,11 +481,7 @@ async function finalizeResult(
   if (isSemanticallySuccessful && outcome) {
     state.result.outcome = outcome;
   }
-  if (state.wasAborted) {
-    state.result.stderr = "";
-    throw new SubagentAbortError(state.result);
-  }
-  return state.result;
+  return { kind: "completed", result: state.result };
 }
 
 /**
@@ -518,19 +512,26 @@ export async function runSingleAgent(
   parentThinking: ThinkingLevel,
   debugEventDiagnostics = false,
   options: RunSingleAgentOptions = {},
-): Promise<SingleResult> {
+): Promise<RunSingleAgentResult> {
   const agent = agents.find((a) => a.name === agentName);
-  if (!agent) return errorForUnknownAgent(agentName, agents, task);
+  if (!agent)
+    return {
+      kind: "completed",
+      result: errorForUnknownAgent(agentName, agents, task),
+    };
   const runtimeLimits = getSubagentRuntimeLimits();
   const depth = getSubagentDepth();
   if (depth >= runtimeLimits.maxDepth) {
-    return errorForDepthLimit(
-      agentName,
-      agent.source,
-      task,
-      depth,
-      runtimeLimits.maxDepth,
-    );
+    return {
+      kind: "completed",
+      result: errorForDepthLimit(
+        agentName,
+        agent.source,
+        task,
+        depth,
+        runtimeLimits.maxDepth,
+      ),
+    };
   }
   const requestedThinking = agent.thinking ?? parentThinking;
   const effectiveModel = resolveEffectiveChildModelSettings(agent, parentModel);
@@ -552,13 +553,16 @@ export async function runSingleAgent(
   if ("error" in resolvedSkills) {
     const promptSetup = await promptSetupPromise;
     await cleanupPromptSetupResult(promptSetup);
-    return createErrorResult(
-      agentName,
-      agent.source,
-      task,
-      resolvedSkills.error,
-      modelDisplay,
-    );
+    return {
+      kind: "completed",
+      result: createErrorResult(
+        agentName,
+        agent.source,
+        task,
+        resolvedSkills.error,
+        modelDisplay,
+      ),
+    };
   }
   const promptSetup = await promptSetupPromise;
   if ("error" in promptSetup) throw promptSetup.error;

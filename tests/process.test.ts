@@ -8,11 +8,8 @@ import {
   type ExtensionAPI,
 } from "@earendil-works/pi-coding-agent";
 import type { AgentConfig } from "../src/agent/agents.js";
-import {
-  makeEmitUpdate,
-  runSingleAgent,
-  SubagentAbortError,
-} from "../src/child/process.js";
+import type { RunSingleAgentResult } from "../src/child/process.js";
+import { makeEmitUpdate, runSingleAgent } from "../src/child/process.js";
 import { resolveSamplingExtensionPath } from "../src/child/process-utils.js";
 import {
   appendSubagentResultContract,
@@ -70,7 +67,7 @@ printf '%s\n' '{"type":"agent_end","messages":[]}'
 exit 0
 `,
   });
-  const result = await runSingleAgent(
+  const { result } = await runSingleAgent(
     cwd,
     [agent],
     agent.name,
@@ -137,7 +134,7 @@ function emitAgentEnd(messages: Record<string, unknown>[]): string {
 }
 
 test("runSingleAgent reports unknown agents with available names", async () => {
-  const result = await runSingleAgent(
+  const { result } = await runSingleAgent(
     "/tmp",
     [hangAgent],
     "missing",
@@ -157,7 +154,7 @@ test("runSingleAgent reports unknown agents with available names", async () => {
 
 test("runSingleAgent reports default depth limit with effective max depth", async () => {
   process.env.PI_SUBAGENT_DEPTH = "3";
-  const result = await runSingleAgent(
+  const { result } = await runSingleAgent(
     "/tmp",
     [hangAgent],
     "hang",
@@ -176,7 +173,7 @@ test("runSingleAgent uses env-configured max depth", async () => {
   process.env.PI_SUBAGENT_DEPTH = "4";
   process.env.PI_SUBAGENT_MAX_DEPTH = "5";
   const { cwd } = await setupTest();
-  const result = await runSingleAgent(
+  const { result } = await runSingleAgent(
     cwd,
     [hangAgent],
     "hang",
@@ -194,7 +191,7 @@ test("runSingleAgent uses env-configured max depth", async () => {
 test("runSingleAgent reports clamped env max depth", async () => {
   process.env.PI_SUBAGENT_DEPTH = "10";
   process.env.PI_SUBAGENT_MAX_DEPTH = "99";
-  const result = await runSingleAgent(
+  const { result } = await runSingleAgent(
     "/tmp",
     [hangAgent],
     "hang",
@@ -418,7 +415,7 @@ test("runSingleAgent formats result model from effective non-empty parts", async
 
 test("runSingleAgent reports effective model display on skill resolution failure", async () => {
   const { cwd } = await setupTest();
-  const result = await runSingleAgent(
+  const { result } = await runSingleAgent(
     cwd,
     [
       makeModelAgent({
@@ -450,7 +447,7 @@ printf '%s\n' '{"type":"agent_end","messages":[]}'
 exit 0
 `,
   });
-  const result = await runSingleAgent(
+  const { result } = await runSingleAgent(
     cwd,
     [hangAgent],
     "hang",
@@ -474,7 +471,7 @@ printf '%s\n' '{"type":"agent_end","messages":[]}'
 exit 0
 `,
   });
-  const result = await runSingleAgent(
+  const { result } = await runSingleAgent(
     cwd,
     [hangAgent],
     "hang",
@@ -499,7 +496,7 @@ printf '%s\n' '{"type":"agent_end","messages":[]}'
 exit 0
 `,
   });
-  const result = await runSingleAgent(
+  const { result } = await runSingleAgent(
     cwd,
     [hangAgent],
     "hang",
@@ -521,7 +518,7 @@ test("runSingleAgent caps spawn error stderr by configured byte limit", async ()
   process.argv[1] = "/non/existent/pi";
   process.execPath = "/non/existent/pi_exec";
   try {
-    const result = await runSingleAgent(
+    const { result } = await runSingleAgent(
       cwd,
       [hangAgent],
       "hang",
@@ -552,7 +549,7 @@ printf '%s\n' '{"type":"agent_end","messages":[]}'
 exit 0
 `,
   });
-  const result = await runSingleAgent(
+  const { result } = await runSingleAgent(
     cwd,
     [hangAgent],
     "hang",
@@ -594,7 +591,7 @@ test("runSingleAgent rejects invalid orchestrator PIDs before sleep inhibitor ac
   ]) {
     let acquisitionAttempts = 0;
     const { cwd } = await setupTest();
-    const result = await runSingleAgent(
+    const { result } = await runSingleAgent(
       cwd,
       [hangAgent],
       "hang",
@@ -624,6 +621,38 @@ test("runSingleAgent rejects invalid orchestrator PIDs before sleep inhibitor ac
   }
 });
 
+test("runSingleAgent handles throwing getOrchestratorPid gracefully", async () => {
+  let acquisitionAttempts = 0;
+  const { cwd } = await setupTest();
+  const { result } = await runSingleAgent(
+    cwd,
+    [hangAgent],
+    "hang",
+    "task",
+    undefined,
+    undefined,
+    makeSubagentDetails,
+    undefined,
+    "off",
+    false,
+    {
+      getOrchestratorPid() {
+        throw new Error("pid resolution failed");
+      },
+      async acquireSleepInhibitor() {
+        acquisitionAttempts += 1;
+        return {
+          async release() {},
+        };
+      },
+    },
+  );
+  expect(acquisitionAttempts).toBe(0);
+  expect(result.exitCode).toBe(0);
+  expect(result.finalOutput).toBe("done");
+  expect(result.termination).toBeUndefined();
+});
+
 test("runSingleAgent keeps acquisition and release failures invisible", async () => {
   const { cwd } = await setupTest({
     piScript: `#!/bin/sh
@@ -633,7 +662,7 @@ printf '%s\n' '{"type":"agent_end","messages":[]}'
 exit 0
 `,
   });
-  const releaseFailure = await runSingleAgent(
+  const { result: releaseFailure } = await runSingleAgent(
     cwd,
     [hangAgent],
     "hang",
@@ -654,7 +683,7 @@ exit 0
       },
     },
   );
-  const acquisitionFailure = await runSingleAgent(
+  const { result: acquisitionFailure } = await runSingleAgent(
     cwd,
     [hangAgent],
     "hang",
@@ -714,10 +743,12 @@ exit 0
     Bun.sleep(500).then(() => new Error("timed out waiting for result")),
   ]);
   expect(result).not.toBeInstanceOf(Error);
+  const outcome = result as RunSingleAgentResult;
   expect(acquiredPid).toBe(process.pid);
-  expect((result as SingleResult).exitCode).toBe(0);
-  expect((result as SingleResult).finalOutput).toBe("delayed done");
-  expect((result as SingleResult).stderr).toBe("delayed stderr");
+  expect(outcome.kind).toBe("completed");
+  expect(outcome.result.exitCode).toBe(0);
+  expect(outcome.result.finalOutput).toBe("delayed done");
+  expect(outcome.result.stderr).toBe("delayed stderr");
 });
 
 test("runSingleAgent handles host abort before delayed sleep inhibitor acquisition resolves", async () => {
@@ -753,15 +784,14 @@ wait $!
     "delayed sleep inhibitor acquisition",
   );
   controller.abort("host abort while acquiring");
-  const error = await Promise.race([
-    promise.then(
-      () => undefined,
-      (value: unknown) => value,
-    ),
-    Bun.sleep(500).then(() => new Error("timed out waiting for abort")),
+  const outcome = await Promise.race([
+    promise,
+    Bun.sleep(500).then(() => {
+      throw new Error("timed out waiting for abort");
+    }),
   ]);
-  expect(error).toBeInstanceOf(SubagentAbortError);
-  expect((error as SubagentAbortError).result.termination?.cancelReason).toBe(
+  expect(outcome.kind).toBe("aborted");
+  expect(outcome.result.termination?.cancelReason).toBe(
     "host abort while acquiring",
   );
 });
@@ -801,13 +831,10 @@ wait $!
   );
   await waitFor(() => acquired || undefined, "sleep inhibitor acquisition");
   controller.abort("cancelled");
-  await promise.catch((error: unknown) => {
-    expect(error).toBeInstanceOf(SubagentAbortError);
-    expect((error as SubagentAbortError).result.termination?.cancelReason).toBe(
-      "cancelled",
-    );
-    expect((error as SubagentAbortError).result.stderr).toBe("");
-  });
+  const cancelledOutcome = await promise;
+  expect(cancelledOutcome.kind).toBe("aborted");
+  expect(cancelledOutcome.result.termination?.cancelReason).toBe("cancelled");
+  expect(cancelledOutcome.result.stderr).toBe("");
   expect(releases).toBe(1);
 });
 
@@ -823,7 +850,7 @@ sleep 10 &
 wait $!
 `,
   });
-  const result = await runSingleAgent(
+  const { result } = await runSingleAgent(
     cwd,
     [hangAgent],
     "hang",
@@ -883,13 +910,10 @@ wait $!
       },
     },
   );
-  await promise.catch((error: unknown) => {
-    expect(error).toBeInstanceOf(SubagentAbortError);
-    expect((error as SubagentAbortError).result.termination?.cancelReason).toBe(
-      "host abort",
-    );
-    expect((error as SubagentAbortError).result.stderr).toBe("");
-  });
+  const preAbortedOutcome = await promise;
+  expect(preAbortedOutcome.kind).toBe("aborted");
+  expect(preAbortedOutcome.result.termination?.cancelReason).toBe("host abort");
+  expect(preAbortedOutcome.result.stderr).toBe("");
   expect(releases).toBe(1);
 });
 
@@ -906,7 +930,7 @@ printf '%s\n' '{"type":"agent_end","messages":[]}'
 exit 0
 `,
   });
-  const result = await runSingleAgent(
+  const { result } = await runSingleAgent(
     cwd,
     [hangAgent],
     "hang",
@@ -951,7 +975,7 @@ exit 0
 `,
   });
   try {
-    const result = await runSingleAgent(
+    const { result } = await runSingleAgent(
       cwd,
       [hangAgent],
       "hang",
@@ -986,7 +1010,7 @@ exit 0
 test("runSingleAgent handles repeated release on the same handle silently", async () => {
   let releaseCalls = 0;
   const { cwd } = await setupTest();
-  const result = await runSingleAgent(
+  const { result } = await runSingleAgent(
     cwd,
     [hangAgent],
     "hang",
@@ -1013,7 +1037,7 @@ test("runSingleAgent handles repeated release on the same handle silently", asyn
 
 test("runSingleAgent suppresses release failure on already-resolved handle", async () => {
   const { cwd } = await setupTest();
-  const result = await runSingleAgent(
+  const { result } = await runSingleAgent(
     cwd,
     [hangAgent],
     "hang",
@@ -1100,19 +1124,19 @@ esac
     "concurrent sleep inhibitor acquisition",
   );
   controller.abort("cancelled child only");
-  await cancelledPromise.catch((error: unknown) => {
-    expect(error).toBeInstanceOf(SubagentAbortError);
-  });
+  const cancelledOutcome2 = await cancelledPromise;
+  expect(cancelledOutcome2.kind).toBe("aborted");
   expect(releaseCounts.cancelled).toBe(1);
   expect(releaseCounts.held).toBe(0);
   await fs.promises.writeFile(path.join(cwd, releasePath), "release");
   const heldResult = await heldPromise;
-  expect(heldResult.exitCode).toBe(0);
-  expect(heldResult.finalOutput).toBe("held done");
-  expect(heldResult.stderr).toBe("");
-  expect(heldResult.usage.input).toBe(2);
-  expect(heldResult.usage.output).toBe(3);
-  expect(heldResult.termination).toBeUndefined();
+  expect(heldResult.kind).toBe("completed");
+  expect(heldResult.result.exitCode).toBe(0);
+  expect(heldResult.result.finalOutput).toBe("held done");
+  expect(heldResult.result.stderr).toBe("");
+  expect(heldResult.result.usage.input).toBe(2);
+  expect(heldResult.result.usage.output).toBe(3);
+  expect(heldResult.result.termination).toBeUndefined();
   expect(releaseCounts.held).toBe(1);
 });
 
@@ -1125,7 +1149,7 @@ printf '%s\n' '{"type":"message_end","message":{"role":"assistant","content":[{"
 exit 0
 `,
   });
-  const result = await runSingleAgent(
+  const { result } = await runSingleAgent(
     cwd,
     [hangAgent],
     "hang",
@@ -1152,7 +1176,7 @@ wait $!
 `,
   });
   const startedAt = Date.now();
-  const result = await runSingleAgent(
+  const { result } = await runSingleAgent(
     cwd,
     [hangAgent],
     "hang",
@@ -1188,9 +1212,8 @@ wait $!
     "off",
   );
   controller.abort(null);
-  await promise.catch((error: unknown) => {
-    expect(error).toBeInstanceOf(SubagentAbortError);
-  });
+  const nonStandardOutcome = await promise;
+  expect(nonStandardOutcome.kind).toBe("aborted");
 });
 
 test("runSingleAgent starts skill resolution and prompt setup concurrently", async () => {
@@ -1256,8 +1279,9 @@ Use fast skill.
     await waitFor(() => reloadStarted || undefined, "skill discovery start");
     await waitFor(() => writeStarted || undefined, "prompt write start");
     releaseOnce();
-    const result = await promise;
-    expect(result.exitCode).toBe(0);
+    const outcome = await promise;
+    expect(outcome.kind).toBe("completed");
+    expect(outcome.result.exitCode).toBe(0);
   } finally {
     DefaultResourceLoader.prototype.reload = originalReload;
     Object.defineProperty(fs.promises, "writeFile", {
@@ -1314,7 +1338,7 @@ Use warm skill.
     skills: ["warm"],
   };
   try {
-    const result = await runSingleAgent(
+    const { result } = await runSingleAgent(
       cwd,
       [agent],
       "warm-agent",
@@ -1365,9 +1389,9 @@ test("runSingleAgent cleans prompt temp file when skill resolution fails after p
     filePath: "badskill.md",
     skills: ["missing-skill"],
   };
-  let result: Awaited<ReturnType<typeof runSingleAgent>> | undefined;
+  let _result: SingleResult | undefined;
   try {
-    result = await runSingleAgent(
+    const { result } = await runSingleAgent(
       cwd,
       [agent],
       "badskill",
@@ -1378,6 +1402,7 @@ test("runSingleAgent cleans prompt temp file when skill resolution fails after p
       undefined,
       "off",
     );
+    _result = result;
   } finally {
     Object.defineProperty(fs.promises, "mkdtemp", {
       value: originalMkdtemp,
@@ -1386,9 +1411,9 @@ test("runSingleAgent cleans prompt temp file when skill resolution fails after p
       configurable: true,
     });
   }
-  if (!result) throw new Error("result missing");
-  expect(result.exitCode).toBe(1);
-  expect(result.stderr).toContain('Unknown skill: "missing-skill"');
+  if (!_result) throw new Error("result missing");
+  expect(_result.exitCode).toBe(1);
+  expect(_result.stderr).toContain('Unknown skill: "missing-skill"');
   expect(tmpDir).toBeDefined();
   expect(fs.existsSync(tmpDir ?? "")).toBe(false);
 });
@@ -1403,7 +1428,7 @@ printf '%s\n' '{"type":"agent_end","messages":[]}'
 exit 0
 `,
   });
-  const result = await runSingleAgent(
+  const { result } = await runSingleAgent(
     cwd,
     [hangAgent],
     "hang",
@@ -1460,7 +1485,7 @@ printf '%s\n' ${shellQuote(makeSubagentToolUpdateLine("Grandchild running"))}
 exit 0
 `,
   });
-  const result = await runSingleAgent(
+  const { result } = await runSingleAgent(
     cwd,
     [hangAgent],
     "hang",
@@ -1677,7 +1702,7 @@ printf 'spawn error stderr' >&2
 exit 1
 `,
   });
-  const result = await runSingleAgent(
+  const { result } = await runSingleAgent(
     cwd,
     [hangAgent],
     "hang",
@@ -1715,7 +1740,7 @@ sleep 10 &
 wait $!
 `,
   });
-  const result = await runSingleAgent(
+  const { result } = await runSingleAgent(
     cwd,
     [hangAgent],
     "hang",
@@ -1743,7 +1768,7 @@ sleep 10 &
 wait $!
 `,
   });
-  const result = await runSingleAgent(
+  const { result } = await runSingleAgent(
     cwd,
     [hangAgent],
     "hang",
@@ -1761,14 +1786,14 @@ wait $!
 });
 
 describe("agent_end message snapshot rebuild", () => {
-  async function runSnapshotScript(lines: string[]) {
+  async function runSnapshotScript(lines: string[]): Promise<SingleResult> {
     const { cwd } = await setupTest({
       piScript: `#!/bin/sh
 ${lines.join("\n")}
 exit 0
 `,
     });
-    return runSingleAgent(
+    const { result } = await runSingleAgent(
       cwd,
       [hangAgent],
       "hang",
@@ -1779,6 +1804,7 @@ exit 0
       undefined,
       "off",
     );
+    return result;
   }
 
   test("non-empty agent_end messages restore missed final streamed message", async () => {
@@ -1905,7 +1931,7 @@ exit 0
 `,
   });
   try {
-    const result = await runSingleAgent(
+    const { result } = await runSingleAgent(
       cwd,
       [hangAgent],
       "hang",
@@ -1982,18 +2008,20 @@ esac
     "concurrent acquisition attempts",
   );
   const failingResult = await failingPromise;
-  expect(failingResult.exitCode).toBe(1);
+  expect(failingResult.kind).toBe("completed");
+  expect(failingResult.result.exitCode).toBe(1);
   expect(releaseCounts.failing).toBe(0);
   await fs.promises.writeFile(path.join(cwd, releasePath), "release");
   const succeedingResult = await succeedingPromise;
-  expect(succeedingResult.exitCode).toBe(0);
-  expect(succeedingResult.finalOutput).toBe("succeeding done");
+  expect(succeedingResult.kind).toBe("completed");
+  expect(succeedingResult.result.exitCode).toBe(0);
+  expect(succeedingResult.result.finalOutput).toBe("succeeding done");
   expect(releaseCounts.succeeding).toBe(1);
 });
 
 test("runSingleAgent default host adapter returns no-op handle on non-darwin platform", async () => {
   const { cwd } = await setupTest();
-  const result = await runSingleAgent(
+  const { result } = await runSingleAgent(
     cwd,
     [hangAgent],
     "hang",
@@ -2010,9 +2038,12 @@ test("runSingleAgent default host adapter returns no-op handle on non-darwin pla
 });
 
 describe("usage accumulation via runSingleAgent", () => {
-  async function runUsageTest(piScript: string, options?: { debug?: boolean }) {
+  async function runUsageTest(
+    piScript: string,
+    options?: { debug?: boolean },
+  ): Promise<SingleResult> {
     const { cwd } = await setupTest({ piScript });
-    return runSingleAgent(
+    const { result } = await runSingleAgent(
       cwd,
       [hangAgent],
       "hang",
@@ -2024,6 +2055,7 @@ describe("usage accumulation via runSingleAgent", () => {
       "off",
       options?.debug,
     );
+    return result;
   }
 
   test("assistant messages increment turns and aggregate usage fields", async () => {
@@ -2168,7 +2200,7 @@ printf '%s\n' '{"type":"agent_end","messages":[]}'
 exit 0
 `;
   const { cwd } = await setupTest({ piScript });
-  const result = await runSingleAgent(
+  const { result } = await runSingleAgent(
     cwd,
     [hangAgent],
     "hang",
@@ -2191,7 +2223,7 @@ exit 0
 `;
   const { cwd } = await setupTest({ piScript });
   let lastUpdate: unknown;
-  const result = await runSingleAgent(
+  const { result } = await runSingleAgent(
     cwd,
     [hangAgent],
     "hang",
@@ -2222,7 +2254,7 @@ exit 0
     return true;
   }) as typeof process.stderr.write;
   try {
-    const result = await runSingleAgent(
+    const { result } = await runSingleAgent(
       cwd,
       [hangAgent],
       "hang",
@@ -2259,7 +2291,7 @@ exit 0
     return true;
   }) as typeof process.stderr.write;
   try {
-    const result = await runSingleAgent(
+    const { result } = await runSingleAgent(
       cwd,
       [hangAgent],
       "hang",
@@ -2290,25 +2322,20 @@ exit 0
   const { cwd } = await setupTest({ piScript });
   const controller = new AbortController();
   controller.abort("pre-aborted");
-  try {
-    await runSingleAgent(
-      cwd,
-      [hangAgent],
-      "hang",
-      "task",
-      controller.signal,
-      undefined,
-      makeSubagentDetails,
-      undefined,
-      "off",
-    );
-    throw new Error("Expected SubagentAbortError");
-  } catch (error) {
-    expect(error).toBeInstanceOf(SubagentAbortError);
-    const abortError = error as SubagentAbortError;
-    expect(abortError.result.termination).toBeDefined();
-    expect(abortError.result.termination?.cancelReason).toBe("pre-aborted");
-  }
+  const outcome = await runSingleAgent(
+    cwd,
+    [hangAgent],
+    "hang",
+    "task",
+    controller.signal,
+    undefined,
+    makeSubagentDetails,
+    undefined,
+    "off",
+  );
+  expect(outcome.kind).toBe("aborted");
+  expect(outcome.result.termination).toBeDefined();
+  expect(outcome.result.termination?.cancelReason).toBe("pre-aborted");
 });
 
 test("runSingleAgent injects the complete extension", async () => {
@@ -2376,7 +2403,7 @@ printf '%s\\n' '{"type":"agent_end","messages":[]}'
 exit 0
 `;
   const { cwd } = await setupTest({ piScript });
-  const result = await runSingleAgent(
+  const { result } = await runSingleAgent(
     cwd,
     [hangAgent],
     "hang",
@@ -2398,7 +2425,7 @@ printf '%s\\n' '{"type":"agent_end","messages":[]}'
 exit 0
 `;
   const { cwd } = await setupTest({ piScript });
-  const result = await runSingleAgent(
+  const { result } = await runSingleAgent(
     cwd,
     [hangAgent],
     "hang",
@@ -2421,7 +2448,7 @@ printf '%s\\n' '{"type":"agent_end","messages":[]}'
 exit 0
 `;
   const { cwd } = await setupTest({ piScript });
-  const result = await runSingleAgent(
+  const { result } = await runSingleAgent(
     cwd,
     [hangAgent],
     "hang",
@@ -2443,7 +2470,7 @@ printf '%s\\n' '{"type":"agent_end","messages":[]}'
 exit 0
 `;
   const { cwd } = await setupTest({ piScript });
-  const result = await runSingleAgent(
+  const { result } = await runSingleAgent(
     cwd,
     [hangAgent],
     "hang",
@@ -2466,7 +2493,7 @@ printf '%s\\n' '{"type":"agent_end","messages":[]}'
 exit 0
 `;
   const { cwd } = await setupTest({ piScript });
-  const result = await runSingleAgent(
+  const { result } = await runSingleAgent(
     cwd,
     [hangAgent],
     "hang",
@@ -2490,7 +2517,7 @@ printf '%s\\n' '{"type":"agent_end","messages":[]}'
 exit 0
 `;
   const { cwd } = await setupTest({ piScript });
-  const result = await runSingleAgent(
+  const { result } = await runSingleAgent(
     cwd,
     [hangAgent],
     "hang",
@@ -2517,7 +2544,7 @@ sleep 10 &
 wait $!
 `,
   });
-  const result = await runSingleAgent(
+  const { result } = await runSingleAgent(
     cwd,
     [hangAgent],
     "hang",
@@ -2542,7 +2569,7 @@ printf '%s\\n' '{"type":"agent_end","messages":[]}'
 exit 1
 `,
   });
-  const result = await runSingleAgent(
+  const { result } = await runSingleAgent(
     cwd,
     [hangAgent],
     "hang",
@@ -2581,14 +2608,12 @@ wait $!
     "off",
   );
   controller.abort("host abort after outcome");
-  const error = await promise.then(
-    () => undefined,
-    (value: unknown) => value,
+  const outcome = await promise;
+  expect(outcome.kind).toBe("aborted");
+  expect(outcome.result.outcome).toBeUndefined();
+  expect(outcome.result.termination?.cancelReason).toBe(
+    "host abort after outcome",
   );
-  expect(error).toBeInstanceOf(SubagentAbortError);
-  const result = (error as SubagentAbortError).result;
-  expect(result.outcome).toBeUndefined();
-  expect(result.termination?.cancelReason).toBe("host abort after outcome");
 });
 
 describe("T-003: parseSamplingParams", () => {
@@ -2860,7 +2885,7 @@ printf '%s\\n' '{"type":"agent_end","messages":[]}'
 exit 0
 `,
     });
-    const result = await runSingleAgent(
+    const { result } = await runSingleAgent(
       cwd,
       [agent],
       agent.name,
@@ -3047,7 +3072,7 @@ exit 0
 `,
     });
     const startedAt = Date.now();
-    const result = await runSingleAgent(
+    const { result } = await runSingleAgent(
       cwd,
       [hangAgent],
       "hang",
@@ -3091,7 +3116,7 @@ exit 0
     return true;
   }) as typeof process.stderr.write);
   try {
-    const result = await runSingleAgent(
+    const { result } = await runSingleAgent(
       cwd,
       [hangAgent],
       "hang",
@@ -3124,7 +3149,7 @@ sleep 10 &
 wait $!
 `,
   });
-  const result = await runSingleAgent(
+  const { result } = await runSingleAgent(
     cwd,
     [hangAgent],
     "hang",
@@ -3150,7 +3175,7 @@ printf '%s\\n' '{"type":"agent_end","messages":[]}'
 exit 0
 `,
   });
-  const result = await runSingleAgent(
+  const { result } = await runSingleAgent(
     cwd,
     [hangAgent],
     "hang",
@@ -3175,7 +3200,7 @@ printf '%s\\n' '{"type":"agent_end","messages":[]}'
 exit 0
 `,
   });
-  const result = await runSingleAgent(
+  const { result } = await runSingleAgent(
     cwd,
     [hangAgent],
     "hang",
@@ -3215,7 +3240,7 @@ ${emitAgentEnd([assistantMsg, toolError])}
 exit 0
 `,
   });
-  const result = await runSingleAgent(
+  const { result } = await runSingleAgent(
     cwd,
     [hangAgent],
     "hang",
@@ -3255,7 +3280,7 @@ ${emitAgentEnd([assistant, toolError])}
 exit 0
 `,
   });
-  const result = await runSingleAgent(
+  const { result } = await runSingleAgent(
     cwd,
     [hangAgent],
     "hang",
@@ -3280,7 +3305,7 @@ printf '%s\\n' '{"type":"agent_end","messages":[]}'
 exit 0
 `,
   });
-  const result = await runSingleAgent(
+  const { result } = await runSingleAgent(
     cwd,
     [hangAgent],
     "hang",

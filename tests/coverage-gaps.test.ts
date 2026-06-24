@@ -402,7 +402,7 @@ exit 0
 `,
     });
 
-    const result = await runSingleAgent(
+    const { result } = await runSingleAgent(
       cwd,
       [hangAgent],
       "hang",

@@ -8,9 +8,10 @@ import type {
 import { Value } from "typebox/value";
 import type { AgentConfig } from "../src/agent/agents.js";
 import registerExtension, {
+  completeParams,
   completeTool,
 } from "../src/child/complete-extension.js";
-import { runSingleAgent, SubagentAbortError } from "../src/child/process.js";
+import { runSingleAgent } from "../src/child/process.js";
 import { SUBAGENT_RESULT_CONTRACT } from "../src/child/prompt-contract.js";
 import { normalizeTerminalSentence } from "../src/output/normalize.js";
 import { summarizeFeedbackUiFinalOutput } from "../src/output/summary.js";
@@ -49,8 +50,12 @@ test("completeTool parameters require outcome string", () => {
   expect(completeTool.description).toBeDefined();
 });
 
+test("completeParams is exported and equals completeTool.parameters by reference", () => {
+  expect(completeParams).toBe(completeTool.parameters);
+});
+
 test("completeTool parameters reject missing, non-string, empty, and whitespace-only outcomes", () => {
-  const check = (input: unknown) => Value.Check(completeTool.parameters, input);
+  const check = (input: unknown) => Value.Check(completeParams, input);
 
   // Valid outcomes
   expect(check({ outcome: "Successfully done" })).toBe(true);
@@ -113,7 +118,7 @@ printf '%s\n' '{"type":"agent_end","messages":[]}'
 exit 0
 `,
     });
-    const result = await runSingleAgent(
+    const { result } = await runSingleAgent(
       cwd,
       [agent],
       agent.name,
@@ -163,7 +168,7 @@ printf '%s\\n' '{"type":"agent_end","messages":[]}'
 exit 0
 `;
     const { cwd } = await setupTest({ piScript });
-    const result = await runSingleAgent(
+    const { result } = await runSingleAgent(
       cwd,
       [hangAgent],
       "hang",
@@ -185,7 +190,7 @@ printf '%s\\n' '{"type":"agent_end","messages":[]}'
 exit 0
 `;
     const { cwd } = await setupTest({ piScript });
-    const result = await runSingleAgent(
+    const { result } = await runSingleAgent(
       cwd,
       [hangAgent],
       "hang",
@@ -208,7 +213,7 @@ printf '%s\\n' '{"type":"agent_end","messages":[]}'
 exit 0
 `;
     const { cwd } = await setupTest({ piScript });
-    const result = await runSingleAgent(
+    const { result } = await runSingleAgent(
       cwd,
       [hangAgent],
       "hang",
@@ -232,7 +237,7 @@ printf '%s\\n' '{"type":"agent_end","messages":[]}'
 exit 0
 `;
     const { cwd } = await setupTest({ piScript });
-    const result = await runSingleAgent(
+    const { result } = await runSingleAgent(
       cwd,
       [hangAgent],
       "hang",
@@ -258,7 +263,7 @@ printf '%s\\n' '{"type":"agent_end","messages":[]}'
 exit 0
 `;
     const { cwd } = await setupTest({ piScript });
-    const result = await runSingleAgent(
+    const { result } = await runSingleAgent(
       cwd,
       [hangAgent],
       "hang",
@@ -280,7 +285,7 @@ printf '%s\\n' '{"type":"agent_end","messages":[]}'
 exit 0
 `;
     const { cwd } = await setupTest({ piScript });
-    const result = await runSingleAgent(
+    const { result } = await runSingleAgent(
       cwd,
       [hangAgent],
       "hang",
@@ -303,7 +308,7 @@ printf '%s\\n' '{"type":"agent_end","messages":[]}'
 exit 0
 `;
     const { cwd } = await setupTest({ piScript });
-    const result = await runSingleAgent(
+    const { result } = await runSingleAgent(
       cwd,
       [hangAgent],
       "hang",
@@ -328,7 +333,7 @@ printf '%s\\n' '{"type":"agent_end","messages":[]}'
 exit 0
 `;
     const { cwd } = await setupTest({ piScript });
-    const result = await runSingleAgent(
+    const { result } = await runSingleAgent(
       cwd,
       [hangAgent],
       "hang",
@@ -354,7 +359,7 @@ printf '%s\\n' '{"type":"agent_end","messages":[]}'
 exit 0
 `;
     const { cwd } = await setupTest({ piScript });
-    const result = await runSingleAgent(
+    const { result } = await runSingleAgent(
       cwd,
       [hangAgent],
       "hang",
@@ -535,7 +540,7 @@ printf '%s\\n' '{"type":"agent_end","messages":[]}'
 exit 0
 `;
     const { cwd } = await setupTest({ piScript });
-    const result = await runSingleAgent(
+    const { result } = await runSingleAgent(
       cwd,
       [hangAgent],
       "hang",
@@ -563,27 +568,22 @@ exit 0
     const { cwd } = await setupTest({ piScript });
     const controller = new AbortController();
     controller.abort();
-    try {
-      await runSingleAgent(
-        cwd,
-        [hangAgent],
-        "hang",
-        "task",
-        controller.signal,
-        undefined,
-        makeSubagentDetails,
-        undefined,
-        "off",
-      );
-      throw new Error("Expected SubagentAbortError");
-    } catch (error) {
-      expect(error).toBeInstanceOf(SubagentAbortError);
-      const abortError = error as SubagentAbortError;
-      expect(abortError.result.outcome).toBeUndefined();
-      expect(abortError.result.termination?.cancelReason).toBe(
-        "The operation was aborted.",
-      );
-    }
+    const outcome = await runSingleAgent(
+      cwd,
+      [hangAgent],
+      "hang",
+      "task",
+      controller.signal,
+      undefined,
+      makeSubagentDetails,
+      undefined,
+      "off",
+    );
+    expect(outcome.kind).toBe("aborted");
+    expect(outcome.result.outcome).toBeUndefined();
+    expect(outcome.result.termination?.cancelReason).toBe(
+      "The operation was aborted.",
+    );
   });
 
   test("outcome is undefined on timeout child process run", async () => {
@@ -595,24 +595,19 @@ sleep 10
     setTimeout(() => {
       controller.abort();
     }, 10);
-    try {
-      await runSingleAgent(
-        cwd,
-        [hangAgent],
-        "hang",
-        "task",
-        controller.signal,
-        undefined,
-        makeSubagentDetails,
-        undefined,
-        "off",
-      );
-      throw new Error("Expected SubagentAbortError");
-    } catch (error) {
-      expect(error).toBeInstanceOf(SubagentAbortError);
-      const abortError = error as SubagentAbortError;
-      expect(abortError.result.outcome).toBeUndefined();
-    }
+    const outcome = await runSingleAgent(
+      cwd,
+      [hangAgent],
+      "hang",
+      "task",
+      controller.signal,
+      undefined,
+      makeSubagentDetails,
+      undefined,
+      "off",
+    );
+    expect(outcome.kind).toBe("aborted");
+    expect(outcome.result.outcome).toBeUndefined();
   });
 
   test("outcome is undefined on failed child process run", async () => {
@@ -622,7 +617,7 @@ printf '%s\\n' '{"type":"tool_result_end","message":{"role":"toolResult","toolCa
 exit 1
 `;
     const { cwd } = await setupTest({ piScript });
-    const result = await runSingleAgent(
+    const { result } = await runSingleAgent(
       cwd,
       [hangAgent],
       "hang",
@@ -645,7 +640,7 @@ echo "critical stderr message" >&2
 exit 1
 `;
     const { cwd } = await setupTest({ piScript });
-    const result = await runSingleAgent(
+    const { result } = await runSingleAgent(
       cwd,
       [hangAgent],
       "hang",
@@ -668,7 +663,7 @@ echo "Outcome: some legacy parsed outcome"
 exit 1
 `;
     const { cwd } = await setupTest({ piScript });
-    const result = await runSingleAgent(
+    const { result } = await runSingleAgent(
       cwd,
       [hangAgent],
       "hang",

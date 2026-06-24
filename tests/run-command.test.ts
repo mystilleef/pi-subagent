@@ -1395,7 +1395,7 @@ wait $!
   if (!requestId) throw new Error("requestId missing");
   const state = getProgressState(requestId);
   expect(state?.status).toBe("cancelled");
-  expect(state?.errorText).toBe("Subagent was aborted");
+  expect(state?.errorText).toBe("host stopped");
 });
 
 test("/run abort during skill discovery records failed result as cancellation", async () => {
