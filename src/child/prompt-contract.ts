@@ -5,12 +5,13 @@ export const SUBAGENT_RESULT_CONTRACT = `
 
 ### Directives
 
-- Write result as a text response.
-- Emit result to the calling agent without commentary.
-- Call the complete tool as the final action, providing a short, single-sentence outcome.
+- Write the complete result as a text response — mandatory, before calling \`complete\`.
+- Call \`complete\` as the final action; \`outcome\` carries a one-sentence progress
+  summary only, not the result.
 
 ### Constraints
 
+- **NEVER** omit the text response.
 - **NEVER** wrap the entire result in a code block.
 `;
 

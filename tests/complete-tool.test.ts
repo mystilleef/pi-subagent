@@ -35,12 +35,12 @@ import {
 setupHooks();
 
 test("SUBAGENT_RESULT_CONTRACT includes completion and result preservation instructions", () => {
-  expect(SUBAGENT_RESULT_CONTRACT).toContain("complete tool");
+  expect(SUBAGENT_RESULT_CONTRACT).toContain("before calling `complete`");
   expect(SUBAGENT_RESULT_CONTRACT).toContain(
     "**NEVER** wrap the entire result in a code block.",
   );
   expect(SUBAGENT_RESULT_CONTRACT).toContain(
-    "Emit result to the calling agent without commentary.",
+    "**NEVER** omit the text response.",
   );
 });
 

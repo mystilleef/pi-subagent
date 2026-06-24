@@ -1541,12 +1541,12 @@ exit 0
 
 test("SUBAGENT_RESULT_CONTRACT contains complete tool instructions", () => {
   expect(SUBAGENT_RESULT_CONTRACT).toContain(
-    "Write result as a text response.",
+    "Write the complete result as a text response",
   );
   expect(SUBAGENT_RESULT_CONTRACT).toMatch(
-    /Call the complete tool as the final action/,
+    /Call `complete` as the final action/,
   );
-  expect(SUBAGENT_RESULT_CONTRACT).toMatch(/short, single-sentence outcome/i);
+  expect(SUBAGENT_RESULT_CONTRACT).toMatch(/one-sentence progress/i);
   expect(SUBAGENT_RESULT_CONTRACT).not.toMatch(/Outcome: <short/);
 });
 
