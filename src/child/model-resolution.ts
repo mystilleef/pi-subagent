@@ -5,10 +5,10 @@
 
 import {
   clampThinkingLevel,
-  getModel,
   getSupportedThinkingLevels,
   type ModelThinkingLevel,
 } from "@earendil-works/pi-ai";
+import { getModel } from "@earendil-works/pi-ai/compat";
 import type { ThinkingLevel } from "../agent/agents.js";
 
 export type ChildModelSettings = {

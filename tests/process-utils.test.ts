@@ -2,7 +2,7 @@ import { describe, expect, spyOn, test } from "bun:test";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import * as piAi from "@earendil-works/pi-ai";
+import * as piAiCompat from "@earendil-works/pi-ai/compat";
 import {
   appendWithByteLimit,
   resolveCompleteExtensionPath,
@@ -204,7 +204,7 @@ describe("resolveContextWindowTokens", () => {
   });
 
   test("returns undefined when getModel throws an error", () => {
-    const spy = spyOn(piAi, "getModel").mockImplementation(() => {
+    const spy = spyOn(piAiCompat, "getModel").mockImplementation(() => {
       throw new Error("Mocked model lookup failure");
     });
     const msg = { provider: "openai", model: "gpt-4" } as unknown as Parameters<
