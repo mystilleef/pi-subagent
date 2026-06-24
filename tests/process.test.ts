@@ -1552,7 +1552,7 @@ test("SUBAGENT_RESULT_CONTRACT contains complete tool instructions", () => {
 
 test("SUBAGENT_RESULT_CONTRACT narrows code-block constraint to entire-result wrapper", () => {
   expect(SUBAGENT_RESULT_CONTRACT).toMatch(
-    /NEVER.*wrap the entire result in one code block/i,
+    /NEVER.*wrap the entire result in a code block/i,
   );
   expect(SUBAGENT_RESULT_CONTRACT).not.toMatch(
     /NEVER.*wrap result in code blocks/i,
