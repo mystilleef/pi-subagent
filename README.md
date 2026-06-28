@@ -123,12 +123,24 @@ description: Review code for correctness and maintainability.
 ```yaml
 tools: read, bash, edit
 skills: code-review
+extensions: git-summary
+context: false
 thinking: medium
 provider: deepseek
 model: deepseek-v4-flash
 temperature: 0.7
 top_p: 0.9
 ```
+
+- `tools`: Comma-separated list of enabled tools.
+- `skills`: Comma-separated list of skills, or `false` to disable all skills.
+- `extensions`: Comma-separated list of extensions, or `false` to disable all extensions.
+- `context`: Set `false` to exclude default project context files.
+- `thinking`: Thinking level.
+- `provider`: Model provider.
+- `model`: Model identifier.
+- `temperature`: Sampling temperature.
+- `top_p`: Sampling top-p.
 
 ### Accepted thinking values
 
