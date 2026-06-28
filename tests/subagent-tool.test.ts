@@ -4187,3 +4187,311 @@ exit 0
     delete process.env["PI_SAMPLING_PARAMS"];
   }
 });
+
+test("subagent context false passes --no-context-files to child alongside approval tools skills model provider thinking prompt complete-extension sampling-extension result-contract", async () => {
+  const sentMessages: SendMessageArg[] = [];
+  const { agentDir, binDir, cwd } = await setupFakePi();
+  const skillDir = path.join(agentDir, "skills", "helper");
+  await mkdir(skillDir, { recursive: true });
+  await writeFile(
+    path.join(skillDir, "SKILL.md"),
+    `---
+name: helper
+description: Helper skill
+---
+Use helper skill.`,
+  );
+  await writeFile(
+    path.join(agentDir, "agents", "context-off-full.md"),
+    `---
+name: context-off-full
+description: Context off with all features
+context: false
+tools: bash, read
+skills: helper
+model: gpt-4
+provider: openai
+thinking: high
+temperature: 0.7
+top_p: 0.9
+---
+Full feature prompt.`,
+  );
+  await writeFile(
+    path.join(binDir, "pi"),
+    `#!/bin/sh
+printf '%s\\n' "$*" > args.txt
+while [ "$#" -gt 0 ]; do
+  if [ "$1" = "--append-system-prompt" ]; then
+    shift
+    cat "$1" > prompt.txt
+  fi
+  shift
+done
+printf '%s\\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"done"}],"usage":{"input":1,"output":1,"totalTokens":2,"cost":{"total":0}}}}'
+printf '%s\\n' '{"type":"agent_end"}'
+exit 0
+`,
+  );
+  await chmod(path.join(binDir, "pi"), 0o755);
+  const tool = getSubagentTool({
+    sendMessage: (msg) => sentMessages.push(msg),
+    thinkingLevel: "off",
+  });
+  process.env.PI_SUBAGENT_DEPTH = "1";
+  const result = await tool.execute(
+    "test-tool-call",
+    { agent: "context-off-full", task: "context test" },
+    undefined,
+    undefined,
+    { cwd, hasUI: false } as unknown as ExtensionContext,
+  );
+  const argsText = await Bun.file(path.join(cwd, "args.txt")).text();
+  const promptText = await Bun.file(path.join(cwd, "prompt.txt")).text();
+  expect((result.content[0] as TextContent).text).toContain("done");
+  expect(argsText).toContain("--no-context-files");
+  expect(argsText).toContain("--approve");
+  expect(argsText).toContain("--provider openai");
+  expect(argsText).toContain("--model gpt-4");
+  expect(argsText).toMatch(/--thinking \S+/);
+  expect(argsText).toContain("--tools bash,read,complete");
+  expect(argsText).toContain("--no-skills --skill");
+  expect(argsText).toContain(path.join(skillDir, "SKILL.md"));
+  expect(argsText).toContain("--append-system-prompt");
+  expect(argsText).toContain("--extension");
+  expect(argsText).toContain("Task: context test");
+  expect(argsText).toContain(SUBAGENT_RESULT_CONTRACT);
+  expect(argsText).toContain("--no-themes");
+  expect(argsText).toContain("--no-prompt-templates");
+  expect(promptText).toBe("Full feature prompt.");
+  expect((argsText.match(/--no-context-files/g) ?? []).length).toBe(1);
+  expect((result.details as SubagentDetails).results[0]?.agentSource).toBe(
+    "user",
+  );
+  expect(listRunJobs()).toHaveLength(0);
+});
+
+test("subagent context absent omits --no-context-files from child args", async () => {
+  const sentMessages: SendMessageArg[] = [];
+  const { binDir, cwd } = await setupFakePi();
+  await writeFile(
+    path.join(binDir, "pi"),
+    `#!/bin/sh
+printf '%s\\n' "$*" > args.txt
+printf '%s\\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"done"}],"usage":{"input":1,"output":1,"totalTokens":2,"cost":{"total":0}}}}'
+printf '%s\\n' '{"type":"agent_end"}'
+exit 0
+`,
+  );
+  await chmod(path.join(binDir, "pi"), 0o755);
+  const tool = getSubagentTool({
+    sendMessage: (msg) => sentMessages.push(msg),
+  });
+  process.env.PI_SUBAGENT_DEPTH = "1";
+  const result = await tool.execute(
+    "test-tool-call",
+    { agent: "hang", task: "no context" },
+    undefined,
+    undefined,
+    { cwd, hasUI: false } as unknown as ExtensionContext,
+  );
+  const argsText = await Bun.file(path.join(cwd, "args.txt")).text();
+  expect((result.content[0] as TextContent).text).toBe("done");
+  expect(argsText).not.toContain("--no-context-files");
+  expect(argsText).toContain("--approve");
+  expect(argsText).toContain("Task: no context");
+  expect(argsText).toContain(SUBAGENT_RESULT_CONTRACT);
+  expect(argsText).toContain("--no-themes");
+  expect(argsText).toContain("--no-prompt-templates");
+  expect(listRunJobs()).toHaveLength(0);
+});
+
+test("subagent invalid context string rejects agent before child spawn", async () => {
+  const sentMessages: SendMessageArg[] = [];
+  const { agentDir, cwd } = await setupFakePi();
+  await writeFile(
+    path.join(agentDir, "agents", "context-string.md"),
+    `---
+name: context-string
+description: Context string agent
+context: "false"
+---
+Prompt.`,
+  );
+  const tool = getSubagentTool({
+    sendMessage: (msg) => sentMessages.push(msg),
+  });
+  const result = await tool.execute(
+    "test-tool-call",
+    { agent: "context-string", task: "should not spawn" },
+    undefined,
+    undefined,
+    { cwd, hasUI: false } as unknown as ExtensionContext,
+  );
+  expect((result.content[0] as TextContent).text).toContain(
+    'Unknown agent: "context-string"',
+  );
+  expect(sentMessages).toHaveLength(0);
+  expect(listRunJobs()).toHaveLength(0);
+});
+
+test("subagent context false does not leak --no-context-files to subsequent context-absent invocation", async () => {
+  const sentMessages: SendMessageArg[] = [];
+  const { agentDir, binDir, cwd } = await setupFakePi();
+  await writeFile(
+    path.join(agentDir, "agents", "ctx-off.md"),
+    `---
+name: ctx-off
+description: Context off agent
+context: false
+---
+Context off prompt.`,
+  );
+  await writeFile(
+    path.join(binDir, "pi"),
+    `#!/bin/sh
+printf '%s\\n' "$*" > args.txt
+printf '%s\\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"done"}],"usage":{"input":1,"output":1,"totalTokens":2,"cost":{"total":0}}}}'
+printf '%s\\n' '{"type":"agent_end"}'
+exit 0
+`,
+  );
+  await chmod(path.join(binDir, "pi"), 0o755);
+  const tool = getSubagentTool({
+    sendMessage: (msg) => sentMessages.push(msg),
+  });
+  process.env.PI_SUBAGENT_DEPTH = "1";
+  const ctxOffResult = await tool.execute(
+    "run-1",
+    { agent: "ctx-off", task: "first" },
+    undefined,
+    undefined,
+    { cwd, hasUI: false } as unknown as ExtensionContext,
+  );
+  const argsOff = await Bun.file(path.join(cwd, "args.txt")).text();
+  expect((ctxOffResult.content[0] as TextContent).text).toBe("done");
+  expect(argsOff).toContain("--no-context-files");
+  const hangResult = await tool.execute(
+    "run-2",
+    { agent: "hang", task: "second" },
+    undefined,
+    undefined,
+    { cwd, hasUI: false } as unknown as ExtensionContext,
+  );
+  const argsHang = await Bun.file(path.join(cwd, "args.txt")).text();
+  expect((hangResult.content[0] as TextContent).text).toBe("done");
+  expect(argsHang).not.toContain("--no-context-files");
+  expect(argsHang).toContain("--approve");
+  expect(argsHang).toContain("Task: second");
+  expect(listRunJobs()).toHaveLength(0);
+});
+
+test("subagent skills false passes --no-skills without skill paths to child and does not trigger skill resolution", async () => {
+  const sentMessages: SendMessageArg[] = [];
+  const { agentDir, binDir, cwd } = await setupFakePi();
+  const skillDir = path.join(agentDir, "skills", "nonexistent");
+  await mkdir(skillDir, { recursive: true });
+  await writeFile(
+    path.join(skillDir, "SKILL.md"),
+    `---
+name: nonexistent
+description: Should not be loaded
+---
+Ghost skill.`,
+  );
+  await writeFile(
+    path.join(agentDir, "agents", "skills-off.md"),
+    `---
+name: skills-off
+description: Skills disabled agent
+skills: false
+---
+No skills prompt.`,
+  );
+  await writeFile(
+    path.join(binDir, "pi"),
+    `#!/bin/sh
+printf '%s\\n' "$*" > args.txt
+printf '%s\\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"done"}],"usage":{"input":1,"output":1,"totalTokens":2,"cost":{"total":0}}}}'
+printf '%s\\n' '{"type":"agent_end"}'
+exit 0
+`,
+  );
+  await chmod(path.join(binDir, "pi"), 0o755);
+  const tool = getSubagentTool({
+    sendMessage: (msg) => sentMessages.push(msg),
+  });
+  process.env.PI_SUBAGENT_DEPTH = "1";
+  const result = await tool.execute(
+    "test-tool-call",
+    { agent: "skills-off", task: "skills off test" },
+    undefined,
+    undefined,
+    { cwd, hasUI: false } as unknown as ExtensionContext,
+  );
+  const argsText = await Bun.file(path.join(cwd, "args.txt")).text();
+  expect((result.content[0] as TextContent).text).toBe("done");
+  expect(argsText).toContain("--no-skills");
+  expect(argsText).not.toContain("--skill");
+  expect(argsText).not.toContain("nonexistent");
+  expect(argsText).toContain("--no-themes");
+  expect(argsText).toContain("--no-prompt-templates");
+  expect(argsText).toContain("--approve");
+  expect(argsText).toContain("Task: skills off test");
+  expect(argsText).toContain(SUBAGENT_RESULT_CONTRACT);
+  expect((result.details as SubagentDetails).results[0]?.agentSource).toBe(
+    "user",
+  );
+  expect(listRunJobs()).toHaveLength(0);
+});
+
+test("subagent skills false does not leak --no-skills to subsequent skills-absent invocation", async () => {
+  const sentMessages: SendMessageArg[] = [];
+  const { agentDir, binDir, cwd } = await setupFakePi();
+  await writeFile(
+    path.join(agentDir, "agents", "skills-off-2.md"),
+    `---
+name: skills-off-2
+description: Skills disabled agent 2
+skills: false
+---
+No skills prompt.`,
+  );
+  await writeFile(
+    path.join(binDir, "pi"),
+    `#!/bin/sh
+printf '%s\\n' "$*" > args.txt
+printf '%s\\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"done"}],"usage":{"input":1,"output":1,"totalTokens":2,"cost":{"total":0}}}}'
+printf '%s\\n' '{"type":"agent_end"}'
+exit 0
+`,
+  );
+  await chmod(path.join(binDir, "pi"), 0o755);
+  const tool = getSubagentTool({
+    sendMessage: (msg) => sentMessages.push(msg),
+  });
+  process.env.PI_SUBAGENT_DEPTH = "1";
+  const skillsOffResult = await tool.execute(
+    "run-1",
+    { agent: "skills-off-2", task: "first" },
+    undefined,
+    undefined,
+    { cwd, hasUI: false } as unknown as ExtensionContext,
+  );
+  const argsOff = await Bun.file(path.join(cwd, "args.txt")).text();
+  expect((skillsOffResult.content[0] as TextContent).text).toBe("done");
+  expect(argsOff).toContain("--no-skills");
+  const hangResult = await tool.execute(
+    "run-2",
+    { agent: "hang", task: "second" },
+    undefined,
+    undefined,
+    { cwd, hasUI: false } as unknown as ExtensionContext,
+  );
+  const argsHang = await Bun.file(path.join(cwd, "args.txt")).text();
+  expect((hangResult.content[0] as TextContent).text).toBe("done");
+  expect(argsHang).not.toContain("--no-skills");
+  expect(argsHang).toContain("--approve");
+  expect(argsHang).toContain("Task: second");
+  expect(listRunJobs()).toHaveLength(0);
+});

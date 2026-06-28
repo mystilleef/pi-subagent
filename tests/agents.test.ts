@@ -9,6 +9,16 @@ import {
 } from "../src/agent/agents.js";
 import { setupFakePi } from "./helpers.js";
 
+async function discoverAgent(
+  yamlBody: string,
+  agentName: string,
+): ReturnType<typeof discoverAgentsAsync> {
+  const { agentDir, cwd } = await setupFakePi();
+  const userDir = path.join(agentDir, "agents");
+  await writeFile(path.join(userDir, `${agentName}.md`), yamlBody);
+  return discoverAgentsAsync(cwd, "user");
+}
+
 async function withCapturedWarnings<T>(
   fn: () => Promise<T>,
 ): Promise<{ result: T; warnings: string[] }> {
@@ -835,6 +845,273 @@ Prompt`,
   ).toBe(true);
 });
 
+test("context false discovery stores agent.context === false as own property", async () => {
+  const discovery = await discoverAgent(
+    `---
+name: context-false
+description: Context false agent
+context: false
+---
+Prompt`,
+    "context-false",
+  );
+  const agent = discovery.agents.find((a) => a.name === "context-false");
+  expect(agent).toBeDefined();
+  expect(agent?.context).toBe(false);
+  if (agent) expect(Object.hasOwn(agent, "context")).toBe(true);
+});
+
+test("context true discovery omits own context property", async () => {
+  const discovery = await discoverAgent(
+    `---
+name: context-true
+description: Context true agent
+context: true
+---
+Prompt`,
+    "context-true",
+  );
+  const agent = discovery.agents.find((a) => a.name === "context-true");
+  expect(agent).toBeDefined();
+  if (agent) {
+    expect(Object.hasOwn(agent, "context")).toBe(false);
+    expect(agent.context).toBeUndefined();
+  }
+});
+
+test("omitted context field discovery omits own context property", async () => {
+  const discovery = await discoverAgent(
+    `---
+name: no-context
+description: No context field
+---
+Prompt`,
+    "no-context",
+  );
+  const agent = discovery.agents.find((a) => a.name === "no-context");
+  expect(agent).toBeDefined();
+  if (agent) {
+    expect(Object.hasOwn(agent, "context")).toBe(false);
+    expect(agent.context).toBeUndefined();
+  }
+});
+
+test("non-boolean context string rejects agent from discovery", async () => {
+  const discovery = await discoverAgent(
+    `---
+name: context-string
+description: Context string agent
+context: "false"
+---
+Prompt`,
+    "context-string",
+  );
+  expect(
+    discovery.agents.find((a) => a.name === "context-string"),
+  ).toBeUndefined();
+});
+
+test("non-boolean context number rejects agent from discovery", async () => {
+  const discovery = await discoverAgent(
+    `---
+name: context-number
+description: Context number agent
+context: 0
+---
+Prompt`,
+    "context-number",
+  );
+  expect(
+    discovery.agents.find((a) => a.name === "context-number"),
+  ).toBeUndefined();
+});
+
+test("non-boolean context array rejects agent from discovery", async () => {
+  const discovery = await discoverAgent(
+    `---
+name: context-array
+description: Context array agent
+context:
+  - false
+---
+Prompt`,
+    "context-array",
+  );
+  expect(
+    discovery.agents.find((a) => a.name === "context-array"),
+  ).toBeUndefined();
+});
+
+test("non-boolean context object rejects agent from discovery", async () => {
+  const discovery = await discoverAgent(
+    `---
+name: context-object
+description: Context object agent
+context:
+  enabled: false
+---
+Prompt`,
+    "context-object",
+  );
+  expect(
+    discovery.agents.find((a) => a.name === "context-object"),
+  ).toBeUndefined();
+});
+
+test("bare YAML context null rejects agent from discovery", async () => {
+  const discovery = await discoverAgent(
+    `---
+name: context-null
+description: Context null agent
+context:
+---
+Prompt`,
+    "context-null",
+  );
+  expect(
+    discovery.agents.find((a) => a.name === "context-null"),
+  ).toBeUndefined();
+});
+
+test("context false coexists with sibling model tools skills sampling fields", async () => {
+  const discovery = await discoverAgent(
+    `---
+name: context-false-siblings
+description: Context false with siblings
+context: false
+model: claude-sonnet-4
+provider: anthropic
+tools: bash, read
+skills: helper, reviewer
+thinking: high
+temperature: 0.5
+top_p: 0.9
+---
+Prompt`,
+    "context-false-siblings",
+  );
+  const agent = discovery.agents.find(
+    (a) => a.name === "context-false-siblings",
+  );
+  expect(agent).toBeDefined();
+  if (agent) {
+    expect(agent.context).toBe(false);
+    expect(Object.hasOwn(agent, "context")).toBe(true);
+    expect(agent.model).toBe("claude-sonnet-4");
+    expect(agent.provider).toBe("anthropic");
+    expect(agent.tools).toEqual(["bash", "read"]);
+    expect(agent.skills).toEqual(["helper", "reviewer"]);
+    expect(agent.thinking).toBe("high");
+    expect(agent.temperature).toBe(0.5);
+    expect(agent.topP).toBe(0.9);
+  }
+});
+
+test("context true coexists with sibling fields and omits own context", async () => {
+  const discovery = await discoverAgent(
+    `---
+name: context-true-siblings
+description: Context true with siblings
+context: true
+model: gpt-5
+tools: bash
+---
+Prompt`,
+    "context-true-siblings",
+  );
+  const agent = discovery.agents.find(
+    (a) => a.name === "context-true-siblings",
+  );
+  expect(agent).toBeDefined();
+  if (agent) {
+    expect(Object.hasOwn(agent, "context")).toBe(false);
+    expect(agent.context).toBeUndefined();
+    expect(agent.model).toBe("gpt-5");
+    expect(agent.tools).toEqual(["bash"]);
+  }
+});
+
+test("skills false discovery stores agent.skills === false as own property", async () => {
+  const discovery = await discoverAgent(
+    `---
+name: skills-false
+description: Skills false agent
+skills: false
+---
+Prompt`,
+    "skills-false",
+  );
+  const agent = discovery.agents.find((a) => a.name === "skills-false");
+  expect(agent).toBeDefined();
+  if (agent) {
+    expect(agent.skills).toBe(false);
+    expect(Object.hasOwn(agent, "skills")).toBe(true);
+  }
+});
+
+test("skills true rejects agent from discovery", async () => {
+  const discovery = await discoverAgent(
+    `---
+name: skills-true
+description: Skills true agent
+skills: true
+---
+Prompt`,
+    "skills-true",
+  );
+  expect(
+    discovery.agents.find((a) => a.name === "skills-true"),
+  ).toBeUndefined();
+});
+
+test("skills number rejects agent from discovery", async () => {
+  const discovery = await discoverAgent(
+    `---
+name: skills-number
+description: Skills number agent
+skills: 42
+---
+Prompt`,
+    "skills-number",
+  );
+  expect(
+    discovery.agents.find((a) => a.name === "skills-number"),
+  ).toBeUndefined();
+});
+
+test("skills false coexists with sibling model tools context sampling fields", async () => {
+  const discovery = await discoverAgent(
+    `---
+name: skills-false-siblings
+description: Skills false with siblings
+skills: false
+context: false
+model: claude-sonnet-4
+provider: anthropic
+tools: bash, read
+thinking: high
+temperature: 0.5
+top_p: 0.9
+---
+Prompt`,
+    "skills-false-siblings",
+  );
+  const agent = discovery.agents.find(
+    (a) => a.name === "skills-false-siblings",
+  );
+  expect(agent).toBeDefined();
+  if (agent) {
+    expect(agent.skills).toBe(false);
+    expect(agent.context).toBe(false);
+    expect(agent.model).toBe("claude-sonnet-4");
+    expect(agent.provider).toBe("anthropic");
+    expect(agent.tools).toEqual(["bash", "read"]);
+    expect(agent.thinking).toBe("high");
+    expect(agent.temperature).toBe(0.5);
+    expect(agent.topP).toBe(0.9);
+  }
+});
+
 test("null sampling frontmatter values are rejected with warning and omitted", async () => {
   const { agentDir, cwd } = await setupFakePi();
   const userDir = path.join(agentDir, "agents");
@@ -865,4 +1142,42 @@ Prompt`,
   expect(
     warnings.some((w) => w.includes("null-sampling") && w.includes("top_p")),
   ).toBe(true);
+});
+
+test("bare YAML skills null discovers agent with skills as empty array own property", async () => {
+  const discovery = await discoverAgent(
+    `---
+name: skills-null
+description: Skills null agent
+skills:
+---
+Prompt`,
+    "skills-null",
+  );
+  const agent = discovery.agents.find((a) => a.name === "skills-null");
+  expect(agent).toBeDefined();
+  if (agent) {
+    expect(Array.isArray(agent.skills)).toBe(true);
+    expect(agent.skills).toHaveLength(0);
+    expect(Object.hasOwn(agent, "skills")).toBe(true);
+  }
+});
+
+test("empty string skills discovers agent with skills as empty array own property", async () => {
+  const discovery = await discoverAgent(
+    `---
+name: skills-empty
+description: Skills empty agent
+skills: ""
+---
+Prompt`,
+    "skills-empty",
+  );
+  const agent = discovery.agents.find((a) => a.name === "skills-empty");
+  expect(agent).toBeDefined();
+  if (agent) {
+    expect(Array.isArray(agent.skills)).toBe(true);
+    expect(agent.skills).toHaveLength(0);
+    expect(Object.hasOwn(agent, "skills")).toBe(true);
+  }
 });

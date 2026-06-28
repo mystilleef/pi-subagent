@@ -21,8 +21,9 @@ export type ThinkingLevel = (typeof THINKING_LEVELS)[number];
 export interface AgentConfig {
   name: string;
   description: string;
+  context?: false | undefined;
   tools?: string[] | undefined;
-  skills?: string[] | undefined;
+  skills?: string[] | false | undefined;
   thinking?: ThinkingLevel | undefined;
   model?: string | undefined;
   provider?: string | undefined;
@@ -124,6 +125,7 @@ function parseAgentConfig(
   const {
     name,
     description,
+    context: rawContext,
     tools: rawTools,
     skills: rawSkills,
     thinking: rawThinking,
@@ -133,14 +135,20 @@ function parseAgentConfig(
     top_p: rawTopP,
   } = frontmatter;
   if (typeof name !== "string" || typeof description !== "string") return null;
+  if (rawContext !== undefined && typeof rawContext !== "boolean") return null;
   if (isNonStringOptional(rawTools)) return null;
-  if (isNonStringOptional(rawSkills)) return null;
+  if (rawSkills != null && typeof rawSkills !== "string" && rawSkills !== false)
+    return null;
   if (isNonStringOptional(rawThinking)) return null;
   if (isNonStringOptional(rawModel)) return null;
   if (isNonStringOptional(rawProvider)) return null;
   const tools = parseCommaList(rawTools);
   const skills =
-    rawSkills !== undefined ? (parseCommaList(rawSkills) ?? []) : undefined;
+    rawSkills === false
+      ? false
+      : rawSkills !== undefined
+        ? (parseCommaList(rawSkills) ?? [])
+        : undefined;
   const thinking = parseThinkingLevel(rawThinking);
   const model = parseOptionalString(rawModel);
   const provider = parseOptionalString(rawProvider);
@@ -158,6 +166,7 @@ function parseAgentConfig(
     systemPrompt: body,
     source,
     filePath,
+    ...(rawContext === false && { context: false }),
     ...(temperature !== undefined && { temperature }),
     ...(topP !== undefined && { topP }),
   };

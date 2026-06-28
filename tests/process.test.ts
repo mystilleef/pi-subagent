@@ -7,7 +7,7 @@ import {
   DefaultResourceLoader,
   type ExtensionAPI,
 } from "@earendil-works/pi-coding-agent";
-import type { AgentConfig } from "../src/agent/agents.js";
+import { type AgentConfig, discoverAgentsAsync } from "../src/agent/agents.js";
 import type { RunSingleAgentResult } from "../src/child/process.js";
 import { makeEmitUpdate, runSingleAgent } from "../src/child/process.js";
 import { resolveSamplingExtensionPath } from "../src/child/process-utils.js";
@@ -37,6 +37,7 @@ import {
   hangAgent,
   makeSubagentDetails,
   makeSubagentToolUpdateLine,
+  setupFakePi,
   setupHooks,
   setupTest,
   shellQuote,
@@ -3481,4 +3482,186 @@ describe("T-004: runtime finalOutput construction invariants", () => {
     expect(result.stopReason).toBeUndefined();
     expect(result.messages).toHaveLength(0);
   });
+});
+
+test("buildPiArgs appends --no-context-files when agent.context is false", async () => {
+  const agent: AgentConfig = {
+    ...hangAgent,
+    context: false,
+  };
+  const args = await captureRunSingleAgentArgs(agent, undefined);
+  expect(args).toContain("--no-context-files");
+  expect(args.filter((a) => a === "--no-context-files")).toHaveLength(1);
+});
+
+test("buildPiArgs omits --no-context-files when agent.context is undefined", async () => {
+  const args = await captureRunSingleAgentArgs(hangAgent, undefined);
+  expect(args).not.toContain("--no-context-files");
+});
+
+test("buildPiArgs --no-context-files coexists with approval, model, provider, thinking, tools, prompt, and complete extension", async () => {
+  const agent: AgentConfig = {
+    ...hangAgent,
+    context: false,
+    tools: ["bash", "read"],
+    thinking: "high",
+    model: "gpt-4",
+    provider: "openai",
+  };
+  const args = await captureRunSingleAgentArgs(agent, {
+    provider: "anthropic",
+    id: "claude-3-7-sonnet-20250219",
+  });
+  expect(args).toContain("--no-context-files");
+  expect(args).toContain("--approve");
+  expect(flagValues(args, "--provider")).toEqual(["openai"]);
+  expect(flagValues(args, "--model")).toEqual(["gpt-4"]);
+  expect(args).toContain("--thinking");
+  expect(flagValues(args, "--thinking")).toEqual(["off"]);
+  expect(args).toContain("--tools");
+  expect(args).toContain("--append-system-prompt");
+  expect(args.some((a) => a.startsWith("Task: "))).toBe(true);
+});
+
+test("buildPiArgs --no-context-files coexists with sampling extension args", async () => {
+  const { cwd } = await setupTest({
+    piScript: `#!/bin/sh
+printf '%s\\n' "$@" > args.txt
+printf '%s\\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"done"}],"api":"fake","provider":"fake","model":"fake","usage":{"input":1,"output":1,"cacheRead":0,"cacheWrite":0,"totalTokens":2,"cost":{"total":0}},"stopReason":"stop","timestamp":0}}'
+printf '%s\\n' '{"type":"agent_end","messages":[]}'
+exit 0
+`,
+  });
+  const agent: AgentConfig = {
+    ...hangAgent,
+    context: false,
+    temperature: 0.7,
+  };
+  const { result } = await runSingleAgent(
+    cwd,
+    [agent],
+    agent.name,
+    "task",
+    undefined,
+    undefined,
+    makeSubagentDetails,
+    undefined,
+    "off",
+  );
+  expect(result.exitCode).toBe(0);
+  const args = fs
+    .readFileSync(path.join(cwd, "args.txt"), "utf8")
+    .trimEnd()
+    .split("\n");
+  expect(args).toContain("--no-context-files");
+  expect(flagValues(args, "--extension")).toContain(
+    resolveSamplingExtensionPath(),
+  );
+});
+
+test("buildPiArgs omits --no-context-files for depth-limit and unknown-agent failures", async () => {
+  process.env.PI_SUBAGENT_DEPTH = "3";
+  const { result: depthResult } = await runSingleAgent(
+    "/tmp",
+    [{ ...hangAgent, context: false }],
+    "hang",
+    "task",
+    undefined,
+    undefined,
+    makeSubagentDetails,
+    undefined,
+    "off",
+  );
+  expect(depthResult.exitCode).toBe(1);
+  expect(depthResult.stderr).toContain("depth 3/3");
+  const { result: unknownResult } = await runSingleAgent(
+    "/tmp",
+    [{ ...hangAgent, context: false }],
+    "missing",
+    "task",
+    undefined,
+    undefined,
+    makeSubagentDetails,
+    undefined,
+    "off",
+  );
+  expect(unknownResult.exitCode).toBe(1);
+  expect(unknownResult.stderr).toContain("Unknown agent");
+});
+
+test("buildPiArgs always includes --no-themes", async () => {
+  const args = await captureRunSingleAgentArgs(hangAgent, undefined);
+  expect(args).toContain("--no-themes");
+});
+
+test("buildPiArgs always includes --no-prompt-templates", async () => {
+  const args = await captureRunSingleAgentArgs(hangAgent, undefined);
+  expect(args).toContain("--no-prompt-templates");
+});
+
+test("buildPiArgs --no-themes and --no-prompt-templates coexist with --no-context-files and model flags", async () => {
+  const agent: AgentConfig = {
+    ...hangAgent,
+    context: false,
+    model: "gpt-4",
+    provider: "openai",
+  };
+  const args = await captureRunSingleAgentArgs(agent, undefined);
+  expect(args).toContain("--no-themes");
+  expect(args).toContain("--no-prompt-templates");
+  expect(args).toContain("--no-context-files");
+  expect(flagValues(args, "--model")).toEqual(["gpt-4"]);
+});
+
+test("buildPiArgs appends --no-skills with no paths when agent.skills is false", async () => {
+  const agent: AgentConfig = { ...hangAgent, skills: false };
+  const args = await captureRunSingleAgentArgs(agent, undefined);
+  const idx = args.indexOf("--no-skills");
+  expect(idx).toBeGreaterThanOrEqual(0);
+  expect(args[idx + 1]).not.toBe(undefined);
+  const nextFlag = args[idx + 1];
+  expect(nextFlag?.startsWith("--") || nextFlag?.startsWith("Task:")).toBe(
+    true,
+  );
+});
+
+test("buildPiArgs appends --no-skills with no paths when agent.skills is empty array", async () => {
+  const agent: AgentConfig = { ...hangAgent, skills: [] };
+  const args = await captureRunSingleAgentArgs(agent, undefined);
+  const idx = args.indexOf("--no-skills");
+  expect(idx).toBeGreaterThanOrEqual(0);
+  expect(args[idx + 1]).not.toBe(undefined);
+  const nextFlag = args[idx + 1];
+  expect(nextFlag?.startsWith("--") || nextFlag?.startsWith("Task:")).toBe(
+    true,
+  );
+});
+
+test("buildPiArgs omits --no-skills when agent.skills is undefined", async () => {
+  const args = await captureRunSingleAgentArgs(hangAgent, undefined);
+  expect(args).not.toContain("--no-skills");
+});
+
+test("discovery-normalized context true omits --no-context-files from child args", async () => {
+  const { agentDir, cwd } = await setupFakePi();
+  const agentsDir = path.join(agentDir, "agents");
+  await fs.promises.writeFile(
+    path.join(agentsDir, "context-true.md"),
+    `---
+name: context-true
+context: true
+description: Context true agent
+---
+Prompt.`,
+  );
+  const discovery = await discoverAgentsAsync(cwd, "user");
+  const discoveredAgent = discovery.agents.find(
+    (a) => a.name === "context-true",
+  );
+  if (!discoveredAgent) throw new Error("context-true agent not discovered");
+  expect(Object.hasOwn(discoveredAgent, "context")).toBe(false);
+  expect(discoveredAgent.context).toBeUndefined();
+  const args = await captureRunSingleAgentArgs(discoveredAgent, undefined);
+  expect(args).not.toContain("--no-context-files");
+  expect(args).toContain("--approve");
 });

@@ -373,7 +373,15 @@ function buildPiArgs(
   resolvedSkills: { args: string[] },
   tmpPrompt: { filePath: string } | null,
 ): string[] {
-  const args: string[] = ["--mode", "json", "-p", "--no-session", "--approve"];
+  const args: string[] = [
+    "--mode",
+    "json",
+    "-p",
+    "--no-session",
+    "--approve",
+    "--no-themes",
+    "--no-prompt-templates",
+  ];
   if (effectiveModel.provider && effectiveModel.id)
     args.push("--provider", effectiveModel.provider);
   if (effectiveModel.id) args.push("--model", effectiveModel.id);
@@ -383,7 +391,9 @@ function buildPiArgs(
     tools.add("complete");
     args.push("--tools", [...tools].join(","));
   }
-  if (agent.skills) args.push("--no-skills", ...resolvedSkills.args);
+  if (agent.skills !== undefined)
+    args.push("--no-skills", ...resolvedSkills.args);
+  if (agent.context === false) args.push("--no-context-files");
   if (tmpPrompt) {
     args.push("--append-system-prompt", tmpPrompt.filePath);
   }
