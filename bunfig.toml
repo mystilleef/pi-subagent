@@ -9,6 +9,7 @@ coverageDir = "./coverage"
 coveragePathIgnorePatterns = [
   "tests/**",
   "node_modules/**",
+  "**/pi-subagent-test-*/**",
   "**/*.test.ts",
   "**/*.spec.ts",
   "**/*.e2e.ts",
