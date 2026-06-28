@@ -44,6 +44,17 @@ export function resolveSamplingExtensionPath(dir?: string): string {
 }
 
 /**
+ * Resolves the absolute path to the pi-subagent package entry extension file.
+ * This is the main index that registers the subagent tool and commands.
+ * Prefers the extension matching the current runtime, then falls back to the
+ * alternate extension. Throws if neither exists.
+ * Pass `dir` in tests to use a controlled directory.
+ */
+export function resolvePackageExtensionPath(dir?: string): string {
+  return resolveExtensionPath("../index", dir);
+}
+
+/**
  * Appends data to a string while enforcing a maximum byte limit.
  * Handles both string and Buffer inputs, truncating at valid UTF-8 boundaries.
  */

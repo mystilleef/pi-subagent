@@ -24,6 +24,7 @@ export interface AgentConfig {
   context?: false | undefined;
   tools?: string[] | undefined;
   skills?: string[] | false | undefined;
+  extensions?: string[] | undefined;
   thinking?: ThinkingLevel | undefined;
   model?: string | undefined;
   provider?: string | undefined;
@@ -70,6 +71,21 @@ function parseCommaList(raw: unknown): string[] | undefined {
     .map((s) => s.trim())
     .filter(Boolean);
   return items.length > 0 ? items : undefined;
+}
+
+function parseExtensions(raw: unknown): string[] | undefined {
+  if (raw === undefined) return undefined;
+  if (raw === false || Array.isArray(raw)) return [];
+  if (typeof raw === "string") {
+    const trimmed = raw.trim();
+    if (trimmed.length === 0) return [];
+    const items = trimmed
+      .split(",")
+      .map((s) => s.trim())
+      .filter(Boolean);
+    return items.length > 0 ? items : [];
+  }
+  return undefined;
 }
 
 function parseThinkingLevel(raw: unknown): ThinkingLevel | undefined {
@@ -128,6 +144,7 @@ function parseAgentConfig(
     context: rawContext,
     tools: rawTools,
     skills: rawSkills,
+    extensions: rawExtensions,
     thinking: rawThinking,
     model: rawModel,
     provider: rawProvider,
@@ -138,6 +155,13 @@ function parseAgentConfig(
   if (rawContext !== undefined && typeof rawContext !== "boolean") return null;
   if (isNonStringOptional(rawTools)) return null;
   if (rawSkills != null && typeof rawSkills !== "string" && rawSkills !== false)
+    return null;
+  if (
+    rawExtensions !== undefined &&
+    rawExtensions !== false &&
+    typeof rawExtensions !== "string" &&
+    !(Array.isArray(rawExtensions) && rawExtensions.length === 0)
+  )
     return null;
   if (isNonStringOptional(rawThinking)) return null;
   if (isNonStringOptional(rawModel)) return null;
@@ -155,6 +179,7 @@ function parseAgentConfig(
   if (provider !== undefined && model === undefined) return null;
   const temperature = parseSamplingValue(rawTemperature, "temperature", name);
   const topP = parseSamplingValue(rawTopP, "top_p", name);
+  const extensions = parseExtensions(rawExtensions);
   return {
     name,
     description,
@@ -169,6 +194,7 @@ function parseAgentConfig(
     ...(rawContext === false && { context: false }),
     ...(temperature !== undefined && { temperature }),
     ...(topP !== undefined && { topP }),
+    ...(extensions !== undefined && { extensions }),
   };
 }
 

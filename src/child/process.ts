@@ -21,6 +21,7 @@ import {
   getPiInvocation,
   getSubagentDepth,
   getSubagentRuntimeLimits,
+  resolveAgentExtensionPaths,
   resolveAgentSkillArgs,
   subagentDepthEnv,
 } from "../shared/utils.js";
@@ -40,6 +41,7 @@ import {
 import {
   appendWithByteLimit,
   resolveCompleteExtensionPath,
+  resolvePackageExtensionPath,
   resolveSamplingExtensionPath,
 } from "./process-utils.js";
 import { appendSubagentResultContract } from "./prompt-contract.js";
@@ -69,6 +71,7 @@ import {
 
 const COMPLETE_EXTENSION_PATH = resolveCompleteExtensionPath();
 const SAMPLING_EXTENSION_PATH = resolveSamplingExtensionPath();
+const PACKAGE_EXTENSION_PATH = resolvePackageExtensionPath();
 
 export { resolveThinkingLevel } from "./model-resolution.js";
 export { makeEmitUpdate } from "./streaming-progress.js";
@@ -365,13 +368,14 @@ function buildSamplingEnv(agent: AgentConfig): string | undefined {
   });
 }
 
-function buildPiArgs(
+export function buildPiArgs(
   agent: AgentConfig,
   task: string,
   effectiveModel: ChildModelSettings,
   thinking: ThinkingLevel,
   resolvedSkills: { args: string[] },
   tmpPrompt: { filePath: string } | null,
+  resolvedExtensionPaths?: string[],
 ): string[] {
   const args: string[] = [
     "--mode",
@@ -382,6 +386,9 @@ function buildPiArgs(
     "--no-themes",
     "--no-prompt-templates",
   ];
+  if (agent.extensions !== undefined) {
+    args.push("--no-extensions");
+  }
   if (effectiveModel.provider && effectiveModel.id)
     args.push("--provider", effectiveModel.provider);
   if (effectiveModel.id) args.push("--model", effectiveModel.id);
@@ -396,6 +403,16 @@ function buildPiArgs(
   if (agent.context === false) args.push("--no-context-files");
   if (tmpPrompt) {
     args.push("--append-system-prompt", tmpPrompt.filePath);
+  }
+  if (agent.extensions !== undefined) {
+    args.push("--extension", PACKAGE_EXTENSION_PATH);
+    if (resolvedExtensionPaths && resolvedExtensionPaths.length > 0) {
+      for (const rp of resolvedExtensionPaths) {
+        if (rp !== PACKAGE_EXTENSION_PATH) {
+          args.push("--extension", rp);
+        }
+      }
+    }
   }
   args.push("--extension", COMPLETE_EXTENSION_PATH);
   const taskPrompt = task
@@ -558,6 +575,15 @@ export async function runSingleAgent(
     agent.skills
       ? resolveAgentSkillArgs(defaultCwd, agent.skills)
       : Promise.resolve({ args: [] });
+  const extensionNames =
+    agent.extensions && agent.extensions.length > 0
+      ? agent.extensions
+      : undefined;
+  const resolvedExtensionsPromise: Promise<
+    { resolvedPaths: string[] } | { error: string }
+  > = extensionNames
+    ? resolveAgentExtensionPaths(defaultCwd, extensionNames)
+    : Promise.resolve({ resolvedPaths: [] });
   const promptSetupPromise = beginPromptSetup(agent);
   const resolvedSkills = await resolvedSkillsPromise;
   if ("error" in resolvedSkills) {
@@ -574,8 +600,34 @@ export async function runSingleAgent(
       ),
     };
   }
+  const resolvedExtensions = await resolvedExtensionsPromise;
+  if ("error" in resolvedExtensions) {
+    const promptSetup = await promptSetupPromise;
+    await cleanupPromptSetupResult(promptSetup);
+    return {
+      kind: "completed",
+      result: createErrorResult(
+        agentName,
+        agent.source,
+        task,
+        resolvedExtensions.error,
+        modelDisplay,
+      ),
+    };
+  }
   const promptSetup = await promptSetupPromise;
-  if ("error" in promptSetup) throw promptSetup.error;
+  if ("error" in promptSetup) {
+    return {
+      kind: "completed",
+      result: createErrorResult(
+        agentName,
+        agent.source,
+        task,
+        `Failed to write prompt: ${promptSetup.error instanceof Error ? promptSetup.error.message : String(promptSetup.error)}`,
+        modelDisplay,
+      ),
+    };
+  }
   const startedAt = Date.now();
   const state: SubagentState = {
     result: initRuntimeResult(agentName, agent.source, task, modelDisplay),
@@ -593,6 +645,9 @@ export async function runSingleAgent(
       thinking,
       resolvedSkills,
       tmpPrompt,
+      agent.extensions !== undefined
+        ? resolvedExtensions.resolvedPaths
+        : undefined,
     );
     if (samplingEnv) {
       args.push("--extension", SAMPLING_EXTENSION_PATH);

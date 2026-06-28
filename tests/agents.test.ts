@@ -1181,3 +1181,311 @@ Prompt`,
     expect(Object.hasOwn(agent, "skills")).toBe(true);
   }
 });
+
+// --- T-001: extensions frontmatter normalization ---
+
+test("omitted extensions frontmatter omits own extensions property", async () => {
+  const discovery = await discoverAgent(
+    `---
+name: no-extensions
+description: No extensions field
+---
+Prompt`,
+    "no-extensions",
+  );
+  const agent = discovery.agents.find((a) => a.name === "no-extensions");
+  expect(agent).toBeDefined();
+  if (agent) {
+    expect(Object.hasOwn(agent, "extensions")).toBe(false);
+    expect(agent.extensions).toBeUndefined();
+  }
+});
+
+test("extensions false discovers agent with extensions as empty array own property", async () => {
+  const discovery = await discoverAgent(
+    `---
+name: extensions-false
+description: Extensions false
+extensions: false
+---
+Prompt`,
+    "extensions-false",
+  );
+  const agent = discovery.agents.find((a) => a.name === "extensions-false");
+  expect(agent).toBeDefined();
+  if (agent) {
+    expect(Array.isArray(agent.extensions)).toBe(true);
+    expect(agent.extensions).toHaveLength(0);
+    expect(Object.hasOwn(agent, "extensions")).toBe(true);
+  }
+});
+
+test("extensions empty YAML list discovers agent with extensions as empty array own property", async () => {
+  const discovery = await discoverAgent(
+    `---
+name: extensions-empty-list
+description: Extensions empty list
+extensions: []
+---
+Prompt`,
+    "extensions-empty-list",
+  );
+  const agent = discovery.agents.find(
+    (a) => a.name === "extensions-empty-list",
+  );
+  expect(agent).toBeDefined();
+  if (agent) {
+    expect(Array.isArray(agent.extensions)).toBe(true);
+    expect(agent.extensions).toHaveLength(0);
+    expect(Object.hasOwn(agent, "extensions")).toBe(true);
+  }
+});
+
+test("extensions empty string discovers agent with extensions as empty array own property", async () => {
+  const discovery = await discoverAgent(
+    `---
+name: extensions-empty-str
+description: Extensions empty string
+extensions: ""
+---
+Prompt`,
+    "extensions-empty-str",
+  );
+  const agent = discovery.agents.find((a) => a.name === "extensions-empty-str");
+  expect(agent).toBeDefined();
+  if (agent) {
+    expect(Array.isArray(agent.extensions)).toBe(true);
+    expect(agent.extensions).toHaveLength(0);
+    expect(Object.hasOwn(agent, "extensions")).toBe(true);
+  }
+});
+
+test("extensions whitespace-only string discovers agent with extensions as empty array own property", async () => {
+  const discovery = await discoverAgent(
+    `---
+name: extensions-whitespace
+description: Extensions whitespace
+extensions: "   "
+---
+Prompt`,
+    "extensions-whitespace",
+  );
+  const agent = discovery.agents.find(
+    (a) => a.name === "extensions-whitespace",
+  );
+  expect(agent).toBeDefined();
+  if (agent) {
+    expect(Array.isArray(agent.extensions)).toBe(true);
+    expect(agent.extensions).toHaveLength(0);
+    expect(Object.hasOwn(agent, "extensions")).toBe(true);
+  }
+});
+
+test("extensions comma-only string discovers agent with extensions as empty array own property", async () => {
+  const discovery = await discoverAgent(
+    `---
+name: extensions-comma-only
+description: Extensions comma only
+extensions: ","
+---
+Prompt`,
+    "extensions-comma-only",
+  );
+  const agent = discovery.agents.find(
+    (a) => a.name === "extensions-comma-only",
+  );
+  expect(agent).toBeDefined();
+  if (agent) {
+    expect(Array.isArray(agent.extensions)).toBe(true);
+    expect(agent.extensions).toHaveLength(0);
+    expect(Object.hasOwn(agent, "extensions")).toBe(true);
+  }
+});
+
+test("extensions comma-delimited string parses ordered raw names preserving duplicates", async () => {
+  const discovery = await discoverAgent(
+    `---
+name: extensions-names
+description: Extensions names
+extensions: "context-mode, npm:helper, context-mode"
+---
+Prompt`,
+    "extensions-names",
+  );
+  const agent = discovery.agents.find((a) => a.name === "extensions-names");
+  expect(agent).toBeDefined();
+  if (agent) {
+    expect(agent.extensions).toEqual([
+      "context-mode",
+      "npm:helper",
+      "context-mode",
+    ]);
+    expect(Object.hasOwn(agent, "extensions")).toBe(true);
+  }
+});
+
+test("extensions comma-delimited string trims whitespace around names", async () => {
+  const discovery = await discoverAgent(
+    `---
+name: extensions-trimmed
+description: Extensions trimmed
+extensions: "  context-mode ,  npm:helper  "
+---
+Prompt`,
+    "extensions-trimmed",
+  );
+  const agent = discovery.agents.find((a) => a.name === "extensions-trimmed");
+  expect(agent).toBeDefined();
+  if (agent) {
+    expect(agent.extensions).toEqual(["context-mode", "npm:helper"]);
+  }
+});
+
+test("extensions true rejects agent from discovery", async () => {
+  const discovery = await discoverAgent(
+    `---
+name: extensions-true
+description: Extensions true
+extensions: true
+---
+Prompt`,
+    "extensions-true",
+  );
+  expect(
+    discovery.agents.find((a) => a.name === "extensions-true"),
+  ).toBeUndefined();
+});
+
+test("extensions number rejects agent from discovery", async () => {
+  const discovery = await discoverAgent(
+    `---
+name: extensions-number
+description: Extensions number
+extensions: 42
+---
+Prompt`,
+    "extensions-number",
+  );
+  expect(
+    discovery.agents.find((a) => a.name === "extensions-number"),
+  ).toBeUndefined();
+});
+
+test("extensions object rejects agent from discovery", async () => {
+  const discovery = await discoverAgent(
+    `---
+name: extensions-object
+description: Extensions object
+extensions:
+  key: value
+---
+Prompt`,
+    "extensions-object",
+  );
+  expect(
+    discovery.agents.find((a) => a.name === "extensions-object"),
+  ).toBeUndefined();
+});
+
+test("bare YAML extensions null rejects agent from discovery", async () => {
+  const discovery = await discoverAgent(
+    `---
+name: extensions-null
+description: Extensions null
+extensions:
+---
+Prompt`,
+    "extensions-null",
+  );
+  expect(
+    discovery.agents.find((a) => a.name === "extensions-null"),
+  ).toBeUndefined();
+});
+
+test("extensions non-empty YAML list rejects agent from discovery", async () => {
+  const discovery = await discoverAgent(
+    `---
+name: extensions-nonempty-list
+description: Extensions nonempty list
+extensions:
+  - context-mode
+  - npm:helper
+---
+Prompt`,
+    "extensions-nonempty-list",
+  );
+  expect(
+    discovery.agents.find((a) => a.name === "extensions-nonempty-list"),
+  ).toBeUndefined();
+});
+
+test("extensions false coexists with sibling model tools skills context sampling fields", async () => {
+  const discovery = await discoverAgent(
+    `---
+name: extensions-false-siblings
+description: Extensions false with siblings
+extensions: false
+model: claude-sonnet-4
+provider: anthropic
+tools: bash, read
+skills: helper, reviewer
+context: false
+thinking: high
+temperature: 0.5
+top_p: 0.9
+---
+Prompt`,
+    "extensions-false-siblings",
+  );
+  const agent = discovery.agents.find(
+    (a) => a.name === "extensions-false-siblings",
+  );
+  expect(agent).toBeDefined();
+  if (agent) {
+    expect(agent.extensions).toEqual([]);
+    expect(Object.hasOwn(agent, "extensions")).toBe(true);
+    expect(agent.model).toBe("claude-sonnet-4");
+    expect(agent.provider).toBe("anthropic");
+    expect(agent.tools).toEqual(["bash", "read"]);
+    expect(agent.skills).toEqual(["helper", "reviewer"]);
+    expect(agent.context).toBe(false);
+    expect(agent.thinking).toBe("high");
+    expect(agent.temperature).toBe(0.5);
+    expect(agent.topP).toBe(0.9);
+  }
+});
+
+test("extensions named string coexists with sibling model tools skills context sampling fields", async () => {
+  const discovery = await discoverAgent(
+    `---
+name: extensions-named-siblings
+description: Extensions named with siblings
+extensions: "context-mode, npm:helper"
+model: gpt-5
+provider: openai
+tools: bash, read
+skills: helper
+context: false
+thinking: medium
+temperature: 0.3
+top_p: 0.7
+---
+Prompt`,
+    "extensions-named-siblings",
+  );
+  const agent = discovery.agents.find(
+    (a) => a.name === "extensions-named-siblings",
+  );
+  expect(agent).toBeDefined();
+  if (agent) {
+    expect(agent.extensions).toEqual(["context-mode", "npm:helper"]);
+    expect(agent.model).toBe("gpt-5");
+    expect(agent.provider).toBe("openai");
+    expect(agent.tools).toEqual(["bash", "read"]);
+    expect(agent.skills).toEqual(["helper"]);
+    expect(agent.context).toBe(false);
+    expect(agent.thinking).toBe("medium");
+    expect(agent.temperature).toBe(0.3);
+    expect(agent.topP).toBe(0.7);
+  }
+});

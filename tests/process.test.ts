@@ -8,9 +8,16 @@ import {
   type ExtensionAPI,
 } from "@earendil-works/pi-coding-agent";
 import { type AgentConfig, discoverAgentsAsync } from "../src/agent/agents.js";
-import type { RunSingleAgentResult } from "../src/child/process.js";
-import { makeEmitUpdate, runSingleAgent } from "../src/child/process.js";
-import { resolveSamplingExtensionPath } from "../src/child/process-utils.js";
+import {
+  buildPiArgs,
+  makeEmitUpdate,
+  type RunSingleAgentResult,
+  runSingleAgent,
+} from "../src/child/process.js";
+import {
+  resolvePackageExtensionPath,
+  resolveSamplingExtensionPath,
+} from "../src/child/process-utils.js";
 import {
   appendSubagentResultContract,
   SUBAGENT_RESULT_CONTRACT,
@@ -30,6 +37,7 @@ import {
   TOOL_RESULT_FAILED_MESSAGE,
 } from "../src/shared/types.js";
 import {
+  resetResolvedAgentExtensionPathsCache,
   resetResolvedAgentSkillArgsCache,
   resolveAgentSkillArgs,
 } from "../src/shared/utils.js";
@@ -1417,6 +1425,139 @@ test("runSingleAgent cleans prompt temp file when skill resolution fails after p
   expect(_result.stderr).toContain('Unknown skill: "missing-skill"');
   expect(tmpDir).toBeDefined();
   expect(fs.existsSync(tmpDir ?? "")).toBe(false);
+});
+
+test("runSingleAgent cleans prompt temp file when extension resolution fails after prompt creation", async () => {
+  const { cwd } = await setupTest();
+  const originalMkdtemp = fs.promises.mkdtemp;
+  let tmpDir: string | undefined;
+  Object.defineProperty(fs.promises, "mkdtemp", {
+    configurable: true,
+    value: async (...args: unknown[]) => {
+      const dir = Reflect.apply(
+        originalMkdtemp,
+        fs.promises,
+        args,
+      ) as Promise<string>;
+      tmpDir = await dir;
+      return tmpDir;
+    },
+  });
+  const agent: AgentConfig = {
+    name: "badext",
+    description: "Bad extension",
+    thinking: "off",
+    systemPrompt: "Prompt that creates a temp file.",
+    source: "user",
+    filePath: "badext.md",
+    extensions: ["missing-ext"],
+  };
+  let _result: SingleResult | undefined;
+  try {
+    const { result } = await runSingleAgent(
+      cwd,
+      [agent],
+      "badext",
+      "task",
+      undefined,
+      undefined,
+      makeSubagentDetails,
+      undefined,
+      "off",
+    );
+    _result = result;
+  } finally {
+    Object.defineProperty(fs.promises, "mkdtemp", {
+      value: originalMkdtemp,
+      writable: true,
+      enumerable: true,
+      configurable: true,
+    });
+  }
+  if (!_result) throw new Error("result missing");
+  expect(_result.exitCode).toBe(1);
+  expect(_result.stderr).toContain('Unknown extension: "missing-ext"');
+  expect(tmpDir).toBeDefined();
+  expect(fs.existsSync(tmpDir ?? "")).toBe(false);
+});
+
+test("runSingleAgent returns skill error when both skill and extension resolution fail", async () => {
+  const { cwd } = await setupTest();
+  const agent: AgentConfig = {
+    name: "dual-fail",
+    description: "Dual failure",
+    thinking: "off",
+    systemPrompt: "Prompt.",
+    source: "user",
+    filePath: "dual-fail.md",
+    skills: ["missing-skill"],
+    extensions: ["missing-ext"],
+  };
+  const { result } = await runSingleAgent(
+    cwd,
+    [agent],
+    "dual-fail",
+    "task",
+    undefined,
+    undefined,
+    makeSubagentDetails,
+    undefined,
+    "off",
+  );
+  expect(result.exitCode).toBe(1);
+  expect(result.stderr).toContain('Unknown skill: "missing-skill"');
+  expect(result.stderr).not.toContain('"missing-ext"');
+});
+
+test("runSingleAgent returns completed error when prompt setup fails", async () => {
+  const { cwd } = await setupTest();
+  const originalWriteFile = fs.promises.writeFile;
+  const writeError = new Error("ENOSPC: no space left on device");
+  Object.defineProperty(fs.promises, "writeFile", {
+    configurable: true,
+    value: async (...args: unknown[]) => {
+      const content = args[1];
+      if (
+        typeof content === "string" &&
+        content.includes("Prompt setup fail.")
+      ) {
+        throw writeError;
+      }
+      return Reflect.apply(originalWriteFile, fs.promises, args);
+    },
+  });
+  const agent: AgentConfig = {
+    name: "prompt-fail",
+    description: "Prompt failure",
+    thinking: "off",
+    systemPrompt: "Prompt setup fail.",
+    source: "user",
+    filePath: "prompt-fail.md",
+  };
+  try {
+    const outcome = await runSingleAgent(
+      cwd,
+      [agent],
+      "prompt-fail",
+      "task",
+      undefined,
+      undefined,
+      makeSubagentDetails,
+      undefined,
+      "off",
+    );
+    expect(outcome.kind).toBe("completed");
+    expect(outcome.result.exitCode).toBe(1);
+    expect(outcome.result.stderr).toContain("Failed to write prompt");
+    expect(outcome.result.stderr).toContain("ENOSPC");
+  } finally {
+    Object.defineProperty(fs.promises, "writeFile", {
+      value: originalWriteFile,
+      writable: true,
+      enumerable: true,
+      configurable: true,
+    });
+  }
 });
 
 test("nested activity triggers onUpdate without appending messages", async () => {
@@ -3664,4 +3805,908 @@ Prompt.`,
   const args = await captureRunSingleAgentArgs(discoveredAgent, undefined);
   expect(args).not.toContain("--no-context-files");
   expect(args).toContain("--approve");
+});
+
+// --- T-003: extension flag construction ---
+
+function buildArgsWithExtensions(
+  agentOverrides: Partial<AgentConfig>,
+  resolvedExtensionPaths?: string[],
+): string[] {
+  return buildPiArgs(
+    { ...hangAgent, ...agentOverrides },
+    "task",
+    { id: "test-model" },
+    "off",
+    { args: [] },
+    { filePath: "/tmp/fake-prompt.md" },
+    resolvedExtensionPaths,
+  );
+}
+
+function extensionFlags(args: string[]): { path: string; index: number }[] {
+  return args.flatMap((arg, i) =>
+    arg === "--extension" ? [{ path: args[i + 1] ?? "", index: i }] : [],
+  );
+}
+
+test("buildPiArgs omitted extensions emits no --no-extensions and no index extension", () => {
+  const agent: AgentConfig = { ...hangAgent };
+  expect(Object.hasOwn(agent, "extensions")).toBe(false);
+  const args = buildArgsWithExtensions(agent);
+  expect(args).not.toContain("--no-extensions");
+  const pkgPath = resolvePackageExtensionPath();
+  expect(args).not.toContain(pkgPath);
+  expect(flagValues(args, "--extension")).not.toContain(pkgPath);
+});
+
+test("buildPiArgs extensions false emits --no-extensions and package index", () => {
+  const args = buildArgsWithExtensions({ extensions: [] });
+  expect(args).toContain("--no-extensions");
+  const pkgPath = resolvePackageExtensionPath();
+  expect(flagValues(args, "--extension")).toContain(pkgPath);
+});
+
+test("buildPiArgs extensions empty parsed string emits --no-extensions and package index", () => {
+  const args = buildArgsWithExtensions({ extensions: [] });
+  const argFlags = extensionFlags(args);
+  const pkgPath = resolvePackageExtensionPath();
+  expect(args).toContain("--no-extensions");
+  expect(argFlags.map((f) => f.path)).toContain(pkgPath);
+});
+
+test("buildPiArgs named extensions emits --no-extensions, index, and named paths", () => {
+  const fakePaths = ["/ext/a.js", "/ext/b.js"];
+  const args = buildArgsWithExtensions(
+    { extensions: ["ext-a", "ext-b"] },
+    fakePaths,
+  );
+  expect(args).toContain("--no-extensions");
+  const pkgPath = resolvePackageExtensionPath();
+  const exts = flagValues(args, "--extension");
+  expect(exts).toContain(pkgPath);
+  expect(exts).toContain("/ext/a.js");
+  expect(exts).toContain("/ext/b.js");
+});
+
+test("buildPiArgs named extensions with resolved path equal to index de-duplicates index path", () => {
+  const pkgPath = resolvePackageExtensionPath();
+  const fakePaths = ["/ext/unique.js", pkgPath];
+  const args = buildArgsWithExtensions(
+    { extensions: ["unique", "self"] },
+    fakePaths,
+  );
+  expect(args).toContain("--no-extensions");
+  const exts = flagValues(args, "--extension");
+  const pkgCount = exts.filter((p) => p === pkgPath).length;
+  expect(pkgCount).toBe(1);
+  expect(exts).toContain("/ext/unique.js");
+});
+
+test("buildPiArgs index extension appears exactly once when no named paths provided", () => {
+  const args = buildArgsWithExtensions({ extensions: [] });
+  const pkgPath = resolvePackageExtensionPath();
+  const exts = flagValues(args, "--extension");
+  const pkgCount = exts.filter((p) => p === pkgPath).length;
+  expect(pkgCount).toBe(1);
+});
+
+test("buildPiArgs complete extension present when extensions disabled", () => {
+  const args = buildArgsWithExtensions({ extensions: [] });
+  const exts = extensionFlags(args);
+  const completeIdx = exts.findIndex((f) =>
+    f.path.includes("complete-extension"),
+  );
+  expect(completeIdx).toBeGreaterThanOrEqual(0);
+});
+
+test("buildPiArgs absent extension field regression: no --no-extensions and no index injection", () => {
+  const args = buildArgsWithExtensions({});
+  expect(args).not.toContain("--no-extensions");
+  const pkgPath = resolvePackageExtensionPath();
+  expect(flagValues(args, "--extension")).not.toContain(pkgPath);
+  expect(args).toContain("--approve");
+  expect(args).toContain("--no-themes");
+});
+
+test("buildPiArgs named extensions preserves complete extension after named paths", () => {
+  const args = buildArgsWithExtensions({ extensions: ["ext-a"] }, [
+    "/ext/a.js",
+  ]);
+  const exts = extensionFlags(args);
+  const paths = exts.map((f) => f.path);
+  const pkgIdx = paths.indexOf(resolvePackageExtensionPath());
+  const namedIdx = paths.indexOf("/ext/a.js");
+  const completeIdx = paths.findIndex((p) => p.includes("complete-extension"));
+  expect(pkgIdx).toBeGreaterThanOrEqual(0);
+  expect(namedIdx).toBeGreaterThan(pkgIdx);
+  expect(completeIdx).toBeGreaterThan(namedIdx);
+});
+
+test("buildPiArgs named extensions preserves first-seen order from resolved paths", () => {
+  const fakePaths = ["/ext/c.js", "/ext/a.js", "/ext/b.js"];
+  const args = buildArgsWithExtensions(
+    { extensions: ["c", "a", "b"] },
+    fakePaths,
+  );
+  const exts = extensionFlags(args);
+  const pkgPath = resolvePackageExtensionPath();
+  const namedFlags = exts.filter(
+    (f) => f.path !== pkgPath && !f.path.includes("complete-extension"),
+  );
+  expect(namedFlags.map((f) => f.path)).toEqual([
+    "/ext/c.js",
+    "/ext/a.js",
+    "/ext/b.js",
+  ]);
+});
+
+// --- T-004: pre-spawn extension resolution and cleanup ---
+
+test("runSingleAgent disabled-without-names skips loader discovery for extensions", async () => {
+  let reloadCalls = 0;
+  const originalReload = DefaultResourceLoader.prototype.reload;
+  DefaultResourceLoader.prototype.reload = async function trackReload() {
+    reloadCalls += 1;
+    return originalReload.call(this);
+  };
+  const { cwd } = await setupTest();
+  try {
+    const agent: AgentConfig = {
+      ...hangAgent,
+      extensions: [],
+    };
+    const { result } = await runSingleAgent(
+      cwd,
+      [agent],
+      agent.name,
+      "task",
+      undefined,
+      undefined,
+      makeSubagentDetails,
+      undefined,
+      "off",
+    );
+    expect(result.exitCode).toBe(0);
+    expect(result.finalOutput).toBe("done");
+    expect(reloadCalls).toBe(0);
+  } finally {
+    DefaultResourceLoader.prototype.reload = originalReload;
+  }
+});
+
+test("runSingleAgent omitted extensions skips loader discovery for extensions", async () => {
+  let reloadCalls = 0;
+  const originalReload = DefaultResourceLoader.prototype.reload;
+  DefaultResourceLoader.prototype.reload = async function trackReload() {
+    reloadCalls += 1;
+    return originalReload.call(this);
+  };
+  const { cwd } = await setupTest();
+  try {
+    const agent: AgentConfig = { ...hangAgent };
+    expect(Object.hasOwn(agent, "extensions")).toBe(false);
+    const { result } = await runSingleAgent(
+      cwd,
+      [agent],
+      agent.name,
+      "task",
+      undefined,
+      undefined,
+      makeSubagentDetails,
+      undefined,
+      "off",
+    );
+    expect(result.exitCode).toBe(0);
+    expect(result.finalOutput).toBe("done");
+    expect(reloadCalls).toBe(0);
+  } finally {
+    DefaultResourceLoader.prototype.reload = originalReload;
+  }
+});
+
+test("runSingleAgent unknown extension names return error result before child spawn", async () => {
+  const { cwd, binDir } = await setupTest();
+  await fs.promises.writeFile(
+    path.join(binDir, "pi"),
+    `#!/bin/sh
+echo "should not run" > spawn-marker.txt
+exit 0
+`,
+  );
+  await fs.promises.chmod(path.join(binDir, "pi"), 0o755);
+  const agent: AgentConfig = {
+    ...hangAgent,
+    extensions: ["nonexistent-ext"],
+  };
+  const { result } = await runSingleAgent(
+    cwd,
+    [agent],
+    agent.name,
+    "task",
+    undefined,
+    undefined,
+    makeSubagentDetails,
+    undefined,
+    "off",
+  );
+  expect(result.exitCode).toBe(1);
+  expect(result.stderr).toContain('Unknown extension: "nonexistent-ext"');
+  expect(result.stderr).toContain("Available extensions:");
+  expect(fs.existsSync(path.join(cwd, "spawn-marker.txt"))).toBe(false);
+});
+
+test("runSingleAgent loader reload failure returns error result before child spawn", async () => {
+  const { cwd, binDir } = await setupTest();
+  await fs.promises.writeFile(
+    path.join(binDir, "pi"),
+    `#!/bin/sh
+echo "should not run" > spawn-marker.txt
+exit 0
+`,
+  );
+  await fs.promises.chmod(path.join(binDir, "pi"), 0o755);
+  const originalReload = DefaultResourceLoader.prototype.reload;
+  DefaultResourceLoader.prototype.reload = async function failReload() {
+    throw new Error("loader crashed");
+  };
+  const agent: AgentConfig = {
+    ...hangAgent,
+    extensions: ["some-ext"],
+  };
+  try {
+    const { result } = await runSingleAgent(
+      cwd,
+      [agent],
+      agent.name,
+      "task",
+      undefined,
+      undefined,
+      makeSubagentDetails,
+      undefined,
+      "off",
+    );
+    expect(result.exitCode).toBe(1);
+    expect(result.stderr).toContain("Failed to discover extensions");
+    expect(result.stderr).toContain("loader crashed");
+    expect(fs.existsSync(path.join(cwd, "spawn-marker.txt"))).toBe(false);
+  } finally {
+    DefaultResourceLoader.prototype.reload = originalReload;
+  }
+});
+
+test("runSingleAgent getExtensions errors return actionable diagnostics before child spawn", async () => {
+  const { cwd, binDir } = await setupTest();
+  await fs.promises.writeFile(
+    path.join(binDir, "pi"),
+    `#!/bin/sh
+echo "should not run" > spawn-marker.txt
+exit 0
+`,
+  );
+  await fs.promises.chmod(path.join(binDir, "pi"), 0o755);
+  const originalGetExtensions = DefaultResourceLoader.prototype.getExtensions;
+  DefaultResourceLoader.prototype.getExtensions =
+    function errorGetExtensions() {
+      return {
+        extensions: [],
+        errors: [
+          { path: "/broken/ext", error: "ENOENT" },
+          { path: "/bad/ext", error: "EACCES" },
+        ],
+        runtime: {} as never,
+      };
+    };
+  const agent: AgentConfig = {
+    ...hangAgent,
+    extensions: ["some-ext"],
+  };
+  try {
+    const { result } = await runSingleAgent(
+      cwd,
+      [agent],
+      agent.name,
+      "task",
+      undefined,
+      undefined,
+      makeSubagentDetails,
+      undefined,
+      "off",
+    );
+    expect(result.exitCode).toBe(1);
+    expect(result.stderr).toContain("Failed to discover extensions");
+    expect(result.stderr).toContain("/broken/ext: ENOENT");
+    expect(result.stderr).toContain("/bad/ext: EACCES");
+    expect(fs.existsSync(path.join(cwd, "spawn-marker.txt"))).toBe(false);
+  } finally {
+    DefaultResourceLoader.prototype.getExtensions = originalGetExtensions;
+  }
+});
+
+test("runSingleAgent cleans prompt temp file after extension resolution failure", async () => {
+  const { cwd } = await setupTest();
+  const originalMkdtemp = fs.promises.mkdtemp;
+  let tmpDir: string | undefined;
+  Object.defineProperty(fs.promises, "mkdtemp", {
+    configurable: true,
+    value: async (...args: unknown[]) => {
+      const dir = Reflect.apply(
+        originalMkdtemp,
+        fs.promises,
+        args,
+      ) as Promise<string>;
+      tmpDir = await dir;
+      return tmpDir;
+    },
+  });
+  const agent: AgentConfig = {
+    ...hangAgent,
+    name: "badext",
+    systemPrompt: "Prompt that creates a temp file.",
+    extensions: ["nonexistent-ext"],
+  };
+  let _result: SingleResult | undefined;
+  try {
+    const { result } = await runSingleAgent(
+      cwd,
+      [agent],
+      "badext",
+      "task",
+      undefined,
+      undefined,
+      makeSubagentDetails,
+      undefined,
+      "off",
+    );
+    _result = result;
+  } finally {
+    Object.defineProperty(fs.promises, "mkdtemp", {
+      value: originalMkdtemp,
+      writable: true,
+      enumerable: true,
+      configurable: true,
+    });
+  }
+  if (!_result) throw new Error("result missing");
+  expect(_result.exitCode).toBe(1);
+  expect(_result.stderr).toContain('Unknown extension: "nonexistent-ext"');
+  expect(tmpDir).toBeDefined();
+  expect(fs.existsSync(tmpDir ?? "")).toBe(false);
+});
+
+test("runSingleAgent skill failure takes precedence over concurrent extension failure", async () => {
+  const { cwd } = await setupTest();
+  const agent: AgentConfig = {
+    ...hangAgent,
+    skills: ["missing-skill"],
+    extensions: ["nonexistent-ext"],
+    systemPrompt: "Prompt.",
+  };
+  const { result } = await runSingleAgent(
+    cwd,
+    [agent],
+    agent.name,
+    "task",
+    undefined,
+    undefined,
+    makeSubagentDetails,
+    undefined,
+    "off",
+  );
+  expect(result.exitCode).toBe(1);
+  expect(result.stderr).toContain('Unknown skill: "missing-skill"');
+  expect(result.stderr).not.toContain("extension");
+});
+
+test("runSingleAgent starts skill resolution, extension resolution, and prompt setup concurrently", async () => {
+  const { cwd, agentDir } = await setupTest();
+  const skillDir = path.join(agentDir, "skills", "conext");
+  await fs.promises.mkdir(skillDir, { recursive: true });
+  await fs.promises.writeFile(
+    path.join(skillDir, "SKILL.md"),
+    `---
+name: conext
+description: Concurrent extension skill
+---
+Use conext skill.
+`,
+  );
+  const extDir = path.join(agentDir, "extensions");
+  await fs.promises.mkdir(extDir, { recursive: true });
+  const extResolvedPath = path.join(extDir, "conext", "index.js");
+  await fs.promises.mkdir(path.dirname(extResolvedPath), { recursive: true });
+  await fs.promises.writeFile(
+    extResolvedPath,
+    "module.exports = function() {}",
+  );
+  const originalGetExtensions = DefaultResourceLoader.prototype.getExtensions;
+  DefaultResourceLoader.prototype.getExtensions = function mockGetExtensions() {
+    return {
+      extensions: [
+        {
+          path: "extensions/conext",
+          resolvedPath: extResolvedPath,
+          sourceInfo: {
+            path: extResolvedPath,
+            source: "extensions/conext",
+            scope: "user",
+            origin: "top-level",
+          },
+          handlers: new Map(),
+          tools: new Map(),
+          messageRenderers: new Map(),
+          commands: new Map(),
+          flags: new Map(),
+          shortcuts: new Map(),
+        },
+      ],
+      errors: [],
+      runtime: {} as never,
+    };
+  };
+  resetResolvedAgentExtensionPathsCache();
+  const originalReload = DefaultResourceLoader.prototype.reload;
+  const originalWriteFile = fs.promises.writeFile;
+  let releaseReload = () => {};
+  let reloadStarted = false;
+  let writeStarted = false;
+  let released = false;
+  const reloadRelease = new Promise<void>((resolve) => {
+    releaseReload = resolve;
+  });
+  DefaultResourceLoader.prototype.reload = async function delayedReload() {
+    reloadStarted = true;
+    await reloadRelease;
+    return originalReload.call(this);
+  };
+  Object.defineProperty(fs.promises, "writeFile", {
+    configurable: true,
+    value: async (...args: unknown[]) => {
+      writeStarted = true;
+      return Reflect.apply(originalWriteFile, fs.promises, args);
+    },
+  });
+  const agent: AgentConfig = {
+    name: "conext-agent",
+    description: "Concurrent extension agent",
+    thinking: "off",
+    systemPrompt: "Concurrent prompt.",
+    source: "user",
+    filePath: "conext-agent.md",
+    skills: ["conext"],
+    extensions: ["conext"],
+  };
+  const promise = runSingleAgent(
+    cwd,
+    [agent],
+    "conext-agent",
+    "task",
+    undefined,
+    undefined,
+    makeSubagentDetails,
+    undefined,
+    "off",
+  );
+  const releaseOnce = () => {
+    if (released) return;
+    released = true;
+    releaseReload();
+  };
+  try {
+    await waitFor(
+      () => reloadStarted || undefined,
+      "skill + extension discovery start",
+    );
+    await waitFor(() => writeStarted || undefined, "prompt write start");
+    releaseOnce();
+    const outcome = await promise;
+    expect(outcome.kind).toBe("completed");
+    expect(outcome.result.exitCode).toBe(0);
+  } finally {
+    DefaultResourceLoader.prototype.reload = originalReload;
+    DefaultResourceLoader.prototype.getExtensions = originalGetExtensions;
+    Object.defineProperty(fs.promises, "writeFile", {
+      value: originalWriteFile,
+      writable: true,
+      enumerable: true,
+      configurable: true,
+    });
+    releaseOnce();
+    await promise.catch(() => {});
+  }
+});
+
+test("runSingleAgent named extensions flow through to child args via runSingleAgent", async () => {
+  const { cwd } = await setupTest({
+    piScript: `#!/bin/sh
+printf '%s\\n' "$@" > args.txt
+printf '%s\\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"done"}],"api":"fake","provider":"fake","model":"fake","usage":{"input":1,"output":1,"cacheRead":0,"cacheWrite":0,"totalTokens":2,"cost":{"total":0}},"stopReason":"stop","timestamp":0}}'
+printf '%s\\n' '{"type":"agent_end","messages":[]}'
+exit 0
+`,
+  });
+  const resolvedPath = path.join(
+    cwd,
+    ".pi",
+    "extensions",
+    "my-ext",
+    "index.js",
+  );
+  await fs.promises.mkdir(path.dirname(resolvedPath), { recursive: true });
+  await fs.promises.writeFile(resolvedPath, "module.exports = function() {}");
+  const originalGetExtensions = DefaultResourceLoader.prototype.getExtensions;
+  DefaultResourceLoader.prototype.getExtensions = () => ({
+    extensions: [
+      {
+        path: ".pi/extensions/my-ext",
+        resolvedPath,
+        sourceInfo: {
+          path: resolvedPath,
+          source: ".pi/extensions/my-ext",
+          scope: "project",
+          origin: "top-level",
+        },
+        handlers: new Map(),
+        tools: new Map(),
+        messageRenderers: new Map(),
+        commands: new Map(),
+        flags: new Map(),
+        shortcuts: new Map(),
+      },
+    ],
+    errors: [],
+    runtime: {} as never,
+  });
+  resetResolvedAgentExtensionPathsCache();
+  const agent: AgentConfig = {
+    ...hangAgent,
+    extensions: ["my-ext"],
+  };
+  try {
+    const { result } = await runSingleAgent(
+      cwd,
+      [agent],
+      agent.name,
+      "task",
+      undefined,
+      undefined,
+      makeSubagentDetails,
+      undefined,
+      "off",
+    );
+    expect(result.exitCode).toBe(0);
+    expect(result.finalOutput).toBe("done");
+    const args = fs
+      .readFileSync(path.join(cwd, "args.txt"), "utf8")
+      .trimEnd()
+      .split("\n");
+    const pkgPath = resolvePackageExtensionPath();
+    expect(args).toContain("--no-extensions");
+    expect(flagValues(args, "--extension")).toContain(pkgPath);
+    const resolvedExt = flagValues(args, "--extension").find(
+      (p) => p !== pkgPath && !p.includes("complete-extension"),
+    );
+    expect(resolvedExt).toBeDefined();
+    expect(resolvedExt).toContain("my-ext");
+  } finally {
+    DefaultResourceLoader.prototype.getExtensions = originalGetExtensions;
+  }
+});
+
+test("runSingleAgent single-file extension resolves by file stem and flows to child args", async () => {
+  const { cwd } = await setupTest({
+    piScript: `#!/bin/sh
+printf '%s\\n' "$@" > args.txt
+printf '%s\\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"done"}],"api":"fake","provider":"fake","model":"fake","usage":{"input":1,"output":1,"cacheRead":0,"cacheWrite":0,"totalTokens":2,"cost":{"total":0}},"stopReason":"stop","timestamp":0}}'
+printf '%s\\n' '{"type":"agent_end","messages":[]}'
+exit 0
+`,
+  });
+  const resolvedPath = path.join(cwd, ".pi", "extensions", "helper.ts");
+  await fs.promises.mkdir(path.dirname(resolvedPath), { recursive: true });
+  await fs.promises.writeFile(
+    resolvedPath,
+    "export default function setup() {}",
+  );
+  const originalGetExtensions = DefaultResourceLoader.prototype.getExtensions;
+  DefaultResourceLoader.prototype.getExtensions = () => ({
+    extensions: [
+      {
+        path: ".pi/extensions/helper.ts",
+        resolvedPath,
+        sourceInfo: {
+          path: resolvedPath,
+          source: ".pi/extensions/helper.ts",
+          scope: "project",
+          origin: "top-level",
+        },
+        handlers: new Map(),
+        tools: new Map(),
+        messageRenderers: new Map(),
+        commands: new Map(),
+        flags: new Map(),
+        shortcuts: new Map(),
+      },
+    ],
+    errors: [],
+    runtime: {} as never,
+  });
+  resetResolvedAgentExtensionPathsCache();
+  const agent: AgentConfig = {
+    ...hangAgent,
+    extensions: ["helper"],
+  };
+  try {
+    const { result } = await runSingleAgent(
+      cwd,
+      [agent],
+      agent.name,
+      "task",
+      undefined,
+      undefined,
+      makeSubagentDetails,
+      undefined,
+      "off",
+    );
+    expect(result.exitCode).toBe(0);
+    expect(result.finalOutput).toBe("done");
+    const args = fs
+      .readFileSync(path.join(cwd, "args.txt"), "utf8")
+      .trimEnd()
+      .split("\n");
+    const pkgPath = resolvePackageExtensionPath();
+    expect(args).toContain("--no-extensions");
+    expect(flagValues(args, "--extension")).toContain(pkgPath);
+    const resolvedExt = flagValues(args, "--extension").find(
+      (p) => p !== pkgPath && !p.includes("complete-extension"),
+    );
+    expect(resolvedExt).toBeDefined();
+    expect(resolvedExt).toContain("helper");
+  } finally {
+    DefaultResourceLoader.prototype.getExtensions = originalGetExtensions;
+  }
+});
+
+test("runSingleAgent version-pinned npm package extension resolves and flows to child args", async () => {
+  const { cwd } = await setupTest({
+    piScript: `#!/bin/sh
+printf '%s\\n' "$@" > args.txt
+printf '%s\\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"done"}],"api":"fake","provider":"fake","model":"fake","usage":{"input":1,"output":1,"cacheRead":0,"cacheWrite":0,"totalTokens":2,"cost":{"total":0}},"stopReason":"stop","timestamp":0}}'
+printf '%s\\n' '{"type":"agent_end","messages":[]}'
+exit 0
+`,
+  });
+  const resolvedPath = path.join(cwd, "node_modules", "helper", "index.js");
+  await fs.promises.mkdir(path.dirname(resolvedPath), { recursive: true });
+  await fs.promises.writeFile(resolvedPath, "module.exports = function() {}");
+  const originalGetExtensions = DefaultResourceLoader.prototype.getExtensions;
+  DefaultResourceLoader.prototype.getExtensions = () => ({
+    extensions: [
+      {
+        path: "node_modules/helper",
+        resolvedPath,
+        sourceInfo: {
+          path: resolvedPath,
+          source: "npm:helper@1.2.3",
+          scope: "user",
+          origin: "package",
+        },
+        handlers: new Map(),
+        tools: new Map(),
+        messageRenderers: new Map(),
+        commands: new Map(),
+        flags: new Map(),
+        shortcuts: new Map(),
+      },
+    ],
+    errors: [],
+    runtime: {} as never,
+  });
+  resetResolvedAgentExtensionPathsCache();
+  const agent: AgentConfig = {
+    ...hangAgent,
+    extensions: ["helper"],
+  };
+  try {
+    const { result } = await runSingleAgent(
+      cwd,
+      [agent],
+      agent.name,
+      "task",
+      undefined,
+      undefined,
+      makeSubagentDetails,
+      undefined,
+      "off",
+    );
+    expect(result.exitCode).toBe(0);
+    expect(result.finalOutput).toBe("done");
+    const args = fs
+      .readFileSync(path.join(cwd, "args.txt"), "utf8")
+      .trimEnd()
+      .split("\n");
+    const pkgPath = resolvePackageExtensionPath();
+    expect(args).toContain("--no-extensions");
+    expect(flagValues(args, "--extension")).toContain(pkgPath);
+    const resolvedExt = flagValues(args, "--extension").find(
+      (p) => p !== pkgPath && !p.includes("complete-extension"),
+    );
+    expect(resolvedExt).toBeDefined();
+    expect(resolvedExt).toContain("helper");
+  } finally {
+    DefaultResourceLoader.prototype.getExtensions = originalGetExtensions;
+  }
+});
+
+test("runSingleAgent extension resolution error reports missing names with sorted available names", async () => {
+  const { cwd } = await setupTest();
+  const extPath = path.join(cwd, ".pi", "extensions");
+  const originalGetExtensions = DefaultResourceLoader.prototype.getExtensions;
+  DefaultResourceLoader.prototype.getExtensions = () => ({
+    extensions: [
+      {
+        path: ".pi/extensions/zebra-ext",
+        resolvedPath: path.join(extPath, "zebra-ext", "index.js"),
+        sourceInfo: {
+          path: path.join(extPath, "zebra-ext", "index.js"),
+          source: ".pi/extensions/zebra-ext",
+          scope: "project",
+          origin: "top-level",
+        },
+        handlers: new Map(),
+        tools: new Map(),
+        messageRenderers: new Map(),
+        commands: new Map(),
+        flags: new Map(),
+        shortcuts: new Map(),
+      },
+      {
+        path: ".pi/extensions/alpha-ext",
+        resolvedPath: path.join(extPath, "alpha-ext", "index.js"),
+        sourceInfo: {
+          path: path.join(extPath, "alpha-ext", "index.js"),
+          source: ".pi/extensions/alpha-ext",
+          scope: "project",
+          origin: "top-level",
+        },
+        handlers: new Map(),
+        tools: new Map(),
+        messageRenderers: new Map(),
+        commands: new Map(),
+        flags: new Map(),
+        shortcuts: new Map(),
+      },
+    ],
+    errors: [],
+    runtime: {} as never,
+  });
+  resetResolvedAgentExtensionPathsCache();
+  const agent: AgentConfig = {
+    ...hangAgent,
+    extensions: ["missing-a", "missing-b"],
+  };
+  try {
+    const { result } = await runSingleAgent(
+      cwd,
+      [agent],
+      agent.name,
+      "task",
+      undefined,
+      undefined,
+      makeSubagentDetails,
+      undefined,
+      "off",
+    );
+    expect(result.exitCode).toBe(1);
+    expect(result.stderr).toContain(
+      'Unknown extensions: "missing-a", "missing-b"',
+    );
+    expect(result.stderr).toContain("Available extensions:");
+    expect(result.stderr).toContain("alpha-ext");
+    expect(result.stderr).toContain("zebra-ext");
+  } finally {
+    DefaultResourceLoader.prototype.getExtensions = originalGetExtensions;
+  }
+});
+
+test("runSingleAgent reports extension resolution error with model display", async () => {
+  const { cwd } = await setupTest();
+  const agent: AgentConfig = {
+    ...hangAgent,
+    model: "agent-model",
+    extensions: ["nonexistent-ext"],
+  };
+  const { result } = await runSingleAgent(
+    cwd,
+    [agent],
+    agent.name,
+    "task",
+    undefined,
+    undefined,
+    makeSubagentDetails,
+    { provider: "parent-provider", id: "parent-model" },
+    "off",
+  );
+  expect(result.exitCode).toBe(1);
+  expect(result.stderr).toContain('Unknown extension: "nonexistent-ext"');
+  expect(result.model).toBe("parent-provider ･ agent-model ･ off");
+});
+
+test("runSingleAgent returns error result when prompt file write fails", async () => {
+  const { cwd } = await setupTest();
+  const originalWriteFile = fs.promises.writeFile;
+  const writeFileError = new Error("ENOSPC: no space left on device");
+  Object.defineProperty(fs.promises, "writeFile", {
+    configurable: true,
+    value: async () => {
+      throw writeFileError;
+    },
+  });
+  const agent: AgentConfig = {
+    ...hangAgent,
+    name: "write-fail",
+    systemPrompt: "Prompt that triggers a write failure.",
+  };
+  try {
+    const { result } = await runSingleAgent(
+      cwd,
+      [agent],
+      "write-fail",
+      "task",
+      undefined,
+      undefined,
+      makeSubagentDetails,
+      undefined,
+      "off",
+    );
+    expect(result.exitCode).toBe(1);
+    expect(result.stderr).toContain("Failed to write prompt");
+    expect(result.stderr).toContain("ENOSPC");
+  } finally {
+    Object.defineProperty(fs.promises, "writeFile", {
+      value: originalWriteFile,
+      writable: true,
+      enumerable: true,
+      configurable: true,
+    });
+  }
+});
+
+test("runSingleAgent returns error result when prompt file write fails with non-Error value", async () => {
+  const { cwd } = await setupTest();
+  const originalWriteFile = fs.promises.writeFile;
+  Object.defineProperty(fs.promises, "writeFile", {
+    configurable: true,
+    value: async () => {
+      throw "disk full";
+    },
+  });
+  const agent: AgentConfig = {
+    ...hangAgent,
+    name: "write-fail-string",
+    systemPrompt: "Prompt that triggers a write failure.",
+  };
+  try {
+    const { result } = await runSingleAgent(
+      cwd,
+      [agent],
+      "write-fail-string",
+      "task",
+      undefined,
+      undefined,
+      makeSubagentDetails,
+      undefined,
+      "off",
+    );
+    expect(result.exitCode).toBe(1);
+    expect(result.stderr).toContain("Failed to write prompt");
+    expect(result.stderr).toContain("disk full");
+  } finally {
+    Object.defineProperty(fs.promises, "writeFile", {
+      value: originalWriteFile,
+      writable: true,
+      enumerable: true,
+      configurable: true,
+    });
+  }
 });

@@ -1,4 +1,5 @@
 import { afterEach, expect, spyOn, test } from "bun:test";
+import * as fs from "node:fs";
 import { chmod, mkdir, symlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import type { AgentToolUpdateCallback } from "@earendil-works/pi-agent-core";
@@ -7,8 +8,11 @@ import type {
   AgentToolResult,
   ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
+import { DefaultResourceLoader } from "@earendil-works/pi-coding-agent";
 import { discoverAgentsAsync } from "../src/agent/agents.js";
+import { resolvePackageExtensionPath } from "../src/child/process-utils.js";
 import { SUBAGENT_RESULT_CONTRACT } from "../src/child/prompt-contract.js";
+import { resetAgentCache } from "../src/index.js";
 import * as delivery from "../src/notification/delivery.js";
 import { setDefaultDeliveryDeps } from "../src/notification/delivery.js";
 import {
@@ -32,6 +36,10 @@ import type {
   SubagentDetails,
   SubagentToolResult,
 } from "../src/shared/types.js";
+import {
+  resetResolvedAgentExtensionPathsCache,
+  resetResolvedAgentSkillArgsCache,
+} from "../src/shared/utils.js";
 import {
   captureStdout,
   getSubagentTool,
@@ -4494,4 +4502,819 @@ exit 0
   expect(argsHang).toContain("--approve");
   expect(argsHang).toContain("Task: second");
   expect(listRunJobs()).toHaveLength(0);
+});
+
+// --- T-005: tool-path regression and nested extension support ---
+
+function flagValues(args: string[], flag: string): string[] {
+  return args.flatMap((arg, index) =>
+    arg === flag ? [args[index + 1] ?? ""] : [],
+  );
+}
+
+async function createAgentWithExtensions(
+  agentDir: string,
+  name: string,
+  extensionsContent: string | undefined,
+): Promise<void> {
+  const agentsDir = path.join(agentDir, "agents");
+  const frontmatter = [
+    `name: ${name}`,
+    `description: Extension test agent`,
+    `thinking: off`,
+  ];
+  if (extensionsContent !== undefined) {
+    frontmatter.push(`extensions: ${extensionsContent}`);
+  }
+  const agentMd = `---\n${frontmatter.join("\n")}\n---\nSystem prompt.`;
+  await writeFile(path.join(agentsDir, `${name}.md`), agentMd);
+  resetAgentCache();
+  resetResolvedAgentExtensionPathsCache();
+  resetResolvedAgentSkillArgsCache();
+}
+
+test("tool path omitted extensions preserves normal discovery without --no-extensions or package index", async () => {
+  const sentMessages: SendMessageArg[] = [];
+  const { tool, cwd, agentDir } = await setupTest({
+    sendMessage: (msg) => sentMessages.push(msg),
+    piScript: `#!/bin/sh
+printf '%s\\n' "$@" > args.txt
+printf '%s\\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"done"}],"usage":{"input":1,"output":1,"totalTokens":2,"cost":{"total":0}}}}'
+printf '%s\\n' '{"type":"agent_end","messages":[]}'
+exit 0
+`,
+  });
+  await createAgentWithExtensions(agentDir, "no-ext", undefined);
+  process.env.PI_SUBAGENT_DEPTH = "1";
+  const result = await tool.execute(
+    "test-tool-call",
+    { agent: "no-ext", task: "omitted extensions task" },
+    undefined,
+    undefined,
+    { cwd, hasUI: false } as unknown as ExtensionContext,
+  );
+  await waitForSentMessageCount(sentMessages, 2);
+  expect((result.content[0] as TextContent).text).toBe("done");
+  const args = fs
+    .readFileSync(path.join(cwd, "args.txt"), "utf8")
+    .trimEnd()
+    .split("\n");
+  expect(args).not.toContain("--no-extensions");
+  const pkgPath = resolvePackageExtensionPath();
+  expect(flagValues(args, "--extension")).not.toContain(pkgPath);
+  expect(args).toContain("--approve");
+  expect(args).toContain("--no-themes");
+  expect(
+    flagValues(args, "--extension").some((p) =>
+      p.includes("complete-extension"),
+    ),
+  ).toBe(true);
+});
+
+test("tool path disabled extensions injects --no-extensions and package index for nested child support", async () => {
+  const sentMessages: SendMessageArg[] = [];
+  const { tool, cwd, agentDir } = await setupTest({
+    sendMessage: (msg) => sentMessages.push(msg),
+    piScript: `#!/bin/sh
+printf '%s\\n' "$@" > args.txt
+printf '%s\\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"done"}],"usage":{"input":1,"output":1,"totalTokens":2,"cost":{"total":0}}}}'
+printf '%s\\n' '{"type":"agent_end","messages":[]}'
+exit 0
+`,
+  });
+  await createAgentWithExtensions(agentDir, "disabled-ext", "[]");
+  process.env.PI_SUBAGENT_DEPTH = "1";
+  const result = await tool.execute(
+    "test-tool-call",
+    { agent: "disabled-ext", task: "disabled extensions task" },
+    undefined,
+    undefined,
+    { cwd, hasUI: false } as unknown as ExtensionContext,
+  );
+  await waitForSentMessageCount(sentMessages, 2);
+  expect((result.content[0] as TextContent).text).toBe("done");
+  const args = fs
+    .readFileSync(path.join(cwd, "args.txt"), "utf8")
+    .trimEnd()
+    .split("\n");
+  expect(args).toContain("--no-extensions");
+  const pkgPath = resolvePackageExtensionPath();
+  const extFlags = flagValues(args, "--extension");
+  expect(extFlags).toContain(pkgPath);
+  const pkgCount = extFlags.filter((p) => p === pkgPath).length;
+  expect(pkgCount).toBe(1);
+  expect(extFlags.some((p) => p.includes("complete-extension"))).toBe(true);
+  expect(args).toContain("--approve");
+});
+
+test("tool path named extensions resolves and passes to child with first-seen order", async () => {
+  const sentMessages: SendMessageArg[] = [];
+  const { tool, cwd, agentDir } = await setupTest({
+    sendMessage: (msg) => sentMessages.push(msg),
+    piScript: `#!/bin/sh
+printf '%s\\n' "$@" > args.txt
+printf '%s\\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"done"}],"usage":{"input":1,"output":1,"totalTokens":2,"cost":{"total":0}}}}'
+printf '%s\\n' '{"type":"agent_end","messages":[]}'
+exit 0
+`,
+  });
+  const extDir = path.join(agentDir, "extensions");
+  const extAPath = path.join(extDir, "ext-a", "index.js");
+  const extBPath = path.join(extDir, "ext-b", "index.js");
+  const extCPath = path.join(extDir, "ext-c", "index.js");
+  await fs.promises.mkdir(path.dirname(extAPath), { recursive: true });
+  await fs.promises.mkdir(path.dirname(extBPath), { recursive: true });
+  await fs.promises.mkdir(path.dirname(extCPath), { recursive: true });
+  await fs.promises.writeFile(extAPath, "module.exports = function() {}");
+  await fs.promises.writeFile(extBPath, "module.exports = function() {}");
+  await fs.promises.writeFile(extCPath, "module.exports = function() {}");
+  const originalGetExtensions = DefaultResourceLoader.prototype.getExtensions;
+  DefaultResourceLoader.prototype.getExtensions = function mockGetExtensions() {
+    return {
+      extensions: [
+        {
+          path: "extensions/ext-c",
+          resolvedPath: extCPath,
+          sourceInfo: {
+            path: extCPath,
+            source: "extensions/ext-c",
+            scope: "user",
+            origin: "top-level",
+          },
+          handlers: new Map(),
+          tools: new Map(),
+          messageRenderers: new Map(),
+          commands: new Map(),
+          flags: new Map(),
+          shortcuts: new Map(),
+        },
+        {
+          path: "extensions/ext-b",
+          resolvedPath: extBPath,
+          sourceInfo: {
+            path: extBPath,
+            source: "extensions/ext-b",
+            scope: "user",
+            origin: "top-level",
+          },
+          handlers: new Map(),
+          tools: new Map(),
+          messageRenderers: new Map(),
+          commands: new Map(),
+          flags: new Map(),
+          shortcuts: new Map(),
+        },
+        {
+          path: "extensions/ext-a",
+          resolvedPath: extAPath,
+          sourceInfo: {
+            path: extAPath,
+            source: "extensions/ext-a",
+            scope: "user",
+            origin: "top-level",
+          },
+          handlers: new Map(),
+          tools: new Map(),
+          messageRenderers: new Map(),
+          commands: new Map(),
+          flags: new Map(),
+          shortcuts: new Map(),
+        },
+      ],
+      errors: [],
+      runtime: {} as never,
+    };
+  };
+  await createAgentWithExtensions(
+    agentDir,
+    "named-ext",
+    '"ext-c, ext-a, ext-b"',
+  );
+  try {
+    process.env.PI_SUBAGENT_DEPTH = "1";
+    const result = await tool.execute(
+      "test-tool-call",
+      { agent: "named-ext", task: "named extensions task" },
+      undefined,
+      undefined,
+      { cwd, hasUI: false } as unknown as ExtensionContext,
+    );
+    await waitForSentMessageCount(sentMessages, 2);
+    expect((result.content[0] as TextContent).text).toBe("done");
+    const args = fs
+      .readFileSync(path.join(cwd, "args.txt"), "utf8")
+      .trimEnd()
+      .split("\n");
+    expect(args).toContain("--no-extensions");
+    const pkgPath = resolvePackageExtensionPath();
+    const extFlags = flagValues(args, "--extension");
+    expect(extFlags).toContain(pkgPath);
+    const namedFlags = extFlags.filter(
+      (p) => p !== pkgPath && !p.includes("complete-extension"),
+    );
+    expect(namedFlags).toEqual([extCPath, extAPath, extBPath]);
+  } finally {
+    DefaultResourceLoader.prototype.getExtensions = originalGetExtensions;
+  }
+});
+
+test("tool path single-file named extension resolves by file stem and flows to child args", async () => {
+  const sentMessages: SendMessageArg[] = [];
+  const { tool, cwd, agentDir } = await setupTest({
+    sendMessage: (msg) => sentMessages.push(msg),
+    piScript: `#!/bin/sh
+printf '%s\\n' "$@" > args.txt
+printf '%s\\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"done"}],"usage":{"input":1,"output":1,"totalTokens":2,"cost":{"total":0}}}}'
+printf '%s\\n' '{"type":"agent_end","messages":[]}'
+exit 0
+`,
+  });
+  const extDir = path.join(agentDir, "extensions");
+  const extPath = path.join(extDir, "standalone.js");
+  await fs.promises.mkdir(path.dirname(extPath), { recursive: true });
+  await fs.promises.writeFile(extPath, "module.exports = function setup() {}");
+  const originalGetExtensions = DefaultResourceLoader.prototype.getExtensions;
+  DefaultResourceLoader.prototype.getExtensions = function mockGetExtensions() {
+    return {
+      extensions: [
+        {
+          path: "extensions/standalone.js",
+          resolvedPath: extPath,
+          sourceInfo: {
+            path: extPath,
+            source: "extensions/standalone.js",
+            scope: "user",
+            origin: "top-level",
+          },
+          handlers: new Map(),
+          tools: new Map(),
+          messageRenderers: new Map(),
+          commands: new Map(),
+          flags: new Map(),
+          shortcuts: new Map(),
+        },
+      ],
+      errors: [],
+      runtime: {} as never,
+    };
+  };
+  await createAgentWithExtensions(agentDir, "single-file-ext", '"standalone"');
+  try {
+    process.env.PI_SUBAGENT_DEPTH = "1";
+    const result = await tool.execute(
+      "test-tool-call",
+      { agent: "single-file-ext", task: "single file extension task" },
+      undefined,
+      undefined,
+      { cwd, hasUI: false } as unknown as ExtensionContext,
+    );
+    await waitForSentMessageCount(sentMessages, 2);
+    expect((result.content[0] as TextContent).text).toBe("done");
+    const args = fs
+      .readFileSync(path.join(cwd, "args.txt"), "utf8")
+      .trimEnd()
+      .split("\n");
+    expect(args).toContain("--no-extensions");
+    const pkgPath = resolvePackageExtensionPath();
+    const extFlags = flagValues(args, "--extension");
+    expect(extFlags).toContain(pkgPath);
+    const namedFlags = extFlags.filter(
+      (p) => p !== pkgPath && !p.includes("complete-extension"),
+    );
+    expect(namedFlags).toEqual([extPath]);
+  } finally {
+    DefaultResourceLoader.prototype.getExtensions = originalGetExtensions;
+  }
+});
+
+test("tool path version-pinned npm extension resolves and flows to child args", async () => {
+  const sentMessages: SendMessageArg[] = [];
+  const { tool, cwd, agentDir } = await setupTest({
+    sendMessage: (msg) => sentMessages.push(msg),
+    piScript: `#!/bin/sh
+printf '%s\\n' "$@" > args.txt
+printf '%s\\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"done"}],"usage":{"input":1,"output":1,"totalTokens":2,"cost":{"total":0}}}}'
+printf '%s\\n' '{"type":"agent_end","messages":[]}'
+exit 0
+`,
+  });
+  const extDir = path.join(agentDir, "extensions");
+  const resolvedPath = path.join(extDir, "npm-helper", "index.js");
+  await fs.promises.mkdir(path.dirname(resolvedPath), { recursive: true });
+  await fs.promises.writeFile(resolvedPath, "module.exports = function() {}");
+  const originalGetExtensions = DefaultResourceLoader.prototype.getExtensions;
+  DefaultResourceLoader.prototype.getExtensions = function mockGetExtensions() {
+    return {
+      extensions: [
+        {
+          path: "extensions/npm-helper",
+          resolvedPath,
+          sourceInfo: {
+            path: resolvedPath,
+            source: "npm:@scope/helper@2.0.0",
+            scope: "user",
+            origin: "package",
+          },
+          handlers: new Map(),
+          tools: new Map(),
+          messageRenderers: new Map(),
+          commands: new Map(),
+          flags: new Map(),
+          shortcuts: new Map(),
+        },
+      ],
+      errors: [],
+      runtime: {} as never,
+    };
+  };
+  await createAgentWithExtensions(agentDir, "npm-version-ext", '"helper"');
+  try {
+    process.env.PI_SUBAGENT_DEPTH = "1";
+    const result = await tool.execute(
+      "test-tool-call",
+      { agent: "npm-version-ext", task: "npm version-pinned extension task" },
+      undefined,
+      undefined,
+      { cwd, hasUI: false } as unknown as ExtensionContext,
+    );
+    await waitForSentMessageCount(sentMessages, 2);
+    expect((result.content[0] as TextContent).text).toBe("done");
+    const args = fs
+      .readFileSync(path.join(cwd, "args.txt"), "utf8")
+      .trimEnd()
+      .split("\n");
+    expect(args).toContain("--no-extensions");
+    const pkgPath = resolvePackageExtensionPath();
+    const extFlags = flagValues(args, "--extension");
+    expect(extFlags).toContain(pkgPath);
+    const namedFlags = extFlags.filter(
+      (p) => p !== pkgPath && !p.includes("complete-extension"),
+    );
+    expect(namedFlags).toEqual([resolvedPath]);
+  } finally {
+    DefaultResourceLoader.prototype.getExtensions = originalGetExtensions;
+  }
+});
+
+test("tool path unknown extension names return completed error with sorted available names and no child spawn", async () => {
+  const sentMessages: SendMessageArg[] = [];
+  const { tool, cwd, agentDir } = await setupTest({
+    sendMessage: (msg) => sentMessages.push(msg),
+    piScript: `#!/bin/sh
+echo "should not spawn" > spawn-marker.txt
+exit 0
+`,
+  });
+  const extDir = path.join(cwd, ".pi", "extensions");
+  const alphaPath = path.join(extDir, "alpha-ext", "index.js");
+  const zebraPath = path.join(extDir, "zebra-ext", "index.js");
+  await fs.promises.mkdir(path.dirname(alphaPath), { recursive: true });
+  await fs.promises.mkdir(path.dirname(zebraPath), { recursive: true });
+  await fs.promises.writeFile(alphaPath, "module.exports = function() {}");
+  await fs.promises.writeFile(zebraPath, "module.exports = function() {}");
+  const originalGetExtensions = DefaultResourceLoader.prototype.getExtensions;
+  DefaultResourceLoader.prototype.getExtensions = function mockGetExtensions() {
+    return {
+      extensions: [
+        {
+          path: ".pi/extensions/zebra-ext",
+          resolvedPath: zebraPath,
+          sourceInfo: {
+            path: zebraPath,
+            source: ".pi/extensions/zebra-ext",
+            scope: "project",
+            origin: "top-level",
+          },
+          handlers: new Map(),
+          tools: new Map(),
+          messageRenderers: new Map(),
+          commands: new Map(),
+          flags: new Map(),
+          shortcuts: new Map(),
+        },
+        {
+          path: ".pi/extensions/alpha-ext",
+          resolvedPath: alphaPath,
+          sourceInfo: {
+            path: alphaPath,
+            source: ".pi/extensions/alpha-ext",
+            scope: "project",
+            origin: "top-level",
+          },
+          handlers: new Map(),
+          tools: new Map(),
+          messageRenderers: new Map(),
+          commands: new Map(),
+          flags: new Map(),
+          shortcuts: new Map(),
+        },
+      ],
+      errors: [],
+      runtime: {} as never,
+    };
+  };
+  await createAgentWithExtensions(
+    agentDir,
+    "bad-ext",
+    '"nonexistent, also-missing"',
+  );
+  try {
+    process.env.PI_SUBAGENT_DEPTH = "1";
+    const result = await tool.execute(
+      "test-tool-call",
+      { agent: "bad-ext", task: "unknown extensions task" },
+      undefined,
+      undefined,
+      { cwd, hasUI: false } as unknown as ExtensionContext,
+    );
+    await waitForSentMessageCount(sentMessages, 2);
+    const resultText = (result.content[0] as TextContent).text;
+    expect(resultText).toStartWith("(failed) ");
+    expect(resultText).toContain('"nonexistent"');
+    expect(resultText).toContain('"also-missing"');
+    expect(resultText).toContain("Available extensions:");
+    expect(resultText).toContain("alpha-ext");
+    expect(resultText).toContain("zebra-ext");
+    const details = result.details as SubagentDetails;
+    expect(details.results[0]?.exitCode).toBe(1);
+    expect(fs.existsSync(path.join(cwd, "spawn-marker.txt"))).toBe(false);
+  } finally {
+    DefaultResourceLoader.prototype.getExtensions = originalGetExtensions;
+  }
+});
+
+test("tool path sampling-enabled disabled extensions includes complete, sampling, and package index without duplicate index", async () => {
+  const sentMessages: SendMessageArg[] = [];
+  const { tool, cwd, agentDir } = await setupTest({
+    sendMessage: (msg) => sentMessages.push(msg),
+    piScript: `#!/bin/sh
+printf '%s\\n' "$@" > args.txt
+printf '%s\\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"done"}],"usage":{"input":1,"output":1,"totalTokens":2,"cost":{"total":0}}}}'
+printf '%s\\n' '{"type":"agent_end","messages":[]}'
+exit 0
+`,
+  });
+  const agentsDir = path.join(agentDir, "agents");
+  await writeFile(
+    path.join(agentsDir, "sampling-ext.md"),
+    `---
+name: sampling-ext
+description: Sampling with disabled extensions
+thinking: off
+temperature: 0.5
+extensions: []
+---
+System prompt.`,
+  );
+  resetAgentCache();
+  resetResolvedAgentExtensionPathsCache();
+  process.env.PI_SUBAGENT_DEPTH = "1";
+  const result = await tool.execute(
+    "test-tool-call",
+    { agent: "sampling-ext", task: "sampling + extensions disabled" },
+    undefined,
+    undefined,
+    { cwd, hasUI: false } as unknown as ExtensionContext,
+  );
+  await waitForSentMessageCount(sentMessages, 2);
+  expect((result.content[0] as TextContent).text).toBe("done");
+  const args = fs
+    .readFileSync(path.join(cwd, "args.txt"), "utf8")
+    .trimEnd()
+    .split("\n");
+  expect(args).toContain("--no-extensions");
+  const pkgPath = resolvePackageExtensionPath();
+  const extFlags = flagValues(args, "--extension");
+  expect(extFlags).toContain(pkgPath);
+  const pkgCount = extFlags.filter((p) => p === pkgPath).length;
+  expect(pkgCount).toBe(1);
+  expect(extFlags.some((p) => p.includes("complete-extension"))).toBe(true);
+  expect(extFlags.some((p) => p.includes("sampling-extension"))).toBe(true);
+});
+
+test("tool path disabled extensions preserves model, thinking, skills, and task args", async () => {
+  const sentMessages: SendMessageArg[] = [];
+  const { tool, cwd, agentDir } = await setupTest({
+    sendMessage: (msg) => sentMessages.push(msg),
+    piScript: `#!/bin/sh
+printf '%s\\n' "$@" > args.txt
+printf '%s\\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"done"}],"usage":{"input":1,"output":1,"totalTokens":2,"cost":{"total":0}}}}'
+printf '%s\\n' '{"type":"agent_end","messages":[]}'
+exit 0
+`,
+  });
+  const agentsDir = path.join(agentDir, "agents");
+  await writeFile(
+    path.join(agentsDir, "regression-ext.md"),
+    `---
+name: regression-ext
+description: Regression agent with extensions
+thinking: high
+model: agent-model
+provider: agent-provider
+tools: bash, read
+skills: helper
+extensions: []
+context: false
+---
+System prompt.`,
+  );
+  const skillDir = path.join(agentDir, "skills", "helper");
+  await fs.promises.mkdir(skillDir, { recursive: true });
+  await writeFile(
+    path.join(skillDir, "SKILL.md"),
+    `---
+name: helper
+description: Helper skill
+---
+Use helper skill.`,
+  );
+  resetAgentCache();
+  resetResolvedAgentExtensionPathsCache();
+  resetResolvedAgentSkillArgsCache();
+  process.env.PI_SUBAGENT_DEPTH = "1";
+  const result = await tool.execute(
+    "test-tool-call",
+    { agent: "regression-ext", task: "regression task" },
+    undefined,
+    undefined,
+    {
+      cwd,
+      hasUI: false,
+      model: { provider: "parent-provider", id: "parent-model" },
+    } as unknown as ExtensionContext,
+  );
+  await waitForSentMessageCount(sentMessages, 2);
+  expect((result.content[0] as TextContent).text).toBe("done");
+  const args = fs
+    .readFileSync(path.join(cwd, "args.txt"), "utf8")
+    .trimEnd()
+    .split("\n");
+  expect(args).toContain("--no-extensions");
+  expect(flagValues(args, "--provider")).toEqual(["agent-provider"]);
+  expect(flagValues(args, "--model")).toEqual(["agent-model"]);
+  expect(flagValues(args, "--thinking")).toEqual(["high"]);
+  expect(args).toContain("--tools");
+  expect(args).toContain("--no-skills");
+  expect(args).toContain("--skill");
+  expect(args).toContain("--no-context-files");
+  expect(args).toContain("--approve");
+  expect(args.join(" ")).toContain("Task: regression task");
+  const argsText = fs.readFileSync(path.join(cwd, "args.txt"), "utf8");
+  expect(argsText).toContain("## Subagent Result Contract");
+  expect(argsText).toContain("**MANDATORY**");
+});
+
+test("tool path omitted extensions at depth 2 preserves nested subagent support", async () => {
+  const sentMessages: SendMessageArg[] = [];
+  const { tool, cwd, agentDir } = await setupTest({
+    sendMessage: (msg) => sentMessages.push(msg),
+    piScript: `#!/bin/sh
+printf '%s\\n' "$@" > args.txt
+printf '%s\\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"done"}],"usage":{"input":1,"output":1,"totalTokens":2,"cost":{"total":0}}}}'
+printf '%s\\n' '{"type":"agent_end","messages":[]}'
+exit 0
+`,
+  });
+  await createAgentWithExtensions(agentDir, "nested-no-ext", undefined);
+  process.env.PI_SUBAGENT_DEPTH = "2";
+  const result = await tool.execute(
+    "test-tool-call",
+    { agent: "nested-no-ext", task: "nested depth 2" },
+    undefined,
+    undefined,
+    { cwd, hasUI: false } as unknown as ExtensionContext,
+  );
+  await waitForSentMessageCount(sentMessages, 2);
+  expect((result.content[0] as TextContent).text).toBe("done");
+  const args = fs
+    .readFileSync(path.join(cwd, "args.txt"), "utf8")
+    .trimEnd()
+    .split("\n");
+  expect(args).not.toContain("--no-extensions");
+  const pkgPath = resolvePackageExtensionPath();
+  expect(flagValues(args, "--extension")).not.toContain(pkgPath);
+  expect(
+    flagValues(args, "--extension").some((p) =>
+      p.includes("complete-extension"),
+    ),
+  ).toBe(true);
+  expect(args).toContain("--approve");
+  expect(listRunJobs()).toHaveLength(0);
+});
+
+test("tool path disabled extensions at depth 0 starts job and child receives package index", async () => {
+  const sentMessages: SendMessageArg[] = [];
+  const { tool, cwd, agentDir } = await setupTest({
+    sendMessage: (msg) => sentMessages.push(msg),
+    piScript: `#!/bin/sh
+printf '%s\\n' "$@" > args.txt
+printf '%s\\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"done"}],"usage":{"input":1,"output":1,"totalTokens":2,"cost":{"total":0}}}}'
+printf '%s\\n' '{"type":"agent_end","messages":[]}'
+exit 0
+`,
+  });
+  await createAgentWithExtensions(agentDir, "depth-zero-ext", "[]");
+  process.env.PI_SUBAGENT_DEPTH = "0";
+  const result = await tool.execute(
+    "test-tool-call",
+    { agent: "depth-zero-ext", task: "depth 0" },
+    undefined,
+    undefined,
+    { cwd, hasUI: false } as unknown as ExtensionContext,
+  );
+  expect((result.content[0] as TextContent).text).toContain("started");
+  await waitForSentMessageCount(sentMessages, 2);
+  expect(sentMessages.at(-1)?.content).toBe("done");
+  const args = fs
+    .readFileSync(path.join(cwd, "args.txt"), "utf8")
+    .trimEnd()
+    .split("\n");
+  expect(args).toContain("--no-extensions");
+  const pkgPath = resolvePackageExtensionPath();
+  expect(flagValues(args, "--extension")).toContain(pkgPath);
+  expect(listRunJobs()).toHaveLength(0);
+});
+
+test("tool path project agent with extensions works through confirmation flow", async () => {
+  const sentMessages: SendMessageArg[] = [];
+  const { cwd } = await setupFakePi();
+  const projectAgentsDir = path.join(cwd, ".pi", "agents");
+  await mkdir(projectAgentsDir, { recursive: true });
+  await writeFile(
+    path.join(projectAgentsDir, "project-ext.md"),
+    `---
+name: project-ext
+description: Project agent with extensions
+thinking: off
+extensions: []
+---
+Project prompt.`,
+  );
+  resetAgentCache();
+  const tool = getSubagentTool({
+    sendMessage: (msg) => sentMessages.push(msg),
+  });
+  process.env.PI_SUBAGENT_DEPTH = "1";
+  const result = await tool.execute(
+    "test-tool-call",
+    { agent: "project-ext", task: "project task", agentScope: "both" },
+    undefined,
+    undefined,
+    {
+      cwd,
+      hasUI: true,
+      ui: { confirm: async () => true },
+    } as unknown as ExtensionContext,
+  );
+  await waitForSentMessageCount(sentMessages, 2);
+  expect((result.content[0] as TextContent).text).toBe("done");
+  expect(sentMessages.at(-1)?.customType).toBe("subagent-result");
+  expect((result.details as SubagentDetails).results[0]?.agentSource).toBe(
+    "project",
+  );
+  expect(listRunJobs()).toHaveLength(0);
+});
+
+test("tool path depth limit with extensions agent still halts before spawn", async () => {
+  const sentMessages: SendMessageArg[] = [];
+  const { tool, cwd, agentDir } = await setupTest({
+    sendMessage: (msg) => sentMessages.push(msg),
+    piScript: `#!/bin/sh
+echo "should not spawn" > spawn-marker.txt
+exit 0
+`,
+  });
+  await createAgentWithExtensions(agentDir, "deep-ext", "[]");
+  process.env.PI_SUBAGENT_DEPTH = "3";
+  const result = await tool.execute(
+    "test-tool-call",
+    { agent: "deep-ext", task: "too deep" },
+    undefined,
+    undefined,
+    { cwd, hasUI: false } as unknown as ExtensionContext,
+  );
+  await waitForSentMessageCount(sentMessages, 1);
+  const resultText = (result.content[0] as TextContent).text;
+  expect(resultText).toStartWith("(failed) ");
+  expect(resultText).toContain("Subagent nesting limit reached");
+  expect(fs.existsSync(path.join(cwd, "spawn-marker.txt"))).toBe(false);
+  expect(listRunJobs()).toHaveLength(0);
+});
+
+test("tool path warm cache preserves named extension resolution order", async () => {
+  const sentMessages: SendMessageArg[] = [];
+  const { tool, cwd, agentDir } = await setupTest({
+    sendMessage: (msg) => sentMessages.push(msg),
+    piScript: `#!/bin/sh
+printf '%s\\n' "$@" > args.txt
+printf '%s\\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"done"}],"usage":{"input":1,"output":1,"totalTokens":2,"cost":{"total":0}}}}'
+printf '%s\\n' '{"type":"agent_end","messages":[]}'
+exit 0
+`,
+  });
+  const extDir = path.join(agentDir, "extensions");
+  const extAPath = path.join(extDir, "first-ext", "index.js");
+  const extBPath = path.join(extDir, "second-ext", "index.js");
+  await fs.promises.mkdir(path.dirname(extAPath), { recursive: true });
+  await fs.promises.mkdir(path.dirname(extBPath), { recursive: true });
+  await fs.promises.writeFile(extAPath, "module.exports = function() {}");
+  await fs.promises.writeFile(extBPath, "module.exports = function() {}");
+  const originalGetExtensions = DefaultResourceLoader.prototype.getExtensions;
+  let reloadCalls = 0;
+  const originalReload = DefaultResourceLoader.prototype.reload;
+  DefaultResourceLoader.prototype.reload = async function trackReload() {
+    reloadCalls += 1;
+    return originalReload.call(this);
+  };
+  DefaultResourceLoader.prototype.getExtensions = function mockGetExtensions() {
+    return {
+      extensions: [
+        {
+          path: "extensions/first-ext",
+          resolvedPath: extAPath,
+          sourceInfo: {
+            path: extAPath,
+            source: "extensions/first-ext",
+            scope: "user",
+            origin: "top-level",
+          },
+          handlers: new Map(),
+          tools: new Map(),
+          messageRenderers: new Map(),
+          commands: new Map(),
+          flags: new Map(),
+          shortcuts: new Map(),
+        },
+        {
+          path: "extensions/second-ext",
+          resolvedPath: extBPath,
+          sourceInfo: {
+            path: extBPath,
+            source: "extensions/second-ext",
+            scope: "user",
+            origin: "top-level",
+          },
+          handlers: new Map(),
+          tools: new Map(),
+          messageRenderers: new Map(),
+          commands: new Map(),
+          flags: new Map(),
+          shortcuts: new Map(),
+        },
+      ],
+      errors: [],
+      runtime: {} as never,
+    };
+  };
+  await createAgentWithExtensions(
+    agentDir,
+    "warm-ext",
+    '"second-ext, first-ext"',
+  );
+  try {
+    process.env.PI_SUBAGENT_DEPTH = "1";
+    const result1 = await tool.execute(
+      "test-tool-call",
+      { agent: "warm-ext", task: "warm first" },
+      undefined,
+      undefined,
+      { cwd, hasUI: false } as unknown as ExtensionContext,
+    );
+    await waitForSentMessageCount(sentMessages, 2);
+    expect((result1.content[0] as TextContent).text).toBe("done");
+    const args1 = fs
+      .readFileSync(path.join(cwd, "args.txt"), "utf8")
+      .trimEnd()
+      .split("\n");
+    const pkgPath = resolvePackageExtensionPath();
+    const namedFirst = flagValues(args1, "--extension").filter(
+      (p) => p !== pkgPath && !p.includes("complete-extension"),
+    );
+    const reloadsFirst = reloadCalls;
+    expect(reloadsFirst).toBeGreaterThanOrEqual(1);
+    reloadCalls = 0;
+    sentMessages.length = 0;
+    const result2 = await tool.execute(
+      "test-tool-call-2",
+      { agent: "warm-ext", task: "warm second" },
+      undefined,
+      undefined,
+      { cwd, hasUI: false } as unknown as ExtensionContext,
+    );
+    await waitForSentMessageCount(sentMessages, 2);
+    expect((result2.content[0] as TextContent).text).toBe("done");
+    const args2 = fs
+      .readFileSync(path.join(cwd, "args.txt"), "utf8")
+      .trimEnd()
+      .split("\n");
+    const namedSecond = flagValues(args2, "--extension").filter(
+      (p) => p !== pkgPath && !p.includes("complete-extension"),
+    );
+    expect(namedSecond).toEqual(namedFirst);
+    expect(reloadCalls).toBe(0);
+  } finally {
+    DefaultResourceLoader.prototype.getExtensions = originalGetExtensions;
+    DefaultResourceLoader.prototype.reload = originalReload;
+  }
 });

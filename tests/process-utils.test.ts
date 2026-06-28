@@ -7,6 +7,8 @@ import {
   appendWithByteLimit,
   resolveCompleteExtensionPath,
   resolveContextWindowTokens,
+  resolvePackageExtensionPath,
+  resolveSamplingExtensionPath,
   truncateValidUtf8,
 } from "../src/child/process-utils.js";
 
@@ -144,6 +146,113 @@ describe("truncateValidUtf8", () => {
   test("returns empty string when the buffer contains no valid truncation point", () => {
     const buf = Buffer.from([0xff, 0xff, 0xff]);
     expect(truncateValidUtf8(buf, 2)).toBe("");
+  });
+});
+
+describe("resolvePackageExtensionPath", () => {
+  test("returns path pointing to index extension from default dir", () => {
+    const result = resolvePackageExtensionPath();
+    const ext = __filename.endsWith(".ts") ? ".ts" : ".js";
+    expect(result).toEndWith(`index${ext}`);
+    expect(fs.existsSync(result)).toBe(true);
+  });
+
+  test("throws when neither .ts nor .js exists at resolved path", () => {
+    const nested = path.join(
+      os.tmpdir(),
+      "pi-subagent-test-nested",
+      "deep",
+      "child",
+    );
+    fs.mkdirSync(nested, { recursive: true });
+    try {
+      expect(() => resolvePackageExtensionPath(nested)).toThrow(
+        "index not found",
+      );
+    } finally {
+      fs.rmSync(path.join(os.tmpdir(), "pi-subagent-test-nested"), {
+        recursive: true,
+        force: true,
+      });
+    }
+  });
+
+  test("returns .js path when only .js exists at resolved path", () => {
+    const nested = path.join(
+      os.tmpdir(),
+      "pi-subagent-test-js",
+      "deep",
+      "child",
+    );
+    const parentDir = path.join(os.tmpdir(), "pi-subagent-test-js", "deep");
+    fs.mkdirSync(nested, { recursive: true });
+    fs.mkdirSync(parentDir, { recursive: true });
+    const jsPath = path.join(parentDir, "index.js");
+    fs.writeFileSync(jsPath, "");
+    try {
+      const result = resolvePackageExtensionPath(nested);
+      expect(result).toBe(jsPath);
+    } finally {
+      fs.rmSync(path.join(os.tmpdir(), "pi-subagent-test-js"), {
+        recursive: true,
+        force: true,
+      });
+    }
+  });
+
+  test("throw message includes both candidate paths", () => {
+    const nested = path.join(
+      os.tmpdir(),
+      "pi-subagent-test-missing",
+      "deep",
+      "child",
+    );
+    fs.mkdirSync(nested, { recursive: true });
+    try {
+      expect(() => resolvePackageExtensionPath(nested)).toThrow("not found");
+    } finally {
+      fs.rmSync(path.join(os.tmpdir(), "pi-subagent-test-missing"), {
+        recursive: true,
+        force: true,
+      });
+    }
+  });
+
+  test("returns .ts path when .ts exists at resolved path", () => {
+    const nested = path.join(
+      os.tmpdir(),
+      "pi-subagent-test-ts",
+      "deep",
+      "child",
+    );
+    const parentDir = path.join(os.tmpdir(), "pi-subagent-test-ts", "deep");
+    fs.mkdirSync(nested, { recursive: true });
+    fs.mkdirSync(parentDir, { recursive: true });
+    const tsPath = path.join(parentDir, "index.ts");
+    fs.writeFileSync(tsPath, "");
+    try {
+      const result = resolvePackageExtensionPath(nested);
+      expect(result).toBe(tsPath);
+    } finally {
+      fs.rmSync(path.join(os.tmpdir(), "pi-subagent-test-ts"), {
+        recursive: true,
+        force: true,
+      });
+    }
+  });
+});
+
+describe("resolveSamplingExtensionPath", () => {
+  test("returns path containing sampling-extension from default dir", () => {
+    const result = resolveSamplingExtensionPath();
+    expect(result).toContain("sampling-extension");
+    expect(fs.existsSync(result)).toBe(true);
+  });
+
+  test("throws when neither .ts nor .js exists in given dir", () => {
+    expect(() =>
+      resolveSamplingExtensionPath("/tmp/nonexistent-pi-subagent-dir-xyz"),
+    ).toThrow("sampling-extension not found");
   });
 });
 
