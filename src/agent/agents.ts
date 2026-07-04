@@ -30,6 +30,7 @@ export interface AgentConfig {
   provider?: string | undefined;
   temperature?: number | undefined;
   topP?: number | undefined;
+  replacePrompt?: true | undefined;
   systemPrompt: string;
   source: AgentSource;
   filePath: string;
@@ -150,9 +151,12 @@ function parseAgentConfig(
     provider: rawProvider,
     temperature: rawTemperature,
     top_p: rawTopP,
+    replace_prompt: rawReplacePrompt,
   } = frontmatter;
   if (typeof name !== "string" || typeof description !== "string") return null;
   if (rawContext !== undefined && typeof rawContext !== "boolean") return null;
+  if (rawReplacePrompt !== undefined && typeof rawReplacePrompt !== "boolean")
+    return null;
   if (isNonStringOptional(rawTools)) return null;
   if (rawSkills != null && typeof rawSkills !== "string" && rawSkills !== false)
     return null;
@@ -180,6 +184,7 @@ function parseAgentConfig(
   const temperature = parseSamplingValue(rawTemperature, "temperature", name);
   const topP = parseSamplingValue(rawTopP, "top_p", name);
   const extensions = parseExtensions(rawExtensions);
+  if (rawReplacePrompt === true && body.trim().length === 0) return null;
   return {
     name,
     description,
@@ -195,6 +200,7 @@ function parseAgentConfig(
     ...(temperature !== undefined && { temperature }),
     ...(topP !== undefined && { topP }),
     ...(extensions !== undefined && { extensions }),
+    ...(rawReplacePrompt === true && { replacePrompt: true }),
   };
 }
 

@@ -44,7 +44,7 @@ import {
   resolvePackageExtensionPath,
   resolveSamplingExtensionPath,
 } from "./process-utils.js";
-import { appendSubagentResultContract } from "./prompt-contract.js";
+import { SUBAGENT_RESULT_CONTRACT } from "./prompt-contract.js";
 import {
   beginPromptSetup,
   cleanupPromptSetupResult,
@@ -368,15 +368,28 @@ function buildSamplingEnv(agent: AgentConfig): string | undefined {
   });
 }
 
-export function buildPiArgs(
-  agent: AgentConfig,
-  task: string,
-  effectiveModel: ChildModelSettings,
-  thinking: ThinkingLevel,
-  resolvedSkills: { args: string[] },
-  tmpPrompt: { filePath: string } | null,
-  resolvedExtensionPaths?: string[],
-): string[] {
+export interface BuildPiArgsConfig {
+  agent: AgentConfig;
+  task: string;
+  effectiveModel: ChildModelSettings;
+  thinking: ThinkingLevel;
+  resolvedSkills: { args: string[] };
+  tmpPrompt: { filePath: string } | null;
+  resolvedExtensionPaths?: string[] | undefined;
+  samplingEnv?: string | undefined;
+}
+
+export function buildPiArgs(config: BuildPiArgsConfig): string[] {
+  const {
+    agent,
+    task,
+    effectiveModel,
+    thinking,
+    resolvedSkills,
+    tmpPrompt,
+    resolvedExtensionPaths,
+    samplingEnv,
+  } = config;
   const args: string[] = [
     "--mode",
     "json",
@@ -402,7 +415,11 @@ export function buildPiArgs(
     args.push("--no-skills", ...resolvedSkills.args);
   if (agent.context === false) args.push("--no-context-files");
   if (tmpPrompt) {
-    args.push("--append-system-prompt", tmpPrompt.filePath);
+    if (agent.replacePrompt) {
+      args.push("--system-prompt", tmpPrompt.filePath);
+    } else {
+      args.push("--append-system-prompt", tmpPrompt.filePath);
+    }
   }
   if (agent.extensions !== undefined) {
     args.push("--extension", PACKAGE_EXTENSION_PATH);
@@ -415,10 +432,14 @@ export function buildPiArgs(
     }
   }
   args.push("--extension", COMPLETE_EXTENSION_PATH);
+  if (samplingEnv) {
+    args.push("--extension", SAMPLING_EXTENSION_PATH);
+  }
+  args.push("--append-system-prompt", SUBAGENT_RESULT_CONTRACT);
   const taskPrompt = task
     ? `Task: ${task}`
     : "Run according to your system prompt. If no explicit task was provided, use the default context described there.";
-  args.push(appendSubagentResultContract(taskPrompt));
+  args.push(taskPrompt);
   return args;
 }
 
@@ -585,9 +606,14 @@ export async function runSingleAgent(
     ? resolveAgentExtensionPaths(defaultCwd, extensionNames)
     : Promise.resolve({ resolvedPaths: [] });
   const promptSetupPromise = beginPromptSetup(agent);
-  const resolvedSkills = await resolvedSkillsPromise;
-  if ("error" in resolvedSkills) {
-    const promptSetup = await promptSetupPromise;
+  const [resolvedSkills, resolvedExtensions, promptSetup] = await Promise.all([
+    resolvedSkillsPromise,
+    resolvedExtensionsPromise,
+    promptSetupPromise,
+  ]);
+  const abortWithError = async (
+    error: string,
+  ): Promise<RunSingleAgentResult> => {
     await cleanupPromptSetupResult(promptSetup);
     return {
       kind: "completed",
@@ -595,27 +621,14 @@ export async function runSingleAgent(
         agentName,
         agent.source,
         task,
-        resolvedSkills.error,
+        error,
         modelDisplay,
       ),
     };
-  }
-  const resolvedExtensions = await resolvedExtensionsPromise;
-  if ("error" in resolvedExtensions) {
-    const promptSetup = await promptSetupPromise;
-    await cleanupPromptSetupResult(promptSetup);
-    return {
-      kind: "completed",
-      result: createErrorResult(
-        agentName,
-        agent.source,
-        task,
-        resolvedExtensions.error,
-        modelDisplay,
-      ),
-    };
-  }
-  const promptSetup = await promptSetupPromise;
+  };
+  if ("error" in resolvedSkills) return abortWithError(resolvedSkills.error);
+  if ("error" in resolvedExtensions)
+    return abortWithError(resolvedExtensions.error);
   if ("error" in promptSetup) {
     return {
       kind: "completed",
@@ -623,7 +636,11 @@ export async function runSingleAgent(
         agentName,
         agent.source,
         task,
-        `Failed to write prompt: ${promptSetup.error instanceof Error ? promptSetup.error.message : String(promptSetup.error)}`,
+        `Failed to write prompt: ${
+          promptSetup.error instanceof Error
+            ? promptSetup.error.message
+            : String(promptSetup.error)
+        }`,
         modelDisplay,
       ),
     };
@@ -638,20 +655,19 @@ export async function runSingleAgent(
   const tmpPrompt = promptSetup.tmpPrompt;
   const samplingEnv = buildSamplingEnv(agent);
   try {
-    const args = buildPiArgs(
+    const args = buildPiArgs({
       agent,
       task,
       effectiveModel,
       thinking,
       resolvedSkills,
       tmpPrompt,
-      agent.extensions !== undefined
-        ? resolvedExtensions.resolvedPaths
-        : undefined,
-    );
-    if (samplingEnv) {
-      args.push("--extension", SAMPLING_EXTENSION_PATH);
-    }
+      resolvedExtensionPaths:
+        agent.extensions !== undefined
+          ? resolvedExtensions.resolvedPaths
+          : undefined,
+      samplingEnv,
+    });
     const invocation = getPiInvocation(args);
     const terminateOptions = {
       tree: true,
