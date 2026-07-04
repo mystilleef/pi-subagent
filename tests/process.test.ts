@@ -18,10 +18,7 @@ import {
   resolvePackageExtensionPath,
   resolveSamplingExtensionPath,
 } from "../src/child/process-utils.js";
-import {
-  appendSubagentResultContract,
-  SUBAGENT_RESULT_CONTRACT,
-} from "../src/child/prompt-contract.js";
+import { SUBAGENT_RESULT_CONTRACT } from "../src/child/prompt-contract.js";
 import {
   addMessageToResult,
   initRuntimeResult,
@@ -42,7 +39,13 @@ import {
   resolveAgentSkillArgs,
 } from "../src/shared/utils.js";
 import {
+  CAPTURE_ARGS_PI_SCRIPT,
+  emitAgentEnd,
+  emitMessageEnd,
+  flagValues,
   hangAgent,
+  makeAssistantMessage,
+  makeModelAgent,
   makeSubagentDetails,
   makeSubagentToolUpdateLine,
   setupFakePi,
@@ -50,6 +53,7 @@ import {
   setupTest,
   shellQuote,
   waitFor,
+  withMkdtempCapture,
 } from "./helpers.js";
 
 setupHooks();
@@ -59,22 +63,13 @@ type CapturableParentModel = {
   id?: string | undefined;
 };
 
-function makeModelAgent(overrides: Partial<AgentConfig>): AgentConfig {
-  return { ...hangAgent, ...overrides };
-}
-
 async function runCapturedModelAgent(
   agent: AgentConfig,
   parentModel: CapturableParentModel | undefined,
   parentThinking: AgentConfig["thinking"] = "off",
 ): Promise<{ args: string[]; result: SingleResult }> {
   const { cwd } = await setupTest({
-    piScript: `#!/bin/sh
-printf '%s\n' "$@" > args.txt
-printf '%s\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"done"}],"api":"fake","provider":"fake","model":"fake","usage":{"input":1,"output":1,"cacheRead":0,"cacheWrite":0,"totalTokens":2,"cost":{"total":0}},"stopReason":"stop","timestamp":0}}'
-printf '%s\n' '{"type":"agent_end","messages":[]}'
-exit 0
-`,
+    piScript: CAPTURE_ARGS_PI_SCRIPT,
   });
   const { result } = await runSingleAgent(
     cwd,
@@ -102,44 +97,6 @@ async function captureRunSingleAgentArgs(
   parentModel: CapturableParentModel | undefined,
 ): Promise<string[]> {
   return (await runCapturedModelAgent(agent, parentModel)).args;
-}
-
-function flagValues(args: string[], flag: string): string[] {
-  return args.flatMap((arg, index) =>
-    arg === flag ? [args[index + 1] ?? ""] : [],
-  );
-}
-
-function makeAssistantMessage(
-  text: string,
-  overrides: Record<string, unknown> = {},
-): Record<string, unknown> {
-  return {
-    role: "assistant",
-    content: [{ type: "text", text }],
-    api: "fake",
-    provider: "fake",
-    model: "fake",
-    usage: {
-      input: 1,
-      output: 1,
-      cacheRead: 0,
-      cacheWrite: 0,
-      totalTokens: 2,
-      cost: { total: 0 },
-    },
-    stopReason: "stop",
-    timestamp: 0,
-    ...overrides,
-  };
-}
-
-function emitMessageEnd(message: Record<string, unknown>): string {
-  return `printf '%s\\n' ${shellQuote(JSON.stringify({ type: "message_end", message }))}`;
-}
-
-function emitAgentEnd(messages: Record<string, unknown>[]): string {
-  return `printf '%s\\n' ${shellQuote(JSON.stringify({ type: "agent_end", messages }))}`;
 }
 
 test("runSingleAgent reports unknown agents with available names", async () => {
@@ -1375,20 +1332,6 @@ Use warm skill.
 
 test("runSingleAgent cleans prompt temp file when skill resolution fails after prompt creation", async () => {
   const { cwd } = await setupTest();
-  const originalMkdtemp = fs.promises.mkdtemp;
-  let tmpDir: string | undefined;
-  Object.defineProperty(fs.promises, "mkdtemp", {
-    configurable: true,
-    value: async (...args: unknown[]) => {
-      const dir = Reflect.apply(
-        originalMkdtemp,
-        fs.promises,
-        args,
-      ) as Promise<string>;
-      tmpDir = await dir;
-      return tmpDir;
-    },
-  });
   const agent: AgentConfig = {
     name: "badskill",
     description: "Bad skill",
@@ -1399,7 +1342,7 @@ test("runSingleAgent cleans prompt temp file when skill resolution fails after p
     skills: ["missing-skill"],
   };
   let _result: SingleResult | undefined;
-  try {
+  const getTmpDir = await withMkdtempCapture(async (getTmpDir) => {
     const { result } = await runSingleAgent(
       cwd,
       [agent],
@@ -1412,37 +1355,54 @@ test("runSingleAgent cleans prompt temp file when skill resolution fails after p
       "off",
     );
     _result = result;
-  } finally {
-    Object.defineProperty(fs.promises, "mkdtemp", {
-      value: originalMkdtemp,
-      writable: true,
-      enumerable: true,
-      configurable: true,
-    });
-  }
+    return getTmpDir;
+  });
   if (!_result) throw new Error("result missing");
   expect(_result.exitCode).toBe(1);
   expect(_result.stderr).toContain('Unknown skill: "missing-skill"');
+  const tmpDir = getTmpDir();
+  expect(tmpDir).toBeDefined();
+  expect(fs.existsSync(tmpDir ?? "")).toBe(false);
+});
+
+test("runSingleAgent cleans prompt temp file when replacePrompt true and skill resolution fails", async () => {
+  const { cwd } = await setupTest();
+  const agent: AgentConfig = {
+    name: "replace-badskill",
+    description: "Replace bad skill",
+    thinking: "off",
+    systemPrompt: "Replacement prompt that creates a temp file.",
+    replacePrompt: true,
+    source: "user",
+    filePath: "replace-badskill.md",
+    skills: ["missing-skill"],
+  };
+  let _result: SingleResult | undefined;
+  const getTmpDir = await withMkdtempCapture(async (getTmpDir) => {
+    const { result } = await runSingleAgent(
+      cwd,
+      [agent],
+      "replace-badskill",
+      "task",
+      undefined,
+      undefined,
+      makeSubagentDetails,
+      undefined,
+      "off",
+    );
+    _result = result;
+    return getTmpDir;
+  });
+  if (!_result) throw new Error("result missing");
+  expect(_result.exitCode).toBe(1);
+  expect(_result.stderr).toContain('Unknown skill: "missing-skill"');
+  const tmpDir = getTmpDir();
   expect(tmpDir).toBeDefined();
   expect(fs.existsSync(tmpDir ?? "")).toBe(false);
 });
 
 test("runSingleAgent cleans prompt temp file when extension resolution fails after prompt creation", async () => {
   const { cwd } = await setupTest();
-  const originalMkdtemp = fs.promises.mkdtemp;
-  let tmpDir: string | undefined;
-  Object.defineProperty(fs.promises, "mkdtemp", {
-    configurable: true,
-    value: async (...args: unknown[]) => {
-      const dir = Reflect.apply(
-        originalMkdtemp,
-        fs.promises,
-        args,
-      ) as Promise<string>;
-      tmpDir = await dir;
-      return tmpDir;
-    },
-  });
   const agent: AgentConfig = {
     name: "badext",
     description: "Bad extension",
@@ -1453,7 +1413,7 @@ test("runSingleAgent cleans prompt temp file when extension resolution fails aft
     extensions: ["missing-ext"],
   };
   let _result: SingleResult | undefined;
-  try {
+  const getTmpDir = await withMkdtempCapture(async (getTmpDir) => {
     const { result } = await runSingleAgent(
       cwd,
       [agent],
@@ -1466,17 +1426,12 @@ test("runSingleAgent cleans prompt temp file when extension resolution fails aft
       "off",
     );
     _result = result;
-  } finally {
-    Object.defineProperty(fs.promises, "mkdtemp", {
-      value: originalMkdtemp,
-      writable: true,
-      enumerable: true,
-      configurable: true,
-    });
-  }
+    return getTmpDir;
+  });
   if (!_result) throw new Error("result missing");
   expect(_result.exitCode).toBe(1);
   expect(_result.stderr).toContain('Unknown extension: "missing-ext"');
+  const tmpDir = getTmpDir();
   expect(tmpDir).toBeDefined();
   expect(fs.existsSync(tmpDir ?? "")).toBe(false);
 });
@@ -1683,7 +1638,7 @@ exit 0
 
 test("SUBAGENT_RESULT_CONTRACT contains complete tool instructions", () => {
   expect(SUBAGENT_RESULT_CONTRACT).toContain(
-    "Write the complete result as a text response",
+    "Write the complete task result as assistant text",
   );
   expect(SUBAGENT_RESULT_CONTRACT).toMatch(
     /Call `complete` as the final action/,
@@ -1699,12 +1654,6 @@ test("SUBAGENT_RESULT_CONTRACT narrows code-block constraint to entire-result wr
   expect(SUBAGENT_RESULT_CONTRACT).not.toMatch(
     /NEVER.*wrap result in code blocks/i,
   );
-});
-
-test("appendSubagentResultContract appends contract to prompt", () => {
-  const result = appendSubagentResultContract("Task: foo");
-  expect(result.startsWith("Task: foo\n\n")).toBe(true);
-  expect(result.endsWith(SUBAGENT_RESULT_CONTRACT)).toBe(true);
 });
 
 // Helper: build a minimal RuntimeResult with a tool-call message so deriveStreamingProgress produces activeToolActivity
@@ -3813,15 +3762,15 @@ function buildArgsWithExtensions(
   agentOverrides: Partial<AgentConfig>,
   resolvedExtensionPaths?: string[],
 ): string[] {
-  return buildPiArgs(
-    { ...hangAgent, ...agentOverrides },
-    "task",
-    { id: "test-model" },
-    "off",
-    { args: [] },
-    { filePath: "/tmp/fake-prompt.md" },
+  return buildPiArgs({
+    agent: { ...hangAgent, ...agentOverrides },
+    task: "task",
+    effectiveModel: { id: "test-model" },
+    thinking: "off",
+    resolvedSkills: { args: [] },
+    tmpPrompt: { filePath: "/tmp/fake-prompt.md" },
     resolvedExtensionPaths,
-  );
+  });
 }
 
 function extensionFlags(args: string[]): { path: string; index: number }[] {
@@ -3939,6 +3888,337 @@ test("buildPiArgs named extensions preserves first-seen order from resolved path
     "/ext/a.js",
     "/ext/b.js",
   ]);
+});
+
+// --- T-002: buildPiArgs contract delivery invariants ---
+
+function buildContractArgs(
+  task: string,
+  tmpPrompt: { filePath: string } | null,
+  agentOverrides: Partial<AgentConfig> = {},
+  resolvedExtensionPaths?: string[],
+  samplingEnv?: string,
+): string[] {
+  return buildPiArgs({
+    agent: { ...hangAgent, ...agentOverrides },
+    task,
+    effectiveModel: { id: "test-model" },
+    thinking: "off",
+    resolvedSkills: { args: [] },
+    tmpPrompt,
+    resolvedExtensionPaths,
+    samplingEnv,
+  });
+}
+
+describe("T-002: buildPiArgs contract delivery invariants", () => {
+  test("tmpPrompt present places contract as last append after body prompt", () => {
+    const args = buildContractArgs("task", {
+      filePath: "/tmp/fake-prompt.md",
+    });
+    const appends = flagValues(args, "--append-system-prompt");
+    expect(appends).toEqual(["/tmp/fake-prompt.md", SUBAGENT_RESULT_CONTRACT]);
+    expect(appends.at(-1)).toBe(SUBAGENT_RESULT_CONTRACT);
+    expect(args.at(-1)).toBe("Task: task");
+    expect(args.at(-1)).not.toContain("Subagent Result Contract");
+  });
+
+  test("tmpPrompt absent places contract as the only append value", () => {
+    const args = buildContractArgs("task", null);
+    const appends = flagValues(args, "--append-system-prompt");
+    expect(appends).toEqual([SUBAGENT_RESULT_CONTRACT]);
+    expect(appends.at(-1)).toBe(SUBAGENT_RESULT_CONTRACT);
+    expect(args.at(-1)).toBe("Task: task");
+    expect(args.at(-1)).not.toContain("Subagent Result Contract");
+  });
+
+  test("empty task fallback with body prompt receives contract last", () => {
+    const args = buildContractArgs("", {
+      filePath: "/tmp/fake-prompt.md",
+    });
+    const appends = flagValues(args, "--append-system-prompt");
+    expect(appends).toEqual(["/tmp/fake-prompt.md", SUBAGENT_RESULT_CONTRACT]);
+    expect(appends.at(-1)).toBe(SUBAGENT_RESULT_CONTRACT);
+    expect(args.at(-1)).toBe(
+      "Run according to your system prompt. If no explicit task was provided, use the default context described there.",
+    );
+    expect(args.at(-1)).not.toContain("Subagent Result Contract");
+  });
+
+  test("empty task fallback without body prompt receives contract as only append", () => {
+    const args = buildContractArgs("", null);
+    const appends = flagValues(args, "--append-system-prompt");
+    expect(appends).toEqual([SUBAGENT_RESULT_CONTRACT]);
+    expect(appends.at(-1)).toBe(SUBAGENT_RESULT_CONTRACT);
+    expect(args.at(-1)).toBe(
+      "Run according to your system prompt. If no explicit task was provided, use the default context described there.",
+    );
+    expect(args.at(-1)).not.toContain("Subagent Result Contract");
+  });
+
+  test("contract remains last append when extensions are disabled", () => {
+    const args = buildContractArgs(
+      "task",
+      { filePath: "/tmp/fake-prompt.md" },
+      { extensions: [] },
+    );
+    const appends = flagValues(args, "--append-system-prompt");
+    expect(appends.at(-1)).toBe(SUBAGENT_RESULT_CONTRACT);
+    expect(args.at(-1)).toBe("Task: task");
+    expect(args.at(-1)).not.toContain("Subagent Result Contract");
+  });
+
+  test("contract remains last append with named extensions and preserves complete extension", () => {
+    const args = buildContractArgs(
+      "task",
+      { filePath: "/tmp/fake-prompt.md" },
+      { extensions: ["ext-a"] },
+      ["/ext/a.js"],
+    );
+    const appends = flagValues(args, "--append-system-prompt");
+    expect(appends.at(-1)).toBe(SUBAGENT_RESULT_CONTRACT);
+    expect(args.at(-1)).toBe("Task: task");
+    const exts = flagValues(args, "--extension");
+    expect(exts.some((p) => p.includes("complete-extension"))).toBe(true);
+  });
+
+  test("contract remains last append with custom tools containing complete and deduplicates complete", () => {
+    const args = buildContractArgs("task", null, {
+      tools: ["complete", "bash"],
+    });
+    const appends = flagValues(args, "--append-system-prompt");
+    expect(appends.at(-1)).toBe(SUBAGENT_RESULT_CONTRACT);
+    expect(args.at(-1)).toBe("Task: task");
+    const tools = flagValues(args, "--tools")[0]?.split(",") ?? [];
+    expect(tools.filter((t) => t === "complete")).toHaveLength(1);
+    expect(tools).toContain("bash");
+  });
+
+  test("contract remains last append with context disabled and preserves unrelated flags", () => {
+    const args = buildContractArgs(
+      "task",
+      { filePath: "/tmp/fake-prompt.md" },
+      { context: false },
+    );
+    const appends = flagValues(args, "--append-system-prompt");
+    expect(appends.at(-1)).toBe(SUBAGENT_RESULT_CONTRACT);
+    expect(args).toContain("--no-context-files");
+    expect(args).toContain("--approve");
+    expect(args).toContain("--no-themes");
+    expect(args).toContain("--no-prompt-templates");
+    expect(args.at(-1)).toBe("Task: task");
+  });
+
+  test("contract remains last append with skills disabled", () => {
+    const args = buildContractArgs(
+      "task",
+      { filePath: "/tmp/fake-prompt.md" },
+      { skills: false },
+    );
+    const appends = flagValues(args, "--append-system-prompt");
+    expect(appends.at(-1)).toBe(SUBAGENT_RESULT_CONTRACT);
+    expect(args).toContain("--no-skills");
+    expect(args.at(-1)).toBe("Task: task");
+  });
+
+  test("contract appears exactly once among appended system prompts", () => {
+    const args = buildContractArgs(
+      "task",
+      { filePath: "/tmp/fake-prompt.md" },
+      { extensions: ["ext-a"] },
+      ["/ext/a.js"],
+    );
+    const appends = flagValues(args, "--append-system-prompt");
+    const contractCount = appends.filter(
+      (a) => a === SUBAGENT_RESULT_CONTRACT,
+    ).length;
+    expect(contractCount).toBe(1);
+  });
+
+  test("sampling extension is loaded before the contract append", () => {
+    const args = buildContractArgs(
+      "task",
+      { filePath: "/tmp/fake-prompt.md" },
+      { temperature: 0.7, topP: 0.9 },
+      undefined,
+      JSON.stringify({ temperature: 0.7, topP: 0.9 }),
+    );
+    const contractIdx = args.indexOf(SUBAGENT_RESULT_CONTRACT);
+    const exts = flagValues(args, "--extension");
+    expect(exts.some((p) => p.includes("sampling-extension"))).toBe(true);
+    const samplingIdx = args.indexOf(
+      exts.find((p) => p.includes("sampling-extension")) ?? "",
+    );
+    expect(contractIdx).toBeGreaterThan(samplingIdx);
+    expect(args.at(-1)).toBe("Task: task");
+  });
+
+  test("task prompt arg never contains contract text across configurations", () => {
+    const configs: {
+      name: string;
+      task: string;
+      tmpPrompt: { filePath: string } | null;
+      overrides: Partial<AgentConfig>;
+      resolvedPaths?: string[];
+    }[] = [
+      {
+        name: "task with body",
+        task: "task",
+        tmpPrompt: { filePath: "/tmp/fake-prompt.md" },
+        overrides: {},
+      },
+      {
+        name: "task without body",
+        task: "task",
+        tmpPrompt: null,
+        overrides: {},
+      },
+      {
+        name: "empty task with body",
+        task: "",
+        tmpPrompt: { filePath: "/tmp/fake-prompt.md" },
+        overrides: {},
+      },
+      {
+        name: "empty task without body",
+        task: "",
+        tmpPrompt: null,
+        overrides: {},
+      },
+      {
+        name: "extensions disabled",
+        task: "task",
+        tmpPrompt: { filePath: "/tmp/fake-prompt.md" },
+        overrides: { extensions: [] },
+      },
+      {
+        name: "named extensions",
+        task: "task",
+        tmpPrompt: { filePath: "/tmp/fake-prompt.md" },
+        overrides: { extensions: ["ext-a"] },
+        resolvedPaths: ["/ext/a.js"],
+      },
+      {
+        name: "custom tools with complete",
+        task: "task",
+        tmpPrompt: null,
+        overrides: { tools: ["complete", "bash"] },
+      },
+      {
+        name: "context disabled",
+        task: "task",
+        tmpPrompt: { filePath: "/tmp/fake-prompt.md" },
+        overrides: { context: false },
+      },
+      {
+        name: "skills disabled",
+        task: "task",
+        tmpPrompt: { filePath: "/tmp/fake-prompt.md" },
+        overrides: { skills: false },
+      },
+    ];
+    for (const config of configs) {
+      const args = buildContractArgs(
+        config.task,
+        config.tmpPrompt,
+        config.overrides,
+        config.resolvedPaths,
+      );
+      const taskArg = args.at(-1) ?? "";
+      expect(taskArg, config.name).not.toContain("Subagent Result Contract");
+      expect(taskArg, config.name).not.toContain("MANDATORY");
+    }
+  });
+
+  test("replacePrompt true routes body via --system-prompt and keeps contract last", () => {
+    const args = buildContractArgs(
+      "task",
+      { filePath: "/tmp/fake-prompt.md" },
+      { replacePrompt: true },
+    );
+    expect(flagValues(args, "--system-prompt")).toEqual([
+      "/tmp/fake-prompt.md",
+    ]);
+    expect(flagValues(args, "--append-system-prompt")).toEqual([
+      SUBAGENT_RESULT_CONTRACT,
+    ]);
+    expect(args.indexOf("--system-prompt")).toBeGreaterThan(-1);
+    expect(args.indexOf(SUBAGENT_RESULT_CONTRACT)).toBeGreaterThan(
+      args.indexOf("--system-prompt"),
+    );
+    expect(args.at(-1)).toBe("Task: task");
+  });
+
+  test("replacePrompt false keeps --append-system-prompt body delivery", () => {
+    const agent = {
+      ...hangAgent,
+      replacePrompt: false,
+    } as unknown as AgentConfig;
+    const args = buildPiArgs({
+      agent,
+      task: "task",
+      effectiveModel: { id: "test-model" },
+      thinking: "off",
+      resolvedSkills: { args: [] },
+      tmpPrompt: { filePath: "/tmp/fake-prompt.md" },
+    });
+    expect(flagValues(args, "--system-prompt")).toEqual([]);
+    expect(flagValues(args, "--append-system-prompt")).toEqual([
+      "/tmp/fake-prompt.md",
+      SUBAGENT_RESULT_CONTRACT,
+    ]);
+  });
+
+  test("replacePrompt omitted keeps --append-system-prompt body delivery", () => {
+    const args = buildContractArgs("task", { filePath: "/tmp/fake-prompt.md" });
+    expect(flagValues(args, "--system-prompt")).toEqual([]);
+    expect(flagValues(args, "--append-system-prompt")).toEqual([
+      "/tmp/fake-prompt.md",
+      SUBAGENT_RESULT_CONTRACT,
+    ]);
+  });
+
+  test("replacePrompt true with empty task uses --system-prompt and default task prompt last", () => {
+    const args = buildContractArgs(
+      "",
+      { filePath: "/tmp/fake-prompt.md" },
+      { replacePrompt: true },
+    );
+    expect(flagValues(args, "--system-prompt")).toEqual([
+      "/tmp/fake-prompt.md",
+    ]);
+    expect(flagValues(args, "--append-system-prompt")).toEqual([
+      SUBAGENT_RESULT_CONTRACT,
+    ]);
+    expect(args.at(-1)).toBe(
+      "Run according to your system prompt. If no explicit task was provided, use the default context described there.",
+    );
+  });
+
+  test("replacePrompt true preserves unrelated flags", () => {
+    const args = buildContractArgs(
+      "task",
+      { filePath: "/tmp/fake-prompt.md" },
+      { replacePrompt: true, context: false, tools: ["bash"] },
+    );
+    expect(flagValues(args, "--system-prompt")).toEqual([
+      "/tmp/fake-prompt.md",
+    ]);
+    expect(flagValues(args, "--append-system-prompt")).toEqual([
+      SUBAGENT_RESULT_CONTRACT,
+    ]);
+    expect(args).toContain("--no-context-files");
+    expect(flagValues(args, "--tools")[0]?.split(",")).toContain("bash");
+    expect(args.at(-1)).toBe("Task: task");
+  });
+
+  test("replacePrompt true with no body omits --system-prompt and appends contract only", () => {
+    const args = buildContractArgs("task", null, { replacePrompt: true });
+    expect(flagValues(args, "--system-prompt")).toEqual([]);
+    expect(flagValues(args, "--append-system-prompt")).toEqual([
+      SUBAGENT_RESULT_CONTRACT,
+    ]);
+  });
 });
 
 // --- T-004: pre-spawn extension resolution and cleanup ---
@@ -4125,20 +4405,6 @@ exit 0
 
 test("runSingleAgent cleans prompt temp file after extension resolution failure", async () => {
   const { cwd } = await setupTest();
-  const originalMkdtemp = fs.promises.mkdtemp;
-  let tmpDir: string | undefined;
-  Object.defineProperty(fs.promises, "mkdtemp", {
-    configurable: true,
-    value: async (...args: unknown[]) => {
-      const dir = Reflect.apply(
-        originalMkdtemp,
-        fs.promises,
-        args,
-      ) as Promise<string>;
-      tmpDir = await dir;
-      return tmpDir;
-    },
-  });
   const agent: AgentConfig = {
     ...hangAgent,
     name: "badext",
@@ -4146,7 +4412,7 @@ test("runSingleAgent cleans prompt temp file after extension resolution failure"
     extensions: ["nonexistent-ext"],
   };
   let _result: SingleResult | undefined;
-  try {
+  const getTmpDir = await withMkdtempCapture(async (getTmpDir) => {
     const { result } = await runSingleAgent(
       cwd,
       [agent],
@@ -4159,17 +4425,12 @@ test("runSingleAgent cleans prompt temp file after extension resolution failure"
       "off",
     );
     _result = result;
-  } finally {
-    Object.defineProperty(fs.promises, "mkdtemp", {
-      value: originalMkdtemp,
-      writable: true,
-      enumerable: true,
-      configurable: true,
-    });
-  }
+    return getTmpDir;
+  });
   if (!_result) throw new Error("result missing");
   expect(_result.exitCode).toBe(1);
   expect(_result.stderr).toContain('Unknown extension: "nonexistent-ext"');
+  const tmpDir = getTmpDir();
   expect(tmpDir).toBeDefined();
   expect(fs.existsSync(tmpDir ?? "")).toBe(false);
 });
