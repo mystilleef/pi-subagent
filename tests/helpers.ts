@@ -1,4 +1,5 @@
 import { afterEach, beforeEach } from "bun:test";
+import * as fs from "node:fs";
 import { chmod, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -37,6 +38,11 @@ const ORIGINAL_DEBUG_ENABLED = process.env.PI_SUBAGENT_DEBUG_ENABLED;
 const ORIGINAL_DESKTOP_NOTIFICATIONS =
   process.env.PI_SUBAGENT_DESKTOP_NOTIFICATIONS;
 const ORIGINAL_NOTIFY_PER_JOB = process.env.PI_SUBAGENT_NOTIFY_PER_JOB;
+
+function restoreEnv(key: string, original: string | undefined): void {
+  if (original === undefined) delete process.env[key];
+  else process.env[key] = original;
+}
 
 let tempDirs: string[] = [];
 
@@ -98,6 +104,49 @@ export function shellQuote(value: string): string {
   return `'${value.replaceAll("'", "'\\''")}'`;
 }
 
+/**
+ * Shell fragment for fake `pi` scripts: captures child argv null-delimited into
+ * `args.txt` so multi-line `--append-system-prompt` values (such as the literal
+ * result contract) survive as single argv elements, and resolves file-path
+ * append values into `prompt.txt`. Literal contract text is not a file path, so
+ * the file check safely skips it — proving fake `pi` never treats the contract
+ * as a file.
+ */
+export const CAPTURE_PI_ARGS_SH = `printf '%s\\0' "$@" > args.txt
+while [ "$#" -gt 0 ]; do
+  if [ "$1" = "--append-system-prompt" ] || [ "$1" = "--system-prompt" ]; then
+    shift
+    if [ -f "$1" ]; then cat "$1" > prompt.txt; fi
+  fi
+  shift
+done`;
+
+/**
+ * A complete fake-pi shell script that captures argv, emits a `message_end`
+ * with "done" text, then emits an empty `agent_end` and exits 0.
+ * Common pattern used by multiple test files for arg-capture tests.
+ */
+export const CAPTURE_ARGS_PI_SCRIPT = `#!/bin/sh
+printf '%s\n' "$@" > args.txt
+printf '%s\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"done"}],"api":"fake","provider":"fake","model":"fake","usage":{"input":1,"output":1,"cacheRead":0,"cacheWrite":0,"totalTokens":2,"cost":{"total":0}},"stopReason":"stop","timestamp":0}}'
+printf '%s\n' '{"type":"agent_end","messages":[]}'
+exit 0
+`;
+
+/**
+ * Reads null-delimited argv captured by `CAPTURE_PI_ARGS_SH` into a `string[]`,
+ * dropping the trailing empty element produced by the final delimiter.
+ */
+export async function readCapturedArgs(
+  cwd: string,
+  filename = "args.txt",
+): Promise<string[]> {
+  const text = await Bun.file(path.join(cwd, filename)).text();
+  const argv = text.split("\0");
+  if (argv[argv.length - 1] === "") argv.pop();
+  return argv;
+}
+
 export function makeSubagentToolUpdateLine(
   preview: string,
   instanceName?: string,
@@ -120,6 +169,48 @@ export function makeSubagentToolUpdateLine(
       details: { results: [result] },
     },
   });
+}
+
+/**
+ * Builds a minimal assistant message object for fake-pi JSON emission.
+ * Merges overrides on top of sensible defaults (fake provider/model/usage).
+ */
+export function makeAssistantMessage(
+  text: string,
+  overrides: Record<string, unknown> = {},
+): Record<string, unknown> {
+  return {
+    role: "assistant",
+    content: [{ type: "text", text }],
+    api: "fake",
+    provider: "fake",
+    model: "fake",
+    usage: {
+      input: 1,
+      output: 1,
+      cacheRead: 0,
+      cacheWrite: 0,
+      totalTokens: 2,
+      cost: { total: 0 },
+    },
+    stopReason: "stop",
+    timestamp: 0,
+    ...overrides,
+  };
+}
+
+/**
+ * Shell fragment that emits a `message_end` JSON event line from a message object.
+ */
+export function emitMessageEnd(message: Record<string, unknown>): string {
+  return `printf '%s\\n' ${shellQuote(JSON.stringify({ type: "message_end", message }))}`;
+}
+
+/**
+ * Shell fragment that emits an `agent_end` JSON event line with the given messages.
+ */
+export function emitAgentEnd(messages: Record<string, unknown>[]): string {
+  return `printf '%s\\n' ${shellQuote(JSON.stringify({ type: "agent_end", messages }))}`;
 }
 
 export async function setupFakePi(): Promise<{
@@ -258,6 +349,41 @@ export function getSubagentTool(overrides?: {
   });
 }
 
+export function flagValues(args: string[], flag: string): string[] {
+  return args.flatMap((arg, index) =>
+    arg === flag ? [args[index + 1] ?? ""] : [],
+  );
+}
+
+export async function withMkdtempCapture<T>(
+  callback: (getTmpDir: () => string | undefined) => T | Promise<T>,
+): Promise<T> {
+  const originalMkdtemp = fs.promises.mkdtemp;
+  let tmpDir: string | undefined;
+  Object.defineProperty(fs.promises, "mkdtemp", {
+    configurable: true,
+    value: async (...args: unknown[]) => {
+      const dir = Reflect.apply(
+        originalMkdtemp,
+        fs.promises,
+        args,
+      ) as Promise<string>;
+      tmpDir = await dir;
+      return tmpDir;
+    },
+  });
+  try {
+    return await callback(() => tmpDir);
+  } finally {
+    Object.defineProperty(fs.promises, "mkdtemp", {
+      value: originalMkdtemp,
+      writable: true,
+      enumerable: true,
+      configurable: true,
+    });
+  }
+}
+
 export function captureStdout<T>(
   ttyMode: boolean,
   callback: (writeCalls: string[]) => T | Promise<T>,
@@ -350,35 +476,18 @@ export function setupHooks() {
   });
   afterEach(async () => {
     process.argv[1] = ORIGINAL_ARGV_1;
-    if (ORIGINAL_PATH === undefined) delete process.env.PATH;
-    else process.env.PATH = ORIGINAL_PATH;
-    if (ORIGINAL_AGENT_DIR === undefined)
-      delete process.env.PI_CODING_AGENT_DIR;
-    else process.env.PI_CODING_AGENT_DIR = ORIGINAL_AGENT_DIR;
-    if (ORIGINAL_SUBAGENT_DEPTH === undefined)
-      delete process.env.PI_SUBAGENT_DEPTH;
-    else process.env.PI_SUBAGENT_DEPTH = ORIGINAL_SUBAGENT_DEPTH;
-    if (ORIGINAL_AGENT_END_GRACE_MS === undefined)
-      delete process.env.PI_SUBAGENT_AGENT_END_GRACE_MS;
-    else
-      process.env.PI_SUBAGENT_AGENT_END_GRACE_MS = ORIGINAL_AGENT_END_GRACE_MS;
-    if (ORIGINAL_MAX_STDERR_BYTES === undefined)
-      delete process.env.PI_SUBAGENT_MAX_STDERR_BYTES;
-    else process.env.PI_SUBAGENT_MAX_STDERR_BYTES = ORIGINAL_MAX_STDERR_BYTES;
-    if (ORIGINAL_MAX_DEPTH === undefined)
-      delete process.env.PI_SUBAGENT_MAX_DEPTH;
-    else process.env.PI_SUBAGENT_MAX_DEPTH = ORIGINAL_MAX_DEPTH;
-    if (ORIGINAL_DEBUG_ENABLED === undefined)
-      delete process.env.PI_SUBAGENT_DEBUG_ENABLED;
-    else process.env.PI_SUBAGENT_DEBUG_ENABLED = ORIGINAL_DEBUG_ENABLED;
-    if (ORIGINAL_DESKTOP_NOTIFICATIONS === undefined)
-      delete process.env.PI_SUBAGENT_DESKTOP_NOTIFICATIONS;
-    else
-      process.env.PI_SUBAGENT_DESKTOP_NOTIFICATIONS =
-        ORIGINAL_DESKTOP_NOTIFICATIONS;
-    if (ORIGINAL_NOTIFY_PER_JOB === undefined)
-      delete process.env.PI_SUBAGENT_NOTIFY_PER_JOB;
-    else process.env.PI_SUBAGENT_NOTIFY_PER_JOB = ORIGINAL_NOTIFY_PER_JOB;
+    restoreEnv("PATH", ORIGINAL_PATH);
+    restoreEnv("PI_CODING_AGENT_DIR", ORIGINAL_AGENT_DIR);
+    restoreEnv("PI_SUBAGENT_DEPTH", ORIGINAL_SUBAGENT_DEPTH);
+    restoreEnv("PI_SUBAGENT_AGENT_END_GRACE_MS", ORIGINAL_AGENT_END_GRACE_MS);
+    restoreEnv("PI_SUBAGENT_MAX_STDERR_BYTES", ORIGINAL_MAX_STDERR_BYTES);
+    restoreEnv("PI_SUBAGENT_MAX_DEPTH", ORIGINAL_MAX_DEPTH);
+    restoreEnv("PI_SUBAGENT_DEBUG_ENABLED", ORIGINAL_DEBUG_ENABLED);
+    restoreEnv(
+      "PI_SUBAGENT_DESKTOP_NOTIFICATIONS",
+      ORIGINAL_DESKTOP_NOTIFICATIONS,
+    );
+    restoreEnv("PI_SUBAGENT_NOTIFY_PER_JOB", ORIGINAL_NOTIFY_PER_JOB);
     resetNotifySendCache();
     resetDefaultDeliveryDeps();
     await Promise.all(
@@ -395,6 +504,10 @@ export const hangAgent: AgentConfig = {
   source: "user",
   filePath: "hang.md",
 };
+
+export function makeModelAgent(overrides: Partial<AgentConfig>): AgentConfig {
+  return { ...hangAgent, ...overrides };
+}
 
 export const makeSubagentDetails = (
   results: SubagentDetails["results"],
@@ -420,6 +533,15 @@ function createCommandFakeTheme(): FakeTheme {
     bold: (text) => `<b>${text}</b>`,
     italic: (text) => `<i>${text}</i>`,
   };
+}
+
+/**
+ * Builds a minimal ExtensionContext with `hasUI: false` for the given cwd.
+ * Replaces the repeated `{ cwd, hasUI: false } as unknown as ExtensionContext`
+ * cast scattered across test files.
+ */
+export function makeBareCtx(cwd: string): ExtensionContext {
+  return { cwd, hasUI: false } as unknown as ExtensionContext;
 }
 
 export function makeCommandContext(
