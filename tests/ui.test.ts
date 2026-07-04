@@ -25,6 +25,7 @@ import type { SubagentDetails } from "../src/shared/types.js";
 import {
   createDefaultFakeTheme,
   getSubagentTool,
+  makeBareCtx,
   makeSubagentToolUpdateLine,
   type RegisteredMessageRenderer,
   type SendMessageArg,
@@ -315,7 +316,7 @@ exit 0
     { agent: "hang", task: "test" },
     undefined,
     undefined,
-    { cwd, hasUI: false } as unknown as ExtensionContext,
+    makeBareCtx(cwd),
   );
   await waitForSentMessageCount(sentMessages, 2);
   const requestId = (sentMessages[0]?.details as { requestId?: string })
@@ -345,7 +346,7 @@ exit 0
     { agent: "hang", task: "test" },
     undefined,
     undefined,
-    { cwd, hasUI: false } as unknown as ExtensionContext,
+    makeBareCtx(cwd),
   );
   await waitForSentMessageCount(sentMessages, 2);
   const resultDetails = sentMessages.at(-1)?.details as
@@ -377,7 +378,7 @@ exit 0
     { agent: "hang", task: "test" },
     undefined,
     undefined,
-    { cwd, hasUI: false } as unknown as ExtensionContext,
+    makeBareCtx(cwd),
   );
   await waitForSentMessageCount(sentMessages, 2);
   const details = sentMessages.at(-1)?.details as SubagentDetails | undefined;
@@ -411,7 +412,7 @@ exit 0
     { agent: "hang", task: "test", debug: true },
     undefined,
     undefined,
-    { cwd, hasUI: false } as unknown as ExtensionContext,
+    makeBareCtx(cwd),
   );
   await waitForSentMessageCount(sentMessages, 2);
   const details = sentMessages.at(-1)?.details as SubagentDetails | undefined;
@@ -2545,7 +2546,7 @@ exit 0
     { agent: "hang", task: "shape compat" },
     undefined,
     undefined,
-    { cwd, hasUI: false } as unknown as ExtensionContext,
+    makeBareCtx(cwd),
   );
   await waitForSentMessageCount(sentMessages, 2);
   const resultDetails = sentMessages.at(-1)?.details as SubagentDetails;
@@ -2575,7 +2576,7 @@ exit 0
     { agent: "hang", task: "sanitized progress" },
     undefined,
     undefined,
-    { cwd, hasUI: false } as unknown as ExtensionContext,
+    makeBareCtx(cwd),
   );
   await waitForSentMessageCount(sentMessages, 2);
   const resultDetails = sentMessages.at(-1)?.details as SubagentDetails;
