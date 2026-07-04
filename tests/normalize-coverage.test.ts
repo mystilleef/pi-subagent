@@ -301,6 +301,29 @@ describe("normalize.ts uncovered branches", () => {
       const args = { secret: "password", count: 42 };
       expect(extractSemanticToolTarget(args)).toBe("");
     });
+
+    test("fallback loop skips JWT values with no semantic keys", () => {
+      const jwt =
+        "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP04sB8Nw";
+      const args = { data: jwt };
+      expect(extractSemanticToolTarget(args)).toBe("");
+    });
+
+    test("fallback loop skips values over 60 chars with no semantic keys", () => {
+      const longValue = "a".repeat(61);
+      const args = { description: longValue };
+      expect(extractSemanticToolTarget(args)).toBe("");
+    });
+
+    test("fallback loop returns first valid non-semantic non-secret key", () => {
+      const args = { title: "summary" };
+      expect(extractSemanticToolTarget(args)).toBe("summary");
+    });
+
+    test("fallback loop skips secret keys and returns next valid key", () => {
+      const args = { secret: "password", title: "summary" };
+      expect(extractSemanticToolTarget(args)).toBe("summary");
+    });
   });
 
   describe("makeToolPreview", () => {
