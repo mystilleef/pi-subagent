@@ -1,4 +1,4 @@
-import { afterEach, expect, spyOn, test } from "bun:test";
+import { afterEach, describe, expect, spyOn, test } from "bun:test";
 import * as fs from "node:fs";
 import { chmod, mkdir, symlink, writeFile } from "node:fs/promises";
 import path from "node:path";
@@ -41,10 +41,14 @@ import {
   resetResolvedAgentSkillArgsCache,
 } from "../src/shared/utils.js";
 import {
+  CAPTURE_PI_ARGS_SH,
   captureStdout,
+  flagValues,
   getSubagentTool,
+  makeBareCtx,
   makeSubagentDetails,
   makeSubagentToolUpdateLine,
+  readCapturedArgs,
   type SendMessageArg,
   setupFakePi,
   setupHooks,
@@ -121,7 +125,7 @@ wait $!
     { agent: "hang", task: "test" },
     undefined,
     undefined,
-    { cwd, hasUI: false } as unknown as ExtensionContext,
+    makeBareCtx(cwd),
   );
   expect((result.content[0] as TextContent).text).toMatch(
     /^Subagent hang [a-z]+-[a-z]+ started \(job: /,
@@ -144,7 +148,7 @@ sleep 10 &
 wait $!
 `,
   });
-  const ctx = { cwd, hasUI: false } as unknown as ExtensionContext;
+  const ctx = makeBareCtx(cwd);
   const [r1, r2] = await Promise.all([
     tool.execute(
       "id-1",
@@ -181,7 +185,7 @@ test("subagent tool result appears in sent messages after child exits", async ()
     { agent: "hang", task: "test" },
     undefined,
     undefined,
-    { cwd, hasUI: false } as unknown as ExtensionContext,
+    makeBareCtx(cwd),
   );
   await waitForSentMessageCount(sentMessages, 2);
   expect(sentMessages[0]?.customType).toBe("subagent-progress");
@@ -205,7 +209,7 @@ test("positive-depth subagent tool waits for success and returns completed resul
     { agent: "hang", task: "nested" },
     undefined,
     undefined,
-    { cwd, hasUI: false } as unknown as ExtensionContext,
+    makeBareCtx(cwd),
   );
   expect((result.content[0] as TextContent).text).toBe("done");
   expect(sentMessages).toHaveLength(2);
@@ -256,7 +260,7 @@ exit 0
 `,
     });
     process.env.PI_SUBAGENT_DEPTH = "1";
-    const ctx = { cwd, hasUI: false } as unknown as ExtensionContext;
+    const ctx = makeBareCtx(cwd);
     const calls = [
       tool.execute(
         "nested-1",
@@ -361,7 +365,7 @@ exit 0
     { agent: "hang", task: "nested failure" },
     undefined,
     undefined,
-    { cwd, hasUI: false } as unknown as ExtensionContext,
+    makeBareCtx(cwd),
   );
   const resultText = (result.content[0] as TextContent).text;
   expect(resultText).toStartWith("(failed) ");
@@ -409,7 +413,7 @@ Prompt`,
     { agent: "needs-skill", task: "nested setup" },
     undefined,
     undefined,
-    { cwd, hasUI: false } as unknown as ExtensionContext,
+    makeBareCtx(cwd),
   );
   const resultText = (result.content[0] as TextContent).text;
   expect(resultText).toStartWith("(failed) ");
@@ -450,7 +454,7 @@ exit 7
     { agent: "hang", task: "nested stderr", debug: true },
     undefined,
     undefined,
-    { cwd, hasUI: false } as unknown as ExtensionContext,
+    makeBareCtx(cwd),
   );
   const resultText = (result.content[0] as TextContent).text;
   expect(resultText).toStartWith("(failed) ");
@@ -492,7 +496,7 @@ wait $!
     { agent: "hang", task: "nested abort", debug: true },
     controller.signal,
     undefined,
-    { cwd, hasUI: false } as unknown as ExtensionContext,
+    makeBareCtx(cwd),
   );
   await waitForSentMessage(sentMessages);
   const requestId = (sentMessages[0]?.details as { requestId?: string })
@@ -539,7 +543,7 @@ wait $!
     { agent: "hang", task: "nested cancel", debug: true },
     undefined,
     undefined,
-    { cwd, hasUI: false } as unknown as ExtensionContext,
+    makeBareCtx(cwd),
   );
   await waitForSentMessage(sentMessages);
   const requestId = (sentMessages[0]?.details as { requestId?: string })
@@ -578,7 +582,7 @@ exit 0
     { agent: "hang", task: "orphaned-streams" },
     undefined,
     undefined,
-    { cwd, hasUI: false } as unknown as ExtensionContext,
+    makeBareCtx(cwd),
   );
   await waitForSentMessageCount(sentMessages, 2);
   expect(sentMessages.at(-1)?.content).toBe("done");
@@ -589,7 +593,7 @@ exit 0
 test("subagent tool accepts omitted task", async () => {
   const { tool, cwd } = await setupTest({
     piScript: `#!/bin/sh
-printf '%s\n' "$*" > args.txt
+${CAPTURE_PI_ARGS_SH}
 printf '%s\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"done"}],"api":"fake","provider":"fake","model":"fake","usage":{"input":1,"output":1,"cacheRead":0,"cacheWrite":0,"totalTokens":2,"cost":{"total":0}},"stopReason":"stop","timestamp":0}}'
 printf '%s\n' '{"type":"agent_end","messages":[]}'
 exit 0
@@ -600,17 +604,27 @@ exit 0
     { agent: "hang" },
     undefined,
     undefined,
-    { cwd, hasUI: false } as unknown as ExtensionContext,
+    makeBareCtx(cwd),
   );
   await waitForRunJobsCleared();
-  const argsText = await Bun.file(path.join(cwd, "args.txt")).text();
-  expect(argsText).not.toContain("Task:");
+  const args = await readCapturedArgs(cwd);
+  const appends = flagValues(args, "--append-system-prompt");
+  expect(appends).toHaveLength(2);
+  expect(appends[0]).not.toBe(SUBAGENT_RESULT_CONTRACT);
+  expect(appends.at(-1)).toBe(SUBAGENT_RESULT_CONTRACT);
+  expect(args.at(-1)).toBe(
+    "Run according to your system prompt. If no explicit task was provided, use the default context described there.",
+  );
+  expect(args.at(-1)).not.toContain("Task:");
+  expect(args.at(-1)).not.toContain("Subagent Result Contract");
+  const promptText = await Bun.file(path.join(cwd, "prompt.txt")).text();
+  expect(promptText).toBe("Test agent prompt.");
 });
 
 test("subagent tool injects current result format", async () => {
   const { tool, cwd } = await setupTest({
     piScript: `#!/bin/sh
-printf '%s\n' "$*" > args.txt
+${CAPTURE_PI_ARGS_SH}
 printf '%s\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"done"}],"api":"fake","provider":"fake","model":"fake","usage":{"input":1,"output":1,"cacheRead":0,"cacheWrite":0,"totalTokens":2,"cost":{"total":0}},"stopReason":"stop","timestamp":0}}'
 printf '%s\n' '{"type":"agent_end","messages":[]}'
 exit 0
@@ -621,14 +635,152 @@ exit 0
     { agent: "hang", task: "ship it" },
     undefined,
     undefined,
-    { cwd, hasUI: false } as unknown as ExtensionContext,
+    makeBareCtx(cwd),
   );
   await waitForRunJobsCleared();
-  const argsText = await Bun.file(path.join(cwd, "args.txt")).text();
-  expect(argsText).toContain("Task: ship it");
-  expect(argsText).toContain(SUBAGENT_RESULT_CONTRACT);
-  expect(argsText).not.toContain("Changed:");
-  expect(argsText).not.toContain("Cause:");
+  const args = await readCapturedArgs(cwd);
+  const appends = flagValues(args, "--append-system-prompt");
+  expect(appends).toHaveLength(2);
+  expect(appends[0]).not.toBe(SUBAGENT_RESULT_CONTRACT);
+  expect(appends.at(-1)).toBe(SUBAGENT_RESULT_CONTRACT);
+  expect(args.at(-1)).toBe("Task: ship it");
+  expect(args.at(-1)).not.toContain("Subagent Result Contract");
+  expect(args.join("\n")).not.toContain("Changed:");
+  expect(args.join("\n")).not.toContain("Cause:");
+  const promptText = await Bun.file(path.join(cwd, "prompt.txt")).text();
+  expect(promptText).toBe("Test agent prompt.");
+});
+
+test("subagent tool keeps contract last when agent has no body prompt", async () => {
+  const { agentDir, tool, cwd } = await setupTest({
+    piScript: `#!/bin/sh
+${CAPTURE_PI_ARGS_SH}
+printf '%s\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"done"}],"api":"fake","provider":"fake","model":"fake","usage":{"input":1,"output":1,"cacheRead":0,"cacheWrite":0,"totalTokens":2,"cost":{"total":0}},"stopReason":"stop","timestamp":0}}'
+printf '%s\n' '{"type":"agent_end","messages":[]}'
+exit 0
+`,
+  });
+  await writeFile(
+    path.join(agentDir, "agents", "no-body.md"),
+    `---
+name: no-body
+description: No body prompt
+---`,
+  );
+  await tool.execute(
+    "test-tool-call",
+    { agent: "no-body", task: "no body task" },
+    undefined,
+    undefined,
+    makeBareCtx(cwd),
+  );
+  await waitForRunJobsCleared();
+  const args = await readCapturedArgs(cwd);
+  expect(args.at(-1)).toBe("Task: no body task");
+  expect(args.at(-1)).not.toContain("Subagent Result Contract");
+  const appends = flagValues(args, "--append-system-prompt");
+  expect(appends).toEqual([SUBAGENT_RESULT_CONTRACT]);
+});
+
+test("subagent tool keeps contract last with custom tools", async () => {
+  const { agentDir, tool, cwd } = await setupTest({
+    piScript: `#!/bin/sh
+${CAPTURE_PI_ARGS_SH}
+printf '%s\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"done"}],"api":"fake","provider":"fake","model":"fake","usage":{"input":1,"output":1,"cacheRead":0,"cacheWrite":0,"totalTokens":2,"cost":{"total":0}},"stopReason":"stop","timestamp":0}}'
+printf '%s\n' '{"type":"agent_end","messages":[]}'
+exit 0
+`,
+  });
+  await writeFile(
+    path.join(agentDir, "agents", "custom-tools.md"),
+    `---
+name: custom-tools
+description: Custom tools
+tools: bash, read
+---
+Custom prompt.`,
+  );
+  await tool.execute(
+    "test-tool-call",
+    { agent: "custom-tools", task: "custom tools task" },
+    undefined,
+    undefined,
+    makeBareCtx(cwd),
+  );
+  await waitForRunJobsCleared();
+  const args = await readCapturedArgs(cwd);
+  expect(args.join(" ")).toContain("--tools bash,read,complete");
+  expect(args.at(-1)).toBe("Task: custom tools task");
+  expect(args.at(-1)).not.toContain("Subagent Result Contract");
+  const appends = flagValues(args, "--append-system-prompt");
+  expect(appends).toHaveLength(2);
+  expect(appends[0]).not.toBe(SUBAGENT_RESULT_CONTRACT);
+  expect(appends.at(-1)).toBe(SUBAGENT_RESULT_CONTRACT);
+});
+
+test("subagent tool with custom tools allows child to call complete", async () => {
+  const sentMessages: SendMessageArg[] = [];
+  const asstMessage = JSON.stringify({
+    type: "message_end",
+    message: {
+      role: "assistant",
+      content: [
+        {
+          type: "toolCall",
+          id: "tc-custom-complete",
+          name: "complete",
+          arguments: { outcome: "custom tools completed" },
+        },
+      ],
+    },
+  });
+  const toolResultMsg = JSON.stringify({
+    type: "tool_result_end",
+    message: {
+      role: "toolResult",
+      toolCallId: "tc-custom-complete",
+      details: { outcome: "custom tools completed" },
+    },
+  });
+  const agentEndMsg = JSON.stringify({
+    type: "agent_end",
+    messages: [],
+  });
+  const { agentDir, tool, cwd } = await setupTest({
+    sendMessage: (msg) => sentMessages.push(msg),
+    piScript: `#!/bin/sh
+${CAPTURE_PI_ARGS_SH}
+printf '%s\\n' ${shellQuote(asstMessage)}
+printf '%s\\n' ${shellQuote(toolResultMsg)}
+printf '%s\\n' ${shellQuote(agentEndMsg)}
+exit 0
+`,
+  });
+  await writeFile(
+    path.join(agentDir, "agents", "custom-tools-complete.md"),
+    `---
+name: custom-tools-complete
+description: Custom tools complete
+tools: bash, read
+---
+Custom prompt.`,
+  );
+  process.env.PI_SUBAGENT_DEPTH = "1";
+  const result = await tool.execute(
+    "test-tool-call",
+    { agent: "custom-tools-complete", task: "custom tools task" },
+    undefined,
+    undefined,
+    makeBareCtx(cwd),
+  );
+  await waitForRunJobsCleared();
+  const args = await readCapturedArgs(cwd);
+  expect(args.join(" ")).toContain("--tools bash,read,complete");
+  expect(args.at(-1)).toBe("Task: custom tools task");
+  expect((result.details as SubagentDetails).results[0]?.outcome).toBe(
+    "custom tools completed",
+  );
+  expect((result.content[0] as TextContent).text).toBe("(no output)");
 });
 
 test("subagent tool sends result card when fake pi exits normally", async () => {
@@ -641,7 +793,7 @@ test("subagent tool sends result card when fake pi exits normally", async () => 
     { agent: "hang", task: "normal" },
     undefined,
     undefined,
-    { cwd, hasUI: false } as unknown as ExtensionContext,
+    makeBareCtx(cwd),
   );
   await waitForSentMessageCount(sentMessages, 2);
   expect(sentMessages.at(-1)?.content).toBe("done");
@@ -666,7 +818,7 @@ exit 0
     { agent: "hang", task: "agent-end-no-exit", debug: true },
     undefined,
     undefined,
-    { cwd, hasUI: false } as unknown as ExtensionContext,
+    makeBareCtx(cwd),
   );
   await waitForSentMessageCount(sentMessages, 2);
   expect(sentMessages.at(-1)?.content).toBe("done");
@@ -691,7 +843,7 @@ sleep 10
     { agent: "hang", task: "agent-end-no-exit" },
     undefined,
     undefined,
-    { cwd, hasUI: false } as unknown as ExtensionContext,
+    makeBareCtx(cwd),
   );
   await waitForSentMessageCount(sentMessages, 2);
   const details = sentMessages.at(-1)?.details as SubagentDetails;
@@ -716,7 +868,7 @@ sleep 10
     { agent: "hang", task: "agent-end-no-output", debug: true },
     undefined,
     undefined,
-    { cwd, hasUI: false } as unknown as ExtensionContext,
+    makeBareCtx(cwd),
   );
   await waitForSentMessageCount(sentMessages, 2);
   const finalContent = sentMessages.at(-1)?.content;
@@ -748,7 +900,7 @@ exit 0
     { agent: "hang", task: "test" },
     undefined,
     undefined,
-    { cwd, hasUI: false } as unknown as ExtensionContext,
+    makeBareCtx(cwd),
   );
   await waitForSentMessageCount(sentMessages, 2);
   expect(sentMessages.at(-1)?.content).toBe("from agent_end");
@@ -785,7 +937,7 @@ exit 0
     { agent: "hang", task: "test" },
     undefined,
     undefined,
-    { cwd, hasUI: false } as unknown as ExtensionContext,
+    makeBareCtx(cwd),
   );
   await waitForSentMessageCount(sentMessages, 2);
   const content = sentMessages.at(-1)?.content as string;
@@ -827,7 +979,7 @@ exit 0
     { agent: "hang", task: "test" },
     undefined,
     undefined,
-    { cwd, hasUI: false } as unknown as ExtensionContext,
+    makeBareCtx(cwd),
   );
   await waitForSentMessageCount(sentMessages, 2);
   expect(sentMessages.at(-1)?.content).toBe(
@@ -876,7 +1028,7 @@ exit 0
     { agent: "hang", task: "test" },
     undefined,
     undefined,
-    { cwd, hasUI: false } as unknown as ExtensionContext,
+    makeBareCtx(cwd),
   );
   await waitForSentMessageCount(sentMessages, 2);
   expect(sentMessages.at(-1)?.customType).toBe("subagent-result");
@@ -922,7 +1074,7 @@ exit 0
     { agent: "hang", task: "test" },
     undefined,
     undefined,
-    { cwd, hasUI: false } as unknown as ExtensionContext,
+    makeBareCtx(cwd),
   );
   await waitForSentMessageCount(sentMessages, 2);
   const requestId = (sentMessages[0]?.details as { requestId?: string })
@@ -947,7 +1099,7 @@ test("subagent tool spawn error sends error result via sent messages", async () 
     { agent: "hang", task: "test" },
     undefined,
     undefined,
-    { cwd, hasUI: false } as unknown as ExtensionContext,
+    makeBareCtx(cwd),
   );
   await waitFor(() => {
     const requestId = (sentMessages[0]?.details as { requestId?: string })
@@ -974,7 +1126,7 @@ test("subagent tool handles unknown agent synchronously", async () => {
     { agent: "non-existent", task: "whatever" },
     undefined,
     undefined,
-    { cwd, hasUI: false } as unknown as ExtensionContext,
+    makeBareCtx(cwd),
   );
   expect((result.content[0] as TextContent).text).toContain(
     'Unknown agent: "non-existent"',
@@ -1004,7 +1156,7 @@ System prompt`,
     { agent: "project-agent", task: "test", agentScope: "user" },
     undefined,
     undefined,
-    { cwd, hasUI: false } as unknown as ExtensionContext,
+    makeBareCtx(cwd),
   );
   expect((resultUser.content[0] as TextContent).text).toContain(
     'Unknown agent: "project-agent"',
@@ -1334,7 +1486,7 @@ Project prompt`,
     { agent: "project-only", task: "test", agentScope: "user" },
     undefined,
     undefined,
-    { cwd, hasUI: false } as unknown as ExtensionContext,
+    makeBareCtx(cwd),
   );
   expect((resultUser.content[0] as TextContent).text).toContain(
     'Unknown agent: "project-only"',
@@ -1406,14 +1558,7 @@ Runtime prompt`,
   await writeFile(
     path.join(binDir, "pi"),
     `#!/bin/sh
-printf '%s\n' "$*" > args.txt
-while [ "$#" -gt 0 ]; do
-  if [ "$1" = "--append-system-prompt" ]; then
-    shift
-    cat "$1" > prompt.txt
-  fi
-  shift
-done
+${CAPTURE_PI_ARGS_SH}
 printf '%s\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"done"}],"usage":{"input":1,"output":1,"totalTokens":2,"cost":{"total":0}}}}'
 printf '%s\n' '{"type":"agent_end"}'
 exit 0
@@ -1436,16 +1581,22 @@ exit 0
       model: { provider: "fake-provider", id: "fake-model" },
     } as unknown as ExtensionContext,
   );
-  const argsText = await Bun.file(path.join(cwd, "args.txt")).text();
+  const args = await readCapturedArgs(cwd);
   const promptText = await Bun.file(path.join(cwd, "prompt.txt")).text();
   expect((result.content[0] as TextContent).text).toBe("done");
-  expect(argsText).toContain("--provider fake-provider --model fake-model");
-  expect(argsText).toContain("--thinking high");
-  expect(argsText).toContain("--no-skills --skill");
-  expect(argsText).toContain(path.join(skillDir, "SKILL.md"));
-  expect(argsText).toContain("--append-system-prompt");
-  expect(argsText).toContain("Task: runtime task");
-  expect(argsText).toContain(SUBAGENT_RESULT_CONTRACT);
+  expect(args.join(" ")).toContain(
+    "--provider fake-provider --model fake-model",
+  );
+  expect(args.join(" ")).toContain("--thinking high");
+  expect(args.join(" ")).toContain("--no-skills --skill");
+  expect(args.join(" ")).toContain(path.join(skillDir, "SKILL.md"));
+  expect(args).toContain("--append-system-prompt");
+  expect(args.at(-1)).toBe("Task: runtime task");
+  expect(args.at(-1)).not.toContain("Subagent Result Contract");
+  const appends = flagValues(args, "--append-system-prompt");
+  expect(appends).toHaveLength(2);
+  expect(appends[0]).not.toBe(SUBAGENT_RESULT_CONTRACT);
+  expect(appends.at(-1)).toBe(SUBAGENT_RESULT_CONTRACT);
   expect(promptText).toBe("Runtime prompt");
   expect((result.details as SubagentDetails).results[0]?.model).toBe(
     "fake-provider ･ fake-model ･ high",
@@ -1473,7 +1624,7 @@ wait $!
     { agent: "hang", task: "test" },
     controller.signal,
     undefined,
-    { cwd, hasUI: false } as unknown as ExtensionContext,
+    makeBareCtx(cwd),
   );
   await waitFor(
     () => (sentMessages.length > 0 ? true : undefined),
@@ -1501,7 +1652,7 @@ test("prepareSubagentJob returns aborted when host signal fires during sendMessa
     { agent: "hang", task: "test" },
     controller.signal,
     undefined,
-    { cwd, hasUI: false } as unknown as ExtensionContext,
+    makeBareCtx(cwd),
   );
   expect((result.content[0] as TextContent).text).toBe("Canceled");
   const requestId = (sentMessages[0]?.details as { requestId?: string })
@@ -1531,7 +1682,7 @@ wait $!
     { agent: "hang", task: "test" },
     controller.signal,
     undefined,
-    { cwd, hasUI: false } as unknown as ExtensionContext,
+    makeBareCtx(cwd),
   );
   const requestId = (sentMessages[0]?.details as { requestId?: string })
     ?.requestId;
@@ -1561,7 +1712,7 @@ exit 0
     { agent: "hang", task: "test" },
     undefined,
     undefined,
-    { cwd, hasUI: false } as unknown as ExtensionContext,
+    makeBareCtx(cwd),
   );
   await waitForSentMessageCount(sentMessages, 2);
   expect(sentMessages.at(-1)?.content).toBe("Outcome: hello");
@@ -1582,7 +1733,7 @@ exit 0
     { agent: "hang", task: "test", debug: true },
     undefined,
     undefined,
-    { cwd, hasUI: false } as unknown as ExtensionContext,
+    makeBareCtx(cwd),
   );
   await waitForSentMessageCount(sentMessages2, 2);
   const debugDetails = sentMessages2.at(-1)?.details as SubagentDetails;
@@ -1609,7 +1760,7 @@ exit 0
     { agent: "hang", task: "test" },
     undefined,
     undefined,
-    { cwd, hasUI: false } as unknown as ExtensionContext,
+    makeBareCtx(cwd),
   );
   await waitForSentMessageCount(sentMessages, 2);
   const details = sentMessages.at(-1)?.details as SubagentDetails;
@@ -1637,7 +1788,7 @@ exit 0
     { agent: "hang", task: "test" },
     undefined,
     undefined,
-    { cwd, hasUI: false } as unknown as ExtensionContext,
+    makeBareCtx(cwd),
   );
   await waitForSentMessageCount(sentMessages, 2);
   const requestId = (sentMessages[0]?.details as { requestId?: string })
@@ -1678,7 +1829,7 @@ wait $!
     { agent: "hang", task: "timeout", debug: true },
     undefined,
     undefined,
-    { cwd, hasUI: false } as unknown as ExtensionContext,
+    makeBareCtx(cwd),
   );
   await waitFor(() => {
     const requestId = (sentMessages[0]?.details as { requestId?: string })
@@ -1717,7 +1868,7 @@ wait $!
     { agent: "hang", task: "timeout", debug: true },
     undefined,
     undefined,
-    { cwd, hasUI: false } as unknown as ExtensionContext,
+    makeBareCtx(cwd),
   );
   await waitFor(() => {
     const requestId = (sentMessages[0]?.details as { requestId?: string })
@@ -1746,7 +1897,7 @@ test("subagent tool reports depth limit synchronously via sent messages", async 
     { agent: "hang", task: "nested" },
     undefined,
     undefined,
-    { cwd, hasUI: false } as unknown as ExtensionContext,
+    makeBareCtx(cwd),
   );
   await waitFor(() => {
     const requestId = (sentMessages[0]?.details as { requestId?: string })
@@ -1790,7 +1941,7 @@ test("subagent tool lifecycle failure with no latest result preserves raw error 
     { agent: "hang", task: "send fails" },
     undefined,
     undefined,
-    { cwd, hasUI: false } as unknown as ExtensionContext,
+    makeBareCtx(cwd),
   );
   expect((result.content[0] as TextContent).text).toBe("send rejected");
   expect((result.details as SubagentDetails).results).toHaveLength(0);
@@ -1867,7 +2018,7 @@ test("positive-depth subagent tool completes successfully at depth 2 (max-depth-
     { agent: "hang", task: "depth-2" },
     undefined,
     undefined,
-    { cwd, hasUI: false } as unknown as ExtensionContext,
+    makeBareCtx(cwd),
   );
   const requestId = (sentMessages[0]?.details as { requestId?: string })
     ?.requestId;
@@ -1904,7 +2055,7 @@ Prompt`,
     { agent: "needs-skill", task: "skills" },
     undefined,
     undefined,
-    { cwd, hasUI: false } as unknown as ExtensionContext,
+    makeBareCtx(cwd),
   );
   await waitFor(() => {
     const requestId = (sentMessages[0]?.details as { requestId?: string })
@@ -1939,7 +2090,7 @@ exit 7
     { agent: "hang", task: "stderr" },
     undefined,
     undefined,
-    { cwd, hasUI: false } as unknown as ExtensionContext,
+    makeBareCtx(cwd),
   );
   await waitFor(() => {
     const requestId = (sentMessages[0]?.details as { requestId?: string })
@@ -1977,7 +2128,7 @@ exit 0
     { agent: "hang", task: "test" },
     undefined,
     undefined,
-    { cwd, hasUI: false } as unknown as ExtensionContext,
+    makeBareCtx(cwd),
   );
   await waitForSentMessageCount(sentMessages, 2);
   const normalDetails = sentMessages.at(-1)?.details as SubagentDetails;
@@ -1995,7 +2146,7 @@ exit 0
     { agent: "hang", task: "test", debug: true },
     undefined,
     undefined,
-    { cwd, hasUI: false } as unknown as ExtensionContext,
+    makeBareCtx(cwd),
   );
   await waitForSentMessageCount(sentMessages2, 2);
   const debugWithoutEnv = sentMessages2.at(-1)?.details as SubagentDetails;
@@ -2013,7 +2164,7 @@ exit 0
     { agent: "hang", task: "test", debug: true },
     undefined,
     undefined,
-    { cwd, hasUI: false } as unknown as ExtensionContext,
+    makeBareCtx(cwd),
   );
   await waitForSentMessageCount(sentMessages3, 2);
   const debugDetails = sentMessages3.at(-1)?.details as SubagentDetails;
@@ -2056,7 +2207,7 @@ exit 0
       { agent: "hang", task: "test", debug: true },
       undefined,
       undefined,
-      { cwd, hasUI: false } as unknown as ExtensionContext,
+      makeBareCtx(cwd),
     );
     await waitForRunJobsCleared();
     expect(diagnostics.join("")).not.toContain("[pi-subagent:unknown-event]");
@@ -2066,7 +2217,7 @@ exit 0
       { agent: "hang", task: "test" },
       undefined,
       undefined,
-      { cwd, hasUI: false } as unknown as ExtensionContext,
+      makeBareCtx(cwd),
     );
     await waitForRunJobsCleared();
     expect(diagnostics.join("")).not.toContain("[pi-subagent:unknown-event]");
@@ -2075,7 +2226,7 @@ exit 0
       { agent: "hang", task: "test", debug: true },
       undefined,
       undefined,
-      { cwd, hasUI: false } as unknown as ExtensionContext,
+      makeBareCtx(cwd),
     );
     await waitForRunJobsCleared();
   } finally {
@@ -2143,7 +2294,7 @@ exit 0
     { agent: "hang", task: "native nested" },
     undefined,
     undefined,
-    { cwd, hasUI: false } as unknown as ExtensionContext,
+    makeBareCtx(cwd),
   );
   await waitForSentMessage(sentMessages);
   const requestId = (sentMessages[0]?.details as { requestId?: string })
@@ -2198,7 +2349,7 @@ exit 0
     { agent: "hang", task: "native filter" },
     undefined,
     undefined,
-    { cwd, hasUI: false } as unknown as ExtensionContext,
+    makeBareCtx(cwd),
   );
   await waitForSentMessage(sentMessages);
   const requestId = (sentMessages[0]?.details as { requestId?: string })
@@ -2421,7 +2572,7 @@ test("per-job notification completes lifecycle without crashing", async () => {
         { agent: "hang", task: "per-job notify" },
         undefined,
         undefined,
-        { cwd, hasUI: false } as unknown as ExtensionContext,
+        makeBareCtx(cwd),
       );
       await waitForSentMessageCount(sentMessages, 2);
       expect((result.content[0] as TextContent).text).toBe("done");
@@ -2464,7 +2615,7 @@ exit 1
         { agent: "hang", task: "per-job error" },
         undefined,
         undefined,
-        { cwd, hasUI: false } as unknown as ExtensionContext,
+        makeBareCtx(cwd),
       );
       await waitForSentMessageCount(sentMessages, 2);
       expect(sentMessages.at(-1)?.customType).toBe("subagent-result");
@@ -2510,7 +2661,7 @@ wait $!
         { agent: "hang", task: "per-job cancel" },
         controller.signal,
         undefined,
-        { cwd, hasUI: false } as unknown as ExtensionContext,
+        makeBareCtx(cwd),
       );
       await waitForSentMessage(sentMessages);
       controller.abort();
@@ -2551,7 +2702,7 @@ test("per-job notification delivers at depth 0 via lifecycle", async () => {
         { agent: "hang", task: "per-job depth-0" },
         undefined,
         undefined,
-        { cwd, hasUI: false } as unknown as ExtensionContext,
+        makeBareCtx(cwd),
       );
       await waitForSentMessageCount(sentMessages, 2);
       expect(sentMessages.at(-1)?.customType).toBe("subagent-result");
@@ -2587,7 +2738,7 @@ test("per-job notification skipped when nested (depth > 0)", async () => {
         { agent: "hang", task: "per-job nested" },
         undefined,
         undefined,
-        { cwd, hasUI: false } as unknown as ExtensionContext,
+        makeBareCtx(cwd),
       );
       await waitForSentMessageCount(sentMessages, 2);
       expect(spawned).toBe(false);
@@ -2611,7 +2762,7 @@ sleep 10 &
 wait $!
 `,
       });
-      const ctx = { cwd, hasUI: false } as unknown as ExtensionContext;
+      const ctx = makeBareCtx(cwd);
       const promises = [
         tool.execute(
           "id-1",
@@ -2659,7 +2810,7 @@ test("batch notification does not crash for successful lifecycle completion", as
         { agent: "hang", task: "batch notify" },
         undefined,
         undefined,
-        { cwd, hasUI: false } as unknown as ExtensionContext,
+        makeBareCtx(cwd),
       );
       await waitForSentMessageCount(sentMessages, 2);
       expect((result.content[0] as TextContent).text).toBe("done");
@@ -2779,7 +2930,7 @@ exit 0
     { agent: "hang", task: "preserve nested" },
     undefined,
     undefined,
-    { cwd, hasUI: false } as unknown as ExtensionContext,
+    makeBareCtx(cwd),
   );
   await waitForSentMessageCount(sentMessages, 2);
   const requestId = (sentMessages[0]?.details as { requestId?: string })
@@ -2812,7 +2963,7 @@ exit 0
     { agent: "hang", task: "fresh tool wins" },
     undefined,
     undefined,
-    { cwd, hasUI: false } as unknown as ExtensionContext,
+    makeBareCtx(cwd),
   );
   await waitForSentMessageCount(sentMessages, 2);
   const requestId = (sentMessages[0]?.details as { requestId?: string })
@@ -2844,7 +2995,7 @@ exit 0
     { agent: "hang", task: "terminal clears" },
     undefined,
     undefined,
-    { cwd, hasUI: false } as unknown as ExtensionContext,
+    makeBareCtx(cwd),
   );
   await waitForSentMessageCount(sentMessages, 2);
   const requestId = (sentMessages[0]?.details as { requestId?: string })
@@ -2907,7 +3058,7 @@ exit 0
     { agent: "hang", task: "nested preview" },
     undefined,
     undefined,
-    { cwd, hasUI: false } as unknown as ExtensionContext,
+    makeBareCtx(cwd),
   );
   await waitForSentMessage(sentMessages);
   const requestId = (sentMessages[0]?.details as { requestId?: string })
@@ -2985,7 +3136,7 @@ exit 0
     { agent: "hang", task: "nested label" },
     undefined,
     undefined,
-    { cwd, hasUI: false } as unknown as ExtensionContext,
+    makeBareCtx(cwd),
   );
   await waitForSentMessage(sentMessages);
   const requestId = (sentMessages[0]?.details as { requestId?: string })
@@ -3033,7 +3184,7 @@ exit 0
     { agent: "hang", task: "shape compat" },
     undefined,
     undefined,
-    { cwd, hasUI: false } as unknown as ExtensionContext,
+    makeBareCtx(cwd),
   );
   await waitForSentMessageCount(sentMessages, 2);
   const resultDetails = sentMessages.at(-1)?.details as SubagentDetails;
@@ -3061,7 +3212,7 @@ exit 0
     { agent: "hang", task: "test" },
     undefined,
     hostOnUpdate,
-    { cwd, hasUI: false } as unknown as ExtensionContext,
+    makeBareCtx(cwd),
   );
   await waitForSentMessageCount(sentMessages, 2);
   expect(result.content).toBeDefined();
@@ -3100,7 +3251,7 @@ test("tool executes successfully without onUpdate callback", async () => {
     { agent: "hang", task: "test" },
     undefined,
     undefined,
-    { cwd, hasUI: false } as unknown as ExtensionContext,
+    makeBareCtx(cwd),
   );
   await waitForSentMessageCount(sentMessages, 2);
   expect(result.content).toBeDefined();
@@ -3128,7 +3279,7 @@ test("non-started flows return same shape with and without callback", async () =
     { agent: "non-existent", task: "test" },
     undefined,
     hostOnUpdate,
-    { cwd, hasUI: false } as unknown as ExtensionContext,
+    makeBareCtx(cwd),
   );
   expect(callbackInvocations).toHaveLength(0);
   expect(resultWithCallback.content).toBeDefined();
@@ -3146,7 +3297,7 @@ test("non-started flows return same shape with and without callback", async () =
     { agent: "non-existent", task: "test" },
     undefined,
     undefined,
-    { cwd, hasUI: false } as unknown as ExtensionContext,
+    makeBareCtx(cwd),
   );
   expect(resultWithoutCallback.content).toBeDefined();
   expect(resultWithoutCallback.content[0]?.type).toBe("text");
@@ -3186,7 +3337,7 @@ exit 0
     { agent: "hang", task: "test" },
     undefined,
     hostOnUpdate,
-    { cwd, hasUI: false } as unknown as ExtensionContext,
+    makeBareCtx(cwd),
   );
   expect(partialUpdates.length).toBeGreaterThan(0);
   for (const partial of partialUpdates) {
@@ -3235,7 +3386,7 @@ exit 0
     { agent: "hang", task: "test" },
     undefined,
     hostOnUpdate,
-    { cwd, hasUI: false } as unknown as ExtensionContext,
+    makeBareCtx(cwd),
   );
   expect(partialUpdates.length).toBeGreaterThanOrEqual(2);
   const texts = partialUpdates.map(
@@ -3271,7 +3422,7 @@ exit 0
     { agent: "hang", task: "test" },
     undefined,
     hostOnUpdate,
-    { cwd, hasUI: false } as unknown as ExtensionContext,
+    makeBareCtx(cwd),
   );
   expect(partialUpdates.length).toBeGreaterThan(0);
   const hasToolPreview = partialUpdates.some((partial) => {
@@ -3348,7 +3499,7 @@ test("final success result uses renderedByMessage to avoid duplicate rendering",
     { agent: "hang", task: "test" },
     undefined,
     hostOnUpdate,
-    { cwd, hasUI: false } as unknown as ExtensionContext,
+    makeBareCtx(cwd),
   );
   expect(partialUpdates.length).toBeGreaterThan(0);
   for (const partial of partialUpdates) {
@@ -3388,7 +3539,7 @@ exit 1
     { agent: "hang", task: "test" },
     undefined,
     hostOnUpdate,
-    { cwd, hasUI: false } as unknown as ExtensionContext,
+    makeBareCtx(cwd),
   );
   expect(result.content).toBeDefined();
   expect(result.details).toBeDefined();
@@ -3422,7 +3573,7 @@ sleep 5
     { agent: "hang", task: "test" },
     controller.signal,
     hostOnUpdate,
-    { cwd, hasUI: false } as unknown as ExtensionContext,
+    makeBareCtx(cwd),
   );
   await Bun.sleep(50);
   controller.abort();
@@ -3463,7 +3614,7 @@ exit 0
     { agent: "hang", task: "test" },
     undefined,
     hostOnUpdate,
-    { cwd, hasUI: false } as unknown as ExtensionContext,
+    makeBareCtx(cwd),
   );
   const toolCallUpdates = partialUpdates.filter((partial) => {
     const text =
@@ -3503,7 +3654,7 @@ exit 0
     { agent: "hang", task: "test" },
     undefined,
     hostOnUpdate,
-    { cwd, hasUI: false } as unknown as ExtensionContext,
+    makeBareCtx(cwd),
   );
   const hasLsTool = partialUpdates.some((partial) => {
     const text =
@@ -3536,7 +3687,7 @@ exit 0
     { agent: "hang", task: "no-model" },
     undefined,
     undefined,
-    { cwd, hasUI: false } as unknown as ExtensionContext,
+    makeBareCtx(cwd),
   );
   expect((result.content[0] as TextContent).text).toBe("done");
   const argsText = await Bun.file(path.join(cwd, "args.txt")).text();
@@ -3609,7 +3760,7 @@ wait $!
     { agent: "hang", task: "cancel-after-start" },
     controller.signal,
     undefined,
-    { cwd, hasUI: false } as unknown as ExtensionContext,
+    makeBareCtx(cwd),
   );
   const requestId = (sentMessages[0]?.details as { requestId?: string })
     ?.requestId;
@@ -3728,7 +3879,7 @@ exit 0
     { agent: "hang", task: "dedup" },
     undefined,
     hostOnUpdate,
-    { cwd, hasUI: false } as unknown as ExtensionContext,
+    makeBareCtx(cwd),
   );
   // Duplicate identical payloads should be suppressed; valid updates still flow
   expect(partialUpdates.length).toBeGreaterThan(0);
@@ -3762,7 +3913,7 @@ exit 0
     { agent: "hang", task: "empty" },
     undefined,
     hostOnUpdate,
-    { cwd, hasUI: false } as unknown as ExtensionContext,
+    makeBareCtx(cwd),
   );
   expect(partialUpdates).toHaveLength(0);
 });
@@ -3813,7 +3964,7 @@ exit 0
     { agent: "hang", task: "test outcome" },
     undefined,
     undefined,
-    { cwd, hasUI: false } as unknown as ExtensionContext,
+    makeBareCtx(cwd),
   );
 
   // Parent details should expose results[0].outcome
@@ -3875,7 +4026,7 @@ exit 0
     { agent: "hang", task: "tool-only outcome" },
     undefined,
     undefined,
-    { cwd, hasUI: false } as unknown as ExtensionContext,
+    makeBareCtx(cwd),
   );
 
   expect(result.details.results[0]?.outcome).toBe(
@@ -3932,7 +4083,7 @@ exit 1
     { agent: "hang", task: "failure outcome" },
     undefined,
     undefined,
-    { cwd, hasUI: false } as unknown as ExtensionContext,
+    makeBareCtx(cwd),
   );
 
   // In case of non-zero exit code or semantic failure, outcome should be undefined
@@ -3983,15 +4134,8 @@ No-sampling agent prompt`,
   await writeFile(
     path.join(binDir, "pi"),
     `#!/bin/sh
-printf '%s\\n' "$*" > args.txt
+${CAPTURE_PI_ARGS_SH}
 printf '%s\\n' "$PI_SAMPLING_PARAMS" > env_sampling.txt
-while [ "$#" -gt 0 ]; do
-  if [ "$1" = "--append-system-prompt" ]; then
-    shift
-    cat "$1" > prompt.txt
-  fi
-  shift
-done
 printf '%s\\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"done"}],"usage":{"input":1,"output":1,"totalTokens":2,"cost":{"total":0}}}}'
 printf '%s\\n' '{"type":"agent_end"}'
 exit 0
@@ -4019,22 +4163,37 @@ exit 0
   );
 
   expect((resSampling.content[0] as TextContent).text).toBe("done");
-  const argsSampling = await Bun.file(path.join(cwd, "args.txt")).text();
+  const argsSampling = await readCapturedArgs(cwd);
   const promptSampling = await Bun.file(path.join(cwd, "prompt.txt")).text();
   const envSampling = await Bun.file(path.join(cwd, "env_sampling.txt")).text();
 
-  expect(argsSampling).toContain("--provider fake-provider --model fake-model");
-  expect(argsSampling).toContain("--thinking high");
-  expect(argsSampling).toContain("--no-skills --skill");
-  expect(argsSampling).toContain(path.join(skillDir, "SKILL.md"));
-  expect(argsSampling).toContain("complete-extension");
-  expect(argsSampling).toContain(SUBAGENT_RESULT_CONTRACT);
+  expect(argsSampling.join(" ")).toContain(
+    "--provider fake-provider --model fake-model",
+  );
+  expect(argsSampling.join(" ")).toContain("--thinking high");
+  expect(argsSampling.join(" ")).toContain("--no-skills --skill");
+  expect(argsSampling.join(" ")).toContain(path.join(skillDir, "SKILL.md"));
+  expect(argsSampling.join(" ")).toContain("complete-extension");
+  const contractSamplingIdx = argsSampling.indexOf(SUBAGENT_RESULT_CONTRACT);
+  expect(argsSampling[contractSamplingIdx + 1]).toBe("Task: sampling task");
+  expect(argsSampling[contractSamplingIdx + 1]).not.toContain(
+    "Subagent Result Contract",
+  );
+  const appendsSampling = flagValues(argsSampling, "--append-system-prompt");
+  expect(appendsSampling).toHaveLength(2);
+  expect(appendsSampling[0]).not.toBe(SUBAGENT_RESULT_CONTRACT);
+  expect(appendsSampling.at(-1)).toBe(SUBAGENT_RESULT_CONTRACT);
   expect(promptSampling).toBe("Sampling agent prompt");
   expect((resSampling.details as SubagentDetails).results[0]?.model).toBe(
     "fake-provider ･ fake-model ･ high",
   );
 
-  expect(argsSampling).toContain("sampling-extension");
+  expect(argsSampling.join(" ")).toContain("sampling-extension");
+  const samplingExtensionIdx = argsSampling.findIndex((arg) =>
+    arg.includes("sampling-extension"),
+  );
+  expect(samplingExtensionIdx).toBeGreaterThan(-1);
+  expect(contractSamplingIdx).toBeGreaterThan(samplingExtensionIdx);
   expect(JSON.parse(envSampling.trim())).toEqual({
     temperature: 0.6,
     topP: 0.8,
@@ -4057,26 +4216,41 @@ exit 0
   );
 
   expect((resNoSampling.content[0] as TextContent).text).toBe("done");
-  const argsNoSampling = await Bun.file(path.join(cwd, "args.txt")).text();
+  const argsNoSampling = await readCapturedArgs(cwd);
   const promptNoSampling = await Bun.file(path.join(cwd, "prompt.txt")).text();
   const envNoSampling = await Bun.file(
     path.join(cwd, "env_sampling.txt"),
   ).text();
 
-  expect(argsNoSampling).toContain(
+  expect(argsNoSampling.join(" ")).toContain(
     "--provider fake-provider --model fake-model",
   );
-  expect(argsNoSampling).toContain("--thinking high");
-  expect(argsNoSampling).toContain("--no-skills --skill");
-  expect(argsNoSampling).toContain(path.join(skillDir, "SKILL.md"));
-  expect(argsNoSampling).toContain("complete-extension");
-  expect(argsNoSampling).toContain(SUBAGENT_RESULT_CONTRACT);
+  expect(argsNoSampling.join(" ")).toContain("--thinking high");
+  expect(argsNoSampling.join(" ")).toContain("--no-skills --skill");
+  expect(argsNoSampling.join(" ")).toContain(path.join(skillDir, "SKILL.md"));
+  expect(argsNoSampling.join(" ")).toContain("complete-extension");
+  const contractNoSamplingIdx = argsNoSampling.indexOf(
+    SUBAGENT_RESULT_CONTRACT,
+  );
+  expect(argsNoSampling[contractNoSamplingIdx + 1]).toBe(
+    "Task: no-sampling task",
+  );
+  expect(argsNoSampling[contractNoSamplingIdx + 1]).not.toContain(
+    "Subagent Result Contract",
+  );
+  const appendsNoSampling = flagValues(
+    argsNoSampling,
+    "--append-system-prompt",
+  );
+  expect(appendsNoSampling).toHaveLength(2);
+  expect(appendsNoSampling[0]).not.toBe(SUBAGENT_RESULT_CONTRACT);
+  expect(appendsNoSampling.at(-1)).toBe(SUBAGENT_RESULT_CONTRACT);
   expect(promptNoSampling).toBe("No-sampling agent prompt");
   expect((resNoSampling.details as SubagentDetails).results[0]?.model).toBe(
     "fake-provider ･ fake-model ･ high",
   );
 
-  expect(argsNoSampling).not.toContain("sampling-extension");
+  expect(argsNoSampling.join(" ")).not.toContain("sampling-extension");
   expect(envNoSampling.trim()).toBe("");
 
   expect(listRunJobs()).toHaveLength(0);
@@ -4116,7 +4290,7 @@ No-sampling agent prompt`,
     { agent: "sampling-agent", task: "sampling task" },
     undefined,
     undefined,
-    { cwd, hasUI: false } as unknown as ExtensionContext,
+    makeBareCtx(cwd),
   );
 
   const samplingText = (resSampling.content[0] as TextContent).text;
@@ -4130,7 +4304,7 @@ No-sampling agent prompt`,
     { agent: "no-sampling-agent", task: "no-sampling task" },
     undefined,
     undefined,
-    { cwd, hasUI: false } as unknown as ExtensionContext,
+    makeBareCtx(cwd),
   );
 
   const noSamplingText = (resNoSampling.content[0] as TextContent).text;
@@ -4182,7 +4356,7 @@ exit 0
       { agent: "no-sampling-agent", task: "no-sampling task" },
       undefined,
       undefined,
-      { cwd, hasUI: false } as unknown as ExtensionContext,
+      makeBareCtx(cwd),
     );
 
     expect((result.content[0] as TextContent).text).toBe("done");
@@ -4228,14 +4402,7 @@ Full feature prompt.`,
   await writeFile(
     path.join(binDir, "pi"),
     `#!/bin/sh
-printf '%s\\n' "$*" > args.txt
-while [ "$#" -gt 0 ]; do
-  if [ "$1" = "--append-system-prompt" ]; then
-    shift
-    cat "$1" > prompt.txt
-  fi
-  shift
-done
+${CAPTURE_PI_ARGS_SH}
 printf '%s\\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"done"}],"usage":{"input":1,"output":1,"totalTokens":2,"cost":{"total":0}}}}'
 printf '%s\\n' '{"type":"agent_end"}'
 exit 0
@@ -4252,27 +4419,32 @@ exit 0
     { agent: "context-off-full", task: "context test" },
     undefined,
     undefined,
-    { cwd, hasUI: false } as unknown as ExtensionContext,
+    makeBareCtx(cwd),
   );
-  const argsText = await Bun.file(path.join(cwd, "args.txt")).text();
+  const args = await readCapturedArgs(cwd);
   const promptText = await Bun.file(path.join(cwd, "prompt.txt")).text();
   expect((result.content[0] as TextContent).text).toContain("done");
-  expect(argsText).toContain("--no-context-files");
-  expect(argsText).toContain("--approve");
-  expect(argsText).toContain("--provider openai");
-  expect(argsText).toContain("--model gpt-4");
-  expect(argsText).toMatch(/--thinking \S+/);
-  expect(argsText).toContain("--tools bash,read,complete");
-  expect(argsText).toContain("--no-skills --skill");
-  expect(argsText).toContain(path.join(skillDir, "SKILL.md"));
-  expect(argsText).toContain("--append-system-prompt");
-  expect(argsText).toContain("--extension");
-  expect(argsText).toContain("Task: context test");
-  expect(argsText).toContain(SUBAGENT_RESULT_CONTRACT);
-  expect(argsText).toContain("--no-themes");
-  expect(argsText).toContain("--no-prompt-templates");
+  expect(args.join(" ")).toContain("--no-context-files");
+  expect(args.join(" ")).toContain("--approve");
+  expect(args.join(" ")).toContain("--provider openai");
+  expect(args.join(" ")).toContain("--model gpt-4");
+  expect(args.join(" ")).toMatch(/--thinking \S+/);
+  expect(args.join(" ")).toContain("--tools bash,read,complete");
+  expect(args.join(" ")).toContain("--no-skills --skill");
+  expect(args.join(" ")).toContain(path.join(skillDir, "SKILL.md"));
+  expect(args).toContain("--append-system-prompt");
+  expect(args).toContain("--extension");
+  const contractIdx = args.indexOf(SUBAGENT_RESULT_CONTRACT);
+  expect(args[contractIdx + 1]).toBe("Task: context test");
+  expect(args[contractIdx + 1]).not.toContain("Subagent Result Contract");
+  const appends = flagValues(args, "--append-system-prompt");
+  expect(appends).toHaveLength(2);
+  expect(appends[0]).not.toBe(SUBAGENT_RESULT_CONTRACT);
+  expect(appends.at(-1)).toBe(SUBAGENT_RESULT_CONTRACT);
+  expect(args.join(" ")).toContain("--no-themes");
+  expect(args.join(" ")).toContain("--no-prompt-templates");
   expect(promptText).toBe("Full feature prompt.");
-  expect((argsText.match(/--no-context-files/g) ?? []).length).toBe(1);
+  expect((args.join(" ").match(/--no-context-files/g) ?? []).length).toBe(1);
   expect((result.details as SubagentDetails).results[0]?.agentSource).toBe(
     "user",
   );
@@ -4285,7 +4457,7 @@ test("subagent context absent omits --no-context-files from child args", async (
   await writeFile(
     path.join(binDir, "pi"),
     `#!/bin/sh
-printf '%s\\n' "$*" > args.txt
+${CAPTURE_PI_ARGS_SH}
 printf '%s\\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"done"}],"usage":{"input":1,"output":1,"totalTokens":2,"cost":{"total":0}}}}'
 printf '%s\\n' '{"type":"agent_end"}'
 exit 0
@@ -4301,16 +4473,20 @@ exit 0
     { agent: "hang", task: "no context" },
     undefined,
     undefined,
-    { cwd, hasUI: false } as unknown as ExtensionContext,
+    makeBareCtx(cwd),
   );
-  const argsText = await Bun.file(path.join(cwd, "args.txt")).text();
+  const args = await readCapturedArgs(cwd);
   expect((result.content[0] as TextContent).text).toBe("done");
-  expect(argsText).not.toContain("--no-context-files");
-  expect(argsText).toContain("--approve");
-  expect(argsText).toContain("Task: no context");
-  expect(argsText).toContain(SUBAGENT_RESULT_CONTRACT);
-  expect(argsText).toContain("--no-themes");
-  expect(argsText).toContain("--no-prompt-templates");
+  expect(args.join(" ")).not.toContain("--no-context-files");
+  expect(args.join(" ")).toContain("--approve");
+  expect(args.at(-1)).toBe("Task: no context");
+  expect(args.at(-1)).not.toContain("Subagent Result Contract");
+  const appends = flagValues(args, "--append-system-prompt");
+  expect(appends).toHaveLength(2);
+  expect(appends[0]).not.toBe(SUBAGENT_RESULT_CONTRACT);
+  expect(appends.at(-1)).toBe(SUBAGENT_RESULT_CONTRACT);
+  expect(args.join(" ")).toContain("--no-themes");
+  expect(args.join(" ")).toContain("--no-prompt-templates");
   expect(listRunJobs()).toHaveLength(0);
 });
 
@@ -4334,7 +4510,7 @@ Prompt.`,
     { agent: "context-string", task: "should not spawn" },
     undefined,
     undefined,
-    { cwd, hasUI: false } as unknown as ExtensionContext,
+    makeBareCtx(cwd),
   );
   expect((result.content[0] as TextContent).text).toContain(
     'Unknown agent: "context-string"',
@@ -4374,7 +4550,7 @@ exit 0
     { agent: "ctx-off", task: "first" },
     undefined,
     undefined,
-    { cwd, hasUI: false } as unknown as ExtensionContext,
+    makeBareCtx(cwd),
   );
   const argsOff = await Bun.file(path.join(cwd, "args.txt")).text();
   expect((ctxOffResult.content[0] as TextContent).text).toBe("done");
@@ -4384,7 +4560,7 @@ exit 0
     { agent: "hang", task: "second" },
     undefined,
     undefined,
-    { cwd, hasUI: false } as unknown as ExtensionContext,
+    makeBareCtx(cwd),
   );
   const argsHang = await Bun.file(path.join(cwd, "args.txt")).text();
   expect((hangResult.content[0] as TextContent).text).toBe("done");
@@ -4419,7 +4595,7 @@ No skills prompt.`,
   await writeFile(
     path.join(binDir, "pi"),
     `#!/bin/sh
-printf '%s\\n' "$*" > args.txt
+${CAPTURE_PI_ARGS_SH}
 printf '%s\\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"done"}],"usage":{"input":1,"output":1,"totalTokens":2,"cost":{"total":0}}}}'
 printf '%s\\n' '{"type":"agent_end"}'
 exit 0
@@ -4435,18 +4611,22 @@ exit 0
     { agent: "skills-off", task: "skills off test" },
     undefined,
     undefined,
-    { cwd, hasUI: false } as unknown as ExtensionContext,
+    makeBareCtx(cwd),
   );
-  const argsText = await Bun.file(path.join(cwd, "args.txt")).text();
+  const args = await readCapturedArgs(cwd);
   expect((result.content[0] as TextContent).text).toBe("done");
-  expect(argsText).toContain("--no-skills");
-  expect(argsText).not.toContain("--skill");
-  expect(argsText).not.toContain("nonexistent");
-  expect(argsText).toContain("--no-themes");
-  expect(argsText).toContain("--no-prompt-templates");
-  expect(argsText).toContain("--approve");
-  expect(argsText).toContain("Task: skills off test");
-  expect(argsText).toContain(SUBAGENT_RESULT_CONTRACT);
+  expect(args.join(" ")).toContain("--no-skills");
+  expect(args.join(" ")).not.toContain("--skill");
+  expect(args.join(" ")).not.toContain("nonexistent");
+  expect(args.join(" ")).toContain("--no-themes");
+  expect(args.join(" ")).toContain("--no-prompt-templates");
+  expect(args.join(" ")).toContain("--approve");
+  expect(args.at(-1)).toBe("Task: skills off test");
+  expect(args.at(-1)).not.toContain("Subagent Result Contract");
+  const appends = flagValues(args, "--append-system-prompt");
+  expect(appends).toHaveLength(2);
+  expect(appends[0]).not.toBe(SUBAGENT_RESULT_CONTRACT);
+  expect(appends.at(-1)).toBe(SUBAGENT_RESULT_CONTRACT);
   expect((result.details as SubagentDetails).results[0]?.agentSource).toBe(
     "user",
   );
@@ -4484,7 +4664,7 @@ exit 0
     { agent: "skills-off-2", task: "first" },
     undefined,
     undefined,
-    { cwd, hasUI: false } as unknown as ExtensionContext,
+    makeBareCtx(cwd),
   );
   const argsOff = await Bun.file(path.join(cwd, "args.txt")).text();
   expect((skillsOffResult.content[0] as TextContent).text).toBe("done");
@@ -4494,7 +4674,7 @@ exit 0
     { agent: "hang", task: "second" },
     undefined,
     undefined,
-    { cwd, hasUI: false } as unknown as ExtensionContext,
+    makeBareCtx(cwd),
   );
   const argsHang = await Bun.file(path.join(cwd, "args.txt")).text();
   expect((hangResult.content[0] as TextContent).text).toBe("done");
@@ -4505,12 +4685,6 @@ exit 0
 });
 
 // --- T-005: tool-path regression and nested extension support ---
-
-function flagValues(args: string[], flag: string): string[] {
-  return args.flatMap((arg, index) =>
-    arg === flag ? [args[index + 1] ?? ""] : [],
-  );
-}
 
 async function createAgentWithExtensions(
   agentDir: string,
@@ -4551,7 +4725,7 @@ exit 0
     { agent: "no-ext", task: "omitted extensions task" },
     undefined,
     undefined,
-    { cwd, hasUI: false } as unknown as ExtensionContext,
+    makeBareCtx(cwd),
   );
   await waitForSentMessageCount(sentMessages, 2);
   expect((result.content[0] as TextContent).text).toBe("done");
@@ -4576,7 +4750,7 @@ test("tool path disabled extensions injects --no-extensions and package index fo
   const { tool, cwd, agentDir } = await setupTest({
     sendMessage: (msg) => sentMessages.push(msg),
     piScript: `#!/bin/sh
-printf '%s\\n' "$@" > args.txt
+${CAPTURE_PI_ARGS_SH}
 printf '%s\\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"done"}],"usage":{"input":1,"output":1,"totalTokens":2,"cost":{"total":0}}}}'
 printf '%s\\n' '{"type":"agent_end","messages":[]}'
 exit 0
@@ -4589,14 +4763,11 @@ exit 0
     { agent: "disabled-ext", task: "disabled extensions task" },
     undefined,
     undefined,
-    { cwd, hasUI: false } as unknown as ExtensionContext,
+    makeBareCtx(cwd),
   );
   await waitForSentMessageCount(sentMessages, 2);
   expect((result.content[0] as TextContent).text).toBe("done");
-  const args = fs
-    .readFileSync(path.join(cwd, "args.txt"), "utf8")
-    .trimEnd()
-    .split("\n");
+  const args = await readCapturedArgs(cwd);
   expect(args).toContain("--no-extensions");
   const pkgPath = resolvePackageExtensionPath();
   const extFlags = flagValues(args, "--extension");
@@ -4605,6 +4776,12 @@ exit 0
   expect(pkgCount).toBe(1);
   expect(extFlags.some((p) => p.includes("complete-extension"))).toBe(true);
   expect(args).toContain("--approve");
+  expect(args.at(-1)).toBe("Task: disabled extensions task");
+  expect(args.at(-1)).not.toContain("Subagent Result Contract");
+  const appends = flagValues(args, "--append-system-prompt");
+  expect(appends).toHaveLength(2);
+  expect(appends[0]).not.toBe(SUBAGENT_RESULT_CONTRACT);
+  expect(appends.at(-1)).toBe(SUBAGENT_RESULT_CONTRACT);
 });
 
 test("tool path named extensions resolves and passes to child with first-seen order", async () => {
@@ -4612,7 +4789,7 @@ test("tool path named extensions resolves and passes to child with first-seen or
   const { tool, cwd, agentDir } = await setupTest({
     sendMessage: (msg) => sentMessages.push(msg),
     piScript: `#!/bin/sh
-printf '%s\\n' "$@" > args.txt
+${CAPTURE_PI_ARGS_SH}
 printf '%s\\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"done"}],"usage":{"input":1,"output":1,"totalTokens":2,"cost":{"total":0}}}}'
 printf '%s\\n' '{"type":"agent_end","messages":[]}'
 exit 0
@@ -4697,14 +4874,11 @@ exit 0
       { agent: "named-ext", task: "named extensions task" },
       undefined,
       undefined,
-      { cwd, hasUI: false } as unknown as ExtensionContext,
+      makeBareCtx(cwd),
     );
     await waitForSentMessageCount(sentMessages, 2);
     expect((result.content[0] as TextContent).text).toBe("done");
-    const args = fs
-      .readFileSync(path.join(cwd, "args.txt"), "utf8")
-      .trimEnd()
-      .split("\n");
+    const args = await readCapturedArgs(cwd);
     expect(args).toContain("--no-extensions");
     const pkgPath = resolvePackageExtensionPath();
     const extFlags = flagValues(args, "--extension");
@@ -4713,6 +4887,12 @@ exit 0
       (p) => p !== pkgPath && !p.includes("complete-extension"),
     );
     expect(namedFlags).toEqual([extCPath, extAPath, extBPath]);
+    expect(args.at(-1)).toBe("Task: named extensions task");
+    expect(args.at(-1)).not.toContain("Subagent Result Contract");
+    const appends = flagValues(args, "--append-system-prompt");
+    expect(appends).toHaveLength(2);
+    expect(appends[0]).not.toBe(SUBAGENT_RESULT_CONTRACT);
+    expect(appends.at(-1)).toBe(SUBAGENT_RESULT_CONTRACT);
   } finally {
     DefaultResourceLoader.prototype.getExtensions = originalGetExtensions;
   }
@@ -4766,7 +4946,7 @@ exit 0
       { agent: "single-file-ext", task: "single file extension task" },
       undefined,
       undefined,
-      { cwd, hasUI: false } as unknown as ExtensionContext,
+      makeBareCtx(cwd),
     );
     await waitForSentMessageCount(sentMessages, 2);
     expect((result.content[0] as TextContent).text).toBe("done");
@@ -4835,7 +5015,7 @@ exit 0
       { agent: "npm-version-ext", task: "npm version-pinned extension task" },
       undefined,
       undefined,
-      { cwd, hasUI: false } as unknown as ExtensionContext,
+      makeBareCtx(cwd),
     );
     await waitForSentMessageCount(sentMessages, 2);
     expect((result.content[0] as TextContent).text).toBe("done");
@@ -4925,7 +5105,7 @@ exit 0
       { agent: "bad-ext", task: "unknown extensions task" },
       undefined,
       undefined,
-      { cwd, hasUI: false } as unknown as ExtensionContext,
+      makeBareCtx(cwd),
     );
     await waitForSentMessageCount(sentMessages, 2);
     const resultText = (result.content[0] as TextContent).text;
@@ -4948,7 +5128,7 @@ test("tool path sampling-enabled disabled extensions includes complete, sampling
   const { tool, cwd, agentDir } = await setupTest({
     sendMessage: (msg) => sentMessages.push(msg),
     piScript: `#!/bin/sh
-printf '%s\\n' "$@" > args.txt
+${CAPTURE_PI_ARGS_SH}
 printf '%s\\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"done"}],"usage":{"input":1,"output":1,"totalTokens":2,"cost":{"total":0}}}}'
 printf '%s\\n' '{"type":"agent_end","messages":[]}'
 exit 0
@@ -4974,14 +5154,11 @@ System prompt.`,
     { agent: "sampling-ext", task: "sampling + extensions disabled" },
     undefined,
     undefined,
-    { cwd, hasUI: false } as unknown as ExtensionContext,
+    makeBareCtx(cwd),
   );
   await waitForSentMessageCount(sentMessages, 2);
   expect((result.content[0] as TextContent).text).toBe("done");
-  const args = fs
-    .readFileSync(path.join(cwd, "args.txt"), "utf8")
-    .trimEnd()
-    .split("\n");
+  const args = await readCapturedArgs(cwd);
   expect(args).toContain("--no-extensions");
   const pkgPath = resolvePackageExtensionPath();
   const extFlags = flagValues(args, "--extension");
@@ -4990,6 +5167,13 @@ System prompt.`,
   expect(pkgCount).toBe(1);
   expect(extFlags.some((p) => p.includes("complete-extension"))).toBe(true);
   expect(extFlags.some((p) => p.includes("sampling-extension"))).toBe(true);
+  const contractIdx = args.indexOf(SUBAGENT_RESULT_CONTRACT);
+  expect(args[contractIdx + 1]).toBe("Task: sampling + extensions disabled");
+  expect(args[contractIdx + 1]).not.toContain("Subagent Result Contract");
+  const appends = flagValues(args, "--append-system-prompt");
+  expect(appends).toHaveLength(2);
+  expect(appends[0]).not.toBe(SUBAGENT_RESULT_CONTRACT);
+  expect(appends.at(-1)).toBe(SUBAGENT_RESULT_CONTRACT);
 });
 
 test("tool path disabled extensions preserves model, thinking, skills, and task args", async () => {
@@ -4997,7 +5181,7 @@ test("tool path disabled extensions preserves model, thinking, skills, and task 
   const { tool, cwd, agentDir } = await setupTest({
     sendMessage: (msg) => sentMessages.push(msg),
     piScript: `#!/bin/sh
-printf '%s\\n' "$@" > args.txt
+${CAPTURE_PI_ARGS_SH}
 printf '%s\\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"done"}],"usage":{"input":1,"output":1,"totalTokens":2,"cost":{"total":0}}}}'
 printf '%s\\n' '{"type":"agent_end","messages":[]}'
 exit 0
@@ -5046,10 +5230,7 @@ Use helper skill.`,
   );
   await waitForSentMessageCount(sentMessages, 2);
   expect((result.content[0] as TextContent).text).toBe("done");
-  const args = fs
-    .readFileSync(path.join(cwd, "args.txt"), "utf8")
-    .trimEnd()
-    .split("\n");
+  const args = await readCapturedArgs(cwd);
   expect(args).toContain("--no-extensions");
   expect(flagValues(args, "--provider")).toEqual(["agent-provider"]);
   expect(flagValues(args, "--model")).toEqual(["agent-model"]);
@@ -5059,10 +5240,12 @@ Use helper skill.`,
   expect(args).toContain("--skill");
   expect(args).toContain("--no-context-files");
   expect(args).toContain("--approve");
-  expect(args.join(" ")).toContain("Task: regression task");
-  const argsText = fs.readFileSync(path.join(cwd, "args.txt"), "utf8");
-  expect(argsText).toContain("## Subagent Result Contract");
-  expect(argsText).toContain("**MANDATORY**");
+  expect(args.at(-1)).toBe("Task: regression task");
+  expect(args.at(-1)).not.toContain("Subagent Result Contract");
+  const appends = flagValues(args, "--append-system-prompt");
+  expect(appends).toHaveLength(2);
+  expect(appends[0]).not.toBe(SUBAGENT_RESULT_CONTRACT);
+  expect(appends.at(-1)).toBe(SUBAGENT_RESULT_CONTRACT);
 });
 
 test("tool path omitted extensions at depth 2 preserves nested subagent support", async () => {
@@ -5083,7 +5266,7 @@ exit 0
     { agent: "nested-no-ext", task: "nested depth 2" },
     undefined,
     undefined,
-    { cwd, hasUI: false } as unknown as ExtensionContext,
+    makeBareCtx(cwd),
   );
   await waitForSentMessageCount(sentMessages, 2);
   expect((result.content[0] as TextContent).text).toBe("done");
@@ -5121,7 +5304,7 @@ exit 0
     { agent: "depth-zero-ext", task: "depth 0" },
     undefined,
     undefined,
-    { cwd, hasUI: false } as unknown as ExtensionContext,
+    makeBareCtx(cwd),
   );
   expect((result.content[0] as TextContent).text).toContain("started");
   await waitForSentMessageCount(sentMessages, 2);
@@ -5192,7 +5375,7 @@ exit 0
     { agent: "deep-ext", task: "too deep" },
     undefined,
     undefined,
-    { cwd, hasUI: false } as unknown as ExtensionContext,
+    makeBareCtx(cwd),
   );
   await waitForSentMessageCount(sentMessages, 1);
   const resultText = (result.content[0] as TextContent).text;
@@ -5279,7 +5462,7 @@ exit 0
       { agent: "warm-ext", task: "warm first" },
       undefined,
       undefined,
-      { cwd, hasUI: false } as unknown as ExtensionContext,
+      makeBareCtx(cwd),
     );
     await waitForSentMessageCount(sentMessages, 2);
     expect((result1.content[0] as TextContent).text).toBe("done");
@@ -5300,7 +5483,7 @@ exit 0
       { agent: "warm-ext", task: "warm second" },
       undefined,
       undefined,
-      { cwd, hasUI: false } as unknown as ExtensionContext,
+      makeBareCtx(cwd),
     );
     await waitForSentMessageCount(sentMessages, 2);
     expect((result2.content[0] as TextContent).text).toBe("done");
@@ -5317,4 +5500,191 @@ exit 0
     DefaultResourceLoader.prototype.getExtensions = originalGetExtensions;
     DefaultResourceLoader.prototype.reload = originalReload;
   }
+});
+
+describe("T-002: replace_prompt routing", () => {
+  test("subagent tool replace_prompt true uses --system-prompt and keeps contract last", async () => {
+    const { tool, cwd, agentDir } = await setupTest({
+      piScript: `#!/bin/sh
+${CAPTURE_PI_ARGS_SH}
+printf '%s\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"done"}],"api":"fake","provider":"fake","model":"fake","usage":{"input":1,"output":1,"cacheRead":0,"cacheWrite":0,"totalTokens":2,"cost":{"total":0}},"stopReason":"stop","timestamp":0}}'
+printf '%s\n' '{"type":"agent_end","messages":[]}'
+exit 0
+`,
+    });
+    await writeFile(
+      path.join(agentDir, "agents", "replace-agent.md"),
+      `---
+name: replace-agent
+description: Replace prompt agent
+replace_prompt: true
+---
+Replacement body prompt.
+`,
+    );
+    await tool.execute(
+      "test-tool-call",
+      { agent: "replace-agent", task: "replace task" },
+      undefined,
+      undefined,
+      makeBareCtx(cwd),
+    );
+    await waitForRunJobsCleared();
+    const args = await readCapturedArgs(cwd);
+    expect(flagValues(args, "--system-prompt")).toHaveLength(1);
+    expect(flagValues(args, "--append-system-prompt")).toEqual([
+      SUBAGENT_RESULT_CONTRACT,
+    ]);
+    const systemIdx = args.indexOf("--system-prompt");
+    const contractIdx = args.indexOf(SUBAGENT_RESULT_CONTRACT);
+    expect(systemIdx).toBeGreaterThan(-1);
+    expect(contractIdx).toBeGreaterThan(systemIdx);
+    expect(args.at(-1)).toBe("Task: replace task");
+    const promptText = await Bun.file(path.join(cwd, "prompt.txt")).text();
+    expect(promptText).toBe("Replacement body prompt.");
+  });
+
+  test("subagent tool replace_prompt false uses --append-system-prompt", async () => {
+    const { tool, cwd, agentDir } = await setupTest({
+      piScript: `#!/bin/sh
+${CAPTURE_PI_ARGS_SH}
+printf '%s\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"done"}],"api":"fake","provider":"fake","model":"fake","usage":{"input":1,"output":1,"cacheRead":0,"cacheWrite":0,"totalTokens":2,"cost":{"total":0}},"stopReason":"stop","timestamp":0}}'
+printf '%s\n' '{"type":"agent_end","messages":[]}'
+exit 0
+`,
+    });
+    await writeFile(
+      path.join(agentDir, "agents", "replace-false-agent.md"),
+      `---
+name: replace-false-agent
+description: Replace prompt false agent
+replace_prompt: false
+---
+Append body prompt.
+`,
+    );
+    await tool.execute(
+      "test-tool-call",
+      { agent: "replace-false-agent", task: "false task" },
+      undefined,
+      undefined,
+      makeBareCtx(cwd),
+    );
+    await waitForRunJobsCleared();
+    const args = await readCapturedArgs(cwd);
+    expect(flagValues(args, "--system-prompt")).toEqual([]);
+    expect(flagValues(args, "--append-system-prompt")).toHaveLength(2);
+    expect(flagValues(args, "--append-system-prompt").at(-1)).toBe(
+      SUBAGENT_RESULT_CONTRACT,
+    );
+    const promptText = await Bun.file(path.join(cwd, "prompt.txt")).text();
+    expect(promptText).toBe("Append body prompt.");
+  });
+
+  test("subagent tool replace_prompt omitted uses --append-system-prompt", async () => {
+    const { tool, cwd } = await setupTest({
+      piScript: `#!/bin/sh
+${CAPTURE_PI_ARGS_SH}
+printf '%s\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"done"}],"api":"fake","provider":"fake","model":"fake","usage":{"input":1,"output":1,"cacheRead":0,"cacheWrite":0,"totalTokens":2,"cost":{"total":0}},"stopReason":"stop","timestamp":0}}'
+printf '%s\n' '{"type":"agent_end","messages":[]}'
+exit 0
+`,
+    });
+    await tool.execute(
+      "test-tool-call",
+      { agent: "hang", task: "omitted task" },
+      undefined,
+      undefined,
+      makeBareCtx(cwd),
+    );
+    await waitForRunJobsCleared();
+    const args = await readCapturedArgs(cwd);
+    expect(flagValues(args, "--system-prompt")).toEqual([]);
+    expect(flagValues(args, "--append-system-prompt")).toHaveLength(2);
+    expect(flagValues(args, "--append-system-prompt").at(-1)).toBe(
+      SUBAGENT_RESULT_CONTRACT,
+    );
+    const promptText = await Bun.file(path.join(cwd, "prompt.txt")).text();
+    expect(promptText).toBe("Test agent prompt.");
+  });
+
+  test("subagent tool replace_prompt true with omitted task uses default task prompt last", async () => {
+    const { tool, cwd, agentDir } = await setupTest({
+      piScript: `#!/bin/sh
+${CAPTURE_PI_ARGS_SH}
+printf '%s\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"done"}],"api":"fake","provider":"fake","model":"fake","usage":{"input":1,"output":1,"cacheRead":0,"cacheWrite":0,"totalTokens":2,"cost":{"total":0}},"stopReason":"stop","timestamp":0}}'
+printf '%s\n' '{"type":"agent_end","messages":[]}'
+exit 0
+`,
+    });
+    await writeFile(
+      path.join(agentDir, "agents", "replace-empty-task.md"),
+      `---
+name: replace-empty-task
+description: Replace empty task agent
+replace_prompt: true
+---
+Replacement empty task prompt.
+`,
+    );
+    await tool.execute(
+      "test-tool-call",
+      { agent: "replace-empty-task" },
+      undefined,
+      undefined,
+      makeBareCtx(cwd),
+    );
+    await waitForRunJobsCleared();
+    const args = await readCapturedArgs(cwd);
+    expect(flagValues(args, "--system-prompt")).toHaveLength(1);
+    expect(flagValues(args, "--append-system-prompt")).toEqual([
+      SUBAGENT_RESULT_CONTRACT,
+    ]);
+    expect(args.at(-1)).toBe(
+      "Run according to your system prompt. If no explicit task was provided, use the default context described there.",
+    );
+    const promptText = await Bun.file(path.join(cwd, "prompt.txt")).text();
+    expect(promptText).toBe("Replacement empty task prompt.");
+  });
+
+  test("subagent tool replace_prompt true coexists with context false and tools", async () => {
+    const { tool, cwd, agentDir } = await setupTest({
+      piScript: `#!/bin/sh
+${CAPTURE_PI_ARGS_SH}
+printf '%s\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"done"}],"api":"fake","provider":"fake","model":"fake","usage":{"input":1,"output":1,"cacheRead":0,"cacheWrite":0,"totalTokens":2,"cost":{"total":0}},"stopReason":"stop","timestamp":0}}'
+printf '%s\n' '{"type":"agent_end","messages":[]}'
+exit 0
+`,
+    });
+    await writeFile(
+      path.join(agentDir, "agents", "replace-flags.md"),
+      `---
+name: replace-flags
+description: Replace flags agent
+replace_prompt: true
+context: false
+tools: bash, read
+---
+Replacement flags prompt.
+`,
+    );
+    await tool.execute(
+      "test-tool-call",
+      { agent: "replace-flags", task: "flags task" },
+      undefined,
+      undefined,
+      makeBareCtx(cwd),
+    );
+    await waitForRunJobsCleared();
+    const args = await readCapturedArgs(cwd);
+    expect(flagValues(args, "--system-prompt")).toHaveLength(1);
+    expect(flagValues(args, "--append-system-prompt")).toEqual([
+      SUBAGENT_RESULT_CONTRACT,
+    ]);
+    expect(args).toContain("--no-context-files");
+    expect(flagValues(args, "--tools")[0]?.split(",")).toContain("bash");
+    expect(args.at(-1)).toBe("Task: flags task");
+    const promptText = await Bun.file(path.join(cwd, "prompt.txt")).text();
+    expect(promptText).toBe("Replacement flags prompt.");
+  });
 });
