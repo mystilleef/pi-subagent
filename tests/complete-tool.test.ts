@@ -26,7 +26,10 @@ import {
   sanitizeResultDetails,
 } from "../src/progress/result-details.js";
 import {
+  CAPTURE_ARGS_PI_SCRIPT,
+  flagValues,
   hangAgent,
+  makeModelAgent,
   makeSubagentDetails,
   setupHooks,
   setupTest,
@@ -36,11 +39,28 @@ setupHooks();
 
 test("SUBAGENT_RESULT_CONTRACT includes completion and result preservation instructions", () => {
   expect(SUBAGENT_RESULT_CONTRACT).toContain("before calling `complete`");
-  expect(SUBAGENT_RESULT_CONTRACT).toContain(
-    "**NEVER** wrap the entire result in a code block.",
+  expect(SUBAGENT_RESULT_CONTRACT).toContain("final action");
+  expect(SUBAGENT_RESULT_CONTRACT).toMatch(
+    /one-sentence|summary-only|summary only/i,
   );
   expect(SUBAGENT_RESULT_CONTRACT).toContain(
-    "**NEVER** omit the text response.",
+    "**NEVER** wrap the entire result in a code block",
+  );
+  expect(SUBAGENT_RESULT_CONTRACT).toContain("**NEVER** omit the result text");
+  expect(SUBAGENT_RESULT_CONTRACT).toMatch(
+    /tool use|multi-step|multi-step work/i,
+  );
+  expect(SUBAGENT_RESULT_CONTRACT).toMatch(
+    /text alone after tool calls|terminal.*complete/i,
+  );
+  expect(SUBAGENT_RESULT_CONTRACT).toContain(
+    "**NEVER** write assistant text after `complete`",
+  );
+  expect(SUBAGENT_RESULT_CONTRACT).toMatch(
+    /complete.*exactly once|exactly once.*complete/i,
+  );
+  expect(SUBAGENT_RESULT_CONTRACT).toMatch(
+    /multiple.*complete calls|multiple `complete` calls/i,
   );
 });
 
@@ -103,20 +123,11 @@ describe("complete-extension default export", () => {
 });
 
 describe("allowlist merging and duplicate complete entries", () => {
-  function makeModelAgent(overrides: Partial<AgentConfig>): AgentConfig {
-    return { ...hangAgent, ...overrides };
-  }
-
   async function captureRunSingleAgentArgs(
     agent: AgentConfig,
   ): Promise<string[]> {
     const { cwd } = await setupTest({
-      piScript: `#!/bin/sh
-printf '%s\n' "$@" > args.txt
-printf '%s\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"done"}],"api":"fake","provider":"fake","model":"fake","usage":{"input":1,"output":1,"cacheRead":0,"cacheWrite":0,"totalTokens":2,"cost":{"total":0}},"stopReason":"stop","timestamp":0}}'
-printf '%s\n' '{"type":"agent_end","messages":[]}'
-exit 0
-`,
+      piScript: CAPTURE_ARGS_PI_SCRIPT,
     });
     const { result } = await runSingleAgent(
       cwd,
@@ -134,12 +145,6 @@ exit 0
       .readFileSync(path.join(cwd, "args.txt"), "utf8")
       .trimEnd()
       .split("\n");
-  }
-
-  function flagValues(args: string[], flag: string): string[] {
-    return args.flatMap((arg, index) =>
-      arg === flag ? [args[index + 1] ?? ""] : [],
-    );
   }
 
   test("injects complete extension and handles duplicate tools list elegantly", async () => {
@@ -280,7 +285,7 @@ exit 0
 
   test("handles blank/non-string outcomes by ignoring them", async () => {
     const piScript = `#!/bin/sh
-printf '%s\\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"toolCall","id":"tc-1","name":"complete","arguments":{"outcome":"   "}}]}}'
+printf '%s\\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"Assistant result text."},{"type":"toolCall","id":"tc-1","name":"complete","arguments":{"outcome":"   "}}]}}'
 printf '%s\\n' '{"type":"agent_end","messages":[]}'
 exit 0
 `;
@@ -298,6 +303,7 @@ exit 0
     );
     expect(result.exitCode).toBe(0);
     expect(result.outcome).toBeUndefined();
+    expect(result.finalOutput).toBe("Assistant result text.");
   });
 
   test("extracts outcome from call arguments even when complete toolResult is isError", async () => {

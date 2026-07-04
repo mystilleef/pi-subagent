@@ -385,6 +385,18 @@ describe("getLatestOutcomeFromMessages", () => {
     expect(getLatestOutcomeFromMessages(messages)).toBeUndefined();
   });
 
+  test("ignores legacy Outcome: labels in assistant text", () => {
+    const messages: Message[] = [
+      assistant([
+        {
+          type: "text",
+          text: "Outcome: extracted from text\nStatus: done",
+        },
+      ]),
+    ];
+    expect(getLatestOutcomeFromMessages(messages)).toBeUndefined();
+  });
+
   test("toolResult with id field instead of toolCallId still matches", () => {
     const messages: Message[] = [
       assistant([
