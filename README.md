@@ -130,6 +130,7 @@ provider: deepseek
 model: deepseek-v4-flash
 temperature: 0.7
 top_p: 0.9
+replace_prompt: true
 ```
 
 - `tools`: Comma-separated list of enabled tools.
@@ -141,6 +142,13 @@ top_p: 0.9
 - `model`: Model identifier.
 - `temperature`: Sampling temperature.
 - `top_p`: Sampling top-p.
+- `replace_prompt`: Set `true` to replace the child system prompt base
+  with the agent body. Omitted or `false` appends the body to the
+  existing system prompt, preserving current behavior. Requires a
+  non-empty agent body; `replace_prompt: true` with an empty or
+  whitespace-only body fails discovery. **Warning:** `true` replaces pi
+  built-in defaults and any project/global `SYSTEM.md`, including their
+  safety and behavior guardrails.
 
 ### Accepted thinking values
 

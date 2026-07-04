@@ -131,6 +131,9 @@ completion/abort union—expected cancellation never travels as exception.
   execution.
 - Sleep inhibition and process-tree termination live with child runner,
   not orchestration.
+- `SUBAGENT_RESULT_CONTRACT`'s `--append-system-prompt` push always sits
+  last among prompt-delivery args in `buildPiArgs`, after any
+  agent-body prompt push (append or replace).
 
 ## Boundaries for changes
 
@@ -155,6 +158,10 @@ completion/abort union—expected cancellation never travels as exception.
 - Avoid restoring message scans in result UI; repair result construction
   instead.
 - Avoid exceptions for expected abort and cancellation flow.
+- Agent body prompt delivery branches on `replacePrompt`: unset/`false`
+  appends via `--append-system-prompt` (default); `true` replaces pi's
+  base prompt/`SYSTEM.md` via `--system-prompt`. Both reuse the same
+  temp-file lifecycle.
 
 ## Architectural traps
 
@@ -175,6 +182,12 @@ completion/abort union—expected cancellation never travels as exception.
   lingering child process.
 - Output truncation and `stderr` capture limits protect parent context;
   bypassing them leaks large child output.
+- Result contract delivery channel: empirically tuned, not cosmetic.
+  `SUBAGENT_RESULT_CONTRACT` rides the system prompt (pi resends it
+  every turn); the task message recedes into the transcript as tool
+  calls accumulate. Reverting the contract to the task message
+  reintroduces the missing-output/lost-in-the-middle compliance
+  regression it fixed.
 
 ## Evidence
 
