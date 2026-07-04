@@ -1489,3 +1489,217 @@ Prompt`,
     expect(agent.topP).toBe(0.7);
   }
 });
+
+// --- T-001: replace_prompt frontmatter parsing ---
+
+test("replace_prompt true discovers agent with replacePrompt true as own property", async () => {
+  const discovery = await discoverAgent(
+    `---
+name: replace-true
+description: Replace prompt true
+replace_prompt: true
+---
+Replacement prompt body.`,
+    "replace-true",
+  );
+  const agent = discovery.agents.find((a) => a.name === "replace-true");
+  expect(agent).toBeDefined();
+  if (agent) {
+    expect(agent.replacePrompt).toBe(true);
+    expect(Object.hasOwn(agent, "replacePrompt")).toBe(true);
+    expect(agent.systemPrompt).toBe("Replacement prompt body.");
+  }
+});
+
+test("replace_prompt true coexists with sibling fields", async () => {
+  const discovery = await discoverAgent(
+    `---
+name: replace-true-siblings
+description: Replace prompt true with siblings
+replace_prompt: true
+model: gpt-5
+provider: openai
+tools: bash, read
+skills: helper
+context: false
+thinking: medium
+temperature: 0.3
+top_p: 0.7
+---
+Replacement body with siblings.`,
+    "replace-true-siblings",
+  );
+  const agent = discovery.agents.find(
+    (a) => a.name === "replace-true-siblings",
+  );
+  expect(agent).toBeDefined();
+  if (agent) {
+    expect(agent.replacePrompt).toBe(true);
+    expect(Object.hasOwn(agent, "replacePrompt")).toBe(true);
+    expect(agent.model).toBe("gpt-5");
+    expect(agent.provider).toBe("openai");
+    expect(agent.tools).toEqual(["bash", "read"]);
+    expect(agent.skills).toEqual(["helper"]);
+    expect(agent.context).toBe(false);
+    expect(agent.thinking).toBe("medium");
+    expect(agent.temperature).toBe(0.3);
+    expect(agent.topP).toBe(0.7);
+    expect(agent.systemPrompt).toBe("Replacement body with siblings.");
+  }
+});
+
+test("replace_prompt false omits own replacePrompt property", async () => {
+  const discovery = await discoverAgent(
+    `---
+name: replace-false
+description: Replace prompt false
+replace_prompt: false
+---
+Legacy append body.`,
+    "replace-false",
+  );
+  const agent = discovery.agents.find((a) => a.name === "replace-false");
+  expect(agent).toBeDefined();
+  if (agent) {
+    expect(Object.hasOwn(agent, "replacePrompt")).toBe(false);
+    expect(agent.replacePrompt).toBeUndefined();
+  }
+});
+
+test("omitted replace_prompt omits own replacePrompt property", async () => {
+  const discovery = await discoverAgent(
+    `---
+name: replace-omitted
+description: Replace prompt omitted
+---
+Legacy append body.`,
+    "replace-omitted",
+  );
+  const agent = discovery.agents.find((a) => a.name === "replace-omitted");
+  expect(agent).toBeDefined();
+  if (agent) {
+    expect(Object.hasOwn(agent, "replacePrompt")).toBe(false);
+    expect(agent.replacePrompt).toBeUndefined();
+  }
+});
+
+test("replace_prompt true with empty body rejects agent from discovery", async () => {
+  const discovery = await discoverAgent(
+    `---
+name: replace-empty-body
+description: Replace prompt empty body
+replace_prompt: true
+---`,
+    "replace-empty-body",
+  );
+  expect(
+    discovery.agents.find((a) => a.name === "replace-empty-body"),
+  ).toBeUndefined();
+});
+
+test("replace_prompt true with whitespace-only body rejects agent from discovery", async () => {
+  const discovery = await discoverAgent(
+    `---
+name: replace-whitespace-body
+description: Replace prompt whitespace body
+replace_prompt: true
+---
+   \n\t  `,
+    "replace-whitespace-body",
+  );
+  expect(
+    discovery.agents.find((a) => a.name === "replace-whitespace-body"),
+  ).toBeUndefined();
+});
+
+test("non-boolean replace_prompt string rejects agent from discovery", async () => {
+  const discovery = await discoverAgent(
+    `---
+name: replace-string
+description: Replace prompt string
+replace_prompt: "true"
+---
+Body`,
+    "replace-string",
+  );
+  expect(
+    discovery.agents.find((a) => a.name === "replace-string"),
+  ).toBeUndefined();
+});
+
+test("non-boolean replace_prompt number rejects agent from discovery", async () => {
+  const discovery = await discoverAgent(
+    `---
+name: replace-number
+description: Replace prompt number
+replace_prompt: 1
+---
+Body`,
+    "replace-number",
+  );
+  expect(
+    discovery.agents.find((a) => a.name === "replace-number"),
+  ).toBeUndefined();
+});
+
+test("non-boolean replace_prompt object rejects agent from discovery", async () => {
+  const discovery = await discoverAgent(
+    `---
+name: replace-object
+description: Replace prompt object
+replace_prompt:
+  enabled: true
+---
+Body`,
+    "replace-object",
+  );
+  expect(
+    discovery.agents.find((a) => a.name === "replace-object"),
+  ).toBeUndefined();
+});
+
+test("bare YAML replace_prompt null rejects agent from discovery", async () => {
+  const discovery = await discoverAgent(
+    `---
+name: replace-null
+description: Replace prompt null
+replace_prompt:
+---
+Body`,
+    "replace-null",
+  );
+  expect(
+    discovery.agents.find((a) => a.name === "replace-null"),
+  ).toBeUndefined();
+});
+
+test("replace_prompt invalid coexists with sibling valid agents", async () => {
+  const { agentDir, cwd } = await setupFakePi();
+  const userDir = path.join(agentDir, "agents");
+  await writeFile(
+    path.join(userDir, "replace-invalid.md"),
+    `---
+name: replace-invalid
+description: Replace prompt invalid
+replace_prompt: "true"
+---
+Body`,
+  );
+  await writeFile(
+    path.join(userDir, "sibling-valid.md"),
+    `---
+name: sibling-valid
+description: Sibling valid agent
+---
+Sibling body`,
+  );
+  const discovery = await discoverAgentsAsync(cwd, "user");
+  expect(
+    discovery.agents.find((a) => a.name === "replace-invalid"),
+  ).toBeUndefined();
+  const sibling = discovery.agents.find((a) => a.name === "sibling-valid");
+  expect(sibling).toBeDefined();
+  if (sibling) {
+    expect(Object.hasOwn(sibling, "replacePrompt")).toBe(false);
+  }
+});
