@@ -282,7 +282,7 @@ decimal, `Infinity`, and non-numeric values fall back to defaults.
 
 **Missing agent:**
 
-- Confirm the file lives under `~/.pi/agents/` or the nearest
+- Confirm the file lives under `~/.pi/agent/agents/` or the nearest
   `.pi/agents/`.
 - Confirm `frontmatter` includes `name` and `description`.
 - Confirm `/run` uses the `name` value, not the filename.
