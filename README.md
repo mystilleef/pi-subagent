@@ -25,7 +25,7 @@ pi -e npm:@mystilleef/pi-subagent
 
 ## Features
 
-- **Asynchronous:** Agents run in the background.
+- **Asynchronous:** Agents always run in the background.
 - **Parallel:** Run many agents simultaneously.
 - **Isolated:** Each delegated task receives a separate context window.
 - **Nested:** `Subagents` can spawn other `subagents`.
@@ -108,8 +108,53 @@ YAML `frontmatter` and a Markdown system prompt body.
 
 ### Discovery locations
 
-- User-global agents: `~/.pi/agents/*.md`
+- User-global agents: `~/.pi/agent/agents/*.md`
 - Project-local agents: nearest `.pi/agents/*.md`
+
+### Example of an agent file
+
+**PATH:** _~/.pi/agent/agents/lifehacks.md_
+
+<!-- prettier-ignore-start -->
+```md
+---
+name: lifehacks
+description: Daily lifehacks
+replace_prompt: true
+context: false
+thinking: xhigh
+skills: false
+extensions: pi-mcp-adapter
+tools: read, grep, find, ls, mcp
+---
+
+# Role
+
+Embody an expert philosopher and life coach. Your specialize in
+_lifehacks_.
+
+## Workflow
+
+- Research and deliver 3 _profound_ and _transformative lifehacks_.
+- Expound upon each of them.
+- Emit unmodified result to the calling agent.
+
+## Directives
+
+- Forbid `copular` verb forms.
+- **Minimum** words. **Maximum** signal.
+- Keep prose vivid but terse.
+- Optimize prose for token and context efficiency.
+- Use lists and sub-lists over paragraphs and long sentences.
+- Use elegant, well-structured, idiomatic markdown.
+
+## Constraints
+
+- Operate in read-only mode.
+- Forbid all write operations.
+- **NEVER** wrap the entire result in a code block.
+```
+<!-- prettier-ignore-end -->
 
 ### Required front matter
 
@@ -133,31 +178,38 @@ top_p: 0.9
 replace_prompt: true
 ```
 
-- `tools`: Comma-separated list of enabled tools.
-- `skills`: Comma-separated list of skills, or `false` to disable all skills.
-- `extensions`: Comma-separated list of extensions, or `false` to disable all extensions.
-- `context`: Set `false` to exclude default project context files.
-- `thinking`: Thinking level.
-- `provider`: Model provider.
-- `model`: Model identifier.
-- `temperature`: Sampling temperature.
-- `top_p`: Sampling top-p.
+- `tools`: Specifies a comma-separated list of enabled tools. Omission
+  defaults to the child process default `toolset`.
+- `skills`: Specifies a comma-separated list of enabled skills. Setting
+  `false` disables all skills. Omission inherits the active workspace
+  skills.
+- `extensions`: Specifies a comma-separated list of enabled extensions.
+  Setting `false` disables all extensions except core subagent
+  extensions. Omission inherits the active workspace extensions.
+- `context`: Controls the inclusion of project context files,
+  `AGENTS.md`. Setting `false` excludes default workspace files from the
+  child context window.
+- `thinking`: Controls the model thinking level (values: `off`,
+  `minimal`, `low`, `medium`, `high`, `xhigh`). The child runner clamps
+  unsupported levels to supported values and prints warnings.
+- `provider`: Specifies the model provider. Requires setting the `model`
+  field. Omission of the `model` field when defining a `provider`
+  invalidates the agent configuration.
+- `model`: Specifies the model identifier. Agent-level model settings
+  override parent settings.
+- `temperature`: Sets the sampling temperature. Accepts numeric values
+  between `0.0` and `1.0` inclusive. Incorrect values trigger warnings
+  during discovery and the system ignores them.
+- `top_p`: Sets the sampling top-p value. Accepts numeric values between
+  `0.0` and `1.0` inclusive. Incorrect values trigger warnings during
+  discovery and the system ignores them.
 - `replace_prompt`: Set `true` to replace the child system prompt base
   with the agent body. Omitted or `false` appends the body to the
-  existing system prompt, preserving current behavior. Requires a
-  non-empty agent body; `replace_prompt: true` with an empty or
-  whitespace-only body fails discovery. **Warning:** `true` replaces pi
-  built-in defaults and any project/global `SYSTEM.md`, including their
-  safety and behavior guardrails.
-
-### Accepted thinking values
-
-- `off`
-- `minimal`
-- `low`
-- `medium`
-- `high`
-- `xhigh`
+  existing system prompt, `SYSTEM.md`, preserving current behavior.
+  Requires a non-empty agent body; `replace_prompt: true` with an empty
+  or whitespace-only body fails discovery. **Warning:** `true` replaces
+  pi built-in defaults and any project/global `SYSTEM.md`, including
+  their safety and behavior guardrails.
 
 ---
 
