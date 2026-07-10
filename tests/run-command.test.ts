@@ -1214,7 +1214,7 @@ exit 0
   expect(sentMessages[0]?.details).toMatchObject({
     agent: "hang",
     instanceName: expect.stringMatching(/^[a-z]+-[a-z]+$/),
-    requestId: (sentMessages[0]?.details as { requestId?: string }).requestId,
+    requestId: (sentMessages[0]?.details as { requestId?: string })?.requestId,
   });
   expect(sentMessages.at(-1)?.content).toBe("done");
   const requestId = (sentMessages[0]?.details as { requestId?: string })
