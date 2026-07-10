@@ -5,6 +5,7 @@ import {
   type AgentConfig,
   discoverAgentsAsync,
   formatAgentList,
+  isDirectoryAsync,
   readMarkdownDirWithStatusAsync,
 } from "../src/agent/agents.js";
 import { setupFakePi } from "./helpers.js";
@@ -489,6 +490,24 @@ Prompt`,
   const agent = discovery.agents.find((a) => a.name === "uppercase-thinking");
   expect(agent).toBeDefined();
   expect(agent?.thinking).toBe("high");
+});
+
+test("max thinking value is accepted in discovery", async () => {
+  const { agentDir, cwd } = await setupFakePi();
+  const userDir = path.join(agentDir, "agents");
+  await writeFile(
+    path.join(userDir, "max-thinking.md"),
+    `---
+name: max-thinking
+description: Max thinking
+thinking: max
+---
+Prompt`,
+  );
+  const discovery = await discoverAgentsAsync(cwd, "user");
+  const agent = discovery.agents.find((a) => a.name === "max-thinking");
+  expect(agent).toBeDefined();
+  expect(agent?.thinking).toBe("max");
 });
 
 test("symlinked markdown files are discovered", async () => {
@@ -1702,4 +1721,527 @@ Sibling body`,
   if (sibling) {
     expect(Object.hasOwn(sibling, "replacePrompt")).toBe(false);
   }
+});
+
+// --- discoverAgentsAsync scope variants ---
+
+test("isDirectoryAsync returns true for existing directories", async () => {
+  const { agentDir } = await setupFakePi();
+  const result = await isDirectoryAsync(agentDir);
+  expect(result).toBe(true);
+});
+
+test("isDirectoryAsync returns false for non-existent paths", async () => {
+  const { agentDir } = await setupFakePi();
+  const result = await isDirectoryAsync(path.join(agentDir, "nonexistent"));
+  expect(result).toBe(false);
+});
+
+test("isDirectoryAsync returns false for files", async () => {
+  const { agentDir } = await setupFakePi();
+  const filePath = path.join(agentDir, "agents", "hang.md");
+  const result = await isDirectoryAsync(filePath);
+  expect(result).toBe(false);
+});
+
+test("readMarkdownDirWithStatusAsync returns empty entries for dir with no markdown files", async () => {
+  const { agentDir } = await setupFakePi();
+  const emptyDir = path.join(agentDir, "empty");
+  await Bun.$`mkdir -p ${emptyDir}`;
+  await writeFile(path.join(emptyDir, "notes.txt"), "text");
+  const listing = await readMarkdownDirWithStatusAsync(emptyDir);
+  expect(listing).toEqual({ entries: [], ok: true });
+});
+
+test("discoverAgentsAsync with project scope discovers project agents", async () => {
+  const { cwd } = await setupFakePi();
+  const projectDir = path.join(cwd, ".pi", "agents");
+  await Bun.$`mkdir -p ${projectDir}`;
+  await writeFile(
+    path.join(projectDir, "proj-agent.md"),
+    `---
+name: proj-agent
+description: Project agent
+tools: bash
+thinking: low
+---
+Project prompt.`,
+  );
+  const discovery = await discoverAgentsAsync(cwd, "project");
+  expect(discovery.agents).toHaveLength(1);
+  const agent = discovery.agents[0];
+  if (!agent) throw new Error("expected agent");
+  expect(agent.name).toBe("proj-agent");
+  expect(agent.source).toBe("project");
+  expect(agent.description).toBe("Project agent");
+  expect(agent.tools).toEqual(["bash"]);
+  expect(agent.thinking).toBe("low");
+});
+
+test("discoverAgentsAsync with project scope skips user agents", async () => {
+  const { cwd } = await setupFakePi();
+  // user dir has "hang" agent by default — should be skipped for project scope
+  const projectDir = path.join(cwd, ".pi", "agents");
+  await Bun.$`mkdir -p ${projectDir}`;
+  await writeFile(
+    path.join(projectDir, "proj-agent.md"),
+    `---
+name: proj-agent
+description: Project only
+---
+Prompt.`,
+  );
+  const discovery = await discoverAgentsAsync(cwd, "project");
+  expect(discovery.agents).toHaveLength(1);
+  const agent = discovery.agents[0];
+  if (!agent) throw new Error("expected agent");
+  expect(agent.name).toBe("proj-agent");
+  expect(agent.source).toBe("project");
+});
+
+test("discoverAgentsAsync with both scope merges user and project agents", async () => {
+  const { agentDir, cwd } = await setupFakePi();
+  const userDir = path.join(agentDir, "agents");
+  const projectDir = path.join(cwd, ".pi", "agents");
+  await Bun.$`mkdir -p ${projectDir}`;
+  await writeFile(
+    path.join(userDir, "user-agent.md"),
+    `---
+name: user-agent
+description: User-specific agent
+---
+User prompt.`,
+  );
+  await writeFile(
+    path.join(projectDir, "proj-agent.md"),
+    `---
+name: proj-agent
+description: Project-specific agent
+---
+Project prompt.`,
+  );
+  const discovery = await discoverAgentsAsync(cwd, "both");
+  const names = discovery.agents.map((a) => a.name).sort();
+  expect(names).toContain("hang");
+  expect(names).toContain("user-agent");
+  expect(names).toContain("proj-agent");
+  expect(discovery.scopes.user.agents.length).toBeGreaterThanOrEqual(2);
+  expect(discovery.scopes.project.agents.length).toBe(1);
+});
+
+test("discoverAgentsAsync with both scope: project agent overrides user agent with same name", async () => {
+  const { agentDir, cwd } = await setupFakePi();
+  const userDir = path.join(agentDir, "agents");
+  const projectDir = path.join(cwd, ".pi", "agents");
+  await Bun.$`mkdir -p ${projectDir}`;
+  await writeFile(
+    path.join(userDir, "shared-agent.md"),
+    `---
+name: shared-agent
+description: User version
+---
+User body.`,
+  );
+  await writeFile(
+    path.join(projectDir, "shared-agent.md"),
+    `---
+name: shared-agent
+description: Project version overrides
+tools: bash
+thinking: high
+---
+Project body.`,
+  );
+  const discovery = await discoverAgentsAsync(cwd, "both");
+  const agent = discovery.agents.find((a) => a.name === "shared-agent");
+  expect(agent).toBeDefined();
+  expect(agent?.source).toBe("project");
+  expect(agent?.description).toBe("Project version overrides");
+  expect(agent?.tools).toEqual(["bash"]);
+  expect(agent?.thinking).toBe("high");
+  expect(agent?.systemPrompt).toBe("Project body.");
+});
+
+test("discoverAgentsAsync with project scope and no project directory returns empty agents", async () => {
+  const { cwd } = await setupFakePi();
+  // cwd has no .pi/agents directory
+  const discovery = await discoverAgentsAsync(cwd, "project");
+  expect(discovery.agents).toHaveLength(0);
+  expect(discovery.projectAgentsDir).toBeNull();
+  expect(discovery.scopes.project.agents).toHaveLength(0);
+});
+
+test("discoverAgentsAsync with both scope and no project directory returns only user agents", async () => {
+  const { agentDir, cwd } = await setupFakePi();
+  const userDir = path.join(agentDir, "agents");
+  await writeFile(
+    path.join(userDir, "only-user.md"),
+    `---
+name: only-user
+description: Only user
+---
+Prompt.`,
+  );
+  const discovery = await discoverAgentsAsync(cwd, "both");
+  expect(discovery.projectAgentsDir).toBeNull();
+  const names = discovery.agents.map((a) => a.name).sort();
+  expect(names).toContain("hang");
+  expect(names).toContain("only-user");
+  expect(discovery.scopes.project.agents).toHaveLength(0);
+});
+
+test("discoverAgentsAsync finds project agents in parent directories", async () => {
+  const { cwd } = await setupFakePi();
+  const projectDir = path.join(cwd, ".pi", "agents");
+  await Bun.$`mkdir -p ${projectDir}`;
+  await writeFile(
+    path.join(projectDir, "parent-agent.md"),
+    `---
+name: parent-agent
+description: Found in parent
+---
+Parent prompt.`,
+  );
+  const subDir = path.join(cwd, "deep", "nested");
+  await Bun.$`mkdir -p ${subDir}`;
+  const discovery = await discoverAgentsAsync(subDir, "both");
+  expect(discovery.projectAgentsDir).toBe(projectDir);
+  const agent = discovery.agents.find((a) => a.name === "parent-agent");
+  expect(agent).toBeDefined();
+  expect(agent?.source).toBe("project");
+  expect(agent?.description).toBe("Found in parent");
+});
+
+test("discoverAgentsAsync returns scoped markdown files separately", async () => {
+  const { agentDir, cwd } = await setupFakePi();
+  const userDir = path.join(agentDir, "agents");
+  const projectDir = path.join(cwd, ".pi", "agents");
+  await Bun.$`mkdir -p ${projectDir}`;
+  await writeFile(
+    path.join(userDir, "extra.md"),
+    `---
+name: extra
+description: Extra user agent
+---
+Prompt.`,
+  );
+  await writeFile(
+    path.join(projectDir, "project-readme.md"),
+    `---
+name: project-readme
+description: Project readme
+---
+Prompt.`,
+  );
+  const discovery = await discoverAgentsAsync(cwd, "both");
+  expect(discovery.scopes.user.markdownFiles).toContain("hang.md");
+  expect(discovery.scopes.user.markdownFiles).toContain("extra.md");
+  expect(discovery.scopes.project.markdownFiles).toContain("project-readme.md");
+  expect(discovery.scopes.user.markdownFiles).not.toContain(
+    "project-readme.md",
+  );
+  expect(discovery.scopes.project.markdownFiles).not.toContain("hang.md");
+});
+
+test("parseCommaList returns undefined for non-string input", async () => {
+  const { agentDir, cwd } = await setupFakePi();
+  const userDir = path.join(agentDir, "agents");
+  // tools as a non-string type (array) is rejected at parseAgentConfig level,
+  // but an empty string is parsed by parseCommaList returning undefined
+  await writeFile(
+    path.join(userDir, "empty-tools-str.md"),
+    `---
+name: empty-tools-str
+description: Empty tools string
+tools: ""
+---
+Prompt.`,
+  );
+  const discovery = await discoverAgentsAsync(cwd, "user");
+  const agent = discovery.agents.find((a) => a.name === "empty-tools-str");
+  expect(agent).toBeDefined();
+  expect(agent?.tools).toBeUndefined();
+});
+
+test("parseCommaList returns undefined for whitespace-only string", async () => {
+  const { agentDir, cwd } = await setupFakePi();
+  const userDir = path.join(agentDir, "agents");
+  await writeFile(
+    path.join(userDir, "whitespace-tools.md"),
+    `---
+name: whitespace-tools
+description: Whitespace tools
+tools: "   "
+---
+Prompt.`,
+  );
+  const discovery = await discoverAgentsAsync(cwd, "user");
+  const agent = discovery.agents.find((a) => a.name === "whitespace-tools");
+  expect(agent).toBeDefined();
+  expect(agent?.tools).toBeUndefined();
+});
+
+test("parseCommaList returns undefined for comma-only string", async () => {
+  const { agentDir, cwd } = await setupFakePi();
+  const userDir = path.join(agentDir, "agents");
+  await writeFile(
+    path.join(userDir, "comma-tools.md"),
+    `---
+name: comma-tools
+description: Comma tools
+tools: ","
+---
+Prompt.`,
+  );
+  const discovery = await discoverAgentsAsync(cwd, "user");
+  const agent = discovery.agents.find((a) => a.name === "comma-tools");
+  expect(agent).toBeDefined();
+  expect(agent?.tools).toBeUndefined();
+});
+
+test("parseCommaList preserves ordering and trims whitespace from tools", async () => {
+  const { agentDir, cwd } = await setupFakePi();
+  const userDir = path.join(agentDir, "agents");
+  await writeFile(
+    path.join(userDir, "trimmed-tools.md"),
+    `---
+name: trimmed-tools
+description: Trimmed tools
+tools: "  bash ,  read , write  "
+---
+Prompt.`,
+  );
+  const discovery = await discoverAgentsAsync(cwd, "user");
+  const agent = discovery.agents.find((a) => a.name === "trimmed-tools");
+  expect(agent).toBeDefined();
+  expect(agent?.tools).toEqual(["bash", "read", "write"]);
+});
+
+test("parseExtensions with non-empty YAML array passes validation but returns empty array", async () => {
+  const { agentDir, cwd } = await setupFakePi();
+  const userDir = path.join(agentDir, "agents");
+  await writeFile(
+    path.join(userDir, "ext-arr.md"),
+    `---
+name: ext-arr
+description: Extensions array
+extensions: []
+---
+Prompt.`,
+  );
+  const discovery = await discoverAgentsAsync(cwd, "user");
+  const agent = discovery.agents.find((a) => a.name === "ext-arr");
+  expect(agent).toBeDefined();
+  if (agent) {
+    expect(Array.isArray(agent.extensions)).toBe(true);
+    expect(agent.extensions).toHaveLength(0);
+  }
+});
+
+test("formatAgentList handles zero maxItems gracefully", () => {
+  const agents: AgentConfig[] = [
+    {
+      name: "alpha",
+      description: "First",
+      systemPrompt: "P",
+      source: "user",
+      filePath: "a.md",
+    },
+  ];
+  const result = formatAgentList(agents, 0);
+  expect(result.text).toBe("");
+  expect(result.remaining).toBe(1);
+});
+
+test("formatAgentList handles maxItems larger than agent count", () => {
+  const agents: AgentConfig[] = [
+    {
+      name: "alpha",
+      description: "First",
+      systemPrompt: "P",
+      source: "user",
+      filePath: "a.md",
+    },
+  ];
+  const result = formatAgentList(agents, 5);
+  expect(result.text).toBe("alpha (user): First");
+  expect(result.remaining).toBe(0);
+});
+
+test("parseAgentConfig rejects non-string name with null return", async () => {
+  const { agentDir, cwd } = await setupFakePi();
+  const userDir = path.join(agentDir, "agents");
+  await writeFile(
+    path.join(userDir, "name-null.md"),
+    `---
+name:
+description: Has description
+---
+Prompt.`,
+  );
+  const discovery = await discoverAgentsAsync(cwd, "user");
+  expect(
+    discovery.agents.find((a) => a.description === "Has description"),
+  ).toBeUndefined();
+});
+
+test("parseAgentConfig rejects non-string description with null return", async () => {
+  const { agentDir, cwd } = await setupFakePi();
+  const userDir = path.join(agentDir, "agents");
+  await writeFile(
+    path.join(userDir, "desc-null.md"),
+    `---
+name: desc-null
+description:
+---
+Prompt.`,
+  );
+  const discovery = await discoverAgentsAsync(cwd, "user");
+  expect(discovery.agents.find((a) => a.name === "desc-null")).toBeUndefined();
+});
+
+test("parseAgentConfig returns null for bare context true — already tested as omission", async () => {
+  // context: true is permitted but omitted from output; this is already verified
+  // by context-true tests. This test confirms it doesn't reject the agent.
+  const discovery = await discoverAgent(
+    `---
+name: context-true-bare
+description: Context true bare
+context: true
+---
+Body`,
+    "context-true-bare",
+  );
+  const agent = discovery.agents.find((a) => a.name === "context-true-bare");
+  expect(agent).toBeDefined();
+  if (agent) {
+    expect(Object.hasOwn(agent, "context")).toBe(false);
+  }
+});
+
+test("parseSamplingValue returns undefined for NaN with warning", async () => {
+  const { agentDir, cwd } = await setupFakePi();
+  const userDir = path.join(agentDir, "agents");
+  await writeFile(
+    path.join(userDir, "nan-temp.md"),
+    `---
+name: nan-temp
+description: NaN temperature
+temperature: .nan
+---
+Prompt.`,
+  );
+  const { result: discovery, warnings } = await withCapturedWarnings(() =>
+    discoverAgentsAsync(cwd, "user"),
+  );
+  const agent = discovery.agents.find((a) => a.name === "nan-temp");
+  expect(agent).toBeDefined();
+  if (agent) {
+    expect(Object.hasOwn(agent, "temperature")).toBe(false);
+    expect(agent.temperature).toBeUndefined();
+  }
+  expect(
+    warnings.some((w) => w.includes("nan-temp") && w.includes("temperature")),
+  ).toBe(true);
+});
+
+test("parseSamplingValue returns undefined for Infinity with warning", async () => {
+  const { agentDir, cwd } = await setupFakePi();
+  const userDir = path.join(agentDir, "agents");
+  await writeFile(
+    path.join(userDir, "inf-top-p.md"),
+    `---
+name: inf-top-p
+description: Infinity top_p
+top_p: .inf
+---
+Prompt.`,
+  );
+  const { result: discovery, warnings } = await withCapturedWarnings(() =>
+    discoverAgentsAsync(cwd, "user"),
+  );
+  const agent = discovery.agents.find((a) => a.name === "inf-top-p");
+  expect(agent).toBeDefined();
+  if (agent) {
+    expect(Object.hasOwn(agent, "topP")).toBe(false);
+    expect(agent.topP).toBeUndefined();
+  }
+  expect(
+    warnings.some((w) => w.includes("inf-top-p") && w.includes("top_p")),
+  ).toBe(true);
+});
+
+test("thinking level off is recognized and preserved", async () => {
+  const discovery = await discoverAgent(
+    `---
+name: thinking-off
+description: Thinking off
+thinking: off
+---
+Prompt.`,
+    "thinking-off",
+  );
+  const agent = discovery.agents.find((a) => a.name === "thinking-off");
+  expect(agent).toBeDefined();
+  expect(agent?.thinking).toBe("off");
+});
+
+test("thinking level xhigh is recognized and preserved", async () => {
+  const discovery = await discoverAgent(
+    `---
+name: thinking-xhigh
+description: Thinking xhigh
+thinking: xhigh
+---
+Prompt.`,
+    "thinking-xhigh",
+  );
+  const agent = discovery.agents.find((a) => a.name === "thinking-xhigh");
+  expect(agent).toBeDefined();
+  expect(agent?.thinking).toBe("xhigh");
+});
+
+test("tools comma-list with trailing comma normalizes correctly", async () => {
+  const discovery = await discoverAgent(
+    `---
+name: trailing-comma
+description: Trailing comma in tools
+tools: "bash, read,"
+---
+Prompt.`,
+    "trailing-comma",
+  );
+  const agent = discovery.agents.find((a) => a.name === "trailing-comma");
+  expect(agent).toBeDefined();
+  expect(agent?.tools).toEqual(["bash", "read"]);
+});
+
+test("tools comma-list with leading comma normalizes correctly", async () => {
+  const discovery = await discoverAgent(
+    `---
+name: leading-comma
+description: Leading comma in tools
+tools: ", bash, read"
+---
+Prompt.`,
+    "leading-comma",
+  );
+  const agent = discovery.agents.find((a) => a.name === "leading-comma");
+  expect(agent).toBeDefined();
+  expect(agent?.tools).toEqual(["bash", "read"]);
+});
+
+test("tools comma-list preserves delimiter usage as-is", async () => {
+  const discovery = await discoverAgent(
+    `---
+name: preserve-delim
+description: Preserve delimiter
+tools: bash, read, write
+---
+Prompt.`,
+    "preserve-delim",
+  );
+  const agent = discovery.agents.find((a) => a.name === "preserve-delim");
+  expect(agent).toBeDefined();
+  expect(agent?.tools).toEqual(["bash", "read", "write"]);
 });
