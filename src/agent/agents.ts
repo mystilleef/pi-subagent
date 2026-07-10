@@ -14,6 +14,7 @@ const THINKING_LEVELS = [
   "medium",
   "high",
   "xhigh",
+  "max",
 ] as const;
 
 export type ThinkingLevel = (typeof THINKING_LEVELS)[number];

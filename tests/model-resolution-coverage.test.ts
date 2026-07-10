@@ -190,4 +190,26 @@ describe("resolveThinkingLevel", () => {
     expect(result.warning).toContain("openai/gpt-5");
     expect(result.warning).toContain('using "minimal" instead');
   });
+
+  test("returns max unclamped for model with max in thinkingLevelMap", () => {
+    const result = resolveThinkingLevel("max", "anthropic", "claude-sonnet-5");
+    expect(result.level).toBe("max");
+    expect(result.warning).toBeUndefined();
+  });
+
+  test("clamps max down to highest supported level when unsupported", () => {
+    const result = resolveThinkingLevel("max", "openai", "gpt-5.2-chat-latest");
+    expect(result.level).toBe("xhigh");
+    expect(result.warning).toContain("not supported by model");
+    expect(result.warning).toContain("openai/gpt-5.2-chat-latest");
+    expect(result.warning).toContain('using "xhigh" instead');
+  });
+
+  test("clamps max for a model with no thinkingLevelMap at all", () => {
+    const result = resolveThinkingLevel("max", "anthropic", "claude-opus-4-5");
+    expect(result.level).toBe("high");
+    expect(result.warning).toContain("not supported by model");
+    expect(result.warning).toContain("anthropic/claude-opus-4-5");
+    expect(result.warning).toContain('using "high" instead');
+  });
 });

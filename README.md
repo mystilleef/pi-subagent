@@ -190,7 +190,8 @@ replace_prompt: true
   `AGENTS.md`. Setting `false` excludes default workspace files from the
   child context window.
 - `thinking`: Controls the model thinking level (values: `off`,
-  `minimal`, `low`, `medium`, `high`, `xhigh`). The child runner clamps
+  `minimal`, `low`, `medium`, `high`, `xhigh`, `max`). `xhigh` and `max`
+  are model-specific, opt-in levels. The child runner clamps
   unsupported levels to supported values and prints warnings.
 - `provider`: Specifies the model provider. Requires setting the `model`
   field. Omission of the `model` field when defining a `provider`

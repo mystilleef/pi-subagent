@@ -32,7 +32,6 @@ export function resolveThinkingLevel(
   if (model.reasoning === false) {
     return { level: "off", warning: mkWarning("off") };
   }
-  if (!model.thinkingLevelMap) return { level: requested };
   const supported = getSupportedThinkingLevels(model);
   if (supported.length === 0) return { level: requested };
   const clamped = clampThinkingLevel(
