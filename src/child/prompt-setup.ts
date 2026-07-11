@@ -1,6 +1,24 @@
 import * as fs from "node:fs";
+import * as os from "node:os";
+import * as path from "node:path";
 import type { AgentConfig } from "../agent/agents.js";
-import { writePromptToTempFile } from "../shared/utils.js";
+
+export async function writePromptToTempFile(
+  agentName: string,
+  prompt: string,
+): Promise<{ dir: string; filePath: string }> {
+  const tmpDir = await fs.promises.mkdtemp(
+    path.join(os.tmpdir(), "pi-subagent-"),
+  );
+  const safeName = agentName.replace(/[^\w.-]+/g, "_");
+  const filePath = path.join(tmpDir, `prompt-${safeName}.md`);
+  // mkdtemp guarantees a unique directory per call; no concurrent writer can hold this path.
+  await fs.promises.writeFile(filePath, prompt, {
+    encoding: "utf-8",
+    mode: 0o600,
+  });
+  return { dir: tmpDir, filePath };
+}
 
 export type TempPrompt = { dir: string; filePath: string };
 

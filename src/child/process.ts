@@ -9,6 +9,11 @@ import readline from "node:readline";
 import type { Message } from "@earendil-works/pi-ai";
 import type { AgentConfig, ThinkingLevel } from "../agent/agents.js";
 import { getFinalOutput } from "../output/ui.js";
+import {
+  getPiInvocation,
+  getSubagentDepth,
+  subagentDepthEnv,
+} from "../shared/invocation.js";
 import { serializeSamplingParams } from "../shared/sampling.js";
 import {
   type OnUpdateCallback,
@@ -18,12 +23,9 @@ import {
 } from "../shared/types.js";
 import {
   detectMessageError,
-  getPiInvocation,
-  getSubagentDepth,
   getSubagentRuntimeLimits,
   resolveAgentExtensionPaths,
   resolveAgentSkillArgs,
-  subagentDepthEnv,
 } from "../shared/utils.js";
 import {
   type ChildEventParseResult,
@@ -74,7 +76,6 @@ const COMPLETE_EXTENSION_PATH = resolveCompleteExtensionPath();
 const SAMPLING_EXTENSION_PATH = resolveSamplingExtensionPath();
 const PACKAGE_EXTENSION_PATH = resolvePackageExtensionPath();
 
-export { resolveThinkingLevel } from "./model-resolution.js";
 export { makeEmitUpdate } from "./streaming-progress.js";
 
 type RuntimeLimits = ReturnType<typeof getSubagentRuntimeLimits>;

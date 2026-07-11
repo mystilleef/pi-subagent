@@ -40,13 +40,14 @@ import {
   sanitizeResultDetails,
 } from "../progress/result-details.js";
 import { generateSubagentInstanceName } from "../shared/instance-name.js";
+import { getSubagentDepth } from "../shared/invocation.js";
 import type {
   OnUpdateCallback,
   SingleResult,
   SubagentDetails,
   SubagentToolResult,
 } from "../shared/types.js";
-import { getSubagentDepth, hasSubagentFailed } from "../shared/utils.js";
+import { hasSubagentFailed } from "../shared/utils.js";
 import {
   listRunJobs,
   type RunJob,
