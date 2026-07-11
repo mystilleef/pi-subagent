@@ -2,196 +2,225 @@
 
 ## Scope
 
-- Project: Pi extension for delegated child agents in Structured Prompt
-  Agent Ecosystem (SPAE)-style workflows.
-- Sources: README, DESIGN, SPAE specs, source tree.
-- `ADRs`: none found during scan.
-- Claims: source/docs inference only; revisit after major lifecycle or
-  UI changes.
+- Project: Pi extension for delegated child agents in `SPAE`-style
+  workflows.
+- Purpose: isolate child context, prompts, tools, skills, extensions,
+  sampling, and model thinking from parent session while streaming
+  progress back.
+- Sources: README, `SPAE` specs/plans, source tree, tests.
+- ADRs/design docs: none found; `SPAE` specs document recent
+  thinking-resolution decisions.
+- Claims: source/docs inference; revisit after lifecycle, result
+  contract, or Pi extension API changes.
 
 ## Architecture
 
-- Shape: plugin shell + process-supervised actor + `renderer`
+- Shape: Pi extension adapter + cached agent/resource discovery +
+  process-supervised child actor + live progress/result render
   projections.
-- `index` layer: Pi extension adapter; registers interactive adapters,
-  delegation tool, and custom message `renderers`; delegates work to
-  orchestration.
-- `orchestration` layer: lifecycle coordinator; discovery, confirmation,
-  job registry, progress kickoff, child runner, result/failure routing,
-  notification trigger.
-- `agent` layer: agent definition discovery; user/project scope merge;
-  scoped cache; `frontmatter` parsing; sampling/model/tool/skill
-  metadata validation.
-- `child` layer: process runner; prompt materialization; child process
-  `args`; JSON event parsing; runtime result assembly; abort/termination
-  cleanup.
-- `progress` layer: mutable in-memory projection keyed by request id;
-  running activity extraction; terminal summary derivation.
-- `output` layer: pure text/terminal rendering and parent-facing result
-  formatting.
-- `notification` layer: request construction separated from
-  platform-specific detached delivery.
+- Registration adapter:
+  - tracks active workspace for completions
+  - registers user launch/cancel/job adapters, subagent tool,
+    progress/result renderers
+  - delegates all execution policy to orchestration
+- Orchestration:
+  - combines discovery, trust confirmation, job registry, progress seed,
+    lifecycle scheduling, cancellation, result routing, notifications
+  - root launches detach lifecycle and returns started handle;
+    nested/tool launches await lifecycle for parent payload
+- Discovery:
+  - parses agent markdown/frontmatter into `AgentConfig`
+  - merges user/project scopes with project overriding user on name
+    collision
+  - validates model/sampling/prompt replacement metadata before spawn
+  - derives scoped cache entries from trusted snapshots only
+- Resource resolution:
+  - converts agent skill/extension names into concrete child resource
+    inputs/paths through Pi resource loader caches
+  - keeps skill and extension resolution independent; unknown names
+    `fail` before spawn with available-name diagnostics
+- Child runner:
+  - materializes prompt, resolves model/thinking display, resolves
+    resources, builds child invocation, streams JSON events, accumulates
+    result, manages abort/termination cleanup
+- Progress/UI:
+  - stores mutable in-memory progress keyed by request id
+  - projects child messages and nested tool activity into cards, status
+    lines, job board, and parent/tool updates
+- Output:
+  - separates parent text, result-card body, progress summary, and
+    diagnostic details
+  - preserves raw final assistant output for success payloads
+- Notification:
+  - builds request from terminal progress state before platform
+    delivery; delivery failures never change lifecycle result
 
 ## Primary flow
 
-- Launch request enters `startSubagentJob`.
-- Agent discovery reads user/project definitions through cached
-  snapshots; project-local selection prompts trust confirmation;
-  project/user name collision emits a progress notice.
-- Prepared job creates:
-  - `RunJob` cancellation entry
-  - `SubagentProgressState`
-  - request id + instance name
-  - sanitized details builder
-- Root-level interactive launch schedules lifecycle asynchronously and
-  returns a started result; nested/tool launch awaits lifecycle inline.
+- Launch enters `startSubagentJob` through command or tool adapter.
+- Cached discovery selects scope; project agent prompts trust
+  confirmation when UI context exists; name collision emits progress
+  notice.
+- Preparation creates request id, instance name, cancellable `RunJob`,
+  progress state, sanitized details builder, merged abort signal, parent
+  model/thinking snapshot.
+- Root-level launch schedules lifecycle asynchronously and immediately
+  returns started handle; nested launch awaits `runSubagentLifecycle`.
 - Lifecycle loop:
   - timer invalidates progress renderer
-  - update callback patches progress and throttles host updates via
+  - update callback patches progress and throttles parent updates by
     payload fingerprint
-  - child runner resolves agent settings, skills, sampling, prompt
-    contract, temp prompt, and child invocation
-- Child runner streams known JSON events:
-  - message/tool-result events update `RuntimeResult`
-  - tool-execution events update nested `ToolActivity`
-  - agent-end events rebuild messages, emit progress, then request
-    graceful termination after grace window
+  - runner resolves skills/extensions/prompt/model/sampling before spawn
+- Child event stream:
+  - message/tool-result events append messages, usage, final output, and
+    error hints
+  - tool-execution events merge nested `ToolActivity`
+  - agent-end events rebuild full message state, emit progress, then
+    request graceful termination after grace window
 - Finalization:
-  - complete-tool arguments yield `outcome`
+  - latest valid `complete` tool-call arguments yield `outcome`
   - semantic success stores `outcome`
-  - abort returns tagged `aborted` result and clears `stderr`
-  - unresolved tool errors mark failure
-- Orchestrator terminal routing:
-  - success sends raw final output to parent/result card and stores
-    canonical progress summary
-  - failure prefixes parent content with explicit failure marker and
-    optional partial output
-  - cancellation sends canonical cancellation content, updates cancelled
-    progress, suppresses duplicate nested behavior
-- Completion cleanup removes job, clears render timer, finalizes
-  notification/beep path.
+  - abort returns tagged `aborted` result and clears captured
+    diagnostics
+  - unresolved post-output tool errors mark failure
+- Terminal routing:
+  - success sends raw final output to parent/result card and concise
+    outcome-derived progress summary
+  - failure prefixes parent content with explicit failure marker plus
+    partial output when present
+  - cancellation updates progress and suppresses duplicate nested
+    behavior
+- Cleanup removes registry entry, clears timer, releases child
+  resources, triggers completion alert path.
 
 ## Core abstractions
 
-**`AgentConfig`** (agent + child): parsed prompt/frontmatter plus launch
-metadata—source scope and file origin.
-
-**`AgentDiscoveryCacheEntry`** (agent cache): `TTL` snapshot with
-directory listing trust + file hashes-enables safe derivation of scoped
-caches from combined scope.
-
-**`RunJob`** (run registry + orchestrator): cancellable background job
-record bridging interactive cancellation and lifecycle signal.
-
-**`SingleResult`** (child + progress + output): cross-boundary result
-envelope carrying output, usage, messages, progress, termination,
-outcome.
-
-**`SubagentDetails`** (orchestrator + progress details): sanitized
-result container passed to UI/tool callbacks.
-
-**`RuntimeResult`** (child result builder): mutable child-side
-`SingleResult` with message accumulation invariant.
-
-**`StreamingProgress` / `ToolActivity`** (child events + progress):
-tree-shaped live tool activity for nested subagent visibility.
-
-**`RunSingleAgentResult`** (child process + orchestrator): tagged
-completion/abort union—expected cancellation never travels as exception.
+- `AgentConfig`: parsed agent prompt/frontmatter plus source/file
+  metadata; drives prompt, tools, skills, extensions, model, sampling,
+  context behavior.
+- `AgentDiscoveryCacheEntry`: `TTL` snapshot with markdown listing
+  trust + file hashes; enables safe `both` → scoped cache derivation.
+- `RunJob`: cancellable registry record connecting jobs board,
+  cancellation, lifecycle signal, and root background launch.
+- `SingleResult`: cross-boundary result envelope for output, usage,
+  model/thinking, progress, messages, termination, outcome.
+- `RuntimeResult`: child-side mutable `SingleResult`; message
+  append/rebuild updates usage and `finalOutput`.
+- `SubagentDetails`: sanitized UI/tool detail payload; debug surfaces
+  require host authorization and redaction.
+- `StreamingProgress` / `ToolActivity`: tree-shaped activity model for
+  nested tool/subagent visibility.
+- `RunSingleAgentResult`: tagged completion/abort union; expected
+  cancellation travels outside exception path.
+- `ResolvedThinkingLevel`: display/warning/diagnostic tuple; child input
+  keeps requested level separately.
+- Resource caches: skill input and extension path maps keyed by
+  canonical workspace, agent directory, and requested names.
 
 ## Invariants
 
-- `SingleResult.finalOutput` tracks last assistant text during message
-  append/rebuild; completed result cards read this field directly. A
-  missing `finalOutput` means no text output—render `"(no output)"`;
-  never `rescan` messages to recover it.
+- `SingleResult.finalOutput` tracks last assistant text during
+  append/rebuild; completed cards read it directly. Empty value means no
+  text output; render `"(no output)"`; never `rescan` parent content.
 - `content[0].text` carries parent/custom-message payload only; never
-  treat it as final-output fallback after completion.
-- `getFeedbackSummaryText` feeds the progress store only; it must never
-  read `content[0].text`, which carries streaming activity text—stale at
-  finalization.
-- `outcome` summarizes progress only; parent-facing success content
-  retains raw final output plus thinking warning.
-- Failure parent content format:
-  `"(failed) <errorMessage>\n\n<finalOutput>"` when partial output
-  exists; just `"<errorMessage>"` with no partial output.
-- Complete-tool outcome extraction reads assistant tool-call arguments,
-  not tool-result payload.
-- `hasSubagentFailed` honors valid outcome as success override;
+  use it as completion fallback.
+- `getFeedbackSummaryText` feeds progress store only; it must not read
+  streaming parent content.
+- `outcome` summarizes progress; parent-facing success content retains
+  raw final output plus thinking warning.
+- Complete outcome extraction reads assistant tool-call arguments, not
+  tool-result payload.
+- `hasSubagentFailed` treats valid `outcome` as success override;
   otherwise exit code, stop reason, error message, and post-output tool
-  errors drive failure.
-- Expected cancellation flows through `RunSingleAgentResult.kind`; only
-  unexpected errors enter orchestrator catch.
-- Non-debug details strip messages, termination internals, and `stderr`;
-  display debug path redacts sensitive fields recursively.
-- Progress store strips transient tool activity after terminal states.
-- Root-level child jobs run outside the tool call stack; nested subagent
-  jobs run inline to return payload to parent agent.
-- Project-local agents require explicit UI trust confirmation before
-  execution.
-- Sleep inhibition and process-tree termination live with child runner,
-  not orchestration.
-- `SUBAGENT_RESULT_CONTRACT`'s `--append-system-prompt` push always sits
-  last among prompt-delivery args in `buildPiArgs`, after any
-  agent-body prompt push (append or replace).
+  errors drive classification.
+- Agent/provider/model precedence: agent settings override parent; agent
+  provider without model invalidates discovery; agent model without
+  provider inherits parent provider.
+- Thinking resolution: confirmed live/static model data clamps
+  display/warning; unconfirmed non-`off` requests preserve requested
+  display with uncertainty warning; child input always receives raw
+  requested level.
+- `replacePrompt` switches only agent-body delivery; result contract
+  prompt injection stays last among prompt-delivery entries.
+- Agent `extensions` `frontmatter` controls extension inheritance:
+  defined value disables inherited extensions, then re-adds this package
+  plus resolved requested extensions and core child helpers.
+- Agent `skills` `frontmatter` controls skills inheritance: defined
+  value disables inherited skills, then adds resolved requested skills;
+  `false` yields no requested skill entries.
+- Sampling `frontmatter` travels through a child-only patch extension;
+  parent process sampling payload never leaks into child unexamined.
+- Project-local agents require UI trust confirmation before spawn.
+- Expected cancellation returns tagged abort; unexpected errors enter
+  orchestration catch.
+- Non-debug details strip messages, termination internals, and captured
+  `stderr`; display debug path redacts sensitive fields recursively.
+- Progress store strips transient activity after terminal states.
+- Output truncation and diagnostic capture limits protect parent
+  context.
+- Sleep inhibition and process-tree termination stay inside child
+  runner.
+- `agent_end` event triggers graceful shutdown, not instant
+  process-success assumption; grace timeout only succeeds when child
+  produced completed output/outcome.
 
 ## Boundaries for changes
 
-- Add or change launch policy in orchestrator; keep `index` as
-  registration adapter.
-- Keep agent markdown parsing in discovery; keep cache validity in cache
-  module.
-- Keep child process concerns—argument construction, event parsing, temp
-  prompt lifecycle, termination, result construction—inside child
-  modules.
-- Keep UI/result content split:
-  - parent/result body: output summary + output UI
-  - progress summary: progress details + progress state
-- Add new child event types through parser → process handler → progress
+- Add launch policy in orchestrator; keep `index` registration-only.
+- Keep markdown/frontmatter parsing in discovery; keep snapshot/hash
+  validity in cache.
+- Keep Pi resource lookup inside resource-resolution; child runner
+  consumes resolved resource inputs/paths only.
+- Keep child process concerns—argument assembly, prompt temp files, JSON
+  event parsing, event diagnostics, termination, result
+  construction—inside child modules.
+- Add child event types through parser → process handler → progress
   projection chain.
-- Extend details only through sanitizer; preserve debug authorization
-  and redaction.
-- Extend notifications through request model first; platform delivery
+- Extend result/details shape through sanitizer first; preserve debug
+  authorization and redaction.
+- Extend UI by consuming `SubagentProgressState`/`SubagentDetails`, not
+  child messages directly.
+- Extend notifications through request model first; platform adapters
   second.
 - Preserve TypeBox schema reuse between complete tool registration and
   outcome validation.
-- Avoid restoring message scans in result UI; repair result construction
-  instead.
-- Avoid exceptions for expected abort and cancellation flow.
-- Agent body prompt delivery branches on `replacePrompt`: unset/`false`
-  appends via `--append-system-prompt` (default); `true` replaces pi's
-  base prompt/`SYSTEM.md` via `--system-prompt`. Both reuse the same
-  temp-file lifecycle.
+- Preserve model/thinking split: display resolution may warn or clamp;
+  child request remains raw.
+- Preserve tool activity tree; flatten only in render formatting.
 
 ## Architectural traps
 
-- Running text and final result use different channels; merging them
-  reintroduces stale-result bugs.
-- Result card duplication prevented through `renderedByMessage`;
+- Running text and final result travel on different channels; merging
+  them reintroduces stale-result bugs.
+- Result-card duplication prevention hinges on `renderedByMessage`;
   removing it duplicates custom message output.
-- Scoped agent cache derivation only safe after snapshot/listing
-  validation; direct reuse risks stale project/user splits.
+- Scoped cache derivation needs trusted snapshot/listing validation;
+  direct reuse risks stale user/project splits.
+- Resource caches key on canonical workspace and agent directory;
+  name-only caching can cross-contaminate projects.
 - Tool activity can nest through subagents; flattening drops child-agent
   visibility.
-- Success/failure classification depends on both process status and
-  message semantics; exit code alone `misclassifies` complete-tool
-  success after handled tool errors.
-- Parent debug flag only exposes messages when host authorization flag
-  permits; never rely on request flag alone.
-- Agent-end event doesn't mean process exit; grace termination handles
+- Exit code alone `misclassifies` handled tool errors and complete-tool
+  success.
+- Parent debug request alone never exposes transcripts; host
+  authorization and sanitizer gate detail expansion.
+- Agent-end event can precede process exit; grace termination handles
   lingering child process.
-- Output truncation and `stderr` capture limits protect parent context;
-  bypassing them leaks large child output.
-- Result contract delivery channel: empirically tuned, not cosmetic.
-  `SUBAGENT_RESULT_CONTRACT` rides the system prompt (pi resends it
-  every turn); the task message recedes into the transcript as tool
-  calls accumulate. Reverting the contract to the task message
-  reintroduces the missing-output/lost-in-the-middle compliance
-  regression it fixed.
+- Result contract delivery through final prompt injection protects
+  against lost-in-the-middle omissions; moving contract into task text
+  risks missing final output.
+- Agent extension inheritance differs from skill inheritance; false
+  extensions still loads core child helpers after disabling host
+  extensions, while false skills adds no requested skill `args`.
 
 ## Evidence
 
-- README: external behavior and progress/result card split.
-- SPAE specs: current design pressures around result contract, failure
-  formatting, tagged abort, outcome parsing.
-- Source scan: layer boundaries and invariants above.
+- README: extension purpose, agent/frontmatter semantics, security
+  model, user-facing progress/result split.
+- `SPAE` specs/plans: thinking-resolution display contract and raw child
+  thinking request decision.
+- Source scan: extension registration, orchestration lifecycle,
+  discovery/cache, resource resolution, child runner, progress/output,
+  notification boundaries.
+- Tests: behavior seams for thinking propagation, child invocation,
+  progress/UI/summary, caching, termination, result contract.
