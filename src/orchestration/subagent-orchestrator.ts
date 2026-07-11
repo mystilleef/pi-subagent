@@ -11,6 +11,7 @@ import type {
   AgentScope,
   ThinkingLevel,
 } from "../agent/agents.js";
+import type { ModelRegistry as ChildModelRegistry } from "../child/model-resolution.js";
 import { runSingleAgent } from "../child/process.js";
 import { deliverNotification } from "../notification/delivery.js";
 import {
@@ -102,6 +103,7 @@ interface LifecycleContext {
   task: string;
   parentModel: { provider: string; id: string } | undefined;
   parentThinking: ThinkingLevel;
+  registry?: ChildModelRegistry;
   hostOnUpdate?: AgentToolUpdateCallback<SubagentDetails> | undefined;
 }
 
@@ -288,6 +290,7 @@ async function runSubagentLifecycle(
       lc.parentModel,
       lc.parentThinking,
       lc.debug,
+      { registry: lc.registry },
     );
     if (outcome.kind === "aborted") {
       const details = lc.makeDetails([outcome.result]);
@@ -474,6 +477,7 @@ async function prepareSubagentJob(
       task,
       parentModel,
       parentThinking,
+      registry: ctx.modelRegistry,
       hostOnUpdate,
     },
     instanceName,

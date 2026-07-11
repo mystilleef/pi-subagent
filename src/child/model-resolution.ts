@@ -4,8 +4,10 @@
  */
 
 import {
+  type Api,
   clampThinkingLevel,
   getSupportedThinkingLevels,
+  type Model,
   type ModelThinkingLevel,
 } from "@earendil-works/pi-ai";
 import { getModel } from "@earendil-works/pi-ai/compat";
@@ -17,20 +19,71 @@ export type ChildModelSettings = {
 };
 
 /**
- * Resolves the effective thinking level for a model, clamping to supported levels.
- * Returns a warning message if the requested level differs from the effective level.
+ * Minimal live-registry seam consumed by thinking-level resolution.
+ * Accepts the public {@link ModelRegistry} from the host extension context
+ * or any test double that provides the same lookup contract.
  */
-export function resolveThinkingLevel(
+export interface ModelRegistry {
+  find(provider: string, modelId: string): Model<Api> | undefined;
+}
+
+export interface ResolveThinkingLevelOptions {
+  registry?: ModelRegistry | undefined;
+}
+
+export interface ResolvedThinkingLevel {
+  level: ThinkingLevel;
+  warning?: string | undefined;
+  diagnostic?: string | undefined;
+}
+
+const FALLBACK_LEVEL: ThinkingLevel = "off";
+
+function formatUnsupportedWarning(
   requested: ThinkingLevel,
+  effective: ThinkingLevel,
+  provider: string | undefined,
+  modelId: string | undefined,
+): string {
+  const providerLabel = provider ?? "unknown";
+  const modelLabel = modelId ?? "unknown";
+  return `Thinking level "${requested}" is not supported; using "${effective}" instead (provider: ${providerLabel}, model: ${modelLabel})`;
+}
+
+function resolveModel(
   provider: string,
   modelId: string,
-): { level: ThinkingLevel; warning?: string } {
-  const model = getModel(provider as never, modelId as never);
-  if (!model) return { level: requested };
-  const mkWarning = (effective: ThinkingLevel) =>
-    `Thinking level "${requested}" not supported by model "${provider}/${modelId}"; using "${effective}" instead`;
+  registry: ModelRegistry | undefined,
+): { model: Model<Api> | undefined; diagnostic: string | undefined } {
+  if (registry) {
+    const live = registry.find(provider, modelId);
+    if (live) return { model: live, diagnostic: undefined };
+  }
+  const diagnostic = registry
+    ? undefined
+    : "Live model registry unavailable; falling back to static catalog.";
+  const staticModel = getModel(provider as never, modelId as never) as
+    | Model<Api>
+    | undefined;
+  return { model: staticModel, diagnostic };
+}
+
+function resolveForModel(
+  requested: ThinkingLevel,
+  provider: string | undefined,
+  modelId: string | undefined,
+  model: Model<Api>,
+): ResolvedThinkingLevel {
   if (model.reasoning === false) {
-    return { level: "off", warning: mkWarning("off") };
+    return {
+      level: FALLBACK_LEVEL,
+      warning: formatUnsupportedWarning(
+        requested,
+        FALLBACK_LEVEL,
+        provider,
+        modelId,
+      ),
+    };
   }
   const supported = getSupportedThinkingLevels(model);
   if (supported.length === 0) return { level: requested };
@@ -39,7 +92,65 @@ export function resolveThinkingLevel(
     requested as ModelThinkingLevel,
   ) as ThinkingLevel;
   if (clamped === requested) return { level: requested };
-  return { level: clamped, warning: mkWarning(clamped) };
+  return {
+    level: clamped,
+    warning: formatUnsupportedWarning(requested, clamped, provider, modelId),
+  };
+}
+
+/**
+ * Resolves the effective thinking level for a model, preferring the live
+ * registry over the static catalog and falling back to the documented safe
+ * estimate when no model is found.
+ *
+ * Missing provider or model identifiers, missing/unavailable registries, and
+ * live or static misses all resolve as "no model": requested `off` stays
+ * warning-free; any other requested level estimates `off` with the standard
+ * unsupported-level warning. Registry diagnostics are returned separately and
+ * never included in the user-facing warning.
+ */
+export function resolveThinkingLevel(
+  requested: ThinkingLevel,
+  provider: string | undefined,
+  modelId: string | undefined,
+  options?: ResolveThinkingLevelOptions,
+): ResolvedThinkingLevel {
+  if (!provider || !modelId) {
+    if (requested === FALLBACK_LEVEL) return { level: FALLBACK_LEVEL };
+    return {
+      level: FALLBACK_LEVEL,
+      warning: formatUnsupportedWarning(
+        requested,
+        FALLBACK_LEVEL,
+        provider,
+        modelId,
+      ),
+    };
+  }
+  const { model, diagnostic } = resolveModel(
+    provider,
+    modelId,
+    options?.registry,
+  );
+  if (!model) {
+    if (requested === FALLBACK_LEVEL) {
+      return diagnostic
+        ? { level: FALLBACK_LEVEL, diagnostic }
+        : { level: FALLBACK_LEVEL };
+    }
+    return {
+      level: FALLBACK_LEVEL,
+      warning: formatUnsupportedWarning(
+        requested,
+        FALLBACK_LEVEL,
+        provider,
+        modelId,
+      ),
+      diagnostic,
+    };
+  }
+  const result = resolveForModel(requested, provider, modelId, model);
+  return diagnostic ? { ...result, diagnostic } : result;
 }
 
 /**

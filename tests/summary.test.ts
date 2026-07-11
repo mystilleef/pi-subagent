@@ -151,11 +151,11 @@ test("parent formatter prepends thinking warning when present", () => {
       result({
         finalOutput: "task completed",
         thinkingWarning:
-          'Thinking level "xhigh" not supported by model "openai/gpt-4o"; using "high" instead',
+          'Thinking level "xhigh" is not supported; using "high" instead (provider: openai, model: gpt-4o)',
       }),
     ),
   ).toBe(
-    '[thinking] Thinking level "xhigh" not supported by model "openai/gpt-4o"; using "high" instead\n\ntask completed',
+    '[thinking] Thinking level "xhigh" is not supported; using "high" instead (provider: openai, model: gpt-4o)\n\ntask completed',
   );
 });
 
@@ -179,11 +179,11 @@ test("parent formatter prepends warning even when finalOutput is empty", () => {
       result({
         finalOutput: "",
         thinkingWarning:
-          'Thinking level "xhigh" not supported by model "openai/gpt-4o"; using "high" instead',
+          'Thinking level "xhigh" is not supported; using "high" instead (provider: openai, model: gpt-4o)',
       }),
     ),
   ).toBe(
-    '[thinking] Thinking level "xhigh" not supported by model "openai/gpt-4o"; using "high" instead\n\n',
+    '[thinking] Thinking level "xhigh" is not supported; using "high" instead (provider: openai, model: gpt-4o)\n\n',
   );
 });
 
@@ -193,11 +193,11 @@ test("parent formatter prepends warning even when finalOutput is only whitespace
       result({
         finalOutput: "  \n\n  ",
         thinkingWarning:
-          'Thinking level "xhigh" not supported by model "openai/gpt-4o"; using "high" instead',
+          'Thinking level "xhigh" is not supported; using "high" instead (provider: openai, model: gpt-4o)',
       }),
     ),
   ).toBe(
-    '[thinking] Thinking level "xhigh" not supported by model "openai/gpt-4o"; using "high" instead\n\n  \n\n  ',
+    '[thinking] Thinking level "xhigh" is not supported; using "high" instead (provider: openai, model: gpt-4o)\n\n  \n\n  ',
   );
 });
 

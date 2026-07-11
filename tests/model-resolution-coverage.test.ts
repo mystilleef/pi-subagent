@@ -1,10 +1,17 @@
 import { describe, expect, test } from "bun:test";
+import type { Api, Model } from "@earendil-works/pi-ai";
 import type { ThinkingLevel } from "../src/agent/agents.js";
 import {
   buildModelDisplay,
+  type ModelRegistry,
   resolveEffectiveChildModelSettings,
   resolveThinkingLevel,
 } from "../src/child/model-resolution.js";
+import {
+  modelFixture,
+  registryFixture,
+  unsupportedWarning,
+} from "./helpers.js";
 
 describe("resolveEffectiveChildModelSettings", () => {
   test("uses agent provider and model when both provided", () => {
@@ -72,10 +79,7 @@ describe("buildModelDisplay", () => {
   });
 
   test("returns provider and thinking when id is missing", () => {
-    const result = buildModelDisplay(
-      { provider: "openai" },
-      "high" as ThinkingLevel,
-    );
+    const result = buildModelDisplay({ provider: "openai" }, "high");
     expect(result).toBe("openai ･ high");
   });
 
@@ -96,7 +100,7 @@ describe("buildModelDisplay", () => {
   });
 
   test("returns only thinking when provider and id are missing", () => {
-    const result = buildModelDisplay({}, "low" as ThinkingLevel);
+    const result = buildModelDisplay({}, "low");
     expect(result).toBe("low");
   });
 
@@ -121,95 +125,157 @@ describe("buildModelDisplay", () => {
   test("handles thinking level off", () => {
     const result = buildModelDisplay(
       { provider: "openai", id: "gpt-4" },
-      "off" as ThinkingLevel,
+      "off",
     );
     expect(result).toBe("openai ･ gpt-4 ･ off");
   });
 });
 
 describe("resolveThinkingLevel", () => {
-  test("returns requested level when model not found", () => {
-    const result = resolveThinkingLevel("low", "nonexistent", "model-1");
-    expect(result).toEqual({ level: "low" });
-    expect(result.warning).toBeUndefined();
-  });
-
-  test("returns off with warning when model reasoning is false", () => {
+  test("static catalog resolves when registry is absent", () => {
     const result = resolveThinkingLevel("high", "openai", "gpt-4");
     expect(result.level).toBe("off");
-    expect(result.warning).toContain("not supported by model");
-  });
-
-  test("returns off with warning when supported levels only contain off", () => {
-    const result = resolveThinkingLevel("low", "openai", "gpt-4-turbo");
-    expect(result.level).toBe("off");
-    expect(result.warning).toContain("not supported by model");
-  });
-
-  test("returns warning when reasoning is false and requested is already off", () => {
-    const result = resolveThinkingLevel("off", "openai", "gpt-4");
-    expect(result.level).toBe("off");
-    expect(result.warning).toContain("not supported by model");
-  });
-
-  test("returns requested level for model with matching supported level", () => {
-    const result = resolveThinkingLevel(
-      "high",
-      "anthropic",
-      "claude-3-7-sonnet-20250219",
+    expect(result.warning).toBe(
+      unsupportedWarning("high", "off", "openai", "gpt-4"),
     );
+    expect(result.diagnostic).toBe(
+      "Live model registry unavailable; falling back to static catalog.",
+    );
+  });
+
+  test("static catalog resolves after a live-registry miss", () => {
+    const result = resolveThinkingLevel("high", "openai", "gpt-4", {
+      registry: registryFixture([]),
+    });
+    expect(result.level).toBe("off");
+    expect(result.warning).toBe(
+      unsupportedWarning("high", "off", "openai", "gpt-4"),
+    );
+  });
+
+  test("live registry match outranks static catalog", () => {
+    const live = modelFixture({
+      provider: "openai",
+      id: "gpt-4",
+      reasoning: true,
+      thinkingLevelMap: {
+        off: null,
+        low: "low",
+        medium: "medium",
+        high: "high",
+      },
+    });
+    const result = resolveThinkingLevel("high", "openai", "gpt-4", {
+      registry: registryFixture([live]),
+    });
     expect(result.level).toBe("high");
     expect(result.warning).toBeUndefined();
   });
 
-  test("returns requested level when thinkingLevelMap is undefined and reasoning is true", () => {
-    const result = resolveThinkingLevel(
-      "medium",
-      "anthropic",
-      "claude-3-7-sonnet-20250219",
+  test("requested off stays warning-free when no model is found", () => {
+    const result = resolveThinkingLevel("off", "nonexistent", "model-1");
+    expect(result.level).toBe("off");
+    expect(result.warning).toBeUndefined();
+  });
+
+  test("requested off stays warning-free when live registry misses and no diagnostic", () => {
+    const result = resolveThinkingLevel("off", "nonexistent", "model-1", {
+      registry: registryFixture([]),
+    });
+    expect(result.level).toBe("off");
+    expect(result.warning).toBeUndefined();
+    expect(result.diagnostic).toBeUndefined();
+  });
+
+  test("non-off unknown request estimates off with uniform warning", () => {
+    const result = resolveThinkingLevel("low", "nonexistent", "model-1");
+    expect(result.level).toBe("off");
+    expect(result.warning).toBe(
+      unsupportedWarning("low", "off", "nonexistent", "model-1"),
     );
+  });
+
+  test("missing provider or model ID is treated as no model", () => {
+    const missingProvider = resolveThinkingLevel(
+      "medium",
+      undefined,
+      "model-1",
+    );
+    expect(missingProvider.level).toBe("off");
+    expect(missingProvider.warning).toBe(
+      unsupportedWarning("medium", "off", undefined, "model-1"),
+    );
+
+    const missingModelId = resolveThinkingLevel("medium", "openai", undefined);
+    expect(missingModelId.level).toBe("off");
+    expect(missingModelId.warning).toBe(
+      unsupportedWarning("medium", "off", "openai", undefined),
+    );
+  });
+
+  test("reasoning-disabled model estimates off with warning", () => {
+    const result = resolveThinkingLevel("high", "openai", "gpt-4");
+    expect(result.level).toBe("off");
+    expect(result.warning).toBe(
+      unsupportedWarning("high", "off", "openai", "gpt-4"),
+    );
+  });
+
+  test("model without explicit supported-level list retains request", () => {
+    const live = modelFixture({
+      provider: "custom",
+      id: "reasoner",
+      reasoning: true,
+    });
+    const result = resolveThinkingLevel("medium", "custom", "reasoner", {
+      registry: registryFixture([live]),
+    });
     expect(result.level).toBe("medium");
     expect(result.warning).toBeUndefined();
   });
 
-  test("clamps unsupported level with warning when model has thinkingLevelMap", () => {
+  test("clamps unsupported level and emits uniform warning", () => {
     const result = resolveThinkingLevel("off", "openai", "gpt-5");
     expect(result.level).toBe("minimal");
-    expect(result.warning).toContain('using "minimal" instead');
+    expect(result.warning).toBe(
+      unsupportedWarning("off", "minimal", "openai", "gpt-5"),
+    );
   });
 
-  test("clamps out-of-range high to supported maximum", () => {
-    const result = resolveThinkingLevel("high", "openai", "gpt-5");
-    expect(result.level).toBe("high");
-    expect(result.warning).toBeUndefined();
-  });
-
-  test("returns clamped level warning for unsupported thinking level", () => {
-    const result = resolveThinkingLevel("off", "openai", "gpt-5");
-    expect(result.warning).toContain("not supported by model");
-    expect(result.warning).toContain("openai/gpt-5");
-    expect(result.warning).toContain('using "minimal" instead');
-  });
-
-  test("returns max unclamped for model with max in thinkingLevelMap", () => {
-    const result = resolveThinkingLevel("max", "anthropic", "claude-sonnet-5");
-    expect(result.level).toBe("max");
-    expect(result.warning).toBeUndefined();
-  });
-
-  test("clamps max down to highest supported level when unsupported", () => {
+  test("clamps max down to highest supported level", () => {
     const result = resolveThinkingLevel("max", "openai", "gpt-5.2-chat-latest");
     expect(result.level).toBe("xhigh");
-    expect(result.warning).toContain("not supported by model");
-    expect(result.warning).toContain("openai/gpt-5.2-chat-latest");
-    expect(result.warning).toContain('using "xhigh" instead');
+    expect(result.warning).toBe(
+      unsupportedWarning("max", "xhigh", "openai", "gpt-5.2-chat-latest"),
+    );
   });
 
-  test("clamps max for a model with no thinkingLevelMap at all", () => {
-    const result = resolveThinkingLevel("max", "anthropic", "claude-opus-4-5");
-    expect(result.level).toBe("high");
-    expect(result.warning).toContain("not supported by model");
-    expect(result.warning).toContain("anthropic/claude-opus-4-5");
-    expect(result.warning).toContain('using "high" instead');
+  test("warning format is deterministic for every clamp or unknown fallback", () => {
+    const clamped = resolveThinkingLevel("off", "openai", "gpt-5");
+    const unknown = resolveThinkingLevel("high", "nonexistent", "model-1");
+    const reasoningDisabled = resolveThinkingLevel("high", "openai", "gpt-4");
+    expect(clamped.warning).toBe(
+      unsupportedWarning("off", "minimal", "openai", "gpt-5"),
+    );
+    expect(unknown.warning).toBe(
+      unsupportedWarning("high", "off", "nonexistent", "model-1"),
+    );
+    expect(reasoningDisabled.warning).toBe(
+      unsupportedWarning("high", "off", "openai", "gpt-4"),
+    );
+  });
+
+  test("fixtures type-check as Model without casts", () => {
+    const live: Model<Api> = modelFixture({
+      provider: "typed",
+      id: "fixture",
+      reasoning: false,
+      thinkingLevelMap: { off: null, high: "high" },
+    });
+    const registry: ModelRegistry = registryFixture([live]);
+    const result = resolveThinkingLevel("high", "typed", "fixture", {
+      registry,
+    });
+    expect(result.level).toBe("off");
   });
 });

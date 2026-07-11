@@ -4,6 +4,7 @@ import { chmod, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import type { AgentToolUpdateCallback } from "@earendil-works/pi-agent-core";
+import type { Api, Model } from "@earendil-works/pi-ai";
 import type {
   AgentToolResult,
   ExtensionAPI,
@@ -12,7 +13,8 @@ import type {
   ThemeColor,
   ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
-import type { AgentConfig } from "../src/agent/agents.js";
+import type { AgentConfig, ThinkingLevel } from "../src/agent/agents.js";
+import type { ModelRegistry } from "../src/child/model-resolution.js";
 import registerSubagentExtension, {
   resetAgentCache,
   type SubagentParams,
@@ -464,6 +466,52 @@ export function makeSingleResult(
     },
     ...overrides,
   };
+}
+
+/**
+ * Creates a minimal Model fixture with sensible defaults.
+ * Merge fields override defaults; `id` and `provider` are required.
+ */
+export function modelFixture(
+  fields: Partial<Model<Api>> & { id: string; provider: string },
+): Model<Api> {
+  return {
+    api: "openai-responses",
+    name: fields.id,
+    baseUrl: "https://api.example.com",
+    reasoning: true,
+    input: ["text"],
+    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+    contextWindow: 128_000,
+    maxTokens: 4096,
+    ...fields,
+  };
+}
+
+/**
+ * Creates a ModelRegistry backed by the given model list.
+ * Lookup matches on both `provider` and `id`.
+ */
+export function registryFixture(models: Model<Api>[]): ModelRegistry {
+  return {
+    find: (provider, modelId) =>
+      models.find((m) => m.provider === provider && m.id === modelId),
+  };
+}
+
+/**
+ * Builds the canonical unsupported-thinking-level warning string.
+ * Mirrors the production format from `model-resolution.ts`.
+ */
+export function unsupportedWarning(
+  requested: ThinkingLevel,
+  effective: ThinkingLevel,
+  provider?: string,
+  modelId?: string,
+): string {
+  const providerLabel = provider ?? "unknown";
+  const modelLabel = modelId ?? "unknown";
+  return `Thinking level "${requested}" is not supported; using "${effective}" instead (provider: ${providerLabel}, model: ${modelLabel})`;
 }
 
 export function setupHooks() {

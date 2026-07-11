@@ -48,7 +48,9 @@ import {
   makeBareCtx,
   makeSubagentDetails,
   makeSubagentToolUpdateLine,
+  modelFixture,
   readCapturedArgs,
+  registryFixture,
   type SendMessageArg,
   setupFakePi,
   setupHooks,
@@ -1583,7 +1585,11 @@ exit 0
   );
   const args = await readCapturedArgs(cwd);
   const promptText = await Bun.file(path.join(cwd, "prompt.txt")).text();
-  expect((result.content[0] as TextContent).text).toBe("done");
+  const expectedWarning =
+    'Thinking level "high" is not supported; using "off" instead (provider: fake-provider, model: fake-model)';
+  expect((result.content[0] as TextContent).text).toBe(
+    `[thinking] ${expectedWarning}\n\ndone`,
+  );
   expect(args.join(" ")).toContain(
     "--provider fake-provider --model fake-model",
   );
@@ -1599,7 +1605,10 @@ exit 0
   expect(appends.at(-1)).toBe(SUBAGENT_RESULT_CONTRACT);
   expect(promptText).toBe("Runtime prompt");
   expect((result.details as SubagentDetails).results[0]?.model).toBe(
-    "fake-provider ･ fake-model ･ high",
+    "fake-provider ･ fake-model ･ off",
+  );
+  expect((result.details as SubagentDetails).results[0]?.thinkingWarning).toBe(
+    expectedWarning,
   );
   expect(listRunJobs()).toHaveLength(0);
 });
@@ -4162,7 +4171,11 @@ exit 0
     } as unknown as ExtensionContext,
   );
 
-  expect((resSampling.content[0] as TextContent).text).toBe("done");
+  const expectedSamplingWarning =
+    'Thinking level "high" is not supported; using "off" instead (provider: fake-provider, model: fake-model)';
+  expect((resSampling.content[0] as TextContent).text).toBe(
+    `[thinking] ${expectedSamplingWarning}\n\ndone`,
+  );
   const argsSampling = await readCapturedArgs(cwd);
   const promptSampling = await Bun.file(path.join(cwd, "prompt.txt")).text();
   const envSampling = await Bun.file(path.join(cwd, "env_sampling.txt")).text();
@@ -4185,8 +4198,11 @@ exit 0
   expect(appendsSampling.at(-1)).toBe(SUBAGENT_RESULT_CONTRACT);
   expect(promptSampling).toBe("Sampling agent prompt");
   expect((resSampling.details as SubagentDetails).results[0]?.model).toBe(
-    "fake-provider ･ fake-model ･ high",
+    "fake-provider ･ fake-model ･ off",
   );
+  expect(
+    (resSampling.details as SubagentDetails).results[0]?.thinkingWarning,
+  ).toBe(expectedSamplingWarning);
 
   expect(argsSampling.join(" ")).toContain("sampling-extension");
   const samplingExtensionIdx = argsSampling.findIndex((arg) =>
@@ -4215,7 +4231,11 @@ exit 0
     } as unknown as ExtensionContext,
   );
 
-  expect((resNoSampling.content[0] as TextContent).text).toBe("done");
+  const expectedNoSamplingWarning =
+    'Thinking level "high" is not supported; using "off" instead (provider: fake-provider, model: fake-model)';
+  expect((resNoSampling.content[0] as TextContent).text).toBe(
+    `[thinking] ${expectedNoSamplingWarning}\n\ndone`,
+  );
   const argsNoSampling = await readCapturedArgs(cwd);
   const promptNoSampling = await Bun.file(path.join(cwd, "prompt.txt")).text();
   const envNoSampling = await Bun.file(
@@ -4247,8 +4267,11 @@ exit 0
   expect(appendsNoSampling.at(-1)).toBe(SUBAGENT_RESULT_CONTRACT);
   expect(promptNoSampling).toBe("No-sampling agent prompt");
   expect((resNoSampling.details as SubagentDetails).results[0]?.model).toBe(
-    "fake-provider ･ fake-model ･ high",
+    "fake-provider ･ fake-model ･ off",
   );
+  expect(
+    (resNoSampling.details as SubagentDetails).results[0]?.thinkingWarning,
+  ).toBe(expectedNoSamplingWarning);
 
   expect(argsNoSampling.join(" ")).not.toContain("sampling-extension");
   expect(envNoSampling.trim()).toBe("");
@@ -5228,8 +5251,12 @@ Use helper skill.`,
       model: { provider: "parent-provider", id: "parent-model" },
     } as unknown as ExtensionContext,
   );
+  const expectedRegressionWarning =
+    'Thinking level "high" is not supported; using "off" instead (provider: agent-provider, model: agent-model)';
   await waitForSentMessageCount(sentMessages, 2);
-  expect((result.content[0] as TextContent).text).toBe("done");
+  expect((result.content[0] as TextContent).text).toBe(
+    `[thinking] ${expectedRegressionWarning}\n\ndone`,
+  );
   const args = await readCapturedArgs(cwd);
   expect(args).toContain("--no-extensions");
   expect(flagValues(args, "--provider")).toEqual(["agent-provider"]);
@@ -5246,6 +5273,122 @@ Use helper skill.`,
   expect(appends).toHaveLength(2);
   expect(appends[0]).not.toBe(SUBAGENT_RESULT_CONTRACT);
   expect(appends.at(-1)).toBe(SUBAGENT_RESULT_CONTRACT);
+});
+
+test("subagent tool forwards live registry to child resolution", async () => {
+  const sentMessages: SendMessageArg[] = [];
+  const { cwd, agentDir } = await setupTest({
+    sendMessage: (msg) => sentMessages.push(msg),
+    piScript: `#!/bin/sh
+${CAPTURE_PI_ARGS_SH}
+printf '%s\\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"done"}],"usage":{"input":1,"output":1,"totalTokens":2,"cost":{"total":0}}}}'
+printf '%s\\n' '{"type":"agent_end"}'
+exit 0
+`,
+  });
+  const tool = getSubagentTool({
+    sendMessage: (msg) => sentMessages.push(msg),
+    thinkingLevel: "high",
+  });
+  await writeFile(
+    path.join(agentDir, "agents", "live-agent.md"),
+    `---
+name: live-agent
+description: Live registry agent
+---
+Live prompt.`,
+  );
+  resetAgentCache();
+  process.env.PI_SUBAGENT_DEPTH = "1";
+  const live = modelFixture({
+    provider: "live-provider",
+    id: "live-model",
+    reasoning: true,
+  });
+  const result = await tool.execute(
+    "test-tool-call",
+    { agent: "live-agent", task: "live task" },
+    undefined,
+    undefined,
+    {
+      cwd,
+      hasUI: false,
+      model: { provider: "live-provider", id: "live-model" },
+      modelRegistry: registryFixture([live]),
+    } as unknown as ExtensionContext,
+  );
+  await waitForSentMessageCount(sentMessages, 2);
+  expect((result.content[0] as TextContent).text).toBe("done");
+  const args = await readCapturedArgs(cwd);
+  expect(args.join(" ")).toContain(
+    "--provider live-provider --model live-model",
+  );
+  expect(args.join(" ")).toContain("--thinking high");
+  expect((result.details as SubagentDetails).results[0]?.model).toBe(
+    "live-provider ･ live-model ･ high",
+  );
+  expect(
+    (result.details as SubagentDetails).results[0]?.thinkingWarning,
+  ).toBeUndefined();
+  expect(listRunJobs()).toHaveLength(0);
+});
+
+test("subagent tool emits registry diagnostic without blocking launch", async () => {
+  const sentMessages: SendMessageArg[] = [];
+  const { cwd, agentDir } = await setupTest({
+    sendMessage: (msg) => sentMessages.push(msg),
+    piScript: `#!/bin/sh
+${CAPTURE_PI_ARGS_SH}
+printf '%s\\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"done"}],"usage":{"input":1,"output":1,"totalTokens":2,"cost":{"total":0}}}}'
+printf '%s\\n' '{"type":"agent_end"}'
+exit 0
+`,
+  });
+  const tool = getSubagentTool({
+    sendMessage: (msg) => sentMessages.push(msg),
+    thinkingLevel: "high",
+  });
+  await writeFile(
+    path.join(agentDir, "agents", "no-registry-agent.md"),
+    `---
+name: no-registry-agent
+description: No registry agent
+---
+No registry prompt.`,
+  );
+  resetAgentCache();
+  process.env.PI_SUBAGENT_DEPTH = "1";
+  const warnSpy = spyOn(console, "warn").mockImplementation(() => {});
+  try {
+    const result = await tool.execute(
+      "test-tool-call",
+      { agent: "no-registry-agent", task: "no-registry task" },
+      undefined,
+      undefined,
+      {
+        cwd,
+        hasUI: false,
+        model: { provider: "missing-provider", id: "missing-model" },
+      } as unknown as ExtensionContext,
+    );
+    await waitForSentMessageCount(sentMessages, 2);
+    const expectedWarning =
+      'Thinking level "high" is not supported; using "off" instead (provider: missing-provider, model: missing-model)';
+    expect((result.content[0] as TextContent).text).toBe(
+      `[thinking] ${expectedWarning}\n\ndone`,
+    );
+    const args = await readCapturedArgs(cwd);
+    expect(args.join(" ")).toContain("--thinking high");
+    expect(
+      (result.details as SubagentDetails).results[0]?.thinkingWarning,
+    ).toBe(expectedWarning);
+    expect(warnSpy).toHaveBeenCalledWith(
+      "Live model registry unavailable; falling back to static catalog.",
+    );
+    expect(listRunJobs()).toHaveLength(0);
+  } finally {
+    warnSpy.mockRestore();
+  }
 });
 
 test("tool path omitted extensions at depth 2 preserves nested subagent support", async () => {
@@ -5687,4 +5830,210 @@ Replacement flags prompt.
     const promptText = await Bun.file(path.join(cwd, "prompt.txt")).text();
     expect(promptText).toBe("Replacement flags prompt.");
   });
+});
+
+// ── Registry forwarding through orchestrator ──
+
+test("orchestrator forwards ctx.modelRegistry to runSingleAgent affecting thinking resolution", async () => {
+  const sentMessages: SendMessageArg[] = [];
+  const { agentDir, binDir, cwd } = await setupFakePi();
+  await writeFile(
+    path.join(binDir, "pi"),
+    `#!/bin/sh
+${CAPTURE_PI_ARGS_SH}
+printf '%s\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"done"}],"usage":{"input":1,"output":1,"totalTokens":2,"cost":{"total":0}}}}'
+printf '%s\n' '{"type":"agent_end"}'
+exit 0
+`,
+  );
+  await chmod(path.join(binDir, "pi"), 0o755);
+  await writeFile(
+    path.join(agentDir, "agents", "registry-agent.md"),
+    `---
+name: registry-agent
+description: Registry forwarding agent
+provider: openai
+model: gpt-4
+thinking: high
+---
+Registry prompt.`,
+  );
+  const live = modelFixture({
+    provider: "openai",
+    id: "gpt-4",
+    reasoning: true,
+    thinkingLevelMap: {
+      off: null,
+      low: "low",
+      medium: "medium",
+      high: "high",
+    },
+  });
+  const registry = registryFixture([live]);
+  const tool = getSubagentTool({
+    sendMessage: (msg) => sentMessages.push(msg),
+  });
+  process.env.PI_SUBAGENT_DEPTH = "1";
+  const result = await tool.execute(
+    "test-tool-call",
+    { agent: "registry-agent", task: "registry task" },
+    undefined,
+    undefined,
+    {
+      cwd,
+      hasUI: false,
+      model: { provider: "openai", id: "gpt-4" },
+      modelRegistry: registry,
+    } as unknown as ExtensionContext,
+  );
+  expect((result.content[0] as TextContent).text).toBe("done");
+  const details = result.details as SubagentDetails;
+  expect(details.results[0]?.thinkingWarning).toBeUndefined();
+  expect(details.results[0]?.model).toBe("openai ･ gpt-4 ･ high");
+  expect(listRunJobs()).toHaveLength(0);
+});
+
+test("orchestrator registry miss falls back to static catalog thinking resolution", async () => {
+  const sentMessages: SendMessageArg[] = [];
+  const { agentDir, binDir, cwd } = await setupFakePi();
+  await writeFile(
+    path.join(binDir, "pi"),
+    `#!/bin/sh
+${CAPTURE_PI_ARGS_SH}
+printf '%s\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"done"}],"usage":{"input":1,"output":1,"totalTokens":2,"cost":{"total":0}}}}'
+printf '%s\n' '{"type":"agent_end"}'
+exit 0
+`,
+  );
+  await chmod(path.join(binDir, "pi"), 0o755);
+  await writeFile(
+    path.join(agentDir, "agents", "registry-miss-agent.md"),
+    `---
+name: registry-miss-agent
+description: Registry miss agent
+provider: openai
+model: gpt-4
+thinking: high
+---
+Registry miss prompt.`,
+  );
+  const registry = registryFixture([]);
+  const tool = getSubagentTool({
+    sendMessage: (msg) => sentMessages.push(msg),
+  });
+  process.env.PI_SUBAGENT_DEPTH = "1";
+  const result = await tool.execute(
+    "test-tool-call",
+    { agent: "registry-miss-agent", task: "registry miss" },
+    undefined,
+    undefined,
+    {
+      cwd,
+      hasUI: false,
+      model: { provider: "openai", id: "gpt-4" },
+      modelRegistry: registry,
+    } as unknown as ExtensionContext,
+  );
+  expect((result.content[0] as TextContent).text).toContain("[thinking]");
+  const details = result.details as SubagentDetails;
+  expect(details.results[0]?.thinkingWarning).toContain('using "off" instead');
+  expect(details.results[0]?.model).toBe("openai ･ gpt-4 ･ off");
+  expect(listRunJobs()).toHaveLength(0);
+});
+
+// ── hostOnUpdate deduplication ──
+
+test("hostOnUpdate deduplicates identical payloads via fingerprint", async () => {
+  const sentMessages: SendMessageArg[] = [];
+  const hostUpdates: unknown[] = [];
+  const { binDir, cwd } = await setupFakePi();
+  await writeFile(
+    path.join(binDir, "pi"),
+    `#!/bin/sh
+printf '%s\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"first"}],"usage":{"input":1,"output":1,"totalTokens":2,"cost":{"total":0}}}}'
+printf '%s\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"second"}],"usage":{"input":1,"output":1,"totalTokens":2,"cost":{"total":0}}}}'
+printf '%s\n' '{"type":"agent_end"}'
+exit 0
+`,
+  );
+  await chmod(path.join(binDir, "pi"), 0o755);
+  const tool = getSubagentTool({
+    sendMessage: (msg) => sentMessages.push(msg),
+  });
+  process.env.PI_SUBAGENT_DEPTH = "1";
+  const onUpdate: AgentToolUpdateCallback<SubagentDetails> = (payload) => {
+    hostUpdates.push(payload);
+  };
+  await tool.execute(
+    "test-tool-call",
+    { agent: "hang", task: "dedup task" },
+    undefined,
+    onUpdate,
+    makeBareCtx(cwd),
+  );
+  await waitForSentMessageCount(sentMessages, 2);
+  expect(hostUpdates.length).toBeGreaterThanOrEqual(1);
+  const uniqueFingerprints = new Set(
+    hostUpdates.map((u) => {
+      const p = u as {
+        content: { type: string; text?: string }[];
+        details: SubagentDetails;
+      };
+      const contentText = p.content[0]?.text ?? "";
+      const latestResult = p.details.results[0];
+      const activityText = latestResult?.progress?.activityText ?? "";
+      const toolCallIds = [
+        ...new Set(
+          latestResult?.progress?.toolCalls?.map((tc: { id: string }) => tc.id),
+        ),
+      ]
+        .sort()
+        .join(",");
+      const exitCode = latestResult?.exitCode ?? 0;
+      const stopReason = latestResult?.stopReason ?? "";
+      return `${contentText}|${activityText}|${toolCallIds}|${exitCode}|${stopReason}`;
+    }),
+  );
+  expect(uniqueFingerprints.size).toBe(hostUpdates.length);
+  expect(listRunJobs()).toHaveLength(0);
+});
+
+test("hostOnUpdate deduplicates consecutive identical tool activity updates", async () => {
+  const sentMessages: SendMessageArg[] = [];
+  const hostUpdates: unknown[] = [];
+  const { binDir, cwd } = await setupFakePi();
+  const updateLine = makeSubagentToolUpdateLine("bash: ls src");
+  await writeFile(
+    path.join(binDir, "pi"),
+    `#!/bin/sh
+printf '%s\n' ${shellQuote(updateLine)}
+printf '%s\n' ${shellQuote(updateLine)}
+printf '%s\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"done"}],"usage":{"input":1,"output":1,"totalTokens":2,"cost":{"total":0}}}}'
+printf '%s\n' '{"type":"agent_end"}'
+exit 0
+`,
+  );
+  await chmod(path.join(binDir, "pi"), 0o755);
+  const tool = getSubagentTool({
+    sendMessage: (msg) => sentMessages.push(msg),
+  });
+  process.env.PI_SUBAGENT_DEPTH = "1";
+  const onUpdate: AgentToolUpdateCallback<SubagentDetails> = (payload) => {
+    hostUpdates.push(payload);
+  };
+  await tool.execute(
+    "test-tool-call",
+    { agent: "hang", task: "dedup tool" },
+    undefined,
+    onUpdate,
+    makeBareCtx(cwd),
+  );
+  await waitForSentMessageCount(sentMessages, 2);
+  const activityTexts = hostUpdates.map((u) => {
+    const p = u as { details: SubagentDetails };
+    return p.details.results[0]?.progress?.activityText ?? "";
+  });
+  const uniqueActivityTexts = [...new Set(activityTexts)];
+  expect(uniqueActivityTexts.length).toBeLessThanOrEqual(hostUpdates.length);
+  expect(listRunJobs()).toHaveLength(0);
 });

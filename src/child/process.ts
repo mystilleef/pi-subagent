@@ -35,6 +35,7 @@ import { getLatestOutcomeFromMessages } from "./complete-outcome.js";
 import {
   buildModelDisplay,
   type ChildModelSettings,
+  type ModelRegistry,
   resolveEffectiveChildModelSettings,
   resolveThinkingLevel,
 } from "./model-resolution.js";
@@ -82,6 +83,7 @@ type SleepInhibitorAcquirer = (pid: number) => Promise<SleepInhibitorHandle>;
 type RunSingleAgentOptions = {
   acquireSleepInhibitor?: SleepInhibitorAcquirer;
   getOrchestratorPid?: () => unknown;
+  registry?: ModelRegistry | undefined;
 };
 
 export type RunSingleAgentResult =
@@ -583,14 +585,15 @@ export async function runSingleAgent(
   }
   const requestedThinking = agent.thinking ?? parentThinking;
   const effectiveModel = resolveEffectiveChildModelSettings(agent, parentModel);
-  const { level: thinking, warning: thinkingWarning } =
-    effectiveModel.provider && effectiveModel.id
-      ? resolveThinkingLevel(
-          requestedThinking,
-          effectiveModel.provider,
-          effectiveModel.id,
-        )
-      : { level: requestedThinking };
+  const resolvedThinking = resolveThinkingLevel(
+    requestedThinking,
+    effectiveModel.provider,
+    effectiveModel.id,
+    { registry: options.registry },
+  );
+  const thinking = resolvedThinking.level;
+  const thinkingWarning = resolvedThinking.warning;
+  if (resolvedThinking.diagnostic) console.warn(resolvedThinking.diagnostic);
   const modelDisplay = buildModelDisplay(effectiveModel, thinking);
   const resolvedSkillsPromise: Promise<{ args: string[] } | { error: string }> =
     agent.skills
@@ -659,7 +662,11 @@ export async function runSingleAgent(
       agent,
       task,
       effectiveModel,
-      thinking,
+      // Intentionally the raw request, not `thinking`: resolveThinkingLevel's
+      // clamp is only an estimate when the model isn't a confirmed live-registry
+      // hit, and `pi` itself makes the authoritative call. `thinking`/`thinkingWarning`
+      // still drive the user-facing display.
+      thinking: requestedThinking,
       resolvedSkills,
       tmpPrompt,
       resolvedExtensionPaths:

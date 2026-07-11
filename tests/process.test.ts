@@ -8,6 +8,7 @@ import {
   type ExtensionAPI,
 } from "@earendil-works/pi-coding-agent";
 import { type AgentConfig, discoverAgentsAsync } from "../src/agent/agents.js";
+import type { ModelRegistry } from "../src/child/model-resolution.js";
 import {
   buildPiArgs,
   makeEmitUpdate,
@@ -48,6 +49,8 @@ import {
   makeModelAgent,
   makeSubagentDetails,
   makeSubagentToolUpdateLine,
+  modelFixture,
+  registryFixture,
   setupFakePi,
   setupHooks,
   setupTest,
@@ -67,6 +70,7 @@ async function runCapturedModelAgent(
   agent: AgentConfig,
   parentModel: CapturableParentModel | undefined,
   parentThinking: AgentConfig["thinking"] = "off",
+  options?: { registry?: ModelRegistry },
 ): Promise<{ args: string[]; result: SingleResult }> {
   const { cwd } = await setupTest({
     piScript: CAPTURE_ARGS_PI_SCRIPT,
@@ -81,6 +85,8 @@ async function runCapturedModelAgent(
     makeSubagentDetails,
     parentModel,
     parentThinking ?? "off",
+    false,
+    options,
   );
   expect(result.exitCode).toBe(0);
   return {
@@ -282,7 +288,8 @@ test("runSingleAgent applies effective model settings to thinking resolution", a
     "low",
   );
   expect(result.model).toBe("openai ･ gpt-4 ･ off");
-  expect(result.thinkingWarning).toContain("openai/gpt-4");
+  expect(result.thinkingWarning).toContain("provider: openai");
+  expect(result.thinkingWarning).toContain("model: gpt-4");
   expect(result.thinkingWarning).toContain('using "off" instead');
 });
 
@@ -294,8 +301,11 @@ test("runSingleAgent treats provider-only agent override as partial model", asyn
   );
   expect(flagValues(args, "--provider")).toEqual([]);
   expect(flagValues(args, "--model")).toEqual([]);
-  expect(result.model).toBe("agent-provider ･ high");
-  expect(result.thinkingWarning).toBeUndefined();
+  expect(flagValues(args, "--thinking")).toEqual(["high"]);
+  expect(result.model).toBe("agent-provider ･ off");
+  expect(result.thinkingWarning).toContain("provider: agent-provider");
+  expect(result.thinkingWarning).toContain("model: unknown");
+  expect(result.thinkingWarning).toContain('using "off" instead');
 });
 
 test("runSingleAgent preserves fallback thinking for partial or absent effective models", async () => {
@@ -309,7 +319,7 @@ test("runSingleAgent preserves fallback thinking for partial or absent effective
       name: "model only",
       agent: makeModelAgent({ thinking: undefined }),
       parentModel: { id: "parent-model" },
-      expectedModel: "parent-model ･ high",
+      expectedModel: "parent-model ･ off",
     },
     {
       name: "provider only",
@@ -318,13 +328,13 @@ test("runSingleAgent preserves fallback thinking for partial or absent effective
         thinking: undefined,
       }),
       parentModel: undefined,
-      expectedModel: "agent-provider ･ high",
+      expectedModel: "agent-provider ･ off",
     },
     {
       name: "absent model",
       agent: makeModelAgent({ thinking: undefined }),
       parentModel: undefined,
-      expectedModel: "high",
+      expectedModel: "off",
     },
   ];
   for (const testCase of cases) {
@@ -333,8 +343,118 @@ test("runSingleAgent preserves fallback thinking for partial or absent effective
       testCase.parentModel,
       "high",
     );
-    expect(result.thinkingWarning, testCase.name).toBeUndefined();
+    expect(result.thinkingWarning, testCase.name).toBeDefined();
+    expect(result.thinkingWarning, testCase.name).toContain(
+      'using "off" instead',
+    );
     expect(result.model, testCase.name).toBe(testCase.expectedModel);
+  }
+});
+
+test("runSingleAgent prefers live registry match over static catalog", async () => {
+  const live = modelFixture({
+    provider: "openai",
+    id: "gpt-4",
+    reasoning: true,
+  });
+  const { args, result } = await runCapturedModelAgent(
+    makeModelAgent({
+      provider: "openai",
+      model: "gpt-4",
+      thinking: "high",
+    }),
+    undefined,
+    "off",
+    { registry: registryFixture([live]) },
+  );
+  expect(flagValues(args, "--provider")).toEqual(["openai"]);
+  expect(flagValues(args, "--model")).toEqual(["gpt-4"]);
+  expect(flagValues(args, "--thinking")).toEqual(["high"]);
+  expect(result.model).toBe("openai ･ gpt-4 ･ high");
+  expect(result.thinkingWarning).toBeUndefined();
+});
+
+test("runSingleAgent falls back to static catalog when live registry misses", async () => {
+  const { args, result } = await runCapturedModelAgent(
+    makeModelAgent({
+      provider: "openai",
+      model: "gpt-4",
+      thinking: "high",
+    }),
+    undefined,
+    "off",
+    { registry: registryFixture([]) },
+  );
+  expect(flagValues(args, "--thinking")).toEqual(["high"]);
+  expect(result.model).toBe("openai ･ gpt-4 ･ off");
+  expect(result.thinkingWarning).toContain('using "off" instead');
+});
+
+test("runSingleAgent keeps requested thinking in child args when estimate clamps", async () => {
+  const { args, result } = await runCapturedModelAgent(
+    makeModelAgent({
+      provider: "openai",
+      model: "gpt-4",
+      thinking: "high",
+    }),
+    undefined,
+    "off",
+  );
+  expect(flagValues(args, "--thinking")).toEqual(["high"]);
+  expect(result.model).toBe("openai ･ gpt-4 ･ off");
+  expect(result.thinkingWarning).toContain('using "off" instead');
+});
+
+test("runSingleAgent inherits parent thinking request when agent omits it", async () => {
+  const live = modelFixture({
+    provider: "openai",
+    id: "gpt-4",
+    reasoning: true,
+    thinkingLevelMap: {
+      off: null,
+      low: "low",
+      medium: "medium",
+      high: "high",
+    },
+  });
+  const { args, result } = await runCapturedModelAgent(
+    makeModelAgent({ provider: "openai", model: "gpt-4", thinking: undefined }),
+    undefined,
+    "high",
+    { registry: registryFixture([live]) },
+  );
+  expect(flagValues(args, "--thinking")).toEqual(["high"]);
+  expect(result.model).toBe("openai ･ gpt-4 ･ high");
+  expect(result.thinkingWarning).toBeUndefined();
+});
+
+test("runSingleAgent retains parent thinking request through catalog clamp", async () => {
+  const { args, result } = await runCapturedModelAgent(
+    makeModelAgent({ provider: "openai", model: "gpt-4", thinking: undefined }),
+    undefined,
+    "high",
+  );
+  expect(flagValues(args, "--thinking")).toEqual(["high"]);
+  expect(result.model).toBe("openai ･ gpt-4 ･ off");
+  expect(result.thinkingWarning).toContain('using "off" instead');
+});
+
+test("runSingleAgent emits unavailable registry diagnostic and continues", async () => {
+  const warnSpy = spyOn(console, "warn").mockImplementation(() => {});
+  try {
+    const { args, result } = await runCapturedModelAgent(
+      makeModelAgent({ provider: "openai", model: "gpt-4", thinking: "high" }),
+      undefined,
+      "off",
+    );
+    expect(flagValues(args, "--thinking")).toEqual(["high"]);
+    expect(result.exitCode).toBe(0);
+    expect(result.model).toBe("openai ･ gpt-4 ･ off");
+    expect(warnSpy).toHaveBeenCalledWith(
+      "Live model registry unavailable; falling back to static catalog.",
+    );
+  } finally {
+    warnSpy.mockRestore();
   }
 });
 
@@ -3598,7 +3718,7 @@ test("buildPiArgs --no-context-files coexists with approval, model, provider, th
     model: "gpt-4",
     provider: "openai",
   };
-  const args = await captureRunSingleAgentArgs(agent, {
+  const { args, result } = await runCapturedModelAgent(agent, {
     provider: "anthropic",
     id: "claude-3-7-sonnet-20250219",
   });
@@ -3607,10 +3727,12 @@ test("buildPiArgs --no-context-files coexists with approval, model, provider, th
   expect(flagValues(args, "--provider")).toEqual(["openai"]);
   expect(flagValues(args, "--model")).toEqual(["gpt-4"]);
   expect(args).toContain("--thinking");
-  expect(flagValues(args, "--thinking")).toEqual(["off"]);
+  expect(flagValues(args, "--thinking")).toEqual(["high"]);
   expect(args).toContain("--tools");
   expect(args).toContain("--append-system-prompt");
   expect(args.some((a) => a.startsWith("Task: "))).toBe(true);
+  expect(result.model).toBe("openai ･ gpt-4 ･ off");
+  expect(result.thinkingWarning).toContain('using "off" instead');
 });
 
 test("buildPiArgs --no-context-files coexists with sampling extension args", async () => {

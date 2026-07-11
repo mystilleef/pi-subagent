@@ -90,7 +90,7 @@ export function truncateValidUtf8(buffer: Buffer, max: number): string {
 /**
  * Resolves the context window size in tokens for a given message.
  * Returns undefined if the message doesn't have valid provider/model info
- * or if the model lookup fails.
+ * or the model isn't in the built-in catalog.
  *
  * Rationale: Subagent usage reporting needs context window awareness to provide
  * meaningful "context full" indicators to the parent.
@@ -99,16 +99,11 @@ export function resolveContextWindowTokens(msg: Message): number | undefined {
   const m = msg as unknown as Record<string, unknown>;
   if (typeof m["provider"] !== "string" || typeof m["model"] !== "string")
     return;
-  try {
-    const contextWindow = getModel(
-      m["provider"] as never,
-      m["model"] as never,
-    )?.contextWindow;
-    return Number.isFinite(contextWindow) && contextWindow > 0
-      ? contextWindow
-      : undefined;
-  } catch {
-    /* model lookup failures return undefined to skip context window tracking */
-    return;
-  }
+  const contextWindow = getModel(
+    m["provider"] as never,
+    m["model"] as never,
+  )?.contextWindow;
+  return Number.isFinite(contextWindow) && contextWindow > 0
+    ? contextWindow
+    : undefined;
 }
