@@ -1581,12 +1581,13 @@ exit 0
       cwd,
       hasUI: false,
       model: { provider: "fake-provider", id: "fake-model" },
+      modelRegistry: registryFixture([]),
     } as unknown as ExtensionContext,
   );
   const args = await readCapturedArgs(cwd);
   const promptText = await Bun.file(path.join(cwd, "prompt.txt")).text();
   const expectedWarning =
-    'Thinking level "high" is not supported; using "off" instead (provider: fake-provider, model: fake-model)';
+    'Thinking level "high" support could not be confirmed; requesting as-is (provider: fake-provider, model: fake-model)';
   expect((result.content[0] as TextContent).text).toBe(
     `[thinking] ${expectedWarning}\n\ndone`,
   );
@@ -1605,7 +1606,7 @@ exit 0
   expect(appends.at(-1)).toBe(SUBAGENT_RESULT_CONTRACT);
   expect(promptText).toBe("Runtime prompt");
   expect((result.details as SubagentDetails).results[0]?.model).toBe(
-    "fake-provider ･ fake-model ･ off",
+    "fake-provider ･ fake-model ･ high",
   );
   expect((result.details as SubagentDetails).results[0]?.thinkingWarning).toBe(
     expectedWarning,
@@ -2008,6 +2009,7 @@ exit 0
       cwd,
       hasUI: false,
       model: { provider: "openai", id: "gpt-4o-mini" },
+      modelRegistry: registryFixture([]),
     } as unknown as ExtensionContext,
   );
   const resultText = (result.content[0] as TextContent).text;
@@ -4168,11 +4170,12 @@ exit 0
       cwd,
       hasUI: false,
       model: { provider: "fake-provider", id: "fake-model" },
+      modelRegistry: registryFixture([]),
     } as unknown as ExtensionContext,
   );
 
   const expectedSamplingWarning =
-    'Thinking level "high" is not supported; using "off" instead (provider: fake-provider, model: fake-model)';
+    'Thinking level "high" support could not be confirmed; requesting as-is (provider: fake-provider, model: fake-model)';
   expect((resSampling.content[0] as TextContent).text).toBe(
     `[thinking] ${expectedSamplingWarning}\n\ndone`,
   );
@@ -4198,7 +4201,7 @@ exit 0
   expect(appendsSampling.at(-1)).toBe(SUBAGENT_RESULT_CONTRACT);
   expect(promptSampling).toBe("Sampling agent prompt");
   expect((resSampling.details as SubagentDetails).results[0]?.model).toBe(
-    "fake-provider ･ fake-model ･ off",
+    "fake-provider ･ fake-model ･ high",
   );
   expect(
     (resSampling.details as SubagentDetails).results[0]?.thinkingWarning,
@@ -4228,11 +4231,12 @@ exit 0
       cwd,
       hasUI: false,
       model: { provider: "fake-provider", id: "fake-model" },
+      modelRegistry: registryFixture([]),
     } as unknown as ExtensionContext,
   );
 
   const expectedNoSamplingWarning =
-    'Thinking level "high" is not supported; using "off" instead (provider: fake-provider, model: fake-model)';
+    'Thinking level "high" support could not be confirmed; requesting as-is (provider: fake-provider, model: fake-model)';
   expect((resNoSampling.content[0] as TextContent).text).toBe(
     `[thinking] ${expectedNoSamplingWarning}\n\ndone`,
   );
@@ -4267,7 +4271,7 @@ exit 0
   expect(appendsNoSampling.at(-1)).toBe(SUBAGENT_RESULT_CONTRACT);
   expect(promptNoSampling).toBe("No-sampling agent prompt");
   expect((resNoSampling.details as SubagentDetails).results[0]?.model).toBe(
-    "fake-provider ･ fake-model ･ off",
+    "fake-provider ･ fake-model ･ high",
   );
   expect(
     (resNoSampling.details as SubagentDetails).results[0]?.thinkingWarning,
@@ -5249,10 +5253,11 @@ Use helper skill.`,
       cwd,
       hasUI: false,
       model: { provider: "parent-provider", id: "parent-model" },
+      modelRegistry: registryFixture([]),
     } as unknown as ExtensionContext,
   );
   const expectedRegressionWarning =
-    'Thinking level "high" is not supported; using "off" instead (provider: agent-provider, model: agent-model)';
+    'Thinking level "high" support could not be confirmed; requesting as-is (provider: agent-provider, model: agent-model)';
   await waitForSentMessageCount(sentMessages, 2);
   expect((result.content[0] as TextContent).text).toBe(
     `[thinking] ${expectedRegressionWarning}\n\ndone`,
@@ -5373,7 +5378,7 @@ No registry prompt.`,
     );
     await waitForSentMessageCount(sentMessages, 2);
     const expectedWarning =
-      'Thinking level "high" is not supported; using "off" instead (provider: missing-provider, model: missing-model)';
+      'Thinking level "high" support could not be confirmed; requesting as-is (provider: missing-provider, model: missing-model)';
     expect((result.content[0] as TextContent).text).toBe(
       `[thinking] ${expectedWarning}\n\ndone`,
     );

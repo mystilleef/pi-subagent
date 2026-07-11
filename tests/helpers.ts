@@ -514,6 +514,20 @@ export function unsupportedWarning(
   return `Thinking level "${requested}" is not supported; using "${effective}" instead (provider: ${providerLabel}, model: ${modelLabel})`;
 }
 
+/**
+ * Builds the canonical unconfirmed-thinking-level warning string.
+ * Mirrors the production format from `model-resolution.ts`.
+ */
+export function unconfirmedWarning(
+  requested: ThinkingLevel,
+  provider?: string,
+  modelId?: string,
+): string {
+  const providerLabel = provider ?? "unknown";
+  const modelLabel = modelId ?? "unknown";
+  return `Thinking level "${requested}" support could not be confirmed; requesting as-is (provider: ${providerLabel}, model: ${modelLabel})`;
+}
+
 export function setupHooks() {
   beforeEach(() => {
     tempDirs = [];
@@ -586,10 +600,16 @@ function createCommandFakeTheme(): FakeTheme {
 /**
  * Builds a minimal ExtensionContext with `hasUI: false` for the given cwd.
  * Replaces the repeated `{ cwd, hasUI: false } as unknown as ExtensionContext`
- * cast scattered across test files.
+ * cast scattered across test files. Includes an empty model registry so
+ * agents with an explicit provider/model don't trip the real
+ * "Live model registry unavailable" console.warn diagnostic.
  */
 export function makeBareCtx(cwd: string): ExtensionContext {
-  return { cwd, hasUI: false } as unknown as ExtensionContext;
+  return {
+    cwd,
+    hasUI: false,
+    modelRegistry: registryFixture([]),
+  } as unknown as ExtensionContext;
 }
 
 export function makeCommandContext(

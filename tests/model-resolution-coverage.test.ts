@@ -10,6 +10,7 @@ import {
 import {
   modelFixture,
   registryFixture,
+  unconfirmedWarning,
   unsupportedWarning,
 } from "./helpers.js";
 
@@ -187,29 +188,29 @@ describe("resolveThinkingLevel", () => {
     expect(result.diagnostic).toBeUndefined();
   });
 
-  test("non-off unknown request estimates off with uniform warning", () => {
+  test("non-off unknown request preserves level with unconfirmed warning", () => {
     const result = resolveThinkingLevel("low", "nonexistent", "model-1");
-    expect(result.level).toBe("off");
+    expect(result.level).toBe("low");
     expect(result.warning).toBe(
-      unsupportedWarning("low", "off", "nonexistent", "model-1"),
+      unconfirmedWarning("low", "nonexistent", "model-1"),
     );
   });
 
-  test("missing provider or model ID is treated as no model", () => {
+  test("missing provider or model ID preserves requested level with unconfirmed warning", () => {
     const missingProvider = resolveThinkingLevel(
       "medium",
       undefined,
       "model-1",
     );
-    expect(missingProvider.level).toBe("off");
+    expect(missingProvider.level).toBe("medium");
     expect(missingProvider.warning).toBe(
-      unsupportedWarning("medium", "off", undefined, "model-1"),
+      unconfirmedWarning("medium", undefined, "model-1"),
     );
 
     const missingModelId = resolveThinkingLevel("medium", "openai", undefined);
-    expect(missingModelId.level).toBe("off");
+    expect(missingModelId.level).toBe("medium");
     expect(missingModelId.warning).toBe(
-      unsupportedWarning("medium", "off", "openai", undefined),
+      unconfirmedWarning("medium", "openai", undefined),
     );
   });
 
@@ -250,19 +251,68 @@ describe("resolveThinkingLevel", () => {
     );
   });
 
-  test("warning format is deterministic for every clamp or unknown fallback", () => {
+  test("warning format is deterministic for clamp, unconfirmed, and reasoning-disabled paths", () => {
     const clamped = resolveThinkingLevel("off", "openai", "gpt-5");
-    const unknown = resolveThinkingLevel("high", "nonexistent", "model-1");
+    const unconfirmed = resolveThinkingLevel("high", "nonexistent", "model-1");
     const reasoningDisabled = resolveThinkingLevel("high", "openai", "gpt-4");
     expect(clamped.warning).toBe(
       unsupportedWarning("off", "minimal", "openai", "gpt-5"),
     );
-    expect(unknown.warning).toBe(
-      unsupportedWarning("high", "off", "nonexistent", "model-1"),
+    expect(unconfirmed.warning).toBe(
+      unconfirmedWarning("high", "nonexistent", "model-1"),
     );
     expect(reasoningDisabled.warning).toBe(
       unsupportedWarning("high", "off", "openai", "gpt-4"),
     );
+  });
+
+  test.each([
+    ["off", undefined],
+    ["minimal", unconfirmedWarning("minimal", undefined, undefined)],
+    ["low", unconfirmedWarning("low", undefined, undefined)],
+    ["medium", unconfirmedWarning("medium", undefined, undefined)],
+    ["high", unconfirmedWarning("high", undefined, undefined)],
+    ["xhigh", unconfirmedWarning("xhigh", undefined, undefined)],
+    ["max", unconfirmedWarning("max", undefined, undefined)],
+  ] as [
+    ThinkingLevel,
+    string | undefined,
+  ][])("missing identifiers resolve level %s with warning %p", (level, expectedWarning) => {
+    const result = resolveThinkingLevel(level, undefined, undefined);
+    expect(result.level).toBe(level);
+    expect(result.warning).toBe(expectedWarning);
+  });
+
+  test.each([
+    ["off", undefined],
+    ["minimal", unconfirmedWarning("minimal", "unknown", "unknown")],
+    ["low", unconfirmedWarning("low", "unknown", "unknown")],
+    ["medium", unconfirmedWarning("medium", "unknown", "unknown")],
+    ["high", unconfirmedWarning("high", "unknown", "unknown")],
+    ["xhigh", unconfirmedWarning("xhigh", "unknown", "unknown")],
+    ["max", unconfirmedWarning("max", "unknown", "unknown")],
+  ] as [
+    ThinkingLevel,
+    string | undefined,
+  ][])("unknown model resolves level %s with warning %p", (level, expectedWarning) => {
+    const result = resolveThinkingLevel(level, "unknown", "unknown", {
+      registry: registryFixture([]),
+    });
+    expect(result.level).toBe(level);
+    expect(result.warning).toBe(expectedWarning);
+  });
+
+  test("unconfirmed non-off keeps registry diagnostic separate from warning", () => {
+    const result = resolveThinkingLevel("high", "nonexistent", "model-1");
+    expect(result.level).toBe("high");
+    expect(result.warning).toBe(
+      unconfirmedWarning("high", "nonexistent", "model-1"),
+    );
+    expect(result.diagnostic).toBe(
+      "Live model registry unavailable; falling back to static catalog.",
+    );
+    expect(result.warning).not.toContain("registry");
+    expect(result.warning).not.toContain("catalog");
   });
 
   test("fixtures type-check as Model without casts", () => {

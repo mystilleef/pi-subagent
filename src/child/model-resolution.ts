@@ -39,15 +39,30 @@ export interface ResolvedThinkingLevel {
 
 const FALLBACK_LEVEL: ThinkingLevel = "off";
 
+function formatProviderModelLabel(
+  provider: string | undefined,
+  modelId: string | undefined,
+): string {
+  const providerLabel = provider ?? "unknown";
+  const modelLabel = modelId ?? "unknown";
+  return `(provider: ${providerLabel}, model: ${modelLabel})`;
+}
+
 function formatUnsupportedWarning(
   requested: ThinkingLevel,
   effective: ThinkingLevel,
   provider: string | undefined,
   modelId: string | undefined,
 ): string {
-  const providerLabel = provider ?? "unknown";
-  const modelLabel = modelId ?? "unknown";
-  return `Thinking level "${requested}" is not supported; using "${effective}" instead (provider: ${providerLabel}, model: ${modelLabel})`;
+  return `Thinking level "${requested}" is not supported; using "${effective}" instead ${formatProviderModelLabel(provider, modelId)}`;
+}
+
+function formatUnconfirmedWarning(
+  requested: ThinkingLevel,
+  provider: string | undefined,
+  modelId: string | undefined,
+): string {
+  return `Thinking level "${requested}" support could not be confirmed; requesting as-is ${formatProviderModelLabel(provider, modelId)}`;
 }
 
 function resolveModel(
@@ -100,14 +115,13 @@ function resolveForModel(
 
 /**
  * Resolves the effective thinking level for a model, preferring the live
- * registry over the static catalog and falling back to the documented safe
- * estimate when no model is found.
- *
- * Missing provider or model identifiers, missing/unavailable registries, and
- * live or static misses all resolve as "no model": requested `off` stays
- * warning-free; any other requested level estimates `off` with the standard
- * unsupported-level warning. Registry diagnostics are returned separately and
- * never included in the user-facing warning.
+ * registry over the static catalog. Confirmed matches (live or static) clamp
+ * unsupported levels with the standard unsupported-level warning. Unconfirmed
+ * misses—missing provider or model identifiers, missing/unavailable registries,
+ * and live or static catalog misses—preserve the requested level for display
+ * while warning that support could not be confirmed. Requested `off` always
+ * stays warning-free in unconfirmed paths. Registry diagnostics are returned
+ * separately and never included in the user-facing warning.
  */
 export function resolveThinkingLevel(
   requested: ThinkingLevel,
@@ -118,13 +132,8 @@ export function resolveThinkingLevel(
   if (!provider || !modelId) {
     if (requested === FALLBACK_LEVEL) return { level: FALLBACK_LEVEL };
     return {
-      level: FALLBACK_LEVEL,
-      warning: formatUnsupportedWarning(
-        requested,
-        FALLBACK_LEVEL,
-        provider,
-        modelId,
-      ),
+      level: requested,
+      warning: formatUnconfirmedWarning(requested, provider, modelId),
     };
   }
   const { model, diagnostic } = resolveModel(
@@ -139,13 +148,8 @@ export function resolveThinkingLevel(
         : { level: FALLBACK_LEVEL };
     }
     return {
-      level: FALLBACK_LEVEL,
-      warning: formatUnsupportedWarning(
-        requested,
-        FALLBACK_LEVEL,
-        provider,
-        modelId,
-      ),
+      level: requested,
+      warning: formatUnconfirmedWarning(requested, provider, modelId),
       diagnostic,
     };
   }

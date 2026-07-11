@@ -1,4 +1,4 @@
-import { afterEach, expect, test } from "bun:test";
+import { afterEach, describe, expect, test } from "bun:test";
 import type { Message } from "@earendil-works/pi-ai";
 import type { ThemeColor } from "@earendil-works/pi-coding-agent";
 import { makeEmitUpdate } from "../src/child/process.js";
@@ -153,6 +153,74 @@ test("empty or undefined modelDisplay leaves footer data absent", () => {
   expect(getProgressState("req-1")?.modelDisplay).toBe("gemini-1.5-pro");
   patchProgressState("req-1", { modelDisplay: "" });
   expect(getProgressState("req-1")?.modelDisplay).toBeUndefined();
+});
+
+describe("unconfirmed thinking progress propagation", () => {
+  function makeDetailsWithModel(model: string): SubagentDetails {
+    return {
+      mode: "single",
+      agentScope: "both",
+      projectAgentsDir: null,
+      results: [
+        {
+          agent: "test-agent",
+          agentSource: "user",
+          task: "test task",
+          exitCode: 0,
+          finalOutput: "",
+          stderr: "",
+          model,
+          usage: {
+            input: 0,
+            output: 0,
+            cacheRead: 0,
+            cacheWrite: 0,
+            cost: 0,
+            contextTokens: 0,
+            turns: 0,
+          },
+        },
+      ],
+    };
+  }
+
+  test("patchProgressFromDetails propagates requested level to modelDisplay", () => {
+    createProgressState("req-1", "agent-a", "task a");
+    const seen = new Set<string>();
+    patchProgressFromDetails(
+      "req-1",
+      makeDetailsWithModel("unknown ･ unknown ･ high"),
+      seen,
+    );
+    expect(getProgressState("req-1")?.modelDisplay).toBe(
+      "unknown ･ unknown ･ high",
+    );
+  });
+
+  test("renderSubagentProgress shows requested level in progress box", () => {
+    createProgressState("req-1", "agent-a", "task a");
+    patchProgressState("req-1", { modelDisplay: "unknown ･ unknown ･ high" });
+    const rendered = renderSubagentProgress(
+      {
+        customType: "subagent-progress",
+        content: "",
+        display: true,
+        details: { requestId: "req-1" },
+      },
+      { expanded: false },
+      makeTheme(),
+    );
+    expect(renderText(rendered)).toContain("unknown ･ unknown ･ high");
+  });
+
+  test("finalized progress state retains requested-level modelDisplay", () => {
+    createProgressState("req-1", "agent-a", "task a");
+    patchProgressState("req-1", { modelDisplay: "unknown ･ unknown ･ high" });
+    finalizeProgressState("req-1", "all done");
+    expect(getProgressState("req-1")?.modelDisplay).toBe(
+      "unknown ･ unknown ･ high",
+    );
+  });
 });
 
 test("getProgressState returns undefined for unknown request id", () => {

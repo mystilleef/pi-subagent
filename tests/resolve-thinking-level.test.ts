@@ -4,6 +4,7 @@ import { resolveThinkingLevel } from "../src/child/model-resolution.js";
 import {
   modelFixture,
   registryFixture,
+  unconfirmedWarning,
   unsupportedWarning,
 } from "./helpers.js";
 
@@ -64,27 +65,27 @@ describe("resolveThinkingLevel", () => {
     expect(result.diagnostic).toBeUndefined();
   });
 
-  test("estimates off with warning for unknown model when requested is not off", () => {
+  test("preserves requested level with unconfirmed warning for unknown model when requested is not off", () => {
     const result = resolveThinkingLevel("low", "nonexistent", "model-1");
-    expect(result.level).toBe("off");
+    expect(result.level).toBe("low");
     expect(result.warning).toBe(
-      unsupportedWarning("low", "off", "nonexistent", "model-1"),
+      unconfirmedWarning("low", "nonexistent", "model-1"),
     );
   });
 
-  test("treats missing provider as no model", () => {
+  test("treats missing provider as unconfirmed and preserves requested level", () => {
     const result = resolveThinkingLevel("medium", undefined, "model-1");
-    expect(result.level).toBe("off");
+    expect(result.level).toBe("medium");
     expect(result.warning).toBe(
-      unsupportedWarning("medium", "off", undefined, "model-1"),
+      unconfirmedWarning("medium", undefined, "model-1"),
     );
   });
 
-  test("treats missing model ID as no model", () => {
+  test("treats missing model ID as unconfirmed and preserves requested level", () => {
     const result = resolveThinkingLevel("medium", "openai", undefined);
-    expect(result.level).toBe("off");
+    expect(result.level).toBe("medium");
     expect(result.warning).toBe(
-      unsupportedWarning("medium", "off", "openai", undefined),
+      unconfirmedWarning("medium", "openai", undefined),
     );
   });
 
@@ -167,9 +168,9 @@ describe("resolveThinkingLevel", () => {
     expect(result.warning).not.toContain("catalog");
   });
 
-  test("uses unknown placeholders in warning when identifiers are missing", () => {
+  test("uses unknown placeholders in unconfirmed warning when identifiers are missing", () => {
     const result = resolveThinkingLevel("high", undefined, undefined);
-    expect(result.warning).toBe(unsupportedWarning("high", "off"));
+    expect(result.warning).toBe(unconfirmedWarning("high"));
     expect(result.warning).toContain("provider: unknown");
     expect(result.warning).toContain("model: unknown");
   });
@@ -185,9 +186,15 @@ describe("resolveThinkingLevel", () => {
       "max",
     ];
     for (const level of levels) {
-      const result = resolveThinkingLevel(level, "openai", "gpt-4");
-      expect(result.level).toBeDefined();
-      expect(typeof result.level).toBe("string");
+      const result = resolveThinkingLevel(level, "nonexistent", "model-1");
+      expect(result.level).toBe(level);
+      if (level === "off") {
+        expect(result.warning).toBeUndefined();
+      } else {
+        expect(result.warning).toBe(
+          unconfirmedWarning(level, "nonexistent", "model-1"),
+        );
+      }
     }
   });
 });

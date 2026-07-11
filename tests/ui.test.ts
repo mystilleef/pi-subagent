@@ -1,4 +1,4 @@
-import { expect, test } from "bun:test";
+import { describe, expect, test } from "bun:test";
 import type { Message } from "@earendil-works/pi-ai";
 import type {
   AgentToolResult,
@@ -1748,6 +1748,65 @@ test("formatResultFooter excludes duration from output", () => {
   );
   expect(footer).toBe("test-model · 5 turns · ctx:50k · $0.0500");
   expect(footer).not.toMatch(/\d+(\.\d+)?(ms|s|m \d+s)/);
+});
+
+describe("unconfirmed thinking UI footer propagation", () => {
+  function renderResultModel(result: { model?: string; finalOutput?: string }) {
+    const fakeTheme = createDefaultFakeTheme();
+    const rendered = renderSubagentResult(
+      {
+        content: [{ type: "text" as const, text: "ignored" }],
+        details: {
+          mode: "single" as const,
+          agentScope: "both" as const,
+          projectAgentsDir: null,
+          results: [
+            {
+              agent: "test-agent",
+              agentSource: "user" as const,
+              task: "test task",
+              exitCode: 0,
+              finalOutput: result.finalOutput ?? "done",
+              stderr: "",
+              model: result.model,
+              usage: {
+                input: 0,
+                output: 0,
+                cacheRead: 0,
+                cacheWrite: 0,
+                cost: 0,
+                contextTokens: 0,
+                turns: 1,
+              },
+              messages: [],
+            },
+          ],
+        },
+      },
+      fakeTheme,
+    ) as unknown as { render: (width: number) => string[] };
+    return rendered.render(120).join("\n");
+  }
+
+  test("renderSubagentResult footer includes requested unconfirmed level", () => {
+    const text = renderResultModel({
+      model: "unknown ･ unknown ･ high",
+    });
+    expect(text).toContain("[dim]unknown ･ unknown ･ high · 1 turn[/dim]");
+  });
+
+  test("renderSubagentResult footer omits model when absent", () => {
+    const text = renderResultModel({});
+    expect(text).toContain("[dim]1 turn[/dim]");
+    expect(text).not.toContain("unknown");
+  });
+
+  test("renderSubagentResult footer shows confirmed requested level", () => {
+    const text = renderResultModel({
+      model: "custom ･ reasoner ･ medium",
+    });
+    expect(text).toContain("[dim]custom ･ reasoner ･ medium · 1 turn[/dim]");
+  });
 });
 
 test("renderSubagentResult includes metadata in header with tools, context, and elapsed time", () => {

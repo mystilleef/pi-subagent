@@ -1,4 +1,4 @@
-import { expect, test } from "bun:test";
+import { describe, expect, test } from "bun:test";
 import { extractSemanticToolTarget } from "../src/output/normalize.js";
 import {
   FEEDBACK_UI_SUMMARY_MAX_CHARS,
@@ -18,7 +18,7 @@ import {
 } from "../src/progress/result-details.js";
 import type { SingleResult } from "../src/shared/types.js";
 import { CANONICAL_SUMMARY_FIXTURES } from "./fixtures.js";
-import { makeSingleResult } from "./helpers.js";
+import { makeSingleResult, unconfirmedWarning } from "./helpers.js";
 
 function result(overrides: Partial<SingleResult>): SingleResult {
   return makeSingleResult(overrides);
@@ -199,6 +199,55 @@ test("parent formatter prepends warning even when finalOutput is only whitespace
   ).toBe(
     '[thinking] Thinking level "xhigh" is not supported; using "high" instead (provider: openai, model: gpt-4o)\n\n  \n\n  ',
   );
+});
+
+describe("unconfirmed thinking parent summary propagation", () => {
+  test("parent formatter prepends exact unconfirmed warning for non-off request", () => {
+    const warning = unconfirmedWarning("high", "unknown", "unknown");
+    expect(
+      formatSubagentResultForParent(
+        result({
+          finalOutput: "task completed",
+          thinkingWarning: warning,
+        }),
+      ),
+    ).toBe(`[thinking] ${warning}\n\ntask completed`);
+  });
+
+  test("parent formatter omits thinking prefix for unresolved off request", () => {
+    expect(
+      formatSubagentResultForParent(
+        result({
+          finalOutput: "task completed",
+          thinkingWarning: undefined,
+        }),
+      ),
+    ).toBe("task completed");
+  });
+
+  test("parent formatter omits thinking prefix for confirmed model without warning", () => {
+    expect(
+      formatSubagentResultForParent(
+        result({
+          finalOutput: "task completed",
+          thinkingWarning: undefined,
+        }),
+      ),
+    ).toBe("task completed");
+  });
+
+  test("failure formatter includes exact unconfirmed warning in formatted output", () => {
+    const warning = unconfirmedWarning("medium", undefined, undefined);
+    expect(
+      formatSubagentFailureForParent(
+        "child failed",
+        result({
+          finalOutput: "partial output",
+          thinkingWarning: warning,
+        }),
+      ),
+    ).toBe(`(failed) child failed\n\n[thinking] ${warning}\n\npartial output`);
+  });
 });
 
 test("extractSemanticToolTarget keeps known safe targets", () => {

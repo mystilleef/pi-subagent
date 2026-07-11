@@ -55,6 +55,7 @@ import {
   setupHooks,
   setupTest,
   shellQuote,
+  unconfirmedWarning,
   waitFor,
   withMkdtempCapture,
 } from "./helpers.js";
@@ -101,8 +102,9 @@ async function runCapturedModelAgent(
 async function captureRunSingleAgentArgs(
   agent: AgentConfig,
   parentModel: CapturableParentModel | undefined,
+  options: { registry?: ModelRegistry } = { registry: registryFixture([]) },
 ): Promise<string[]> {
-  return (await runCapturedModelAgent(agent, parentModel)).args;
+  return (await runCapturedModelAgent(agent, parentModel, "off", options)).args;
 }
 
 test("runSingleAgent reports unknown agents with available names", async () => {
@@ -286,6 +288,7 @@ test("runSingleAgent applies effective model settings to thinking resolution", a
     makeModelAgent({ provider: "openai", model: "gpt-4", thinking: "high" }),
     { provider: "anthropic", id: "claude-3-7-sonnet-20250219" },
     "low",
+    { registry: registryFixture([]) },
   );
   expect(result.model).toBe("openai ･ gpt-4 ･ off");
   expect(result.thinkingWarning).toContain("provider: openai");
@@ -302,13 +305,13 @@ test("runSingleAgent treats provider-only agent override as partial model", asyn
   expect(flagValues(args, "--provider")).toEqual([]);
   expect(flagValues(args, "--model")).toEqual([]);
   expect(flagValues(args, "--thinking")).toEqual(["high"]);
-  expect(result.model).toBe("agent-provider ･ off");
+  expect(result.model).toBe("agent-provider ･ high");
   expect(result.thinkingWarning).toContain("provider: agent-provider");
   expect(result.thinkingWarning).toContain("model: unknown");
-  expect(result.thinkingWarning).toContain('using "off" instead');
+  expect(result.thinkingWarning).toContain("requesting as-is");
 });
 
-test("runSingleAgent preserves fallback thinking for partial or absent effective models", async () => {
+test("runSingleAgent preserves requested thinking for partial or absent effective models", async () => {
   const cases: {
     name: string;
     agent: AgentConfig;
@@ -319,7 +322,7 @@ test("runSingleAgent preserves fallback thinking for partial or absent effective
       name: "model only",
       agent: makeModelAgent({ thinking: undefined }),
       parentModel: { id: "parent-model" },
-      expectedModel: "parent-model ･ off",
+      expectedModel: "parent-model ･ high",
     },
     {
       name: "provider only",
@@ -328,13 +331,13 @@ test("runSingleAgent preserves fallback thinking for partial or absent effective
         thinking: undefined,
       }),
       parentModel: undefined,
-      expectedModel: "agent-provider ･ off",
+      expectedModel: "agent-provider ･ high",
     },
     {
       name: "absent model",
       agent: makeModelAgent({ thinking: undefined }),
       parentModel: undefined,
-      expectedModel: "off",
+      expectedModel: "high",
     },
   ];
   for (const testCase of cases) {
@@ -344,9 +347,7 @@ test("runSingleAgent preserves fallback thinking for partial or absent effective
       "high",
     );
     expect(result.thinkingWarning, testCase.name).toBeDefined();
-    expect(result.thinkingWarning, testCase.name).toContain(
-      'using "off" instead',
-    );
+    expect(result.thinkingWarning, testCase.name).toContain("requesting as-is");
     expect(result.model, testCase.name).toBe(testCase.expectedModel);
   }
 });
@@ -399,6 +400,7 @@ test("runSingleAgent keeps requested thinking in child args when estimate clamps
     }),
     undefined,
     "off",
+    { registry: registryFixture([]) },
   );
   expect(flagValues(args, "--thinking")).toEqual(["high"]);
   expect(result.model).toBe("openai ･ gpt-4 ･ off");
@@ -433,6 +435,7 @@ test("runSingleAgent retains parent thinking request through catalog clamp", asy
     makeModelAgent({ provider: "openai", model: "gpt-4", thinking: undefined }),
     undefined,
     "high",
+    { registry: registryFixture([]) },
   );
   expect(flagValues(args, "--thinking")).toEqual(["high"]);
   expect(result.model).toBe("openai ･ gpt-4 ･ off");
@@ -456,6 +459,89 @@ test("runSingleAgent emits unavailable registry diagnostic and continues", async
   } finally {
     warnSpy.mockRestore();
   }
+});
+
+describe("unconfirmed thinking display propagation", () => {
+  test("unknown model preserves requested level and emits exact unconfirmed warning", async () => {
+    const { args, result } = await runCapturedModelAgent(
+      makeModelAgent({
+        provider: "unknown",
+        model: "unknown",
+        thinking: "high",
+      }),
+      undefined,
+      "off",
+      { registry: registryFixture([]) },
+    );
+    expect(flagValues(args, "--thinking")).toEqual(["high"]);
+    expect(result.model).toBe("unknown ･ unknown ･ high");
+    expect(result.thinkingWarning).toBe(
+      unconfirmedWarning("high", "unknown", "unknown"),
+    );
+  });
+
+  test("missing identifiers preserve requested level with unknown placeholders", async () => {
+    const { args, result } = await runCapturedModelAgent(
+      makeModelAgent({ thinking: "medium" }),
+      undefined,
+      "off",
+    );
+    expect(flagValues(args, "--thinking")).toEqual(["medium"]);
+    expect(result.model).toBe("medium");
+    expect(result.thinkingWarning).toBe(
+      unconfirmedWarning("medium", undefined, undefined),
+    );
+  });
+
+  test("missing identifiers with off thinking stay warning-free", async () => {
+    const { args, result } = await runCapturedModelAgent(
+      makeModelAgent({ thinking: "off" }),
+      undefined,
+      "off",
+    );
+    expect(flagValues(args, "--thinking")).toEqual(["off"]);
+    expect(result.model).toBe("off");
+    expect(result.thinkingWarning).toBeUndefined();
+  });
+
+  test("confirmed live model shows requested level without warning", async () => {
+    const live = modelFixture({
+      provider: "custom",
+      id: "reasoner",
+      reasoning: true,
+      thinkingLevelMap: {
+        off: null,
+        low: "low",
+        medium: "medium",
+        high: "high",
+      },
+    });
+    const { args, result } = await runCapturedModelAgent(
+      makeModelAgent({
+        provider: "custom",
+        model: "reasoner",
+        thinking: "medium",
+      }),
+      undefined,
+      "off",
+      { registry: registryFixture([live]) },
+    );
+    expect(flagValues(args, "--thinking")).toEqual(["medium"]);
+    expect(result.model).toBe("custom ･ reasoner ･ medium");
+    expect(result.thinkingWarning).toBeUndefined();
+  });
+
+  test("reasoning-disabled off request retains unsupported warning", async () => {
+    const { args, result } = await runCapturedModelAgent(
+      makeModelAgent({ provider: "openai", model: "gpt-4", thinking: "off" }),
+      undefined,
+      "off",
+      { registry: registryFixture([]) },
+    );
+    expect(flagValues(args, "--thinking")).toEqual(["off"]);
+    expect(result.model).toBe("openai ･ gpt-4 ･ off");
+    expect(result.thinkingWarning).toContain('using "off" instead');
+  });
 });
 
 test("runSingleAgent formats result model from effective non-empty parts", async () => {
@@ -494,6 +580,8 @@ test("runSingleAgent formats result model from effective non-empty parts", async
     const { result } = await runCapturedModelAgent(
       testCase.agent,
       testCase.parentModel,
+      "off",
+      { registry: registryFixture([]) },
     );
     expect(result.model, testCase.name).toBe(testCase.expectedModel);
   }
@@ -517,6 +605,8 @@ test("runSingleAgent reports effective model display on skill resolution failure
     makeSubagentDetails,
     { provider: "parent-provider", id: "parent-model" },
     "off",
+    false,
+    { registry: registryFixture([]) },
   );
   expect(result.exitCode).toBe(1);
   expect(result.stderr).toContain('Unknown skill: "missing-skill"');
@@ -3718,10 +3808,12 @@ test("buildPiArgs --no-context-files coexists with approval, model, provider, th
     model: "gpt-4",
     provider: "openai",
   };
-  const { args, result } = await runCapturedModelAgent(agent, {
-    provider: "anthropic",
-    id: "claude-3-7-sonnet-20250219",
-  });
+  const { args, result } = await runCapturedModelAgent(
+    agent,
+    { provider: "anthropic", id: "claude-3-7-sonnet-20250219" },
+    "off",
+    { registry: registryFixture([]) },
+  );
   expect(args).toContain("--no-context-files");
   expect(args).toContain("--approve");
   expect(flagValues(args, "--provider")).toEqual(["openai"]);
@@ -5009,6 +5101,8 @@ test("runSingleAgent reports extension resolution error with model display", asy
     makeSubagentDetails,
     { provider: "parent-provider", id: "parent-model" },
     "off",
+    false,
+    { registry: registryFixture([]) },
   );
   expect(result.exitCode).toBe(1);
   expect(result.stderr).toContain('Unknown extension: "nonexistent-ext"');
