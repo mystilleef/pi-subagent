@@ -73,6 +73,40 @@ export function formatTokens(count: number): string {
 }
 
 /**
+ * Formats the plural-aware turn count string.
+ */
+function formatTurns(turns: number): string {
+  return `${turns} turn${turns > 1 ? "s" : ""}`;
+}
+
+function formatIoTokens(input: number, output: number): string {
+  const tokens: string[] = [];
+  if (input) tokens.push(`↑${formatTokens(input)}`);
+  if (output) tokens.push(`↓${formatTokens(output)}`);
+  return tokens.join(" ");
+}
+
+function formatCacheStats(cacheRead: number, cacheWrite: number): string {
+  const cache: string[] = [];
+  if (cacheRead) cache.push(`R${formatTokens(cacheRead)}`);
+  if (cacheWrite) cache.push(`W${formatTokens(cacheWrite)}`);
+  return `cache:${cache.join("/")}`;
+}
+
+/**
+ * Builds common usage stat parts: turns, context tokens, and cost.
+ * Shared between formatUsageStats and formatResultFooter.
+ */
+function formatUsageCore(usage: UsageStats): string[] {
+  const parts: string[] = [];
+  if (usage.turns) parts.push(formatTurns(usage.turns));
+  if (usage.contextTokens && usage.contextTokens > 0)
+    parts.push(`ctx:${formatTokens(usage.contextTokens)}`);
+  if (usage.cost) parts.push(`$${usage.cost.toFixed(4)}`);
+  return parts;
+}
+
+/**
  * Formats cumulative usage statistics for compact UI display.
  */
 export function formatUsageStats(
@@ -81,20 +115,11 @@ export function formatUsageStats(
   compact?: boolean,
 ): string {
   const parts: string[] = [];
-  if (usage.turns)
-    parts.push(`${usage.turns} turn${usage.turns > 1 ? "s" : ""}`);
-  if (usage.input || usage.output) {
-    const tokens: string[] = [];
-    if (usage.input) tokens.push(`↑${formatTokens(usage.input)}`);
-    if (usage.output) tokens.push(`↓${formatTokens(usage.output)}`);
-    parts.push(tokens.join(" "));
-  }
-  if (!compact && (usage.cacheRead || usage.cacheWrite)) {
-    const cache: string[] = [];
-    if (usage.cacheRead) cache.push(`R${formatTokens(usage.cacheRead)}`);
-    if (usage.cacheWrite) cache.push(`W${formatTokens(usage.cacheWrite)}`);
-    parts.push(`cache:${cache.join("/")}`);
-  }
+  if (usage.turns) parts.push(formatTurns(usage.turns));
+  if (usage.input || usage.output)
+    parts.push(formatIoTokens(usage.input, usage.output));
+  if (!compact && (usage.cacheRead || usage.cacheWrite))
+    parts.push(formatCacheStats(usage.cacheRead, usage.cacheWrite));
   if (!compact && usage.contextTokens && usage.contextTokens > 0)
     parts.push(`ctx:${formatTokens(usage.contextTokens)}`);
   if (usage.cost) parts.push(`$${usage.cost.toFixed(4)}`);
@@ -108,11 +133,7 @@ export function formatUsageStats(
 export function formatResultFooter(usage: UsageStats, model?: string): string {
   const parts: string[] = [];
   if (model) parts.push(model);
-  if (usage.turns)
-    parts.push(`${usage.turns} turn${usage.turns > 1 ? "s" : ""}`);
-  if (usage.contextTokens && usage.contextTokens > 0)
-    parts.push(`ctx:${formatTokens(usage.contextTokens)}`);
-  if (usage.cost) parts.push(`$${usage.cost.toFixed(4)}`);
+  parts.push(...formatUsageCore(usage));
   return parts.join(" · ");
 }
 
