@@ -990,7 +990,7 @@ test("subagent-result message renderer uses summarized content and preserves res
       timestamp: 0,
       details,
     },
-    { expanded: false },
+    { expanded: false, outputPad: 2 },
     fakeTheme as never,
   ) as unknown as { render: (width: number) => string[] };
   const lines = rendered.render(120);
