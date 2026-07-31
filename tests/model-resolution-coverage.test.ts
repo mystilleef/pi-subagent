@@ -274,14 +274,14 @@ describe("resolveThinkingLevel", () => {
     ["high", unconfirmedWarning("high", undefined, undefined)],
     ["xhigh", unconfirmedWarning("xhigh", undefined, undefined)],
     ["max", unconfirmedWarning("max", undefined, undefined)],
-  ] as [
-    ThinkingLevel,
-    string | undefined,
-  ][])("missing identifiers resolve level %s with warning %p", (level, expectedWarning) => {
-    const result = resolveThinkingLevel(level, undefined, undefined);
-    expect(result.level).toBe(level);
-    expect(result.warning).toBe(expectedWarning);
-  });
+  ] as [ThinkingLevel, string | undefined][])(
+    "missing identifiers resolve level %s with warning %p",
+    (level, expectedWarning) => {
+      const result = resolveThinkingLevel(level, undefined, undefined);
+      expect(result.level).toBe(level);
+      expect(result.warning).toBe(expectedWarning);
+    },
+  );
 
   test.each([
     ["off", undefined],
@@ -291,16 +291,16 @@ describe("resolveThinkingLevel", () => {
     ["high", unconfirmedWarning("high", "unknown", "unknown")],
     ["xhigh", unconfirmedWarning("xhigh", "unknown", "unknown")],
     ["max", unconfirmedWarning("max", "unknown", "unknown")],
-  ] as [
-    ThinkingLevel,
-    string | undefined,
-  ][])("unknown model resolves level %s with warning %p", (level, expectedWarning) => {
-    const result = resolveThinkingLevel(level, "unknown", "unknown", {
-      registry: registryFixture([]),
-    });
-    expect(result.level).toBe(level);
-    expect(result.warning).toBe(expectedWarning);
-  });
+  ] as [ThinkingLevel, string | undefined][])(
+    "unknown model resolves level %s with warning %p",
+    (level, expectedWarning) => {
+      const result = resolveThinkingLevel(level, "unknown", "unknown", {
+        registry: registryFixture([]),
+      });
+      expect(result.level).toBe(level);
+      expect(result.warning).toBe(expectedWarning);
+    },
+  );
 
   test("unconfirmed non-off keeps registry diagnostic separate from warning", () => {
     const result = resolveThinkingLevel("high", "nonexistent", "model-1");
