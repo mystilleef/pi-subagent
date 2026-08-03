@@ -255,7 +255,7 @@ case "$*" in
   *"task one"*) text=one ;;
   *"task two"*) text=two ;;
 esac
-sleep 0.1
+sleep 0.01
 printf '%s\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"'"$text"'"}],"usage":{"input":1,"output":1,"totalTokens":2,"cost":{"total":0}}}}'
 printf '%s\n' '{"type":"agent_end"}'
 exit 0
@@ -802,6 +802,7 @@ test("subagent tool sends result card when fake pi exits normally", async () => 
 });
 
 test("subagent tool sends result card when fake pi emits agent_end but stays alive", async () => {
+  process.env.PI_SUBAGENT_AGENT_END_GRACE_MS = "25";
   const sentMessages: SendMessageArg[] = [];
   const { tool, cwd } = await setupTest({
     sendMessage: (msg) => sentMessages.push(msg),
@@ -831,6 +832,7 @@ exit 0
 });
 
 test("subagent tool hides agent_end_timeout metadata outside debug", async () => {
+  process.env.PI_SUBAGENT_AGENT_END_GRACE_MS = "25";
   const sentMessages: SendMessageArg[] = [];
   const { tool, cwd } = await setupTest({
     sendMessage: (msg) => sentMessages.push(msg),
@@ -856,6 +858,7 @@ sleep 10
 });
 
 test("subagent tool fails agent_end timeout with empty transcript", async () => {
+  process.env.PI_SUBAGENT_AGENT_END_GRACE_MS = "25";
   const sentMessages: SendMessageArg[] = [];
   const { tool, cwd } = await setupTest({
     sendMessage: (msg) => sentMessages.push(msg),
@@ -1809,6 +1812,7 @@ exit 0
 });
 
 test("subagent tool preserves stopReason error after agent_end timeout", async () => {
+  process.env.PI_SUBAGENT_AGENT_END_GRACE_MS = "25";
   const sentMessages: SendMessageArg[] = [];
   process.env.PI_SUBAGENT_DEBUG_ENABLED = "1";
   const { binDir, cwd } = await setupFakePi();
@@ -1856,6 +1860,7 @@ wait $!
 });
 
 test("subagent tool fails agent_end timeout with tool-only transcript", async () => {
+  process.env.PI_SUBAGENT_AGENT_END_GRACE_MS = "25";
   const sentMessages: SendMessageArg[] = [];
   process.env.PI_SUBAGENT_DEBUG_ENABLED = "1";
   const { binDir, cwd } = await setupFakePi();
@@ -3332,7 +3337,7 @@ test("live partial updates are forwarded to host callback with correct shape", a
     path.join(binDir, "pi"),
     `#!/bin/sh
 printf '%s\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"toolCall","name":"bash","id":"tc-1","arguments":{"command":"ls"}}]}}'
-sleep 0.1
+sleep 0.01
 printf '%s\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"done"}],"usage":{"input":1,"output":1,"totalTokens":2,"cost":{"total":0}}}}'
 printf '%s\n' '{"type":"agent_end"}'
 exit 0
@@ -3417,7 +3422,7 @@ test("partial updates contain meaningful activity text from child progress", asy
     path.join(binDir, "pi"),
     `#!/bin/sh
 printf '%s\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"toolCall","name":"bash","id":"tc-1","arguments":{"command":"echo hello"}}]}}'
-sleep 0.1
+sleep 0.01
 printf '%s\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"done"}],"usage":{"input":1,"output":1,"totalTokens":2,"cost":{"total":0}}}}'
 printf '%s\n' '{"type":"agent_end"}'
 exit 0
@@ -3461,7 +3466,7 @@ test("partial updates preserve progress state patching and progress card renders
     path.join(binDir, "pi"),
     `#!/bin/sh
 printf '%s\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"toolCall","name":"bash","id":"tc-1","arguments":{"command":"ls"}}]}}'
-sleep 0.1
+sleep 0.01
 printf '%s\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"done"}],"usage":{"input":1,"output":1,"totalTokens":2,"cost":{"total":0}}}}'
 printf '%s\n' '{"type":"agent_end"}'
 exit 0
@@ -3605,11 +3610,11 @@ test("rapid duplicate progress events are coalesced by deduplication guard", asy
     path.join(binDir, "pi"),
     `#!/bin/sh
 printf '%s\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"toolCall","name":"bash","id":"tc-1","arguments":{"command":"ls"}}]}}'
-sleep 0.05
+sleep 0.01
 printf '%s\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"toolCall","name":"bash","id":"tc-1","arguments":{"command":"ls"}}]}}'
-sleep 0.05
+sleep 0.01
 printf '%s\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"toolCall","name":"bash","id":"tc-1","arguments":{"command":"ls"}}]}}'
-sleep 0.1
+sleep 0.01
 printf '%s\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"done"}],"usage":{"input":1,"output":1,"totalTokens":2,"cost":{"total":0}}}}'
 printf '%s\n' '{"type":"agent_end"}'
 exit 0
@@ -3647,9 +3652,9 @@ test("distinct progress events reach callback despite deduplication guard", asyn
     path.join(binDir, "pi"),
     `#!/bin/sh
 printf '%s\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"toolCall","name":"bash","id":"tc-1","arguments":{"command":"ls"}}]}}'
-sleep 0.1
+sleep 0.01
 printf '%s\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"toolCall","name":"read","id":"tc-2","arguments":{"path":"file.txt"}}]}}'
-sleep 0.1
+sleep 0.01
 printf '%s\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"done"}],"usage":{"input":1,"output":1,"totalTokens":2,"cost":{"total":0}}}}'
 printf '%s\n' '{"type":"agent_end"}'
 exit 0
@@ -3872,9 +3877,9 @@ test("createPayloadFingerprint deduplicates equal tool call IDs via hostOnUpdate
     path.join(binDir, "pi"),
     `#!/bin/sh
 printf '%s\\n' ${shellQuote(tc1)}
-sleep 0.05
+sleep 0.01
 printf '%s\\n' ${shellQuote(tc2)}
-sleep 0.05
+sleep 0.01
 printf '%s\\n' ${shellQuote(final)}
 printf '%s\\n' '{"type":"agent_end"}'
 exit 0

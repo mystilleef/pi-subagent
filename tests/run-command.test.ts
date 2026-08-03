@@ -615,7 +615,7 @@ test("run slash command does not append progress refresh messages", async () => 
     sendMessage: (msg) => sentMessages.push(msg),
     piScript: `#!/bin/sh
 printf '%s\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"done"}],"api":"fake","provider":"fake","model":"fake","usage":{"input":1,"output":1,"cacheRead":0,"cacheWrite":0,"totalTokens":2,"cost":{"total":0}},"stopReason":"stop","timestamp":0}}'
-sleep 1.1
+sleep 0.6
 printf '%s\n' '{"type":"agent_end","messages":[]}'
 exit 0
 `,
@@ -1056,6 +1056,7 @@ exit 0
 });
 
 test("/run success after agent_end_timeout keeps final content and hides metadata", async () => {
+  process.env.PI_SUBAGENT_AGENT_END_GRACE_MS = "25";
   const sentMessages: SendMessageArg[] = [];
   const finalOutput = "Outcome: completed after timeout";
   const { tool, cwd } = await setupTest({
@@ -1093,6 +1094,7 @@ sleep 10
 });
 
 test("/run debug exposes agent_end_timeout metadata", async () => {
+  process.env.PI_SUBAGENT_AGENT_END_GRACE_MS = "25";
   const sentMessages: SendMessageArg[] = [];
   process.env.PI_SUBAGENT_DEBUG_ENABLED = "1";
   const { tool, cwd } = await setupTest({
