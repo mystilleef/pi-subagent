@@ -31,12 +31,18 @@ describe("termination.ts coverage gaps", () => {
     describe("PATH resolution via spawn", () => {
       let tempDir: string;
       let originalPath: string;
+      let hadPath: boolean;
       beforeAll(() => {
         tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-test-cmd-"));
+        hadPath = "PATH" in process.env;
         originalPath = process.env.PATH ?? "";
       });
       afterAll(() => {
-        process.env.PATH = originalPath;
+        if (hadPath) {
+          process.env.PATH = originalPath;
+        } else {
+          delete process.env.PATH;
+        }
         fs.rmSync(tempDir, { recursive: true, force: true });
       });
       test("resolves executable systemd-inhibit through command -v", async () => {
@@ -213,36 +219,46 @@ describe("termination.ts coverage gaps", () => {
     });
   });
 
-  describe("makePidPollingShellArgs runtime", () => {
-    const isLinux = os.platform() === "linux";
-    const SHELL_COMMAND = "/bin/sh";
-    function pidPollingArgs(pid: number): string[] {
-      return [
-        SHELL_COMMAND,
-        "-c",
-        `while kill -0 ${pid} 2>/dev/null && [ "$(cut -d' ' -f4 /proc/$$/stat 2>/dev/null)" != "1" ]; do sleep 1; done`,
-      ];
-    }
-    describe("dead target", () => {
-      test("exits immediately when target PID is dead", async () => {
-        if (!isLinux) return;
-        const shortLived = spawn("true");
-        if (shortLived.pid === undefined)
-          throw new Error("spawn true returned no PID");
-        const deadPid = shortLived.pid;
-        await new Promise<void>((resolve) =>
-          shortLived.on("exit", () => resolve()),
-        );
-        const args = pidPollingArgs(deadPid);
-        const command = args[0];
-        if (!command) throw new Error("pidPollingArgs returned empty args");
-        const polling = spawn(command, args.slice(1));
-        const exitCode = await new Promise<number>((resolve) => {
-          polling.on("exit", resolve);
-        });
-        expect(exitCode).toBe(0);
-      }, 10_000);
-    });
+  describe("real process integration", () => {
+    test("acquireChildSleepInhibitor drives a dead PID through the real polling command to fast exit", async () => {
+      const isLinux = os.platform() === "linux";
+      if (!isLinux) return;
+      const shortLived = spawn("/bin/true");
+      if (shortLived.pid === undefined)
+        throw new Error("spawn /bin/true returned no PID");
+      const deadPid = shortLived.pid;
+      await new Promise<void>((resolve) =>
+        shortLived.on("exit", () => resolve()),
+      );
+
+      // commandExists/getEnvironment are stubbed to skip real "does
+      // systemd-inhibit exist" lookups (already covered by
+      // "makeHostSleepInhibitorAdapter platform handling" below); this
+      // still runs the actual makePidPollingShellArgs()-generated
+      // command for real via the trailing three args every
+      // makeXInhibitArgs() variant appends.
+      let helperProcess: ReturnType<typeof spawn> | undefined;
+      const adapter = makeHostSleepInhibitorAdapter({
+        platform: "linux",
+        getEnvironment: () => ({}),
+        commandExists: () => true,
+        spawnHelper: (_command, args, options) => {
+          const [shell, flag, script] = args.slice(-3);
+          if (!shell || !flag || !script)
+            throw new Error("expected trailing shell polling args");
+          helperProcess = spawn(shell, [flag, script], options);
+          return helperProcess;
+        },
+      });
+      const handle = await acquireChildSleepInhibitor(deadPid, adapter);
+      if (!helperProcess)
+        throw new Error("adapter did not spawn a helper process");
+      const exitCode = await new Promise<number | null>((resolve) => {
+        helperProcess?.on("exit", (code) => resolve(code));
+      });
+      expect(exitCode).toBe(0);
+      await handle.release();
+    }, 10_000);
   });
 
   describe("makeHostSleepInhibitorAdapter platform handling", () => {

@@ -1170,6 +1170,7 @@ describe("terminateChildProcess", () => {
     );
     expect(child.signals).toEqual([]);
     expect(metadata.terminationSignal).toBeUndefined();
+    expect(metadata.target).toBe("direct");
   });
   // sendTreeSignal "missing child PID" throw (line 305) unreachable
   // through public API: sendTerminationSignal guards with hasPid()

@@ -665,18 +665,6 @@ describe("utils.ts coverage gaps", () => {
 });
 
 describe("termination.ts coverage gaps", () => {
-  test("terminateChildProcess handles child that exits before signal", async () => {
-    const { spawn } = await import("node:child_process");
-    const proc = spawn("true", [], { stdio: "ignore" });
-
-    // Wait for process to exit
-    await new Promise<void>((resolve) => proc.on("exit", () => resolve()));
-
-    const metadata = await terminateChildProcess(proc);
-    expect(metadata.terminationSignal).toBeUndefined();
-    expect(metadata.target).toBe("direct");
-  });
-
   test("terminateChildProcess handles child without PID", async () => {
     const { EventEmitter } = await import("node:events");
     const proc =
@@ -688,22 +676,24 @@ describe("termination.ts coverage gaps", () => {
     expect(metadata.target).toBe("direct");
   });
 
-  test("terminateChildProcess handles tree termination with process group", async () => {
-    const { spawn } = await import("node:child_process");
-    const proc = spawn("sleep", ["10"], {
-      stdio: "ignore",
-      detached: true,
-    });
+  describe("live-PID process group", () => {
+    test("terminateChildProcess handles tree termination with process group", async () => {
+      const { spawn } = await import("node:child_process");
+      const proc = spawn("sleep", ["10"], {
+        stdio: "ignore",
+        detached: true,
+      });
 
-    const metadata = await terminateChildProcess(proc, {
-      tree: true,
-      platform: "linux",
-      processTreeDetached: true,
-    });
+      const metadata = await terminateChildProcess(proc, {
+        tree: true,
+        platform: "linux",
+        processTreeDetached: true,
+      });
 
-    expect(metadata.target).toBe("tree");
-    expect(metadata.processTreeKilled).toBe(true);
-    expect(metadata.terminationSignal).toBe("SIGTERM");
+      expect(metadata.target).toBe("tree");
+      expect(metadata.processTreeKilled).toBe(true);
+      expect(metadata.terminationSignal).toBe("SIGTERM");
+    });
   });
 
   test("acquireChildSleepInhibitor returns no-op handle for invalid PID", async () => {
