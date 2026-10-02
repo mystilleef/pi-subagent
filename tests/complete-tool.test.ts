@@ -3,7 +3,7 @@ import * as fs from "node:fs";
 import path from "node:path";
 import type {
   ExtensionAPI,
-  ExtensionContext,
+  ExtensionToolContext,
 } from "@earendil-works/pi-coding-agent";
 import { Value } from "typebox/value";
 import type { AgentConfig } from "../src/agent/agents.js";
@@ -98,7 +98,7 @@ test("completeTool execute returns correct payload and terminate: true", async (
     { outcome: "Successfully done" },
     new AbortController().signal,
     undefined,
-    {} as unknown as ExtensionContext,
+    {} as unknown as ExtensionToolContext,
   );
   expect(result.terminate).toBe(true);
   expect(result.details?.outcome).toBe("Successfully done");
