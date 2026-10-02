@@ -5,16 +5,10 @@
  */
 
 import { type ChildProcess, spawn } from "node:child_process";
-import readline from "node:readline";
 import type { Message } from "@earendil-works/pi-ai";
 import type { AgentConfig, ThinkingLevel } from "../agent/agents.js";
 import { getFinalOutput } from "../output/ui.js";
-import {
-  getPiInvocation,
-  getSubagentDepth,
-  subagentDepthEnv,
-} from "../shared/invocation.js";
-import { serializeSamplingParams } from "../shared/sampling.js";
+import { getPiInvocation, getSubagentDepth } from "../shared/invocation.js";
 import {
   type OnUpdateCallback,
   type SingleResult,
@@ -27,13 +21,13 @@ import {
   resolveAgentExtensionPaths,
   resolveAgentSkillArgs,
 } from "../shared/utils.js";
-import {
-  type ChildEventParseResult,
-  type ChildKnownEvent,
-  parseChildEventLine,
-  TOOL_EXECUTION_UPDATE_EVENT,
-} from "./child-events.js";
 import { getLatestOutcomeFromMessages } from "./complete-outcome.js";
+import {
+  clearGraceTimer,
+  makeRequestTerminator,
+  type SubagentState,
+  setupChildProcess,
+} from "./event-stream.js";
 import {
   buildModelDisplay,
   type ChildModelSettings,
@@ -41,44 +35,30 @@ import {
   resolveEffectiveChildModelSettings,
   resolveThinkingLevel,
 } from "./model-resolution.js";
-import {
-  appendWithByteLimit,
-  resolveCompleteExtensionPath,
-  resolvePackageExtensionPath,
-  resolveSamplingExtensionPath,
-} from "./process-utils.js";
-import { SUBAGENT_RESULT_CONTRACT } from "./prompt-contract.js";
+import { buildChildEnv, buildPiArgs, buildSamplingEnv } from "./pi-args.js";
 import {
   beginPromptSetup,
   cleanupPromptSetupResult,
   cleanupTempPrompt,
 } from "./prompt-setup.js";
 import {
-  addMessageToResult,
   createErrorResult,
   errorForDepthLimit,
   errorForUnknownAgent,
   initRuntimeResult,
   type RuntimeResult,
-  rebuildResultFromMessages,
 } from "./result-builder.js";
-import { type EmitUpdateFn, makeEmitUpdate } from "./streaming-progress.js";
+import { makeEmitUpdate } from "./streaming-progress.js";
 import {
   acquireChildSleepInhibitor,
   getProcessTreeSpawnOptions,
   isFinitePid,
   makeHostSleepInhibitorAdapter,
   type SleepInhibitorHandle,
-  terminateChildProcess,
 } from "./termination.js";
-
-const COMPLETE_EXTENSION_PATH = resolveCompleteExtensionPath();
-const SAMPLING_EXTENSION_PATH = resolveSamplingExtensionPath();
-const PACKAGE_EXTENSION_PATH = resolvePackageExtensionPath();
 
 export { makeEmitUpdate } from "./streaming-progress.js";
 
-type RuntimeLimits = ReturnType<typeof getSubagentRuntimeLimits>;
 type SleepInhibitorAcquirer = (pid: number) => Promise<SleepInhibitorHandle>;
 
 type RunSingleAgentOptions = {
@@ -90,15 +70,6 @@ type RunSingleAgentOptions = {
 export type RunSingleAgentResult =
   | { kind: "completed"; result: SingleResult }
   | { kind: "aborted"; result: SingleResult };
-
-interface SubagentState {
-  result: RuntimeResult;
-  runtimeLimits: RuntimeLimits;
-  spawnError?: Error;
-  wasAborted: boolean;
-  agentEndGraceTimer?: ReturnType<typeof setTimeout>;
-  terminationPromise?: Promise<unknown>;
-}
 
 function getAbortReason(signal: AbortSignal): string {
   const { reason } = signal;
@@ -243,107 +214,6 @@ async function waitForSubagentProcess(
   });
 }
 
-function makeRequestTerminator(
-  proc: ChildProcess,
-  terminateOptions: {
-    tree: boolean;
-    platform: NodeJS.Platform;
-    processTreeDetached: boolean;
-  },
-  state: SubagentState,
-): (reason: string) => Promise<unknown> {
-  return (reason: string) => {
-    state.terminationPromise ??= terminateChildProcess(proc, {
-      ...terminateOptions,
-      reason,
-    }).then((metadata) => {
-      state.result.termination = metadata;
-    });
-    return state.terminationPromise;
-  };
-}
-
-function clearGraceTimer(state: SubagentState): void {
-  if (!state.agentEndGraceTimer) return;
-  clearTimeout(state.agentEndGraceTimer);
-  delete state.agentEndGraceTimer;
-}
-
-function handleMessageEvent(
-  event: ChildKnownEvent,
-  state: SubagentState,
-  emitUpdate: EmitUpdateFn,
-): void {
-  if (event.type !== "message_end" && event.type !== "tool_result_end") return;
-  if (event.message) {
-    addMessageToResult(state.result, event.message as Message);
-    const toolResultCompleted = event.type === "tool_result_end";
-    emitUpdate({ toolResultCompleted });
-  }
-}
-
-function handleToolExecutionUpdateEvent(
-  event: ChildKnownEvent,
-  emitUpdate: EmitUpdateFn,
-): void {
-  if (event.type !== TOOL_EXECUTION_UPDATE_EVENT) return;
-  emitUpdate({ toolActivity: event.toolActivity });
-}
-
-function handleAgentEndEvent(
-  event: ChildKnownEvent,
-  state: SubagentState,
-  emitUpdate: EmitUpdateFn,
-  requestTermination: (reason: string) => Promise<unknown>,
-): void {
-  if (event.type !== "agent_end") return;
-  if (Array.isArray(event.messages) && event.messages.length > 0) {
-    rebuildResultFromMessages(state.result, event.messages as Message[]);
-    emitUpdate();
-  }
-  if (state.agentEndGraceTimer || state.terminationPromise) return;
-  state.agentEndGraceTimer = setTimeout(() => {
-    delete state.agentEndGraceTimer;
-    void requestTermination("agent_end_timeout");
-  }, state.runtimeLimits.agentEndGraceMs);
-  state.agentEndGraceTimer.unref?.();
-}
-
-function formatUnknownEventDiagnostic(
-  line: string,
-  parseResult: Exclude<ChildEventParseResult, { kind: "known" }>,
-): string {
-  if (parseResult.kind === "invalid" && !line.trim()) {
-    return "[pi-subagent:unknown-event] blank";
-  }
-  if (parseResult.kind === "invalid") {
-    return `[pi-subagent:unknown-event] malformed: ${line}`;
-  }
-  return `[pi-subagent:unknown-event] unknown: ${JSON.stringify(parseResult.event)}`;
-}
-
-function processEventLine(
-  line: string,
-  state: SubagentState,
-  emitUpdate: EmitUpdateFn,
-  requestTermination: (reason: string) => Promise<unknown>,
-  debugEventDiagnostics: boolean,
-): void {
-  const parseResult = parseChildEventLine(line);
-  if (parseResult.kind !== "known") {
-    if (debugEventDiagnostics) {
-      process.stderr.write(
-        `${formatUnknownEventDiagnostic(line, parseResult)}\n`,
-      );
-    }
-    return;
-  }
-  const { event } = parseResult;
-  handleMessageEvent(event, state, emitUpdate);
-  handleToolExecutionUpdateEvent(event, emitUpdate);
-  handleAgentEndEvent(event, state, emitUpdate, requestTermination);
-}
-
 function setupAbortHandler(
   signal: AbortSignal | undefined,
   state: SubagentState,
@@ -362,136 +232,6 @@ function setupAbortHandler(
     signal.addEventListener("abort", onAbort, { once: true });
   }
   return onAbort;
-}
-
-function buildSamplingEnv(agent: AgentConfig): string | undefined {
-  return serializeSamplingParams({
-    temperature: agent.temperature,
-    topP: agent.topP,
-  });
-}
-
-export interface BuildPiArgsConfig {
-  agent: AgentConfig;
-  task: string;
-  effectiveModel: ChildModelSettings;
-  thinking: ThinkingLevel;
-  resolvedSkills: { args: string[] };
-  tmpPrompt: { filePath: string } | null;
-  resolvedExtensionPaths?: string[] | undefined;
-  samplingEnv?: string | undefined;
-}
-
-export function buildPiArgs(config: BuildPiArgsConfig): string[] {
-  const {
-    agent,
-    task,
-    effectiveModel,
-    thinking,
-    resolvedSkills,
-    tmpPrompt,
-    resolvedExtensionPaths,
-    samplingEnv,
-  } = config;
-  const args: string[] = [
-    "--mode",
-    "json",
-    "-p",
-    "--no-session",
-    "--approve",
-    "--no-themes",
-    "--no-prompt-templates",
-  ];
-  if (agent.extensions !== undefined) {
-    args.push("--no-extensions");
-  }
-  if (effectiveModel.provider && effectiveModel.id)
-    args.push("--provider", effectiveModel.provider);
-  if (effectiveModel.id) args.push("--model", effectiveModel.id);
-  args.push("--thinking", thinking);
-  if (agent.tools) {
-    const tools = new Set(agent.tools);
-    tools.add("complete");
-    args.push("--tools", [...tools].join(","));
-  }
-  if (agent.skills !== undefined)
-    args.push("--no-skills", ...resolvedSkills.args);
-  if (agent.context === false) args.push("--no-context-files");
-  if (tmpPrompt) {
-    if (agent.replacePrompt) {
-      args.push("--system-prompt", tmpPrompt.filePath);
-    } else {
-      args.push("--append-system-prompt", tmpPrompt.filePath);
-    }
-  }
-  if (agent.extensions !== undefined) {
-    args.push("--extension", PACKAGE_EXTENSION_PATH);
-    if (resolvedExtensionPaths && resolvedExtensionPaths.length > 0) {
-      for (const rp of resolvedExtensionPaths) {
-        if (rp !== PACKAGE_EXTENSION_PATH) {
-          args.push("--extension", rp);
-        }
-      }
-    }
-  }
-  args.push("--extension", COMPLETE_EXTENSION_PATH);
-  if (samplingEnv) {
-    args.push("--extension", SAMPLING_EXTENSION_PATH);
-  }
-  args.push("--append-system-prompt", SUBAGENT_RESULT_CONTRACT);
-  const taskPrompt = task
-    ? `Task: ${task}`
-    : "Run according to your system prompt. If no explicit task was provided, use the default context described there.";
-  args.push(taskPrompt);
-  return args;
-}
-
-function buildChildEnv(samplingEnv: string | undefined): NodeJS.ProcessEnv {
-  const { PI_SAMPLING_PARAMS: _, ...parentEnv } = process.env;
-  return {
-    ...parentEnv,
-    ...subagentDepthEnv(),
-    ...(samplingEnv ? { PI_SAMPLING_PARAMS: samplingEnv } : {}),
-  };
-}
-
-function setupChildProcess(
-  proc: ChildProcess,
-  state: SubagentState,
-  emitUpdate: EmitUpdateFn,
-  requestTermination: (reason: string) => Promise<unknown>,
-  debugEventDiagnostics: boolean,
-): void {
-  proc.once("error", (error) => {
-    state.spawnError = error;
-    state.result.stderr = appendWithByteLimit(
-      state.result.stderr,
-      error.message,
-      state.runtimeLimits.maxStderrBytes,
-    );
-  });
-  if (proc.stdout) {
-    readline
-      .createInterface({ input: proc.stdout })
-      .on("line", (line) =>
-        processEventLine(
-          line,
-          state,
-          emitUpdate,
-          requestTermination,
-          debugEventDiagnostics,
-        ),
-      );
-  }
-  if (proc.stderr) {
-    proc.stderr.on("data", (data: Buffer) => {
-      state.result.stderr = appendWithByteLimit(
-        state.result.stderr,
-        data,
-        state.runtimeLimits.maxStderrBytes,
-      );
-    });
-  }
 }
 
 async function finalizeResult(

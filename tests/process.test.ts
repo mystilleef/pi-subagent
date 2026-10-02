@@ -9,8 +9,8 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { type AgentConfig, discoverAgentsAsync } from "../src/agent/agents.js";
 import type { ModelRegistry } from "../src/child/model-resolution.js";
+import { buildPiArgs } from "../src/child/pi-args.js";
 import {
-  buildPiArgs,
   makeEmitUpdate,
   type RunSingleAgentResult,
   runSingleAgent,
