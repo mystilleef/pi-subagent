@@ -43,6 +43,7 @@ import {
 import {
   CAPTURE_PI_ARGS_SH,
   captureStdout,
+  denyFsAccess,
   flagValues,
   getSubagentTool,
   makeBareCtx,
@@ -1284,12 +1285,12 @@ description: Hidden
 ---
 Hidden prompt`,
   );
-  await chmod(unreadableAgentsDir, 0);
+  const denied = denyFsAccess(unreadableAgentsDir);
   process.env.PI_CODING_AGENT_DIR = unreadableRoot;
   try {
     expect((await discoverAgentsAsync(cwd, "user")).agents).toEqual([]);
   } finally {
-    await chmod(unreadableAgentsDir, 0o700);
+    denied.restore();
   }
 });
 
