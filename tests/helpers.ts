@@ -1,5 +1,6 @@
-import { afterEach, beforeEach } from "bun:test";
+import { afterEach, beforeEach, spyOn } from "bun:test";
 import * as fs from "node:fs";
+import * as fsPromises from "node:fs/promises";
 import { chmod, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -100,6 +101,65 @@ export async function makeTempDir(prefix: string): Promise<string> {
   const dir = await mkdtemp(path.join(tmpdir(), prefix));
   tempDirs.push(dir);
   return dir;
+}
+
+function eaccesError(syscall: string, target: string): NodeJS.ErrnoException {
+  const error: NodeJS.ErrnoException = new Error(
+    `EACCES: permission denied, ${syscall} '${target}'`,
+  );
+  error.code = "EACCES";
+  error.syscall = syscall;
+  error.path = target;
+  return error;
+}
+
+function isInside(target: unknown, root: string): boolean {
+  return (
+    typeof target === "string" &&
+    path.resolve(target).startsWith(`${path.resolve(root)}${path.sep}`)
+  );
+}
+
+function isAtOrInside(target: unknown, root: string): boolean {
+  return (
+    (typeof target === "string" &&
+      path.resolve(target) === path.resolve(root)) ||
+    isInside(target, root)
+  );
+}
+
+/**
+ * Simulates `chmod 0o000` on `root` by failing `fs/promises` reads with
+ * `EACCES`. Root ignores mode bits, so real `chmod` cannot exercise
+ * permission paths in containers that run tests as root.
+ */
+export function denyFsAccess(root: string): { restore: () => void } {
+  const { readFile, readdir, stat } = fsPromises;
+  const spies = [
+    spyOn(fsPromises, "readFile").mockImplementation(((
+      ...args: Parameters<typeof readFile>
+    ) =>
+      isAtOrInside(args[0], root)
+        ? Promise.reject(eaccesError("open", String(args[0])))
+        : readFile(...args)) as typeof readFile),
+    spyOn(fsPromises, "readdir").mockImplementation(((
+      ...args: Parameters<typeof readdir>
+    ) =>
+      isAtOrInside(args[0], root)
+        ? Promise.reject(eaccesError("scandir", String(args[0])))
+        : readdir(...args)) as typeof readdir),
+    spyOn(fsPromises, "stat").mockImplementation(((
+      ...args: Parameters<typeof stat>
+    ) =>
+      isInside(args[0], root)
+        ? Promise.reject(eaccesError("stat", String(args[0])))
+        : stat(...args)) as typeof stat),
+  ];
+  return {
+    restore: () => {
+      for (const spy of spies) spy.mockRestore();
+    },
+  };
 }
 
 export function shellQuote(value: string): string {

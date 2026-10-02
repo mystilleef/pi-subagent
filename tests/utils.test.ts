@@ -1,6 +1,6 @@
 import { expect, spyOn, test } from "bun:test";
 import * as fsPromises from "node:fs/promises";
-import { chmod, mkdir, rename, symlink, writeFile } from "node:fs/promises";
+import { mkdir, rename, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import type { Message } from "@earendil-works/pi-ai";
@@ -35,7 +35,7 @@ import {
   truncateOutput,
   writePromptToTempFile,
 } from "../src/shared/utils.js";
-import { makeTempDir, setupHooks } from "./helpers.js";
+import { denyFsAccess, makeTempDir, setupHooks } from "./helpers.js";
 
 setupHooks();
 
@@ -1528,14 +1528,14 @@ Prompt`,
   );
   process.env.PI_CODING_AGENT_DIR = agentDir;
   const cache: AgentDiscoveryCache = new Map();
-  await chmod(userDir, 0o000);
+  const denied = denyFsAccess(userDir);
   try {
     const result = await getCachedAgentDiscovery(cwd, "user", cache, 3000);
     expect(result.agents).toEqual([]);
     expect(result.scopes.user.agents).toEqual([]);
     expect(result.scopes.user.markdownFiles).toEqual([]);
   } finally {
-    await chmod(userDir, 0o755);
+    denied.restore();
   }
 });
 
@@ -1557,14 +1557,14 @@ Prompt`,
   );
   process.env.PI_CODING_AGENT_DIR = agentDir;
   const cache: AgentDiscoveryCache = new Map();
-  await chmod(agentFile, 0o000);
+  const denied = denyFsAccess(agentFile);
   try {
     const result = await getCachedAgentDiscovery(cwd, "user", cache, 3000);
     expect(result.agents).toEqual([]);
     expect(result.scopes.user.agents).toEqual([]);
     expect(result.scopes.user.markdownFiles).toEqual(["test.md"]);
   } finally {
-    await chmod(agentFile, 0o644);
+    denied.restore();
   }
 });
 

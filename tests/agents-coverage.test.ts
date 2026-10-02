@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { chmod, mkdir, writeFile } from "node:fs/promises";
+import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import {
   discoverAgentsAsync,
@@ -7,7 +7,7 @@ import {
   isDirectoryAsync,
   readMarkdownDirWithStatusAsync,
 } from "../src/agent/agents.js";
-import { setupFakePi } from "./helpers.js";
+import { denyFsAccess, setupFakePi } from "./helpers.js";
 
 describe("agents.ts error handling and edge cases", () => {
   describe("parseAgentConfig error paths", () => {
@@ -114,12 +114,15 @@ description: Cannot read this
 ---
 body`,
       );
-      await chmod(unreadablePath, 0o000);
-      const discovery = await discoverAgentsAsync(cwd, "user");
-      expect(
-        discovery.agents.find((a) => a.name === "unreadable"),
-      ).toBeUndefined();
-      await chmod(unreadablePath, 0o644);
+      const denied = denyFsAccess(unreadablePath);
+      try {
+        const discovery = await discoverAgentsAsync(cwd, "user");
+        expect(
+          discovery.agents.find((a) => a.name === "unreadable"),
+        ).toBeUndefined();
+      } finally {
+        denied.restore();
+      }
     });
   });
 
@@ -142,11 +145,14 @@ body`,
       const { agentDir } = await setupFakePi();
       const inaccessibleDir = path.join(agentDir, "inaccessible");
       await mkdir(inaccessibleDir, { recursive: true });
-      await chmod(inaccessibleDir, 0o000);
-      const result = await readMarkdownDirWithStatusAsync(inaccessibleDir);
-      expect(result.entries).toEqual([]);
-      expect(result.ok).toBe(false);
-      await chmod(inaccessibleDir, 0o755);
+      const denied = denyFsAccess(inaccessibleDir);
+      try {
+        const result = await readMarkdownDirWithStatusAsync(inaccessibleDir);
+        expect(result.entries).toEqual([]);
+        expect(result.ok).toBe(false);
+      } finally {
+        denied.restore();
+      }
     });
   });
 
@@ -160,12 +166,16 @@ body`,
       const { agentDir } = await setupFakePi();
       const inaccessiblePath = path.join(agentDir, "inaccessible-stat");
       await mkdir(inaccessiblePath, { recursive: true });
-      await chmod(inaccessiblePath, 0o000);
-      const result = await isDirectoryAsync(
-        path.join(inaccessiblePath, "subdir"),
-      );
-      expect(result).toBe(false);
-      await chmod(inaccessiblePath, 0o755);
+      await mkdir(path.join(inaccessiblePath, "subdir"));
+      const denied = denyFsAccess(inaccessiblePath);
+      try {
+        const result = await isDirectoryAsync(
+          path.join(inaccessiblePath, "subdir"),
+        );
+        expect(result).toBe(false);
+      } finally {
+        denied.restore();
+      }
     });
   });
 
