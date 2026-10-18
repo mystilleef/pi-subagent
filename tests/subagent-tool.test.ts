@@ -1907,7 +1907,7 @@ test("subagent tool reports depth limit synchronously via sent messages", async 
   const tool = getSubagentTool({
     sendMessage: (msg) => sentMessages.push(msg),
   });
-  process.env.PI_SUBAGENT_DEPTH = "3";
+  process.env.PI_SUBAGENT_DEPTH = "5";
   const result = await tool.execute(
     "test-tool-call",
     { agent: "hang", task: "nested" },
@@ -4316,7 +4316,7 @@ No-sampling agent prompt`,
     sendMessage: (msg) => sentMessages.push(msg),
   });
 
-  process.env.PI_SUBAGENT_DEPTH = "3";
+  process.env.PI_SUBAGENT_DEPTH = "5";
 
   const resSampling = await tool.execute(
     "test-tool-call-1",
@@ -5523,7 +5523,7 @@ exit 0
 `,
   });
   await createAgentWithExtensions(agentDir, "deep-ext", "[]");
-  process.env.PI_SUBAGENT_DEPTH = "3";
+  process.env.PI_SUBAGENT_DEPTH = "5";
   const result = await tool.execute(
     "test-tool-call",
     { agent: "deep-ext", task: "too deep" },

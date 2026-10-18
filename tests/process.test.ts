@@ -127,7 +127,7 @@ test("runSingleAgent reports unknown agents with available names", async () => {
 });
 
 test("runSingleAgent reports default depth limit with effective max depth", async () => {
-  process.env.PI_SUBAGENT_DEPTH = "3";
+  process.env.PI_SUBAGENT_DEPTH = "5";
   const { result } = await runSingleAgent(
     "/tmp",
     [hangAgent],
@@ -140,7 +140,7 @@ test("runSingleAgent reports default depth limit with effective max depth", asyn
     "off",
   );
   expect(result.exitCode).toBe(1);
-  expect(result.stderr).toContain("depth 3/3");
+  expect(result.stderr).toContain("depth 5/5");
 });
 
 test("runSingleAgent uses env-configured max depth", async () => {
@@ -3864,7 +3864,7 @@ exit 0
 });
 
 test("buildPiArgs omits --no-context-files for depth-limit and unknown-agent failures", async () => {
-  process.env.PI_SUBAGENT_DEPTH = "3";
+  process.env.PI_SUBAGENT_DEPTH = "5";
   const { result: depthResult } = await runSingleAgent(
     "/tmp",
     [{ ...hangAgent, context: false }],
@@ -3877,7 +3877,7 @@ test("buildPiArgs omits --no-context-files for depth-limit and unknown-agent fai
     "off",
   );
   expect(depthResult.exitCode).toBe(1);
-  expect(depthResult.stderr).toContain("depth 3/3");
+  expect(depthResult.stderr).toContain("depth 5/5");
   const { result: unknownResult } = await runSingleAgent(
     "/tmp",
     [{ ...hangAgent, context: false }],

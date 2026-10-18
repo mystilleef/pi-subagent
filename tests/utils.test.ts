@@ -237,11 +237,11 @@ test("detectMessageError is false when text assistant message follows error and 
 test("subagent runtime limits parse env values safely", () => {
   expect(DEFAULT_AGENT_END_GRACE_MS).toBe(250);
   expect(DEFAULT_MAX_STDERR_BYTES).toBe(10_000);
-  expect(DEFAULT_MAX_SUBAGENT_DEPTH).toBe(3);
+  expect(DEFAULT_MAX_SUBAGENT_DEPTH).toBe(5);
   expect(getSubagentRuntimeLimits()).toEqual({
     agentEndGraceMs: 250,
     maxStderrBytes: 10_000,
-    maxDepth: 3,
+    maxDepth: 5,
   });
   expect(
     getSubagentRuntimeLimits({
@@ -277,7 +277,7 @@ test("subagent runtime limits fall back for invalid env values", () => {
         PI_SUBAGENT_MAX_STDERR_BYTES: value,
         PI_SUBAGENT_MAX_DEPTH: value,
       }),
-    ).toEqual({ agentEndGraceMs: 250, maxStderrBytes: 10_000, maxDepth: 3 });
+    ).toEqual({ agentEndGraceMs: 250, maxStderrBytes: 10_000, maxDepth: 5 });
   }
 });
 

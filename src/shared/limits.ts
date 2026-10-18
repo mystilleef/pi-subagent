@@ -7,7 +7,7 @@ export const DEFAULT_MAX_OUTPUT_BYTES = 50_000;
 export const DEFAULT_MAX_OUTPUT_LINES = 500;
 export const DEFAULT_AGENT_END_GRACE_MS = 250;
 export const DEFAULT_MAX_STDERR_BYTES = 10_000;
-export const DEFAULT_MAX_SUBAGENT_DEPTH = 3;
+export const DEFAULT_MAX_SUBAGENT_DEPTH = 5;
 const MAX_SUBAGENT_DEPTH_CEILING = 10;
 
 export interface SubagentOutputLimits {

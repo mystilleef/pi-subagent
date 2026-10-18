@@ -258,7 +258,7 @@ executable automation.
 
 - `PI_SUBAGENT_DEPTH`: current nested subagent depth counter set
   internally for child processes.
-- `PI_SUBAGENT_MAX_DEPTH`: max nested subagent depth. Default: `3`.
+- `PI_SUBAGENT_MAX_DEPTH`: max nested subagent depth. Default: `5`.
   Values above `10` clamp to the internal ceiling `10`; deeper nesting
   increases cost, latency, and runaway delegation risk.
 - `PI_SUBAGENT_AGENT_END_GRACE_MS`: child process grace period after
