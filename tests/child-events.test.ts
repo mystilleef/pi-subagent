@@ -3,6 +3,9 @@ import {
   parseChildEventLine,
   TOOL_EXECUTION_UPDATE_EVENT,
 } from "../src/child/child-events.js";
+import { setupHooks } from "./helpers.js";
+
+setupHooks();
 
 function known(line: string) {
   const r = parseChildEventLine(line);
@@ -546,24 +549,22 @@ describe("parseChildEventLine", () => {
   });
 
   describe("invalid JSON", () => {
-    test("malformed JSON", () => {
-      const r = parseChildEventLine("{ not json }");
+    test.each([
+      {
+        name: "malformed JSON",
+        line: "{ not json }",
+        expectedLine: "{ not json }",
+      },
+      { name: "empty string", line: "", expectedLine: "" },
+      { name: "whitespace only", line: "   \t\n ", expectedLine: "   \t\n " },
+    ])("$name", (row) => {
+      const r = parseChildEventLine(row.line);
       expect(r.kind).toBe("invalid");
-      if (r.kind === "invalid") expect(r.line).toBe("{ not json }");
+      if (r.kind === "invalid") expect(r.line).toBe(row.expectedLine);
     });
     test("truncated JSON", () => {
       const r = parseChildEventLine('{"type": "message_end"');
       expect(r.kind).toBe("invalid");
-    });
-    test("empty string", () => {
-      const r = parseChildEventLine("");
-      expect(r.kind).toBe("invalid");
-      if (r.kind === "invalid") expect(r.line).toBe("");
-    });
-    test("whitespace only", () => {
-      const r = parseChildEventLine("   \t\n ");
-      expect(r.kind).toBe("invalid");
-      if (r.kind === "invalid") expect(r.line).toBe("   \t\n ");
     });
     test("null input returns invalid", () => {
       // TypeScript forbids null but runtime may pass it; test the guard
@@ -573,6 +574,349 @@ describe("parseChildEventLine", () => {
     test("undefined input returns invalid", () => {
       const r = parseChildEventLine(undefined as unknown as string);
       expect(r.kind).toBe("invalid");
+    });
+  });
+});
+
+describe("child-events.ts coverage gaps", () => {
+  test("tryFirstResult handles non-object nested result", () => {
+    const details = {
+      results: [42], // Not an object
+    };
+
+    const line = JSON.stringify({
+      type: "tool_execution_update",
+      toolName: "bash",
+      partialResult: { details },
+    });
+
+    const result = parseChildEventLine(line);
+    expect(result.kind).toBe("known");
+    if (result.kind === "known") {
+      const event = result.event as {
+        toolActivity: { toolName: string; inputSummary: string };
+      };
+      expect(event.toolActivity.toolName).toBe("bash");
+      expect(event.toolActivity.inputSummary).toBe("bash");
+    }
+  });
+
+  test("tryFirstResult handles null nested result", () => {
+    const details = {
+      results: [null],
+    };
+
+    const line = JSON.stringify({
+      type: "tool_execution_update",
+      toolName: "bash",
+      partialResult: { details },
+    });
+
+    const result = parseChildEventLine(line);
+    expect(result.kind).toBe("known");
+    if (result.kind === "known") {
+      const event = result.event as {
+        toolActivity: { toolName: string; inputSummary: string };
+      };
+      expect(event.toolActivity.toolName).toBe("bash");
+      expect(event.toolActivity.inputSummary).toBe("bash");
+    }
+  });
+});
+
+describe("child-events.ts uncovered branches", () => {
+  describe("parseChildEventLine invalid inputs", () => {
+    test.each([
+      { name: "empty string returns invalid", line: "", expectedLine: "" },
+      {
+        name: "whitespace-only string returns invalid",
+        line: "   ",
+        expectedLine: "   ",
+      },
+      {
+        name: "malformed JSON returns invalid",
+        line: "{not valid json",
+        expectedLine: "{not valid json",
+      },
+    ])("$name", (row) => {
+      const result = parseChildEventLine(row.line);
+      expect(result).toEqual({ kind: "invalid", line: row.expectedLine });
+    });
+
+    test("non-string input returns invalid", () => {
+      const result = parseChildEventLine(123 as unknown as string);
+      expect(result.kind).toBe("invalid");
+    });
+  });
+
+  describe("parseChildEventLine unknown events", () => {
+    test.each([
+      {
+        name: "event without type field returns unknown",
+        line: '{"data": "value"}',
+      },
+      {
+        name: "event with non-string type returns unknown",
+        line: '{"type": 123}',
+      },
+      { name: "non-object JSON returns unknown", line: '"just a string"' },
+      { name: "array JSON returns unknown", line: "[1, 2, 3]" },
+    ])("$name", (row) => {
+      const result = parseChildEventLine(row.line);
+      expect(result.kind).toBe("unknown");
+    });
+
+    test("event with unknown type string returns unknown", () => {
+      const result = parseChildEventLine('{"type": "unknown_event"}');
+      expect(result.kind).toBe("unknown");
+      if (result.kind === "unknown") {
+        expect(result.event).toEqual({ type: "unknown_event" });
+      }
+    });
+  });
+
+  describe("parseChildEventLine tool_execution_update validation", () => {
+    test("missing toolName returns unknown", () => {
+      const event = {
+        type: TOOL_EXECUTION_UPDATE_EVENT,
+        partialResult: { content: "test" },
+      };
+      const result = parseChildEventLine(JSON.stringify(event));
+      expect(result.kind).toBe("unknown");
+    });
+
+    test("non-string toolName returns unknown", () => {
+      const event = {
+        type: TOOL_EXECUTION_UPDATE_EVENT,
+        toolName: 123,
+        partialResult: { content: "test" },
+      };
+      const result = parseChildEventLine(JSON.stringify(event));
+      expect(result.kind).toBe("unknown");
+    });
+
+    test("missing partialResult returns unknown", () => {
+      const event = {
+        type: TOOL_EXECUTION_UPDATE_EVENT,
+        toolName: "bash",
+      };
+      const result = parseChildEventLine(JSON.stringify(event));
+      expect(result.kind).toBe("unknown");
+    });
+
+    test("null partialResult returns unknown", () => {
+      const event = {
+        type: TOOL_EXECUTION_UPDATE_EVENT,
+        toolName: "bash",
+        partialResult: null,
+      };
+      const result = parseChildEventLine(JSON.stringify(event));
+      expect(result.kind).toBe("unknown");
+    });
+
+    test("valid tool_execution_update with minimal fields returns known", () => {
+      const event = {
+        type: TOOL_EXECUTION_UPDATE_EVENT,
+        toolName: "bash",
+        partialResult: {},
+      };
+      const result = parseChildEventLine(JSON.stringify(event));
+      expect(result.kind).toBe("known");
+      if (result.kind === "known") {
+        expect(result.event.type).toBe(TOOL_EXECUTION_UPDATE_EVENT);
+        if (result.event.type === TOOL_EXECUTION_UPDATE_EVENT) {
+          expect(result.event.toolName).toBe("bash");
+        }
+      }
+    });
+
+    test("tool_execution_update with nested details extracts toolActivity", () => {
+      const event = {
+        type: TOOL_EXECUTION_UPDATE_EVENT,
+        toolName: "read",
+        partialResult: {
+          details: {
+            results: [
+              {
+                path: "/tmp/file.txt",
+                progress: {
+                  activeToolActivity: {
+                    toolName: "bash",
+                    inputSummary: "echo test",
+                  },
+                },
+              },
+            ],
+          },
+        },
+      };
+      const result = parseChildEventLine(JSON.stringify(event));
+      expect(result.kind).toBe("known");
+      if (
+        result.kind === "known" &&
+        result.event.type === TOOL_EXECUTION_UPDATE_EVENT
+      ) {
+        expect(result.event.toolActivity).toBeDefined();
+        expect(result.event.toolActivity.toolName).toBe("read");
+        expect(result.event.toolActivity.child).toBeDefined();
+        expect(result.event.toolActivity.child?.toolName).toBe("bash");
+      }
+    });
+
+    test("subagent tool with agent name uses makeToolPreview", () => {
+      const event = {
+        type: TOOL_EXECUTION_UPDATE_EVENT,
+        toolName: "subagent",
+        partialResult: {
+          details: {
+            results: [
+              {
+                agent: "test-agent",
+                command: "run test",
+              },
+            ],
+          },
+        },
+      };
+      const result = parseChildEventLine(JSON.stringify(event));
+      expect(result.kind).toBe("known");
+      if (
+        result.kind === "known" &&
+        result.event.type === TOOL_EXECUTION_UPDATE_EVENT
+      ) {
+        expect(result.event.toolActivity.inputSummary).toContain("subagent");
+      }
+    });
+
+    test("non-subagent tool with child activity uses child inputSummary", () => {
+      const event = {
+        type: TOOL_EXECUTION_UPDATE_EVENT,
+        toolName: "read",
+        partialResult: {
+          details: {
+            results: [
+              {
+                progress: {
+                  activeToolActivity: {
+                    toolName: "bash",
+                    inputSummary: "child summary",
+                  },
+                },
+              },
+            ],
+          },
+        },
+      };
+      const result = parseChildEventLine(JSON.stringify(event));
+      expect(result.kind).toBe("known");
+      if (
+        result.kind === "known" &&
+        result.event.type === TOOL_EXECUTION_UPDATE_EVENT
+      ) {
+        expect(result.event.toolActivity.inputSummary).toBe("child summary");
+      }
+    });
+
+    test("details without results array falls back to toolName", () => {
+      const event = {
+        type: TOOL_EXECUTION_UPDATE_EVENT,
+        toolName: "bash",
+        partialResult: {
+          details: {
+            other: "data",
+          },
+        },
+      };
+      const result = parseChildEventLine(JSON.stringify(event));
+      expect(result.kind).toBe("known");
+      if (
+        result.kind === "known" &&
+        result.event.type === TOOL_EXECUTION_UPDATE_EVENT
+      ) {
+        expect(result.event.toolActivity.inputSummary).toBe("bash");
+      }
+    });
+
+    test("empty results array falls back to toolName", () => {
+      const event = {
+        type: TOOL_EXECUTION_UPDATE_EVENT,
+        toolName: "bash",
+        partialResult: {
+          details: {
+            results: [],
+          },
+        },
+      };
+      const result = parseChildEventLine(JSON.stringify(event));
+      expect(result.kind).toBe("known");
+      if (
+        result.kind === "known" &&
+        result.event.type === TOOL_EXECUTION_UPDATE_EVENT
+      ) {
+        expect(result.event.toolActivity.inputSummary).toBe("bash");
+      }
+    });
+
+    test("non-object first result falls back to toolName", () => {
+      const event = {
+        type: TOOL_EXECUTION_UPDATE_EVENT,
+        toolName: "bash",
+        partialResult: {
+          details: {
+            results: ["not an object"],
+          },
+        },
+      };
+      const result = parseChildEventLine(JSON.stringify(event));
+      expect(result.kind).toBe("known");
+      if (
+        result.kind === "known" &&
+        result.event.type === TOOL_EXECUTION_UPDATE_EVENT
+      ) {
+        expect(result.event.toolActivity.inputSummary).toBe("bash");
+      }
+    });
+  });
+
+  describe("parseChildEventLine known event types", () => {
+    test.each([
+      {
+        name: "message_end event returns known",
+        type: "message_end",
+        role: "assistant",
+        content: "done",
+        expectedType: "message_end",
+      },
+      {
+        name: "tool_result_end event returns known",
+        type: "tool_result_end",
+        role: "tool",
+        content: "result",
+        expectedType: "tool_result_end",
+      },
+    ])("$name", (row) => {
+      const event = {
+        type: row.type,
+        message: { role: row.role, content: row.content },
+      };
+      const result = parseChildEventLine(JSON.stringify(event));
+      expect(result.kind).toBe("known");
+      if (result.kind === "known") {
+        expect(result.event.type).toBe(row.expectedType);
+      }
+    });
+
+    test("agent_end event returns known", () => {
+      const event = {
+        type: "agent_end",
+        messages: [],
+        stopReason: "completed",
+      };
+      const result = parseChildEventLine(JSON.stringify(event));
+      expect(result.kind).toBe("known");
+      if (result.kind === "known") {
+        expect(result.event.type).toBe("agent_end");
+      }
     });
   });
 });

@@ -5,7 +5,7 @@ import { chmod, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import type { AgentToolUpdateCallback } from "@earendil-works/pi-agent-core";
-import type { Api, Model } from "@earendil-works/pi-ai";
+import type { Api, Message, Model } from "@earendil-works/pi-ai";
 import type {
   AgentToolResult,
   ExtensionAPI,
@@ -16,6 +16,7 @@ import type {
 } from "@earendil-works/pi-coding-agent";
 import type { AgentConfig, ThinkingLevel } from "../src/agent/agents.js";
 import type { ModelRegistry } from "../src/child/model-resolution.js";
+import type { RuntimeResult } from "../src/child/result-builder.js";
 import registerSubagentExtension, {
   resetAgentCache,
   type SubagentParams,
@@ -101,6 +102,34 @@ export async function makeTempDir(prefix: string): Promise<string> {
   const dir = await mkdtemp(path.join(tmpdir(), prefix));
   tempDirs.push(dir);
   return dir;
+}
+
+/** Default fixture agent markdown shared by discovery and fake-pi fixtures. */
+const HANG_AGENT_MD = `---
+name: hang
+description: Test agent
+thinking: off
+---
+Test agent prompt.
+`;
+
+/**
+ * Discovery-only fixture: cleanup-registered home with `agents/` and working
+ * directories plus the default fixture agent, and no fake `pi` executable.
+ */
+export async function makeAgentHome(): Promise<{
+  agentDir: string;
+  cwd: string;
+}> {
+  const root = await makeTempDir("pi-subagent-test-");
+  const agentDir = path.join(root, "agent");
+  const agentsDir = path.join(agentDir, "agents");
+  const cwd = path.join(root, "work");
+  await Bun.$`mkdir -p ${agentsDir} ${cwd}`;
+  await writeFile(path.join(agentsDir, "hang.md"), HANG_AGENT_MD);
+  process.env.PI_CODING_AGENT_DIR = agentDir;
+  resetAgentCache();
+  return { agentDir, cwd };
 }
 
 function eaccesError(syscall: string, target: string): NodeJS.ErrnoException {
@@ -261,6 +290,50 @@ export function makeAssistantMessage(
   };
 }
 
+/** Build a minimal assistant message with given content items. */
+export function assistantMessage(content: unknown[]): Message {
+  return {
+    role: "assistant",
+    content: content as Message extends { role: "assistant" }
+      ? Message["content"]
+      : never,
+    api: "anthropic-messages",
+    provider: "anthropic",
+    model: "claude-3-5-sonnet-latest",
+    usage: {
+      input: 0,
+      output: 0,
+      cacheRead: 0,
+      cacheWrite: 0,
+      totalTokens: 0,
+      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+    },
+    stopReason: "stop",
+    timestamp: Date.now(),
+  } as unknown as Message;
+}
+
+/** Build a minimal user message with empty content. */
+export function userMessage(): Message {
+  return {
+    role: "user",
+    content: [],
+    timestamp: Date.now(),
+  } as unknown as Message;
+}
+
+/** Build a minimal tool-result message for the fixed `tc1` tool call. */
+export function toolResultMessage(isError = false): Message {
+  return {
+    role: "toolResult",
+    toolCallId: "tc1",
+    toolName: "test",
+    content: [],
+    isError,
+    timestamp: Date.now(),
+  } as unknown as Message;
+}
+
 /**
  * Shell fragment that emits a `message_end` JSON event line from a message object.
  */
@@ -275,6 +348,19 @@ export function emitAgentEnd(messages: Record<string, unknown>[]): string {
   return `printf '%s\\n' ${shellQuote(JSON.stringify({ type: "agent_end", messages }))}`;
 }
 
+/**
+ * Writes a fake `pi` executable into `binDir` and marks it mode `0o755`.
+ * Overwriting keeps the executable mode, so callers may reinstall scripts.
+ */
+export async function installFakePi(
+  binDir: string,
+  script: string,
+): Promise<void> {
+  const piPath = path.join(binDir, "pi");
+  await writeFile(piPath, script);
+  await chmod(piPath, 0o755);
+}
+
 export async function setupFakePi(): Promise<{
   agentDir: string;
   cwd: string;
@@ -286,19 +372,9 @@ export async function setupFakePi(): Promise<{
   const binDir = path.join(root, "bin");
   const cwd = path.join(root, "work");
   await Bun.$`mkdir -p ${agentsDir} ${binDir} ${cwd}`;
-  await writeFile(
-    path.join(agentsDir, "hang.md"),
-    `---
-name: hang
-description: Test agent
-thinking: off
----
-Test agent prompt.
-`,
-  );
-  const fakePi = path.join(binDir, "pi");
-  await writeFile(
-    fakePi,
+  await writeFile(path.join(agentsDir, "hang.md"), HANG_AGENT_MD);
+  await installFakePi(
+    binDir,
     `#!/bin/sh
 printf '%s\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"done"}],"api":"fake","provider":"fake","model":"fake","usage":{"input":1,"output":1,"cacheRead":0,"cacheWrite":0,"totalTokens":2,"cost":{"total":0}},"stopReason":"stop","timestamp":0}}'
 printf '%s\n' '{"type":"agent_end","messages":[]}'
@@ -308,7 +384,6 @@ esac
 exit 0
 `,
   );
-  await chmod(fakePi, 0o755);
   process.argv[1] = path.join(root, "not-pi");
   process.env.PATH = `${binDir}:${ORIGINAL_PATH ?? ""}`;
   process.env.PI_CODING_AGENT_DIR = agentDir;
@@ -318,14 +393,26 @@ exit 0
 
 export type SendMessageArg = Parameters<ExtensionAPI["sendMessage"]>[0];
 
+/**
+ * Returns the first sent message's `details.requestId`, throwing when the
+ * message, its details, or the request id is absent.
+ */
+export function requestIdOf(sentMessages: SendMessageArg[]): string {
+  const details = sentMessages[0]?.details as
+    | { requestId?: string }
+    | undefined;
+  const requestId = details?.requestId;
+  if (!requestId) throw new Error("requestId missing");
+  return requestId;
+}
+
 export async function setupTest(overrides?: {
   sendMessage?: (msg: SendMessageArg) => void;
   piScript?: string;
 }) {
   const { binDir, cwd, agentDir } = await setupFakePi();
   if (overrides?.piScript) {
-    await writeFile(path.join(binDir, "pi"), overrides.piScript);
-    await chmod(path.join(binDir, "pi"), 0o755);
+    await installFakePi(binDir, overrides.piScript);
   }
   const tool = getSubagentTool(
     overrides?.sendMessage !== undefined
@@ -359,6 +446,19 @@ export type CapturedSubagentTool = Omit<
 export type RegisteredCommandOptions = Parameters<
   ExtensionAPI["registerCommand"]
 >[1];
+/**
+ * Delegates to the tool's `execute` boundary with the standard test call
+ * identity and no update callback, returning results and errors unchanged.
+ */
+export async function runTool(
+  tool: CapturedSubagentTool,
+  params: Record<string, unknown>,
+  ctx: ExtensionContext,
+  signal?: AbortSignal,
+): Promise<AgentToolResult<SubagentDetails>> {
+  return tool.execute("test-tool-call", params, signal, undefined, ctx);
+}
+
 export type RegisteredMessageRenderer = Parameters<
   ExtensionAPI["registerMessageRenderer"]
 >[1];
@@ -366,6 +466,22 @@ export type RegisteredEventHandler = (
   event: unknown,
   ctx: ExtensionContext,
 ) => unknown;
+
+/**
+ * Dispatches the `session_start` startup event to every registered handler in
+ * registration order, awaiting each with the given workspace directory.
+ */
+export async function emitSessionStart(
+  tool: { registeredEventHandlers: Map<string, RegisteredEventHandler[]> },
+  cwd: string | undefined,
+): Promise<void> {
+  for (const handler of tool.registeredEventHandlers.get("session_start") ??
+    []) {
+    await handler({ type: "session_start", reason: "startup" }, {
+      cwd,
+    } as ExtensionCommandContext);
+  }
+}
 
 export function getSubagentTool(overrides?: {
   sendMessage?: (msg: SendMessageArg) => void;
@@ -529,6 +645,20 @@ export function makeSingleResult(
 }
 
 /**
+ * Builds a `RuntimeResult` fixture on `makeSingleResult` defaults with
+ * `messages` defaulting to empty; explicit overrides win over every default.
+ */
+export function makeRuntimeResult(
+  overrides: Partial<RuntimeResult> = {},
+): RuntimeResult {
+  const base = makeSingleResult(overrides as Partial<SingleResult>);
+  if (!("messages" in base)) {
+    (base as RuntimeResult).messages = [];
+  }
+  return base as RuntimeResult;
+}
+
+/**
  * Creates a minimal Model fixture with sensible defaults.
  * Merge fields override defaults; `id` and `provider` are required.
  */
@@ -592,6 +722,7 @@ export function setupHooks() {
   beforeEach(() => {
     tempDirs = [];
     resetRunRegistry();
+    resetAgentCache();
     process.env.PI_SUBAGENT_DEPTH = "0";
     process.env.PI_SUBAGENT_DESKTOP_NOTIFICATIONS = "0";
     delete process.env.PI_SUBAGENT_DEBUG_ENABLED;

@@ -3,37 +3,27 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import path from "node:path";
 import type { Message } from "@earendil-works/pi-ai";
-import {
-  DefaultResourceLoader,
-  type ExtensionAPI,
-} from "@earendil-works/pi-coding-agent";
-import { type AgentConfig, discoverAgentsAsync } from "../src/agent/agents.js";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { DefaultResourceLoader } from "@earendil-works/pi-coding-agent";
+import type { AgentConfig } from "../src/agent/agents.js";
+import { discoverAgentsAsync } from "../src/agent/agents.js";
 import type { ModelRegistry } from "../src/child/model-resolution.js";
-import { buildPiArgs } from "../src/child/pi-args.js";
+import type { RunSingleAgentResult } from "../src/child/process.js";
 import {
-  makeEmitUpdate,
-  type RunSingleAgentResult,
+  getAgentEndTimeoutExitCode,
+  hasCompletedAgentOutput,
   runSingleAgent,
 } from "../src/child/process.js";
 import {
   resolvePackageExtensionPath,
   resolveSamplingExtensionPath,
 } from "../src/child/process-utils.js";
-import { SUBAGENT_RESULT_CONTRACT } from "../src/child/prompt-contract.js";
-import {
-  addMessageToResult,
-  initRuntimeResult,
-  type RuntimeResult,
-  rebuildResultFromMessages,
-} from "../src/child/result-builder.js";
 import defaultSamplingExtension, {
   patchPayload,
 } from "../src/child/sampling-extension.js";
 import { parseSamplingParams } from "../src/shared/sampling.js";
-import {
-  type SingleResult,
-  TOOL_RESULT_FAILED_MESSAGE,
-} from "../src/shared/types.js";
+import type { SingleResult } from "../src/shared/types.js";
+import { TOOL_RESULT_FAILED_MESSAGE } from "../src/shared/types.js";
 import {
   resetResolvedAgentExtensionPathsCache,
   resetResolvedAgentSkillArgsCache,
@@ -45,18 +35,18 @@ import {
   emitMessageEnd,
   flagValues,
   hangAgent,
+  installFakePi,
   makeAssistantMessage,
   makeModelAgent,
+  makeRuntimeResult,
+  makeSingleResult,
   makeSubagentDetails,
-  makeSubagentToolUpdateLine,
-  modelFixture,
   registryFixture,
   setupFakePi,
   setupHooks,
   setupTest,
-  shellQuote,
-  unconfirmedWarning,
   waitFor,
+  withEnv,
   withMkdtempCapture,
 } from "./helpers.js";
 
@@ -180,448 +170,32 @@ test("runSingleAgent reports clamped env max depth", async () => {
   expect(result.stderr).toContain("depth 10/10");
 });
 
-test("runSingleAgent resolves child model flags independently from agent and parent settings", async () => {
-  const cases: {
-    name: string;
-    agent: AgentConfig;
-    parentModel: CapturableParentModel | undefined;
-    providerFlags: string[];
-    modelFlags: string[];
-  }[] = [
-    {
-      name: "inherits both parent fields without overrides",
-      agent: makeModelAgent({}),
-      parentModel: { provider: "parent-provider", id: "parent-model" },
-      providerFlags: ["parent-provider"],
-      modelFlags: ["parent-model"],
-    },
-    {
-      name: "omits provider-only flag when agent overrides provider without model",
-      agent: makeModelAgent({ provider: "agent-provider" }),
-      parentModel: { provider: "parent-provider", id: "parent-model" },
-      providerFlags: [],
-      modelFlags: [],
-    },
-    {
-      name: "inherits provider and overrides model",
-      agent: makeModelAgent({ model: "agent-model" }),
-      parentModel: { provider: "parent-provider", id: "parent-model" },
-      providerFlags: ["parent-provider"],
-      modelFlags: ["agent-model"],
-    },
-    {
-      name: "overrides both fields",
-      agent: makeModelAgent({
-        provider: "agent-provider",
-        model: "agent-model",
-      }),
-      parentModel: { provider: "parent-provider", id: "parent-model" },
-      providerFlags: ["agent-provider"],
-      modelFlags: ["agent-model"],
-    },
-    {
-      name: "omits provider flag when parent model id is absent",
-      agent: makeModelAgent({}),
-      parentModel: { provider: "parent-provider" },
-      providerFlags: [],
-      modelFlags: [],
-    },
-    {
-      name: "emits model only when parent provider remains absent",
-      agent: makeModelAgent({}),
-      parentModel: { id: "parent-model" },
-      providerFlags: [],
-      modelFlags: ["parent-model"],
-    },
-    {
-      name: "omits provider flag without model when parent model absent",
-      agent: makeModelAgent({ provider: "agent-provider" }),
-      parentModel: undefined,
-      providerFlags: [],
-      modelFlags: [],
-    },
-    {
-      name: "emits model only without parent provider",
-      agent: makeModelAgent({ model: "agent-model" }),
-      parentModel: undefined,
-      providerFlags: [],
-      modelFlags: ["agent-model"],
-    },
-    {
-      name: "omits both flags without any effective settings",
-      agent: makeModelAgent({ provider: undefined, model: undefined }),
-      parentModel: undefined,
-      providerFlags: [],
-      modelFlags: [],
-    },
-    {
-      name: "inherits parent when blank-normalized agent fields are absent",
-      agent: makeModelAgent({ provider: undefined, model: undefined }),
-      parentModel: { provider: "parent-provider", id: "parent-model" },
-      providerFlags: ["parent-provider"],
-      modelFlags: ["parent-model"],
-    },
-    {
-      name: "passes invalid runtime strings unchanged",
-      agent: makeModelAgent({ provider: "not/a/provider", model: "???" }),
-      parentModel: undefined,
-      providerFlags: ["not/a/provider"],
-      modelFlags: ["???"],
-    },
-  ];
-  for (const testCase of cases) {
-    const args = await captureRunSingleAgentArgs(
-      testCase.agent,
-      testCase.parentModel,
-    );
-    expect(flagValues(args, "--provider"), testCase.name).toEqual(
-      testCase.providerFlags,
-    );
-    expect(flagValues(args, "--model"), testCase.name).toEqual(
-      testCase.modelFlags,
-    );
-  }
-});
-
-test("runSingleAgent applies effective model settings to thinking resolution", async () => {
-  const { result } = await runCapturedModelAgent(
-    makeModelAgent({ provider: "openai", model: "gpt-4", thinking: "high" }),
-    { provider: "anthropic", id: "claude-3-7-sonnet-20250219" },
-    "low",
-    { registry: registryFixture([]) },
-  );
-  expect(result.model).toBe("openai ･ gpt-4 ･ off");
-  expect(result.thinkingWarning).toContain("provider: openai");
-  expect(result.thinkingWarning).toContain("model: gpt-4");
-  expect(result.thinkingWarning).toContain('using "off" instead');
-});
-
-test("runSingleAgent treats provider-only agent override as partial model", async () => {
-  const { args, result } = await runCapturedModelAgent(
-    makeModelAgent({ provider: "agent-provider", thinking: "high" }),
-    { provider: "openai", id: "gpt-4" },
-    "low",
-  );
-  expect(flagValues(args, "--provider")).toEqual([]);
-  expect(flagValues(args, "--model")).toEqual([]);
-  expect(flagValues(args, "--thinking")).toEqual(["high"]);
-  expect(result.model).toBe("agent-provider ･ high");
-  expect(result.thinkingWarning).toContain("provider: agent-provider");
-  expect(result.thinkingWarning).toContain("model: unknown");
-  expect(result.thinkingWarning).toContain("requesting as-is");
-});
-
-test("runSingleAgent preserves requested thinking for partial or absent effective models", async () => {
-  const cases: {
-    name: string;
-    agent: AgentConfig;
-    parentModel: CapturableParentModel | undefined;
-    expectedModel: string;
-  }[] = [
-    {
-      name: "model only",
-      agent: makeModelAgent({ thinking: undefined }),
-      parentModel: { id: "parent-model" },
-      expectedModel: "parent-model ･ high",
-    },
-    {
-      name: "provider only",
-      agent: makeModelAgent({
-        provider: "agent-provider",
-        thinking: undefined,
-      }),
-      parentModel: undefined,
-      expectedModel: "agent-provider ･ high",
-    },
-    {
-      name: "absent model",
-      agent: makeModelAgent({ thinking: undefined }),
-      parentModel: undefined,
-      expectedModel: "high",
-    },
-  ];
-  for (const testCase of cases) {
-    const { result } = await runCapturedModelAgent(
-      testCase.agent,
-      testCase.parentModel,
-      "high",
-    );
-    expect(result.thinkingWarning, testCase.name).toBeDefined();
-    expect(result.thinkingWarning, testCase.name).toContain("requesting as-is");
-    expect(result.model, testCase.name).toBe(testCase.expectedModel);
-  }
-});
-
-test("runSingleAgent prefers live registry match over static catalog", async () => {
-  const live = modelFixture({
-    provider: "openai",
-    id: "gpt-4",
-    reasoning: true,
-  });
-  const { args, result } = await runCapturedModelAgent(
-    makeModelAgent({
-      provider: "openai",
-      model: "gpt-4",
-      thinking: "high",
-    }),
-    undefined,
-    "off",
-    { registry: registryFixture([live]) },
-  );
-  expect(flagValues(args, "--provider")).toEqual(["openai"]);
-  expect(flagValues(args, "--model")).toEqual(["gpt-4"]);
-  expect(flagValues(args, "--thinking")).toEqual(["high"]);
-  expect(result.model).toBe("openai ･ gpt-4 ･ high");
-  expect(result.thinkingWarning).toBeUndefined();
-});
-
-test("runSingleAgent falls back to static catalog when live registry misses", async () => {
-  const { args, result } = await runCapturedModelAgent(
-    makeModelAgent({
-      provider: "openai",
-      model: "gpt-4",
-      thinking: "high",
-    }),
-    undefined,
-    "off",
-    { registry: registryFixture([]) },
-  );
-  expect(flagValues(args, "--thinking")).toEqual(["high"]);
-  expect(result.model).toBe("openai ･ gpt-4 ･ off");
-  expect(result.thinkingWarning).toContain('using "off" instead');
-});
-
-test("runSingleAgent keeps requested thinking in child args when estimate clamps", async () => {
-  const { args, result } = await runCapturedModelAgent(
-    makeModelAgent({
-      provider: "openai",
-      model: "gpt-4",
-      thinking: "high",
-    }),
-    undefined,
-    "off",
-    { registry: registryFixture([]) },
-  );
-  expect(flagValues(args, "--thinking")).toEqual(["high"]);
-  expect(result.model).toBe("openai ･ gpt-4 ･ off");
-  expect(result.thinkingWarning).toContain('using "off" instead');
-});
-
-test("runSingleAgent inherits parent thinking request when agent omits it", async () => {
-  const live = modelFixture({
-    provider: "openai",
-    id: "gpt-4",
-    reasoning: true,
-    thinkingLevelMap: {
-      off: null,
-      low: "low",
-      medium: "medium",
-      high: "high",
-    },
-  });
-  const { args, result } = await runCapturedModelAgent(
-    makeModelAgent({ provider: "openai", model: "gpt-4", thinking: undefined }),
-    undefined,
-    "high",
-    { registry: registryFixture([live]) },
-  );
-  expect(flagValues(args, "--thinking")).toEqual(["high"]);
-  expect(result.model).toBe("openai ･ gpt-4 ･ high");
-  expect(result.thinkingWarning).toBeUndefined();
-});
-
-test("runSingleAgent retains parent thinking request through catalog clamp", async () => {
-  const { args, result } = await runCapturedModelAgent(
-    makeModelAgent({ provider: "openai", model: "gpt-4", thinking: undefined }),
-    undefined,
-    "high",
-    { registry: registryFixture([]) },
-  );
-  expect(flagValues(args, "--thinking")).toEqual(["high"]);
-  expect(result.model).toBe("openai ･ gpt-4 ･ off");
-  expect(result.thinkingWarning).toContain('using "off" instead');
-});
-
-test("runSingleAgent emits unavailable registry diagnostic and continues", async () => {
-  const warnSpy = spyOn(console, "warn").mockImplementation(() => {});
-  try {
-    const { args, result } = await runCapturedModelAgent(
-      makeModelAgent({ provider: "openai", model: "gpt-4", thinking: "high" }),
-      undefined,
-      "off",
-    );
-    expect(flagValues(args, "--thinking")).toEqual(["high"]);
-    expect(result.exitCode).toBe(0);
-    expect(result.model).toBe("openai ･ gpt-4 ･ off");
-    expect(warnSpy).toHaveBeenCalledWith(
-      "Live model registry unavailable; falling back to static catalog.",
-    );
-  } finally {
-    warnSpy.mockRestore();
-  }
-});
-
-describe("unconfirmed thinking display propagation", () => {
-  test("unknown model preserves requested level and emits exact unconfirmed warning", async () => {
-    const { args, result } = await runCapturedModelAgent(
-      makeModelAgent({
-        provider: "unknown",
-        model: "unknown",
-        thinking: "high",
-      }),
-      undefined,
-      "off",
-      { registry: registryFixture([]) },
-    );
-    expect(flagValues(args, "--thinking")).toEqual(["high"]);
-    expect(result.model).toBe("unknown ･ unknown ･ high");
-    expect(result.thinkingWarning).toBe(
-      unconfirmedWarning("high", "unknown", "unknown"),
-    );
-  });
-
-  test("missing identifiers preserve requested level with unknown placeholders", async () => {
-    const { args, result } = await runCapturedModelAgent(
-      makeModelAgent({ thinking: "medium" }),
-      undefined,
-      "off",
-    );
-    expect(flagValues(args, "--thinking")).toEqual(["medium"]);
-    expect(result.model).toBe("medium");
-    expect(result.thinkingWarning).toBe(
-      unconfirmedWarning("medium", undefined, undefined),
-    );
-  });
-
-  test("missing identifiers with off thinking stay warning-free", async () => {
-    const { args, result } = await runCapturedModelAgent(
-      makeModelAgent({ thinking: "off" }),
-      undefined,
-      "off",
-    );
-    expect(flagValues(args, "--thinking")).toEqual(["off"]);
-    expect(result.model).toBe("off");
-    expect(result.thinkingWarning).toBeUndefined();
-  });
-
-  test("confirmed live model shows requested level without warning", async () => {
-    const live = modelFixture({
-      provider: "custom",
-      id: "reasoner",
-      reasoning: true,
-      thinkingLevelMap: {
-        off: null,
-        low: "low",
-        medium: "medium",
-        high: "high",
-      },
-    });
-    const { args, result } = await runCapturedModelAgent(
-      makeModelAgent({
-        provider: "custom",
-        model: "reasoner",
-        thinking: "medium",
-      }),
-      undefined,
-      "off",
-      { registry: registryFixture([live]) },
-    );
-    expect(flagValues(args, "--thinking")).toEqual(["medium"]);
-    expect(result.model).toBe("custom ･ reasoner ･ medium");
-    expect(result.thinkingWarning).toBeUndefined();
-  });
-
-  test("reasoning-disabled off request retains unsupported warning", async () => {
-    const { args, result } = await runCapturedModelAgent(
-      makeModelAgent({ provider: "openai", model: "gpt-4", thinking: "off" }),
-      undefined,
-      "off",
-      { registry: registryFixture([]) },
-    );
-    expect(flagValues(args, "--thinking")).toEqual(["off"]);
-    expect(result.model).toBe("openai ･ gpt-4 ･ off");
-    expect(result.thinkingWarning).toContain('using "off" instead');
-  });
-});
-
-test("runSingleAgent formats result model from effective non-empty parts", async () => {
-  const cases: {
-    name: string;
-    agent: AgentConfig;
-    parentModel: CapturableParentModel | undefined;
-    expectedModel: string;
-  }[] = [
-    {
-      name: "inherits full parent model",
-      agent: makeModelAgent({}),
-      parentModel: { provider: "parent-provider", id: "parent-model" },
-      expectedModel: "parent-provider ･ parent-model ･ off",
-    },
-    {
-      name: "overrides model without leading slash",
-      agent: makeModelAgent({ model: "agent-model" }),
-      parentModel: undefined,
-      expectedModel: "agent-model ･ off",
-    },
-    {
-      name: "omits empty provider with model override",
-      agent: makeModelAgent({ model: "agent-model" }),
-      parentModel: { provider: undefined },
-      expectedModel: "agent-model ･ off",
-    },
-    {
-      name: "preserves effective provider and model suffix",
-      agent: makeModelAgent({ model: "agent-model" }),
-      parentModel: { provider: "parent-provider", id: "parent-model" },
-      expectedModel: "parent-provider ･ agent-model ･ off",
-    },
-  ];
-  for (const testCase of cases) {
-    const { result } = await runCapturedModelAgent(
-      testCase.agent,
-      testCase.parentModel,
-      "off",
-      { registry: registryFixture([]) },
-    );
-    expect(result.model, testCase.name).toBe(testCase.expectedModel);
-  }
-});
-
-test("runSingleAgent reports effective model display on skill resolution failure", async () => {
-  const { cwd } = await setupTest();
-  const { result } = await runSingleAgent(
-    cwd,
-    [
-      makeModelAgent({
-        name: "bad-skill-model",
-        model: "agent-model",
-        skills: ["missing-skill"],
-      }),
-    ],
-    "bad-skill-model",
-    "task",
-    undefined,
-    undefined,
-    makeSubagentDetails,
-    { provider: "parent-provider", id: "parent-model" },
-    "off",
-    false,
-    { registry: registryFixture([]) },
-  );
-  expect(result.exitCode).toBe(1);
-  expect(result.stderr).toContain('Unknown skill: "missing-skill"');
-  expect(result.model).toBe("parent-provider ･ agent-model ･ off");
-});
-
-test("runSingleAgent truncates stderr to env-configured byte cap", async () => {
-  process.env.PI_SUBAGENT_MAX_STDERR_BYTES = "7";
-  const { cwd } = await setupTest({
+test.each([
+  {
+    name: "runSingleAgent truncates stderr to env-configured byte cap",
+    maxStderrBytes: "7",
     piScript: `#!/bin/sh
 printf 'abcdefghij' >&2
 printf '%s\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"done"}],"api":"fake","provider":"fake","model":"fake","usage":{"input":1,"output":1,"cacheRead":0,"cacheWrite":0,"totalTokens":2,"cost":{"total":0}},"stopReason":"stop","timestamp":0}}'
 printf '%s\n' '{"type":"agent_end","messages":[]}'
 exit 0
 `,
+    expectedStderr: "abcdefg",
+  },
+  {
+    name: "runSingleAgent keeps empty stderr under configured byte cap",
+    maxStderrBytes: "1",
+    piScript: `#!/bin/sh
+printf '%s\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"done"}],"api":"fake","provider":"fake","model":"fake","usage":{"input":1,"output":1,"cacheRead":0,"cacheWrite":0,"totalTokens":2,"cost":{"total":0}},"stopReason":"stop","timestamp":0}}'
+printf '%s\n' '{"type":"agent_end","messages":[]}'
+exit 0
+`,
+    expectedStderr: "",
+  },
+])("$name", async (row) => {
+  process.env.PI_SUBAGENT_MAX_STDERR_BYTES = row.maxStderrBytes;
+  const { cwd } = await setupTest({
+    piScript: row.piScript,
   });
   const { result } = await runSingleAgent(
     cwd,
@@ -634,7 +208,7 @@ exit 0
     undefined,
     "off",
   );
-  expect(result.stderr).toBe("abcdefg");
+  expect(result.stderr).toBe(row.expectedStderr);
 });
 
 test("runSingleAgent truncates multibyte stderr at valid UTF-8 byte boundaries", async () => {
@@ -661,29 +235,6 @@ exit 0
   expect(result.stderr).toBe("a😀b");
   expect(Buffer.byteLength(result.stderr, "utf-8")).toBeLessThanOrEqual(7);
   expect(result.stderr).not.toContain("�");
-});
-
-test("runSingleAgent keeps empty stderr under configured byte cap", async () => {
-  process.env.PI_SUBAGENT_MAX_STDERR_BYTES = "1";
-  const { cwd } = await setupTest({
-    piScript: `#!/bin/sh
-printf '%s\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"done"}],"api":"fake","provider":"fake","model":"fake","usage":{"input":1,"output":1,"cacheRead":0,"cacheWrite":0,"totalTokens":2,"cost":{"total":0}},"stopReason":"stop","timestamp":0}}'
-printf '%s\n' '{"type":"agent_end","messages":[]}'
-exit 0
-`,
-  });
-  const { result } = await runSingleAgent(
-    cwd,
-    [hangAgent],
-    "hang",
-    "task",
-    undefined,
-    undefined,
-    makeSubagentDetails,
-    undefined,
-    "off",
-  );
-  expect(result.stderr).toBe("");
 });
 
 test("runSingleAgent caps spawn error stderr by configured byte limit", async () => {
@@ -896,7 +447,7 @@ printf '%s\n' '{"type":"agent_end","messages":[]}'
 exit 0
 `,
   });
-  const resultPromise = runSingleAgent(
+  const outcome = await runSingleAgent(
     cwd,
     [hangAgent],
     "hang",
@@ -914,12 +465,6 @@ exit 0
       },
     },
   );
-  const result = await Promise.race([
-    resultPromise,
-    Bun.sleep(500).then(() => new Error("timed out waiting for result")),
-  ]);
-  expect(result).not.toBeInstanceOf(Error);
-  const outcome = result as RunSingleAgentResult;
   expect(acquiredPid).toBe(process.pid);
   expect(outcome.kind).toBe("completed");
   expect(outcome.result.exitCode).toBe(0);
@@ -960,12 +505,7 @@ wait $!
     "delayed sleep inhibitor acquisition",
   );
   controller.abort("host abort while acquiring");
-  const outcome = await Promise.race([
-    promise,
-    Bun.sleep(500).then(() => {
-      throw new Error("timed out waiting for abort");
-    }),
-  ]);
+  const outcome = await promise;
   expect(outcome.kind).toBe("aborted");
   expect(outcome.result.termination?.cancelReason).toBe(
     "host abort while acquiring",
@@ -1014,39 +554,66 @@ wait $!
   expect(releases).toBe(1);
 });
 
-test("runSingleAgent releases injected sleep inhibitor after agent-end timeout", async () => {
-  process.env.PI_SUBAGENT_AGENT_END_GRACE_MS = "25";
-  let releases = 0;
-  const { cwd } = await setupTest({
-    piScript: `#!/bin/sh
+type AgentEndTimeoutScenario = {
+  result: SingleResult;
+  releases: number;
+  elapsedMs: number;
+};
+
+/**
+ * One spawn per distinct agent-end-timeout child behavior: the
+ * inhibitor-release and explicit-grace cases share this byte-identical
+ * fake-child run so the behavior spawns exactly once per layer.
+ */
+let sharedAgentEndTimeoutScenario: Promise<AgentEndTimeoutScenario> | undefined;
+
+function runAgentEndTimeoutScenario(): Promise<AgentEndTimeoutScenario> {
+  sharedAgentEndTimeoutScenario ??= (async () => {
+    const scenario = await withEnv(
+      { PI_SUBAGENT_AGENT_END_GRACE_MS: "25" },
+      async () => {
+        let releases = 0;
+        const { cwd } = await setupTest({
+          piScript: `#!/bin/sh
 trap 'exit 0' TERM
 printf '%s\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"done"}],"api":"fake","provider":"fake","model":"fake","usage":{"input":1,"output":1,"cacheRead":0,"cacheWrite":0,"totalTokens":2,"cost":{"total":0}},"stopReason":"stop","timestamp":0}}'
 printf '%s\n' '{"type":"agent_end","messages":[]}'
 sleep 10 &
 wait $!
 `,
-  });
-  const { result } = await runSingleAgent(
-    cwd,
-    [hangAgent],
-    "hang",
-    "task",
-    undefined,
-    undefined,
-    makeSubagentDetails,
-    undefined,
-    "off",
-    false,
-    {
-      async acquireSleepInhibitor() {
-        return {
-          async release() {
-            releases += 1;
+        });
+        const startedAt = Date.now();
+        const { result } = await runSingleAgent(
+          cwd,
+          [hangAgent],
+          "hang",
+          "task",
+          undefined,
+          undefined,
+          makeSubagentDetails,
+          undefined,
+          "off",
+          false,
+          {
+            async acquireSleepInhibitor() {
+              return {
+                async release() {
+                  releases += 1;
+                },
+              };
+            },
           },
-        };
+        );
+        return { result, releases, elapsedMs: Date.now() - startedAt };
       },
-    },
-  );
+    );
+    return scenario;
+  })();
+  return sharedAgentEndTimeoutScenario;
+}
+
+test("runSingleAgent releases injected sleep inhibitor after agent-end timeout", async () => {
+  const { result, releases } = await runAgentEndTimeoutScenario();
   expect(result.exitCode).toBe(0);
   expect(result.finalOutput).toBe("done");
   expect(result.stderr).toBe("");
@@ -1341,29 +908,8 @@ exit 0
 });
 
 test("runSingleAgent honors explicit lower agent-end grace", async () => {
-  process.env.PI_SUBAGENT_AGENT_END_GRACE_MS = "25";
-  const { cwd } = await setupTest({
-    piScript: `#!/bin/sh
-trap 'exit 0' TERM
-printf '%s\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"done"}],"api":"fake","provider":"fake","model":"fake","usage":{"input":1,"output":1,"cacheRead":0,"cacheWrite":0,"totalTokens":2,"cost":{"total":0}},"stopReason":"stop","timestamp":0}}'
-printf '%s\n' '{"type":"agent_end","messages":[]}'
-sleep 10 &
-wait $!
-`,
-  });
-  const startedAt = Date.now();
-  const { result } = await runSingleAgent(
-    cwd,
-    [hangAgent],
-    "hang",
-    "task",
-    undefined,
-    undefined,
-    makeSubagentDetails,
-    undefined,
-    "off",
-  );
-  expect(Date.now() - startedAt).toBeLessThan(500);
+  const { result, elapsedMs } = await runAgentEndTimeoutScenario();
+  expect(elapsedMs).toBeLessThan(500);
   expect(result.termination?.cancelReason).toBe("agent_end_timeout");
 });
 
@@ -1699,18 +1245,23 @@ test("runSingleAgent returns completed error when prompt setup fails", async () 
     source: "user",
     filePath: "prompt-fail.md",
   };
+  let leakedPromptDir: string | undefined;
   try {
-    const outcome = await runSingleAgent(
-      cwd,
-      [agent],
-      "prompt-fail",
-      "task",
-      undefined,
-      undefined,
-      makeSubagentDetails,
-      undefined,
-      "off",
-    );
+    const outcome = await withMkdtempCapture(async (getTmpDir) => {
+      const runResult = await runSingleAgent(
+        cwd,
+        [agent],
+        "prompt-fail",
+        "task",
+        undefined,
+        undefined,
+        makeSubagentDetails,
+        undefined,
+        "off",
+      );
+      leakedPromptDir = getTmpDir();
+      return runResult;
+    });
     expect(outcome.kind).toBe("completed");
     expect(outcome.result.exitCode).toBe(1);
     expect(outcome.result.stderr).toContain("Failed to write prompt");
@@ -1722,276 +1273,10 @@ test("runSingleAgent returns completed error when prompt setup fails", async () 
       enumerable: true,
       configurable: true,
     });
+    if (leakedPromptDir) {
+      await fs.promises.rm(leakedPromptDir, { recursive: true, force: true });
+    }
   }
-});
-
-test("nested activity triggers onUpdate without appending messages", async () => {
-  const updates: { text: string; messageCount: number }[] = [];
-  const { cwd } = await setupTest({
-    piScript: `#!/bin/sh
-printf '%s\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"hello"}],"api":"fake","provider":"fake","model":"fake","usage":{"input":1,"output":1,"cacheRead":0,"cacheWrite":0,"totalTokens":2,"cost":{"total":0}},"stopReason":"stop","timestamp":0}}'
-printf '%s\n' ${shellQuote(makeSubagentToolUpdateLine("Reading file.ts"))}
-printf '%s\n' '{"type":"agent_end","messages":[]}'
-exit 0
-`,
-  });
-  const { result } = await runSingleAgent(
-    cwd,
-    [hangAgent],
-    "hang",
-    "task",
-    undefined,
-    (partial) => {
-      const text = partial.content[0]?.text ?? "";
-      const msgCount = partial.details.results[0]?.messages?.length ?? 0;
-      updates.push({ text, messageCount: msgCount });
-    },
-    makeSubagentDetails,
-    undefined,
-    "off",
-  );
-  expect(result.exitCode).toBe(0);
-  expect(result.messages).toHaveLength(1);
-  const nestedUpdate = updates.find(
-    (u) => u.text === "subagent - Reading file.ts",
-  );
-  expect(nestedUpdate).toBeDefined();
-  expect(nestedUpdate?.messageCount).toBe(1);
-});
-
-test("nested activity with sensitive keywords is redacted", async () => {
-  let capturedText = "";
-  const { cwd } = await setupTest({
-    piScript: `#!/bin/sh
-printf '%s\n' ${shellQuote(makeSubagentToolUpdateLine("Reading secret-token.yaml"))}
-printf '%s\n' '{"type":"agent_end","messages":[]}'
-exit 0
-`,
-  });
-  await runSingleAgent(
-    cwd,
-    [hangAgent],
-    "hang",
-    "task",
-    undefined,
-    (partial) => {
-      capturedText = partial.content[0]?.text ?? "";
-    },
-    makeSubagentDetails,
-    undefined,
-    "off",
-  );
-  expect(capturedText).toBe("(running...)");
-});
-
-test("nested activity handles no-message no-terminal child exit", async () => {
-  const updates: { text: string; messageCount: number }[] = [];
-  const { cwd } = await setupTest({
-    piScript: `#!/bin/sh
-printf '%s\n' ${shellQuote(makeSubagentToolUpdateLine("Grandchild running"))}
-exit 0
-`,
-  });
-  const { result } = await runSingleAgent(
-    cwd,
-    [hangAgent],
-    "hang",
-    "task",
-    undefined,
-    (partial) => {
-      const text = partial.content[0]?.text ?? "";
-      const msgCount = partial.details.results[0]?.messages?.length ?? 0;
-      updates.push({ text, messageCount: msgCount });
-    },
-    makeSubagentDetails,
-    undefined,
-    "off",
-  );
-  expect(result.exitCode).toBe(0);
-  expect(result.messages).toHaveLength(0);
-  expect(result.progress?.activityText).toBe("subagent - Grandchild running");
-  expect(updates).toContainEqual({
-    text: "subagent - Grandchild running",
-    messageCount: 0,
-  });
-});
-
-test("child tool events replace nested activity in subsequent updates", async () => {
-  const texts: string[] = [];
-  const { cwd } = await setupTest({
-    piScript: `#!/bin/sh
-printf '%s\n' ${shellQuote(makeSubagentToolUpdateLine("Grandchild working"))}
-printf '%s\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"toolCall","id":"tc-1","name":"bash","arguments":{"command":"ls"}}],"api":"fake","provider":"fake","model":"fake","usage":{"input":1,"output":1,"cacheRead":0,"cacheWrite":0,"totalTokens":2,"cost":{"total":0}},"stopReason":"stop","timestamp":0}}'
-printf '%s\n' '{"type":"agent_end","messages":[]}'
-exit 0
-`,
-  });
-  await runSingleAgent(
-    cwd,
-    [hangAgent],
-    "hang",
-    "task",
-    undefined,
-    (partial) => {
-      texts.push(partial.content[0]?.text ?? "");
-    },
-    makeSubagentDetails,
-    undefined,
-    "off",
-  );
-  expect(texts).toContain("subagent - Grandchild working");
-  expect(texts.some((t) => t.includes("bash"))).toBe(true);
-  const nestedIdx = texts.indexOf("subagent - Grandchild working");
-  const toolIdx = texts.findIndex((t) => t.includes("bash"));
-  expect(toolIdx).toBeGreaterThan(nestedIdx);
-});
-
-test("SUBAGENT_RESULT_CONTRACT contains complete tool instructions", () => {
-  expect(SUBAGENT_RESULT_CONTRACT).toContain(
-    "Write the complete task result as assistant text",
-  );
-  expect(SUBAGENT_RESULT_CONTRACT).toMatch(
-    /Call `complete` as the final action/,
-  );
-  expect(SUBAGENT_RESULT_CONTRACT).toMatch(/one-sentence progress/i);
-  expect(SUBAGENT_RESULT_CONTRACT).not.toMatch(/Outcome: <short/);
-});
-
-test("SUBAGENT_RESULT_CONTRACT narrows code-block constraint to entire-result wrapper", () => {
-  expect(SUBAGENT_RESULT_CONTRACT).toMatch(
-    /NEVER.*wrap the entire result in a code block/i,
-  );
-  expect(SUBAGENT_RESULT_CONTRACT).not.toMatch(
-    /NEVER.*wrap result in code blocks/i,
-  );
-});
-
-// Helper: build a minimal RuntimeResult with a tool-call message so deriveStreamingProgress produces activeToolActivity
-function makeRuntimeWithToolCall(
-  toolName: string,
-  args: Record<string, unknown>,
-) {
-  const messages = [
-    {
-      role: "assistant",
-      content: [
-        { type: "toolCall", id: "tc-1", name: toolName, arguments: args },
-      ],
-    },
-  ] as Message[];
-  return {
-    agent: "test",
-    agentSource: "user" as const,
-    task: "task",
-    exitCode: 0,
-    finalOutput: "",
-    stderr: "",
-    usage: {
-      input: 0,
-      output: 0,
-      cacheRead: 0,
-      cacheWrite: 0,
-      cost: 0,
-      contextTokens: 0,
-      turns: 0,
-    },
-    messages,
-  } as SingleResult & { messages: Message[] };
-}
-
-test("makeEmitUpdate merge: inputSummary === toolName fallback does not overwrite parent inputSummary", () => {
-  // deriveStreamingProgress produces inputSummary from makeToolPreview("subagent", ...) → "subagent: builder"
-  const result = makeRuntimeWithToolCall("subagent", {
-    agent: "builder",
-    task: "fix bugs",
-    agentScope: "project",
-  });
-  const emitUpdate = makeEmitUpdate(result, undefined, makeSubagentDetails);
-  // Parser sends bare toolName fallback (inputSummary === toolName) — should retain parent's richer value
-  emitUpdate({
-    toolActivity: { toolName: "subagent", inputSummary: "subagent" },
-  });
-  expect(result.progress?.activeToolActivity).toEqual({
-    toolName: "subagent",
-    inputSummary: "subagent: builder",
-  });
-});
-
-test("makeEmitUpdate merge: inputSummary !== toolName overwrites parent inputSummary", () => {
-  // deriveStreamingProgress produces inputSummary: "subagent" (bare toolName from makeToolPreview)
-  const result = makeRuntimeWithToolCall("subagent", {
-    agent: "builder",
-    task: "fix bugs",
-    agentScope: "project",
-  });
-  const emitUpdate = makeEmitUpdate(result, undefined, makeSubagentDetails);
-  // Parser sends richer inputSummary from nested child (different from toolName "subagent")
-  emitUpdate({
-    toolActivity: { toolName: "subagent", inputSummary: "bash: scan src" },
-  });
-  expect(result.progress?.activeToolActivity).toEqual({
-    toolName: "subagent",
-    inputSummary: "bash: scan src",
-  });
-});
-
-test("makeEmitUpdate merge: incoming without inputSummary preserves parent inputSummary", () => {
-  const result = makeRuntimeWithToolCall("subagent", {
-    agent: "builder",
-    task: "fix bugs",
-    agentScope: "project",
-  });
-  const emitUpdate = makeEmitUpdate(result, undefined, makeSubagentDetails);
-  // Incoming has no inputSummary — merge should keep parent's richer semantic value
-  emitUpdate({
-    toolActivity: {
-      toolName: "subagent",
-      child: { toolName: "bash", inputSummary: "bash: ls" },
-    },
-  });
-  expect(result.progress?.activeToolActivity).toEqual({
-    toolName: "subagent",
-    inputSummary: "subagent: builder",
-    child: { toolName: "bash", inputSummary: "bash: ls" },
-  });
-});
-
-test("makeEmitUpdate streaming integration: subagent preview starts with semantic target then updated to richer parser inputSummary", () => {
-  // deriveStreamingProgress produces activeToolActivity with inputSummary from semantic lookup: "subagent: builder"
-  const result = makeRuntimeWithToolCall("subagent", {
-    agent: "builder",
-    task: "fix bugs",
-    agentScope: "project",
-  });
-  const texts: string[] = [];
-  const emitUpdate = makeEmitUpdate(
-    result,
-    (partial) => {
-      texts.push(partial.content[0]?.text ?? "");
-    },
-    makeSubagentDetails,
-  );
-  // First call triggers deriveStreamingProgress and sets result.progress
-  emitUpdate();
-  // progress derived from messages: makeToolPreview("subagent", ...) → "subagent: builder" (semantic lookup)
-  expect(result.progress?.activeToolActivity).toEqual({
-    toolName: "subagent",
-    inputSummary: "subagent: builder",
-  });
-  expect(result.progress?.activityText).toBe("subagent: builder");
-  // Parser sends richer nested child data — merge prefers incoming inputSummary
-  emitUpdate({
-    toolActivity: {
-      toolName: "subagent",
-      inputSummary: "bash: scan src",
-      child: { toolName: "bash", inputSummary: "bash: scan src" },
-    },
-  });
-  expect(result.progress?.activeToolActivity?.inputSummary).toBe(
-    "bash: scan src",
-  );
-  // renderToolActivity walks full tree: parent + child joined with " - "
-  expect(result.progress?.activityText).toBe("bash: scan src - bash: scan src");
 });
 
 test("runSingleAgent releases sleep inhibitor after spawn error with valid PID", async () => {
@@ -2397,21 +1682,50 @@ exit 0
     expect(result.usage.contextWindowTokens).toBeUndefined();
   });
 
-  test("non-assistant messages do not affect usage", async () => {
-    const piScript = `#!/bin/sh
+  test.each([
+    {
+      name: "non-assistant messages do not affect usage",
+      piScript: `#!/bin/sh
 printf '%s\n' '{"type":"message_end","message":{"role":"toolResult","content":[{"type":"text","text":"tool result"}],"api":"fake","provider":"fake","model":"fake","usage":{"input":5,"output":5,"cacheRead":0,"cacheWrite":0,"totalTokens":10,"cost":{"total":0.1}},"timestamp":0}}'
 printf '%s\n' '{"type":"agent_end","messages":[]}'
 exit 0
-`;
+`,
+      expectedTurns: 0,
+      expectedInput: 0,
+      expectedOutput: 0,
+      expectedCacheRead: 0,
+      expectedCacheWrite: 0,
+      expectedCost: 0,
+      expectedContextTokens: 0,
+    },
+    {
+      name: "multiple assistant messages accumulate cache and cost correctly",
+      piScript: `#!/bin/sh
+printf '%s\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"first"}],"api":"fake","provider":"fake","model":"fake","usage":{"input":100,"output":50,"cacheRead":10,"cacheWrite":5,"totalTokens":150,"cost":{"total":2.5}},"stopReason":"stop","timestamp":0}}'
+printf '%s\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"second"}],"api":"fake","provider":"fake","model":"fake","usage":{"input":200,"output":100,"cacheRead":20,"cacheWrite":10,"totalTokens":300,"cost":{"total":5.0}},"stopReason":"stop","timestamp":0}}'
+printf '%s\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"third"}],"api":"fake","provider":"fake","model":"fake","usage":{"input":50,"output":25,"cacheRead":5,"cacheWrite":2,"totalTokens":75,"cost":{"total":1.25}},"stopReason":"stop","timestamp":0}}'
+printf '%s\n' '{"type":"agent_end","messages":[]}'
+exit 0
+`,
+      expectedTurns: 3,
+      expectedInput: 350,
+      expectedOutput: 175,
+      expectedCacheRead: 35,
+      expectedCacheWrite: 17,
+      expectedCost: 8.75,
+      expectedContextTokens: 75,
+    },
+  ])("$name", async (row) => {
+    const piScript = row.piScript;
     const result = await runUsageTest(piScript);
     expect(result.exitCode).toBe(0);
-    expect(result.usage.turns).toBe(0);
-    expect(result.usage.input).toBe(0);
-    expect(result.usage.output).toBe(0);
-    expect(result.usage.cacheRead).toBe(0);
-    expect(result.usage.cacheWrite).toBe(0);
-    expect(result.usage.cost).toBe(0);
-    expect(result.usage.contextTokens).toBe(0);
+    expect(result.usage.turns).toBe(row.expectedTurns);
+    expect(result.usage.input).toBe(row.expectedInput);
+    expect(result.usage.output).toBe(row.expectedOutput);
+    expect(result.usage.cacheRead).toBe(row.expectedCacheRead);
+    expect(result.usage.cacheWrite).toBe(row.expectedCacheWrite);
+    expect(result.usage.cost).toBe(row.expectedCost);
+    expect(result.usage.contextTokens).toBe(row.expectedContextTokens);
   });
 
   test("missing cost keeps cost at zero", async () => {
@@ -2448,25 +1762,6 @@ exit 0
     const result = await runUsageTest(piScript);
     expect(result.exitCode).toBe(0);
     expect(result.usage.contextWindowTokens).toBeUndefined();
-  });
-
-  test("multiple assistant messages accumulate cache and cost correctly", async () => {
-    const piScript = `#!/bin/sh
-printf '%s\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"first"}],"api":"fake","provider":"fake","model":"fake","usage":{"input":100,"output":50,"cacheRead":10,"cacheWrite":5,"totalTokens":150,"cost":{"total":2.5}},"stopReason":"stop","timestamp":0}}'
-printf '%s\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"second"}],"api":"fake","provider":"fake","model":"fake","usage":{"input":200,"output":100,"cacheRead":20,"cacheWrite":10,"totalTokens":300,"cost":{"total":5.0}},"stopReason":"stop","timestamp":0}}'
-printf '%s\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"third"}],"api":"fake","provider":"fake","model":"fake","usage":{"input":50,"output":25,"cacheRead":5,"cacheWrite":2,"totalTokens":75,"cost":{"total":1.25}},"stopReason":"stop","timestamp":0}}'
-printf '%s\n' '{"type":"agent_end","messages":[]}'
-exit 0
-`;
-    const result = await runUsageTest(piScript);
-    expect(result.exitCode).toBe(0);
-    expect(result.usage.turns).toBe(3);
-    expect(result.usage.input).toBe(350);
-    expect(result.usage.output).toBe(175);
-    expect(result.usage.cacheRead).toBe(35);
-    expect(result.usage.cacheWrite).toBe(17);
-    expect(result.usage.cost).toBe(8.75);
-    expect(result.usage.contextTokens).toBe(75);
   });
 
   test("model and stopReason set from last assistant message", async () => {
@@ -2541,49 +1836,27 @@ exit 0
   expect(lastUpdate).toBeDefined();
 });
 
-test("debug event diagnostics logs malformed JSON", async () => {
-  const piScript = `#!/bin/sh
+test.each([
+  {
+    name: "debug event diagnostics logs malformed JSON",
+    piScript: `#!/bin/sh
 printf '%s\n' 'not valid json'
 printf '%s\n' '{"type":"agent_end","messages":[]}'
 exit 0
-`;
-  const { cwd } = await setupTest({ piScript });
-  const stderrChunks: string[] = [];
-  const originalWrite = process.stderr.write;
-  process.stderr.write = ((chunk: string | Uint8Array) => {
-    stderrChunks.push(typeof chunk === "string" ? chunk : chunk.toString());
-    return true;
-  }) as typeof process.stderr.write;
-  try {
-    const { result } = await runSingleAgent(
-      cwd,
-      [hangAgent],
-      "hang",
-      "task",
-      undefined,
-      undefined,
-      makeSubagentDetails,
-      undefined,
-      "off",
-      true,
-    );
-    expect(result.exitCode).toBe(0);
-    expect(
-      stderrChunks.some((chunk) =>
-        chunk.includes("[pi-subagent:unknown-event] malformed:"),
-      ),
-    ).toBe(true);
-  } finally {
-    process.stderr.write = originalWrite;
-  }
-});
-
-test("debug event diagnostics logs unknown event types", async () => {
-  const piScript = `#!/bin/sh
+`,
+    expectedStderrChunk: "[pi-subagent:unknown-event] malformed:",
+  },
+  {
+    name: "debug event diagnostics logs unknown event types",
+    piScript: `#!/bin/sh
 printf '%s\n' '{"type":"unknown_type","data":"test"}'
 printf '%s\n' '{"type":"agent_end","messages":[]}'
 exit 0
-`;
+`,
+    expectedStderrChunk: "[pi-subagent:unknown-event] unknown:",
+  },
+])("$name", async (row) => {
+  const piScript = row.piScript;
   const { cwd } = await setupTest({ piScript });
   const stderrChunks: string[] = [];
   const originalWrite = process.stderr.write;
@@ -2606,9 +1879,7 @@ exit 0
     );
     expect(result.exitCode).toBe(0);
     expect(
-      stderrChunks.some((chunk) =>
-        chunk.includes("[pi-subagent:unknown-event] unknown:"),
-      ),
+      stderrChunks.some((chunk) => chunk.includes(row.expectedStderrChunk)),
     ).toBe(true);
   } finally {
     process.stderr.write = originalWrite;
@@ -2696,58 +1967,31 @@ test("runSingleAgent deduplicates complete in the tool allowlist", async () => {
   ]);
 });
 
-test("runSingleAgent extracts outcome from toolResult details", async () => {
-  const piScript = `#!/bin/sh
-printf '%s\\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"toolCall","id":"tc-1","name":"complete","arguments":{"outcome":"A beautiful outcome"}}]}}'
-printf '%s\\n' '{"type":"tool_result_end","message":{"role":"toolResult","toolCallId":"tc-1","details":{"outcome":"A beautiful outcome"}}}'
-printf '%s\\n' '{"type":"agent_end","messages":[]}'
-exit 0
-`;
-  const { cwd } = await setupTest({ piScript });
-  const { result } = await runSingleAgent(
-    cwd,
-    [hangAgent],
-    "hang",
-    "task",
-    undefined,
-    undefined,
-    makeSubagentDetails,
-    undefined,
-    "off",
-  );
-  expect(result.exitCode).toBe(0);
-  expect(result.outcome).toBe("A beautiful outcome");
-});
-
-test("runSingleAgent suppresses outcome from assistant arguments when toolResult is missing", async () => {
-  const piScript = `#!/bin/sh
-printf '%s\\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"toolCall","id":"tc-1","name":"complete","arguments":{"outcome":"Assistant outcome"}}]}}'
-printf '%s\\n' '{"type":"agent_end","messages":[]}'
-exit 0
-`;
-  const { cwd } = await setupTest({ piScript });
-  const { result } = await runSingleAgent(
-    cwd,
-    [hangAgent],
-    "hang",
-    "task",
-    undefined,
-    undefined,
-    makeSubagentDetails,
-    undefined,
-    "off",
-  );
-  expect(result.exitCode).toBe(0);
-  expect(result.outcome).toBe("Assistant outcome");
-});
-
-test("runSingleAgent prefers toolResult details.outcome over assistant arguments.outcome", async () => {
-  const piScript = `#!/bin/sh
+test.each([
+  {
+    name: "runSingleAgent prefers toolResult details.outcome over assistant arguments.outcome",
+    piScript: `#!/bin/sh
 printf '%s\\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"toolCall","id":"tc-1","name":"complete","arguments":{"outcome":"Assistant outcome"}}]}}'
 printf '%s\\n' '{"type":"tool_result_end","message":{"role":"toolResult","toolCallId":"tc-1","details":{"outcome":"Tool outcome beats assistant"}}}'
 printf '%s\\n' '{"type":"agent_end","messages":[]}'
 exit 0
-`;
+`,
+    expectedOutcome: "Assistant outcome",
+  },
+  {
+    name: "runSingleAgent handles multiple complete calls, newer invalid/blank calls do not block older valid outcomes",
+    piScript: `#!/bin/sh
+printf '%s\\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"toolCall","id":"tc-1","name":"complete","arguments":{"outcome":"First valid"}}]}}'
+printf '%s\\n' '{"type":"tool_result_end","message":{"role":"toolResult","toolCallId":"tc-1","details":{"outcome":"First valid"}}}'
+printf '%s\\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"toolCall","id":"tc-2","name":"complete","arguments":{"outcome":"   "}}]}}'
+printf '%s\\n' '{"type":"tool_result_end","message":{"role":"toolResult","toolCallId":"tc-2","details":{"outcome":"   "}}}'
+printf '%s\\n' '{"type":"agent_end","messages":[]}'
+exit 0
+`,
+    expectedOutcome: "First valid",
+  },
+])("$name", async (row) => {
+  const piScript = row.piScript;
   const { cwd } = await setupTest({ piScript });
   const { result } = await runSingleAgent(
     cwd,
@@ -2761,7 +2005,7 @@ exit 0
     "off",
   );
   expect(result.exitCode).toBe(0);
-  expect(result.outcome).toBe("Assistant outcome");
+  expect(result.outcome).toBe(row.expectedOutcome);
 });
 
 test("runSingleAgent ignores blank or malformed outcomes", async () => {
@@ -2806,31 +2050,6 @@ exit 0
     "off",
   );
   expect(result.outcome).toBe("Should be ignored");
-});
-
-test("runSingleAgent handles multiple complete calls, newer invalid/blank calls do not block older valid outcomes", async () => {
-  const piScript = `#!/bin/sh
-printf '%s\\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"toolCall","id":"tc-1","name":"complete","arguments":{"outcome":"First valid"}}]}}'
-printf '%s\\n' '{"type":"tool_result_end","message":{"role":"toolResult","toolCallId":"tc-1","details":{"outcome":"First valid"}}}'
-printf '%s\\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"toolCall","id":"tc-2","name":"complete","arguments":{"outcome":"   "}}]}}'
-printf '%s\\n' '{"type":"tool_result_end","message":{"role":"toolResult","toolCallId":"tc-2","details":{"outcome":"   "}}}'
-printf '%s\\n' '{"type":"agent_end","messages":[]}'
-exit 0
-`;
-  const { cwd } = await setupTest({ piScript });
-  const { result } = await runSingleAgent(
-    cwd,
-    [hangAgent],
-    "hang",
-    "task",
-    undefined,
-    undefined,
-    makeSubagentDetails,
-    undefined,
-    "off",
-  );
-  expect(result.exitCode).toBe(0);
-  expect(result.outcome).toBe("First valid");
 });
 
 test("runSingleAgent preserves outcome during agent-end timeout with no assistant text", async () => {
@@ -2917,15 +2136,42 @@ wait $!
   );
 });
 
-describe("T-003: parseSamplingParams", () => {
-  test("parses valid full sampling parameters", () => {
-    const res = parseSamplingParams('{"temperature":0.5,"topP":0.8}');
-    expect(res).toEqual({ temperature: 0.5, topP: 0.8 });
+describe("parseSamplingParams", () => {
+  test.each([
+    {
+      name: "parses valid full sampling parameters",
+      params: '{"temperature":0.5,"topP":0.8}',
+      expectedTemperature: 0.5,
+      expectedTopP: 0.8,
+    },
+    {
+      name: "accepts boundary values 0 and 1",
+      params: '{"temperature":0,"topP":1}',
+      expectedTemperature: 0,
+      expectedTopP: 1,
+    },
+  ])("$name", (row) => {
+    const res = parseSamplingParams(row.params);
+    expect(res).toEqual({
+      temperature: row.expectedTemperature,
+      topP: row.expectedTopP,
+    });
   });
 
-  test("parses valid single temperature parameter", () => {
-    const res = parseSamplingParams('{"temperature":0.7}');
-    expect(res).toEqual({ temperature: 0.7 });
+  test.each([
+    {
+      name: "parses valid single temperature parameter",
+      params: '{"temperature":0.7}',
+      expectedTemperature: 0.7,
+    },
+    {
+      name: "ignores unsupported keys",
+      params: '{"temperature":0.5,"unsupported":123}',
+      expectedTemperature: 0.5,
+    },
+  ])("$name", (row) => {
+    const res = parseSamplingParams(row.params);
+    expect(res).toEqual({ temperature: row.expectedTemperature });
   });
 
   test("parses valid single topP parameter", () => {
@@ -2942,15 +2188,29 @@ describe("T-003: parseSamplingParams", () => {
     expect(parseSamplingParams("{invalid}")).toBeUndefined();
   });
 
-  test("returns undefined for non-object JSON", () => {
-    expect(parseSamplingParams("42")).toBeUndefined();
-    expect(parseSamplingParams('"string"')).toBeUndefined();
-    expect(parseSamplingParams("[]")).toBeUndefined();
-  });
-
-  test("ignores unsupported keys", () => {
-    const res = parseSamplingParams('{"temperature":0.5,"unsupported":123}');
-    expect(res).toEqual({ temperature: 0.5 });
+  test.each([
+    {
+      name: "returns undefined for non-object JSON",
+      params1: "42",
+      params2: '"string"',
+      params3: "[]",
+    },
+    {
+      name: "ignores invalid topP values",
+      params1: '{"topP":1.1}',
+      params2: '{"topP":-0.01}',
+      params3: '{"topP":null}',
+    },
+    {
+      name: "returns undefined for unsupported-only and invalid-only inputs",
+      params1: '{"unsupported":123}',
+      params2: '{"temperature":-1}',
+      params3: '{"topP":2}',
+    },
+  ])("$name", (row) => {
+    expect(parseSamplingParams(row.params1)).toBeUndefined();
+    expect(parseSamplingParams(row.params2)).toBeUndefined();
+    expect(parseSamplingParams(row.params3)).toBeUndefined();
   });
 
   test("ignores invalid temperature values", () => {
@@ -2961,32 +2221,15 @@ describe("T-003: parseSamplingParams", () => {
     expect(parseSamplingParams('{"temperature":Infinity}')).toBeUndefined();
   });
 
-  test("ignores invalid topP values", () => {
-    expect(parseSamplingParams('{"topP":1.1}')).toBeUndefined();
-    expect(parseSamplingParams('{"topP":-0.01}')).toBeUndefined();
-    expect(parseSamplingParams('{"topP":null}')).toBeUndefined();
-  });
-
   test("accepts valid value when other value is invalid in both directions", () => {
     const res1 = parseSamplingParams('{"temperature":0.5,"topP":1.5}');
     expect(res1).toEqual({ temperature: 0.5 });
     const res2 = parseSamplingParams('{"temperature":-0.5,"topP":0.8}');
     expect(res2).toEqual({ topP: 0.8 });
   });
-
-  test("returns undefined for unsupported-only and invalid-only inputs", () => {
-    expect(parseSamplingParams('{"unsupported":123}')).toBeUndefined();
-    expect(parseSamplingParams('{"temperature":-1}')).toBeUndefined();
-    expect(parseSamplingParams('{"topP":2}')).toBeUndefined();
-  });
-
-  test("accepts boundary values 0 and 1", () => {
-    const res = parseSamplingParams('{"temperature":0,"topP":1}');
-    expect(res).toEqual({ temperature: 0, topP: 1 });
-  });
 });
 
-describe("T-004: patchPayload", () => {
+describe("patchPayload", () => {
   test("patches flat payloads without mutating original", () => {
     const payload = Object.freeze({ model: "claude-3-5", messages: [] });
     const params = { temperature: 0.2, topP: 0.9 };
@@ -3077,7 +2320,7 @@ describe("T-004: patchPayload", () => {
   });
 });
 
-describe("T-004: sampling extension hook registration and execution", () => {
+describe("sampling extension hook registration and execution", () => {
   function makeTrackingPi(): {
     pi: ExtensionAPI;
     getHandler: () => ((event: { payload: unknown }) => unknown) | undefined;
@@ -3173,7 +2416,7 @@ describe("T-004: sampling extension hook registration and execution", () => {
   });
 });
 
-describe("T-002: Wire child-scoped sampling env and extension loading", () => {
+describe("Wire child-scoped sampling env and extension loading", () => {
   async function runCapturedAgentWithParams(
     agent: AgentConfig,
   ): Promise<{ args: string[]; envSampling: string; result: SingleResult }> {
@@ -3318,7 +2561,7 @@ exit 0
   });
 });
 
-describe("T-006: resolveSamplingExtensionPath", () => {
+describe("resolveSamplingExtensionPath", () => {
   function withTempDir(fn: (dir: string) => void): void {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "sampling-ext-"));
     try {
@@ -3328,18 +2571,18 @@ describe("T-006: resolveSamplingExtensionPath", () => {
     }
   }
 
-  test("returns primary runtime extension when sampling-extension.ts exists", () => {
+  test.each([
+    {
+      name: "returns primary runtime extension when sampling-extension.ts exists",
+      extensionFile: "sampling-extension.ts",
+    },
+    {
+      name: "falls back to alternate extension when only sampling-extension.js exists",
+      extensionFile: "sampling-extension.js",
+    },
+  ])("$name", (row) => {
     withTempDir((dir) => {
-      const expected = path.join(dir, "sampling-extension.ts");
-      fs.writeFileSync(expected, "");
-      const resolved = resolveSamplingExtensionPath(dir);
-      expect(resolved).toBe(expected);
-    });
-  });
-
-  test("falls back to alternate extension when only sampling-extension.js exists", () => {
-    withTempDir((dir) => {
-      const expected = path.join(dir, "sampling-extension.js");
+      const expected = path.join(dir, row.extensionFile);
       fs.writeFileSync(expected, "");
       const resolved = resolveSamplingExtensionPath(dir);
       expect(resolved).toBe(expected);
@@ -3627,325 +2870,6 @@ exit 0
   expect(result.finalOutput).toBe("done");
 });
 
-describe("T-004: runtime finalOutput construction invariants", () => {
-  function makeResult(model?: string): RuntimeResult {
-    return initRuntimeResult("agent", "user", "task", model ?? "display-model");
-  }
-
-  function makeTextMessage(text: string): Message {
-    return {
-      role: "assistant",
-      content: [{ type: "text", text }],
-    } as unknown as Message;
-  }
-
-  function makeToolCallMessage(
-    name: string,
-    args: Record<string, unknown>,
-  ): Message {
-    return {
-      role: "assistant",
-      content: [{ type: "toolCall", id: "tc-1", name, arguments: args }],
-    } as unknown as Message;
-  }
-
-  function makeToolResultMessage(isError: boolean): Message {
-    return {
-      role: "toolResult",
-      toolCallId: "tc-1",
-      isError,
-      content: [{ type: "text", text: "tool output" }],
-    } as unknown as Message;
-  }
-
-  test("initRuntimeResult starts with empty finalOutput", () => {
-    const result = makeResult();
-    expect(result.finalOutput).toBe("");
-    expect(result.messages).toHaveLength(0);
-  });
-
-  test("addMessageToResult updates finalOutput from assistant text", () => {
-    const result = makeResult();
-    addMessageToResult(result, makeTextMessage("first"));
-    expect(result.finalOutput).toBe("first");
-    addMessageToResult(result, makeTextMessage("second"));
-    expect(result.finalOutput).toBe("second");
-  });
-
-  test("addMessageToResult updates finalOutput when assistant text follows a tool call", () => {
-    const result = makeResult();
-    addMessageToResult(result, makeToolCallMessage("bash", { command: "ls" }));
-    expect(result.finalOutput).toBe("");
-    addMessageToResult(result, makeTextMessage("done"));
-    expect(result.finalOutput).toBe("done");
-  });
-
-  test("addMessageToResult keeps finalOutput empty for tool-only complete outcome", () => {
-    const result = makeResult();
-    addMessageToResult(
-      result,
-      makeToolCallMessage("complete", { outcome: "Completed" }),
-    );
-    expect(result.finalOutput).toBe("");
-    addMessageToResult(result, makeToolResultMessage(false));
-    expect(result.finalOutput).toBe("");
-  });
-
-  test("addMessageToResult truncates finalOutput to configured output limits", () => {
-    process.env.PI_SUBAGENT_MAX_OUTPUT_LINES = "2";
-    process.env.PI_SUBAGENT_MAX_OUTPUT_BYTES = "100000";
-    try {
-      const result = makeResult();
-      const long = "line1\nline2\nline3";
-      addMessageToResult(result, makeTextMessage(long));
-      expect(result.finalOutput).toContain("[TRUNCATED:");
-      expect(result.finalOutput).toContain("line1");
-      expect(result.finalOutput).not.toContain("line3");
-    } finally {
-      delete process.env.PI_SUBAGENT_MAX_OUTPUT_LINES;
-      delete process.env.PI_SUBAGENT_MAX_OUTPUT_BYTES;
-    }
-  });
-
-  test("addMessageToResult records toolResult errors and assistant error messages", () => {
-    const result = makeResult();
-    addMessageToResult(result, makeToolResultMessage(true));
-    expect(result.errorMessage).toBe(TOOL_RESULT_FAILED_MESSAGE);
-    addMessageToResult(result, makeTextMessage("retry") as unknown as Message);
-    expect(result.errorMessage).toBeUndefined();
-    addMessageToResult(result, {
-      role: "assistant",
-      content: [{ type: "text", text: "api error" }],
-      errorMessage: "provider error",
-    } as unknown as Message);
-    expect(result.errorMessage).toBe("provider error");
-  });
-
-  test("rebuildResultFromMessages replaces stale finalOutput with newer assistant text", () => {
-    const result = makeResult();
-    addMessageToResult(result, makeTextMessage("stale"));
-    rebuildResultFromMessages(result, [makeTextMessage("authoritative")]);
-    expect(result.finalOutput).toBe("authoritative");
-    expect(result.messages).toHaveLength(1);
-  });
-
-  test("rebuildResultFromMessages refreshes usage, stopReason, and errorMessage", () => {
-    const result = makeResult();
-    const stale = {
-      role: "assistant",
-      content: [{ type: "text", text: "stale" }],
-      usage: {
-        input: 100,
-        output: 200,
-        cacheRead: 30,
-        cacheWrite: 40,
-        totalTokens: 300,
-        cost: { total: 9 },
-      },
-      stopReason: "length",
-      errorMessage: "stale error",
-    } as unknown as Message;
-    const authoritative = {
-      role: "assistant",
-      content: [{ type: "text", text: "authoritative" }],
-      usage: {
-        input: 2,
-        output: 3,
-        cacheRead: 4,
-        cacheWrite: 5,
-        totalTokens: 6,
-        cost: { total: 0.7 },
-      },
-      stopReason: "error",
-      errorMessage: "final error",
-    } as unknown as Message;
-    addMessageToResult(result, stale);
-    rebuildResultFromMessages(result, [authoritative]);
-    expect(result.finalOutput).toBe("authoritative");
-    expect(result.usage.input).toBe(2);
-    expect(result.usage.output).toBe(3);
-    expect(result.usage.cacheRead).toBe(4);
-    expect(result.usage.cacheWrite).toBe(5);
-    expect(result.usage.cost).toBe(0.7);
-    expect(result.usage.contextTokens).toBe(6);
-    expect(result.stopReason).toBe("error");
-    expect(result.errorMessage).toBe("final error");
-  });
-
-  test("rebuildResultFromMessages with empty messages clears finalOutput and errors", () => {
-    const result = makeResult();
-    addMessageToResult(result, makeTextMessage("stale"));
-    addMessageToResult(result, makeToolResultMessage(true));
-    rebuildResultFromMessages(result, []);
-    expect(result.finalOutput).toBe("");
-    expect(result.errorMessage).toBeUndefined();
-    expect(result.stopReason).toBeUndefined();
-    expect(result.messages).toHaveLength(0);
-  });
-});
-
-test("buildPiArgs appends --no-context-files when agent.context is false", async () => {
-  const agent: AgentConfig = {
-    ...hangAgent,
-    context: false,
-  };
-  const args = await captureRunSingleAgentArgs(agent, undefined);
-  expect(args).toContain("--no-context-files");
-  expect(args.filter((a) => a === "--no-context-files")).toHaveLength(1);
-});
-
-test("buildPiArgs omits --no-context-files when agent.context is undefined", async () => {
-  const args = await captureRunSingleAgentArgs(hangAgent, undefined);
-  expect(args).not.toContain("--no-context-files");
-});
-
-test("buildPiArgs --no-context-files coexists with approval, model, provider, thinking, tools, prompt, and complete extension", async () => {
-  const agent: AgentConfig = {
-    ...hangAgent,
-    context: false,
-    tools: ["bash", "read"],
-    thinking: "high",
-    model: "gpt-4",
-    provider: "openai",
-  };
-  const { args, result } = await runCapturedModelAgent(
-    agent,
-    { provider: "anthropic", id: "claude-3-7-sonnet-20250219" },
-    "off",
-    { registry: registryFixture([]) },
-  );
-  expect(args).toContain("--no-context-files");
-  expect(args).toContain("--approve");
-  expect(flagValues(args, "--provider")).toEqual(["openai"]);
-  expect(flagValues(args, "--model")).toEqual(["gpt-4"]);
-  expect(args).toContain("--thinking");
-  expect(flagValues(args, "--thinking")).toEqual(["high"]);
-  expect(args).toContain("--tools");
-  expect(args).toContain("--append-system-prompt");
-  expect(args.some((a) => a.startsWith("Task: "))).toBe(true);
-  expect(result.model).toBe("openai ･ gpt-4 ･ off");
-  expect(result.thinkingWarning).toContain('using "off" instead');
-});
-
-test("buildPiArgs --no-context-files coexists with sampling extension args", async () => {
-  const { cwd } = await setupTest({
-    piScript: `#!/bin/sh
-printf '%s\\n' "$@" > args.txt
-printf '%s\\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"done"}],"api":"fake","provider":"fake","model":"fake","usage":{"input":1,"output":1,"cacheRead":0,"cacheWrite":0,"totalTokens":2,"cost":{"total":0}},"stopReason":"stop","timestamp":0}}'
-printf '%s\\n' '{"type":"agent_end","messages":[]}'
-exit 0
-`,
-  });
-  const agent: AgentConfig = {
-    ...hangAgent,
-    context: false,
-    temperature: 0.7,
-  };
-  const { result } = await runSingleAgent(
-    cwd,
-    [agent],
-    agent.name,
-    "task",
-    undefined,
-    undefined,
-    makeSubagentDetails,
-    undefined,
-    "off",
-  );
-  expect(result.exitCode).toBe(0);
-  const args = fs
-    .readFileSync(path.join(cwd, "args.txt"), "utf8")
-    .trimEnd()
-    .split("\n");
-  expect(args).toContain("--no-context-files");
-  expect(flagValues(args, "--extension")).toContain(
-    resolveSamplingExtensionPath(),
-  );
-});
-
-test("buildPiArgs omits --no-context-files for depth-limit and unknown-agent failures", async () => {
-  process.env.PI_SUBAGENT_DEPTH = "5";
-  const { result: depthResult } = await runSingleAgent(
-    "/tmp",
-    [{ ...hangAgent, context: false }],
-    "hang",
-    "task",
-    undefined,
-    undefined,
-    makeSubagentDetails,
-    undefined,
-    "off",
-  );
-  expect(depthResult.exitCode).toBe(1);
-  expect(depthResult.stderr).toContain("depth 5/5");
-  const { result: unknownResult } = await runSingleAgent(
-    "/tmp",
-    [{ ...hangAgent, context: false }],
-    "missing",
-    "task",
-    undefined,
-    undefined,
-    makeSubagentDetails,
-    undefined,
-    "off",
-  );
-  expect(unknownResult.exitCode).toBe(1);
-  expect(unknownResult.stderr).toContain("Unknown agent");
-});
-
-test("buildPiArgs always includes --no-themes", async () => {
-  const args = await captureRunSingleAgentArgs(hangAgent, undefined);
-  expect(args).toContain("--no-themes");
-});
-
-test("buildPiArgs always includes --no-prompt-templates", async () => {
-  const args = await captureRunSingleAgentArgs(hangAgent, undefined);
-  expect(args).toContain("--no-prompt-templates");
-});
-
-test("buildPiArgs --no-themes and --no-prompt-templates coexist with --no-context-files and model flags", async () => {
-  const agent: AgentConfig = {
-    ...hangAgent,
-    context: false,
-    model: "gpt-4",
-    provider: "openai",
-  };
-  const args = await captureRunSingleAgentArgs(agent, undefined);
-  expect(args).toContain("--no-themes");
-  expect(args).toContain("--no-prompt-templates");
-  expect(args).toContain("--no-context-files");
-  expect(flagValues(args, "--model")).toEqual(["gpt-4"]);
-});
-
-test("buildPiArgs appends --no-skills with no paths when agent.skills is false", async () => {
-  const agent: AgentConfig = { ...hangAgent, skills: false };
-  const args = await captureRunSingleAgentArgs(agent, undefined);
-  const idx = args.indexOf("--no-skills");
-  expect(idx).toBeGreaterThanOrEqual(0);
-  expect(args[idx + 1]).not.toBe(undefined);
-  const nextFlag = args[idx + 1];
-  expect(nextFlag?.startsWith("--") || nextFlag?.startsWith("Task:")).toBe(
-    true,
-  );
-});
-
-test("buildPiArgs appends --no-skills with no paths when agent.skills is empty array", async () => {
-  const agent: AgentConfig = { ...hangAgent, skills: [] };
-  const args = await captureRunSingleAgentArgs(agent, undefined);
-  const idx = args.indexOf("--no-skills");
-  expect(idx).toBeGreaterThanOrEqual(0);
-  expect(args[idx + 1]).not.toBe(undefined);
-  const nextFlag = args[idx + 1];
-  expect(nextFlag?.startsWith("--") || nextFlag?.startsWith("Task:")).toBe(
-    true,
-  );
-});
-
-test("buildPiArgs omits --no-skills when agent.skills is undefined", async () => {
-  const args = await captureRunSingleAgentArgs(hangAgent, undefined);
-  expect(args).not.toContain("--no-skills");
-});
-
 test("discovery-normalized context true omits --no-context-files from child args", async () => {
   const { agentDir, cwd } = await setupFakePi();
   const agentsDir = path.join(agentDir, "agents");
@@ -3969,473 +2893,6 @@ Prompt.`,
   expect(args).not.toContain("--no-context-files");
   expect(args).toContain("--approve");
 });
-
-// --- T-003: extension flag construction ---
-
-function buildArgsWithExtensions(
-  agentOverrides: Partial<AgentConfig>,
-  resolvedExtensionPaths?: string[],
-): string[] {
-  return buildPiArgs({
-    agent: { ...hangAgent, ...agentOverrides },
-    task: "task",
-    effectiveModel: { id: "test-model" },
-    thinking: "off",
-    resolvedSkills: { args: [] },
-    tmpPrompt: { filePath: "/tmp/fake-prompt.md" },
-    resolvedExtensionPaths,
-  });
-}
-
-function extensionFlags(args: string[]): { path: string; index: number }[] {
-  return args.flatMap((arg, i) =>
-    arg === "--extension" ? [{ path: args[i + 1] ?? "", index: i }] : [],
-  );
-}
-
-test("buildPiArgs omitted extensions emits no --no-extensions and no index extension", () => {
-  const agent: AgentConfig = { ...hangAgent };
-  expect(Object.hasOwn(agent, "extensions")).toBe(false);
-  const args = buildArgsWithExtensions(agent);
-  expect(args).not.toContain("--no-extensions");
-  const pkgPath = resolvePackageExtensionPath();
-  expect(args).not.toContain(pkgPath);
-  expect(flagValues(args, "--extension")).not.toContain(pkgPath);
-});
-
-test("buildPiArgs extensions false emits --no-extensions and package index", () => {
-  const args = buildArgsWithExtensions({ extensions: [] });
-  expect(args).toContain("--no-extensions");
-  const pkgPath = resolvePackageExtensionPath();
-  expect(flagValues(args, "--extension")).toContain(pkgPath);
-});
-
-test("buildPiArgs extensions empty parsed string emits --no-extensions and package index", () => {
-  const args = buildArgsWithExtensions({ extensions: [] });
-  const argFlags = extensionFlags(args);
-  const pkgPath = resolvePackageExtensionPath();
-  expect(args).toContain("--no-extensions");
-  expect(argFlags.map((f) => f.path)).toContain(pkgPath);
-});
-
-test("buildPiArgs named extensions emits --no-extensions, index, and named paths", () => {
-  const fakePaths = ["/ext/a.js", "/ext/b.js"];
-  const args = buildArgsWithExtensions(
-    { extensions: ["ext-a", "ext-b"] },
-    fakePaths,
-  );
-  expect(args).toContain("--no-extensions");
-  const pkgPath = resolvePackageExtensionPath();
-  const exts = flagValues(args, "--extension");
-  expect(exts).toContain(pkgPath);
-  expect(exts).toContain("/ext/a.js");
-  expect(exts).toContain("/ext/b.js");
-});
-
-test("buildPiArgs named extensions with resolved path equal to index de-duplicates index path", () => {
-  const pkgPath = resolvePackageExtensionPath();
-  const fakePaths = ["/ext/unique.js", pkgPath];
-  const args = buildArgsWithExtensions(
-    { extensions: ["unique", "self"] },
-    fakePaths,
-  );
-  expect(args).toContain("--no-extensions");
-  const exts = flagValues(args, "--extension");
-  const pkgCount = exts.filter((p) => p === pkgPath).length;
-  expect(pkgCount).toBe(1);
-  expect(exts).toContain("/ext/unique.js");
-});
-
-test("buildPiArgs index extension appears exactly once when no named paths provided", () => {
-  const args = buildArgsWithExtensions({ extensions: [] });
-  const pkgPath = resolvePackageExtensionPath();
-  const exts = flagValues(args, "--extension");
-  const pkgCount = exts.filter((p) => p === pkgPath).length;
-  expect(pkgCount).toBe(1);
-});
-
-test("buildPiArgs complete extension present when extensions disabled", () => {
-  const args = buildArgsWithExtensions({ extensions: [] });
-  const exts = extensionFlags(args);
-  const completeIdx = exts.findIndex((f) =>
-    f.path.includes("complete-extension"),
-  );
-  expect(completeIdx).toBeGreaterThanOrEqual(0);
-});
-
-test("buildPiArgs absent extension field regression: no --no-extensions and no index injection", () => {
-  const args = buildArgsWithExtensions({});
-  expect(args).not.toContain("--no-extensions");
-  const pkgPath = resolvePackageExtensionPath();
-  expect(flagValues(args, "--extension")).not.toContain(pkgPath);
-  expect(args).toContain("--approve");
-  expect(args).toContain("--no-themes");
-});
-
-test("buildPiArgs named extensions preserves complete extension after named paths", () => {
-  const args = buildArgsWithExtensions({ extensions: ["ext-a"] }, [
-    "/ext/a.js",
-  ]);
-  const exts = extensionFlags(args);
-  const paths = exts.map((f) => f.path);
-  const pkgIdx = paths.indexOf(resolvePackageExtensionPath());
-  const namedIdx = paths.indexOf("/ext/a.js");
-  const completeIdx = paths.findIndex((p) => p.includes("complete-extension"));
-  expect(pkgIdx).toBeGreaterThanOrEqual(0);
-  expect(namedIdx).toBeGreaterThan(pkgIdx);
-  expect(completeIdx).toBeGreaterThan(namedIdx);
-});
-
-test("buildPiArgs named extensions preserves first-seen order from resolved paths", () => {
-  const fakePaths = ["/ext/c.js", "/ext/a.js", "/ext/b.js"];
-  const args = buildArgsWithExtensions(
-    { extensions: ["c", "a", "b"] },
-    fakePaths,
-  );
-  const exts = extensionFlags(args);
-  const pkgPath = resolvePackageExtensionPath();
-  const namedFlags = exts.filter(
-    (f) => f.path !== pkgPath && !f.path.includes("complete-extension"),
-  );
-  expect(namedFlags.map((f) => f.path)).toEqual([
-    "/ext/c.js",
-    "/ext/a.js",
-    "/ext/b.js",
-  ]);
-});
-
-// --- T-002: buildPiArgs contract delivery invariants ---
-
-function buildContractArgs(
-  task: string,
-  tmpPrompt: { filePath: string } | null,
-  agentOverrides: Partial<AgentConfig> = {},
-  resolvedExtensionPaths?: string[],
-  samplingEnv?: string,
-): string[] {
-  return buildPiArgs({
-    agent: { ...hangAgent, ...agentOverrides },
-    task,
-    effectiveModel: { id: "test-model" },
-    thinking: "off",
-    resolvedSkills: { args: [] },
-    tmpPrompt,
-    resolvedExtensionPaths,
-    samplingEnv,
-  });
-}
-
-describe("T-002: buildPiArgs contract delivery invariants", () => {
-  test("tmpPrompt present places contract as last append after body prompt", () => {
-    const args = buildContractArgs("task", {
-      filePath: "/tmp/fake-prompt.md",
-    });
-    const appends = flagValues(args, "--append-system-prompt");
-    expect(appends).toEqual(["/tmp/fake-prompt.md", SUBAGENT_RESULT_CONTRACT]);
-    expect(appends.at(-1)).toBe(SUBAGENT_RESULT_CONTRACT);
-    expect(args.at(-1)).toBe("Task: task");
-    expect(args.at(-1)).not.toContain("Subagent Result Contract");
-  });
-
-  test("tmpPrompt absent places contract as the only append value", () => {
-    const args = buildContractArgs("task", null);
-    const appends = flagValues(args, "--append-system-prompt");
-    expect(appends).toEqual([SUBAGENT_RESULT_CONTRACT]);
-    expect(appends.at(-1)).toBe(SUBAGENT_RESULT_CONTRACT);
-    expect(args.at(-1)).toBe("Task: task");
-    expect(args.at(-1)).not.toContain("Subagent Result Contract");
-  });
-
-  test("empty task fallback with body prompt receives contract last", () => {
-    const args = buildContractArgs("", {
-      filePath: "/tmp/fake-prompt.md",
-    });
-    const appends = flagValues(args, "--append-system-prompt");
-    expect(appends).toEqual(["/tmp/fake-prompt.md", SUBAGENT_RESULT_CONTRACT]);
-    expect(appends.at(-1)).toBe(SUBAGENT_RESULT_CONTRACT);
-    expect(args.at(-1)).toBe(
-      "Run according to your system prompt. If no explicit task was provided, use the default context described there.",
-    );
-    expect(args.at(-1)).not.toContain("Subagent Result Contract");
-  });
-
-  test("empty task fallback without body prompt receives contract as only append", () => {
-    const args = buildContractArgs("", null);
-    const appends = flagValues(args, "--append-system-prompt");
-    expect(appends).toEqual([SUBAGENT_RESULT_CONTRACT]);
-    expect(appends.at(-1)).toBe(SUBAGENT_RESULT_CONTRACT);
-    expect(args.at(-1)).toBe(
-      "Run according to your system prompt. If no explicit task was provided, use the default context described there.",
-    );
-    expect(args.at(-1)).not.toContain("Subagent Result Contract");
-  });
-
-  test("contract remains last append when extensions are disabled", () => {
-    const args = buildContractArgs(
-      "task",
-      { filePath: "/tmp/fake-prompt.md" },
-      { extensions: [] },
-    );
-    const appends = flagValues(args, "--append-system-prompt");
-    expect(appends.at(-1)).toBe(SUBAGENT_RESULT_CONTRACT);
-    expect(args.at(-1)).toBe("Task: task");
-    expect(args.at(-1)).not.toContain("Subagent Result Contract");
-  });
-
-  test("contract remains last append with named extensions and preserves complete extension", () => {
-    const args = buildContractArgs(
-      "task",
-      { filePath: "/tmp/fake-prompt.md" },
-      { extensions: ["ext-a"] },
-      ["/ext/a.js"],
-    );
-    const appends = flagValues(args, "--append-system-prompt");
-    expect(appends.at(-1)).toBe(SUBAGENT_RESULT_CONTRACT);
-    expect(args.at(-1)).toBe("Task: task");
-    const exts = flagValues(args, "--extension");
-    expect(exts.some((p) => p.includes("complete-extension"))).toBe(true);
-  });
-
-  test("contract remains last append with custom tools containing complete and deduplicates complete", () => {
-    const args = buildContractArgs("task", null, {
-      tools: ["complete", "bash"],
-    });
-    const appends = flagValues(args, "--append-system-prompt");
-    expect(appends.at(-1)).toBe(SUBAGENT_RESULT_CONTRACT);
-    expect(args.at(-1)).toBe("Task: task");
-    const tools = flagValues(args, "--tools")[0]?.split(",") ?? [];
-    expect(tools.filter((t) => t === "complete")).toHaveLength(1);
-    expect(tools).toContain("bash");
-  });
-
-  test("contract remains last append with context disabled and preserves unrelated flags", () => {
-    const args = buildContractArgs(
-      "task",
-      { filePath: "/tmp/fake-prompt.md" },
-      { context: false },
-    );
-    const appends = flagValues(args, "--append-system-prompt");
-    expect(appends.at(-1)).toBe(SUBAGENT_RESULT_CONTRACT);
-    expect(args).toContain("--no-context-files");
-    expect(args).toContain("--approve");
-    expect(args).toContain("--no-themes");
-    expect(args).toContain("--no-prompt-templates");
-    expect(args.at(-1)).toBe("Task: task");
-  });
-
-  test("contract remains last append with skills disabled", () => {
-    const args = buildContractArgs(
-      "task",
-      { filePath: "/tmp/fake-prompt.md" },
-      { skills: false },
-    );
-    const appends = flagValues(args, "--append-system-prompt");
-    expect(appends.at(-1)).toBe(SUBAGENT_RESULT_CONTRACT);
-    expect(args).toContain("--no-skills");
-    expect(args.at(-1)).toBe("Task: task");
-  });
-
-  test("contract appears exactly once among appended system prompts", () => {
-    const args = buildContractArgs(
-      "task",
-      { filePath: "/tmp/fake-prompt.md" },
-      { extensions: ["ext-a"] },
-      ["/ext/a.js"],
-    );
-    const appends = flagValues(args, "--append-system-prompt");
-    const contractCount = appends.filter(
-      (a) => a === SUBAGENT_RESULT_CONTRACT,
-    ).length;
-    expect(contractCount).toBe(1);
-  });
-
-  test("sampling extension is loaded before the contract append", () => {
-    const args = buildContractArgs(
-      "task",
-      { filePath: "/tmp/fake-prompt.md" },
-      { temperature: 0.7, topP: 0.9 },
-      undefined,
-      JSON.stringify({ temperature: 0.7, topP: 0.9 }),
-    );
-    const contractIdx = args.indexOf(SUBAGENT_RESULT_CONTRACT);
-    const exts = flagValues(args, "--extension");
-    expect(exts.some((p) => p.includes("sampling-extension"))).toBe(true);
-    const samplingIdx = args.indexOf(
-      exts.find((p) => p.includes("sampling-extension")) ?? "",
-    );
-    expect(contractIdx).toBeGreaterThan(samplingIdx);
-    expect(args.at(-1)).toBe("Task: task");
-  });
-
-  test("task prompt arg never contains contract text across configurations", () => {
-    const configs: {
-      name: string;
-      task: string;
-      tmpPrompt: { filePath: string } | null;
-      overrides: Partial<AgentConfig>;
-      resolvedPaths?: string[];
-    }[] = [
-      {
-        name: "task with body",
-        task: "task",
-        tmpPrompt: { filePath: "/tmp/fake-prompt.md" },
-        overrides: {},
-      },
-      {
-        name: "task without body",
-        task: "task",
-        tmpPrompt: null,
-        overrides: {},
-      },
-      {
-        name: "empty task with body",
-        task: "",
-        tmpPrompt: { filePath: "/tmp/fake-prompt.md" },
-        overrides: {},
-      },
-      {
-        name: "empty task without body",
-        task: "",
-        tmpPrompt: null,
-        overrides: {},
-      },
-      {
-        name: "extensions disabled",
-        task: "task",
-        tmpPrompt: { filePath: "/tmp/fake-prompt.md" },
-        overrides: { extensions: [] },
-      },
-      {
-        name: "named extensions",
-        task: "task",
-        tmpPrompt: { filePath: "/tmp/fake-prompt.md" },
-        overrides: { extensions: ["ext-a"] },
-        resolvedPaths: ["/ext/a.js"],
-      },
-      {
-        name: "custom tools with complete",
-        task: "task",
-        tmpPrompt: null,
-        overrides: { tools: ["complete", "bash"] },
-      },
-      {
-        name: "context disabled",
-        task: "task",
-        tmpPrompt: { filePath: "/tmp/fake-prompt.md" },
-        overrides: { context: false },
-      },
-      {
-        name: "skills disabled",
-        task: "task",
-        tmpPrompt: { filePath: "/tmp/fake-prompt.md" },
-        overrides: { skills: false },
-      },
-    ];
-    for (const config of configs) {
-      const args = buildContractArgs(
-        config.task,
-        config.tmpPrompt,
-        config.overrides,
-        config.resolvedPaths,
-      );
-      const taskArg = args.at(-1) ?? "";
-      expect(taskArg, config.name).not.toContain("Subagent Result Contract");
-      expect(taskArg, config.name).not.toContain("MANDATORY");
-    }
-  });
-
-  test("replacePrompt true routes body via --system-prompt and keeps contract last", () => {
-    const args = buildContractArgs(
-      "task",
-      { filePath: "/tmp/fake-prompt.md" },
-      { replacePrompt: true },
-    );
-    expect(flagValues(args, "--system-prompt")).toEqual([
-      "/tmp/fake-prompt.md",
-    ]);
-    expect(flagValues(args, "--append-system-prompt")).toEqual([
-      SUBAGENT_RESULT_CONTRACT,
-    ]);
-    expect(args.indexOf("--system-prompt")).toBeGreaterThan(-1);
-    expect(args.indexOf(SUBAGENT_RESULT_CONTRACT)).toBeGreaterThan(
-      args.indexOf("--system-prompt"),
-    );
-    expect(args.at(-1)).toBe("Task: task");
-  });
-
-  test("replacePrompt false keeps --append-system-prompt body delivery", () => {
-    const agent = {
-      ...hangAgent,
-      replacePrompt: false,
-    } as unknown as AgentConfig;
-    const args = buildPiArgs({
-      agent,
-      task: "task",
-      effectiveModel: { id: "test-model" },
-      thinking: "off",
-      resolvedSkills: { args: [] },
-      tmpPrompt: { filePath: "/tmp/fake-prompt.md" },
-    });
-    expect(flagValues(args, "--system-prompt")).toEqual([]);
-    expect(flagValues(args, "--append-system-prompt")).toEqual([
-      "/tmp/fake-prompt.md",
-      SUBAGENT_RESULT_CONTRACT,
-    ]);
-  });
-
-  test("replacePrompt omitted keeps --append-system-prompt body delivery", () => {
-    const args = buildContractArgs("task", { filePath: "/tmp/fake-prompt.md" });
-    expect(flagValues(args, "--system-prompt")).toEqual([]);
-    expect(flagValues(args, "--append-system-prompt")).toEqual([
-      "/tmp/fake-prompt.md",
-      SUBAGENT_RESULT_CONTRACT,
-    ]);
-  });
-
-  test("replacePrompt true with empty task uses --system-prompt and default task prompt last", () => {
-    const args = buildContractArgs(
-      "",
-      { filePath: "/tmp/fake-prompt.md" },
-      { replacePrompt: true },
-    );
-    expect(flagValues(args, "--system-prompt")).toEqual([
-      "/tmp/fake-prompt.md",
-    ]);
-    expect(flagValues(args, "--append-system-prompt")).toEqual([
-      SUBAGENT_RESULT_CONTRACT,
-    ]);
-    expect(args.at(-1)).toBe(
-      "Run according to your system prompt. If no explicit task was provided, use the default context described there.",
-    );
-  });
-
-  test("replacePrompt true preserves unrelated flags", () => {
-    const args = buildContractArgs(
-      "task",
-      { filePath: "/tmp/fake-prompt.md" },
-      { replacePrompt: true, context: false, tools: ["bash"] },
-    );
-    expect(flagValues(args, "--system-prompt")).toEqual([
-      "/tmp/fake-prompt.md",
-    ]);
-    expect(flagValues(args, "--append-system-prompt")).toEqual([
-      SUBAGENT_RESULT_CONTRACT,
-    ]);
-    expect(args).toContain("--no-context-files");
-    expect(flagValues(args, "--tools")[0]?.split(",")).toContain("bash");
-    expect(args.at(-1)).toBe("Task: task");
-  });
-
-  test("replacePrompt true with no body omits --system-prompt and appends contract only", () => {
-    const args = buildContractArgs("task", null, { replacePrompt: true });
-    expect(flagValues(args, "--system-prompt")).toEqual([]);
-    expect(flagValues(args, "--append-system-prompt")).toEqual([
-      SUBAGENT_RESULT_CONTRACT,
-    ]);
-  });
-});
-
-// --- T-004: pre-spawn extension resolution and cleanup ---
 
 test("runSingleAgent disabled-without-names skips loader discovery for extensions", async () => {
   let reloadCalls = 0;
@@ -4501,14 +2958,13 @@ test("runSingleAgent omitted extensions skips loader discovery for extensions", 
 
 test("runSingleAgent unknown extension names return error result before child spawn", async () => {
   const { cwd, binDir } = await setupTest();
-  await fs.promises.writeFile(
-    path.join(binDir, "pi"),
+  await installFakePi(
+    binDir,
     `#!/bin/sh
 echo "should not run" > spawn-marker.txt
 exit 0
 `,
   );
-  await fs.promises.chmod(path.join(binDir, "pi"), 0o755);
   const agent: AgentConfig = {
     ...hangAgent,
     extensions: ["nonexistent-ext"],
@@ -4532,14 +2988,13 @@ exit 0
 
 test("runSingleAgent loader reload failure returns error result before child spawn", async () => {
   const { cwd, binDir } = await setupTest();
-  await fs.promises.writeFile(
-    path.join(binDir, "pi"),
+  await installFakePi(
+    binDir,
     `#!/bin/sh
 echo "should not run" > spawn-marker.txt
 exit 0
 `,
   );
-  await fs.promises.chmod(path.join(binDir, "pi"), 0o755);
   const originalReload = DefaultResourceLoader.prototype.reload;
   DefaultResourceLoader.prototype.reload = async function failReload() {
     throw new Error("loader crashed");
@@ -4571,14 +3026,13 @@ exit 0
 
 test("runSingleAgent getExtensions errors return actionable diagnostics before child spawn", async () => {
   const { cwd, binDir } = await setupTest();
-  await fs.promises.writeFile(
-    path.join(binDir, "pi"),
+  await installFakePi(
+    binDir,
     `#!/bin/sh
 echo "should not run" > spawn-marker.txt
 exit 0
 `,
   );
-  await fs.promises.chmod(path.join(binDir, "pi"), 0o755);
   const originalGetExtensions = DefaultResourceLoader.prototype.getExtensions;
   DefaultResourceLoader.prototype.getExtensions =
     function errorGetExtensions() {
@@ -5084,31 +3538,6 @@ test("runSingleAgent extension resolution error reports missing names with sorte
   }
 });
 
-test("runSingleAgent reports extension resolution error with model display", async () => {
-  const { cwd } = await setupTest();
-  const agent: AgentConfig = {
-    ...hangAgent,
-    model: "agent-model",
-    extensions: ["nonexistent-ext"],
-  };
-  const { result } = await runSingleAgent(
-    cwd,
-    [agent],
-    agent.name,
-    "task",
-    undefined,
-    undefined,
-    makeSubagentDetails,
-    { provider: "parent-provider", id: "parent-model" },
-    "off",
-    false,
-    { registry: registryFixture([]) },
-  );
-  expect(result.exitCode).toBe(1);
-  expect(result.stderr).toContain('Unknown extension: "nonexistent-ext"');
-  expect(result.model).toBe("parent-provider ･ agent-model ･ off");
-});
-
 test("runSingleAgent returns error result when prompt file write fails", async () => {
   const { cwd } = await setupTest();
   const originalWriteFile = fs.promises.writeFile;
@@ -5124,18 +3553,23 @@ test("runSingleAgent returns error result when prompt file write fails", async (
     name: "write-fail",
     systemPrompt: "Prompt that triggers a write failure.",
   };
+  let leakedPromptDir: string | undefined;
   try {
-    const { result } = await runSingleAgent(
-      cwd,
-      [agent],
-      "write-fail",
-      "task",
-      undefined,
-      undefined,
-      makeSubagentDetails,
-      undefined,
-      "off",
-    );
+    const { result } = await withMkdtempCapture(async (getTmpDir) => {
+      const runResult = await runSingleAgent(
+        cwd,
+        [agent],
+        "write-fail",
+        "task",
+        undefined,
+        undefined,
+        makeSubagentDetails,
+        undefined,
+        "off",
+      );
+      leakedPromptDir = getTmpDir();
+      return runResult;
+    });
     expect(result.exitCode).toBe(1);
     expect(result.stderr).toContain("Failed to write prompt");
     expect(result.stderr).toContain("ENOSPC");
@@ -5146,6 +3580,9 @@ test("runSingleAgent returns error result when prompt file write fails", async (
       enumerable: true,
       configurable: true,
     });
+    if (leakedPromptDir) {
+      await fs.promises.rm(leakedPromptDir, { recursive: true, force: true });
+    }
   }
 });
 
@@ -5163,18 +3600,23 @@ test("runSingleAgent returns error result when prompt file write fails with non-
     name: "write-fail-string",
     systemPrompt: "Prompt that triggers a write failure.",
   };
+  let leakedPromptDir: string | undefined;
   try {
-    const { result } = await runSingleAgent(
-      cwd,
-      [agent],
-      "write-fail-string",
-      "task",
-      undefined,
-      undefined,
-      makeSubagentDetails,
-      undefined,
-      "off",
-    );
+    const { result } = await withMkdtempCapture(async (getTmpDir) => {
+      const runResult = await runSingleAgent(
+        cwd,
+        [agent],
+        "write-fail-string",
+        "task",
+        undefined,
+        undefined,
+        makeSubagentDetails,
+        undefined,
+        "off",
+      );
+      leakedPromptDir = getTmpDir();
+      return runResult;
+    });
     expect(result.exitCode).toBe(1);
     expect(result.stderr).toContain("Failed to write prompt");
     expect(result.stderr).toContain("disk full");
@@ -5185,5 +3627,289 @@ test("runSingleAgent returns error result when prompt file write fails with non-
       enumerable: true,
       configurable: true,
     });
+    if (leakedPromptDir) {
+      await fs.promises.rm(leakedPromptDir, { recursive: true, force: true });
+    }
   }
+});
+
+test("RunSingleAgentResult discriminated union narrows on kind", () => {
+  const completed: RunSingleAgentResult = {
+    kind: "completed",
+    result: makeSingleResult({ finalOutput: "done", outcome: "ok" }),
+  };
+  const aborted: RunSingleAgentResult = {
+    kind: "aborted",
+    result: makeSingleResult({ finalOutput: "", outcome: undefined }),
+  };
+  if (completed.kind === "completed") {
+    expect(completed.result.outcome).toBe("ok");
+  }
+  if (aborted.kind === "aborted") {
+    expect(aborted.result.outcome).toBeUndefined();
+  }
+});
+
+test("aborted RunSingleAgentResult omits outcome and has empty stderr", () => {
+  const aborted: RunSingleAgentResult = {
+    kind: "aborted",
+    result: makeSingleResult({
+      finalOutput: "",
+      outcome: undefined,
+      stderr: "",
+    }),
+  };
+  expect(aborted.result.stderr).toBe("");
+  expect(aborted.result.outcome).toBeUndefined();
+});
+
+test("completed RunSingleAgentResult preserves outcome and stderr", () => {
+  const completed: RunSingleAgentResult = {
+    kind: "completed",
+    result: makeSingleResult({
+      finalOutput: "done",
+      outcome: "task completed",
+      stderr: "warning: deprecation",
+    }),
+  };
+  expect(completed.result.outcome).toBe("task completed");
+  expect(completed.result.stderr).toBe("warning: deprecation");
+});
+
+describe("hasCompletedAgentOutput", () => {
+  test("returns true when finalOutput has non-whitespace content", () => {
+    const result = makeRuntimeResult({
+      finalOutput: "some output",
+      messages: [],
+    });
+    expect(hasCompletedAgentOutput(result)).toBe(true);
+  });
+
+  test("returns true when finalOutput is whitespace-only but outcome has content", () => {
+    const result = makeRuntimeResult({
+      finalOutput: "   \n  ",
+      messages: [],
+    });
+    expect(hasCompletedAgentOutput(result, "completed successfully")).toBe(
+      true,
+    );
+  });
+
+  test("returns true when both finalOutput and outcome are empty but messages contain final output text", () => {
+    const result = makeRuntimeResult({
+      finalOutput: "",
+      messages: [
+        {
+          role: "assistant",
+          content: [{ type: "text", text: "real output" }],
+        } as unknown as Message,
+      ],
+    });
+    expect(hasCompletedAgentOutput(result)).toBe(true);
+  });
+
+  test("returns false when finalOutput is empty and outcome is undefined", () => {
+    const result = makeRuntimeResult({
+      finalOutput: "",
+      messages: [],
+    });
+    expect(hasCompletedAgentOutput(result)).toBe(false);
+  });
+
+  test("returns false when finalOutput is only whitespace and outcome is empty", () => {
+    const result = makeRuntimeResult({
+      finalOutput: "   ",
+      messages: [],
+    });
+    expect(hasCompletedAgentOutput(result, "   ")).toBe(false);
+  });
+
+  test("returns true when outcome has content regardless of finalOutput state", () => {
+    const result = makeRuntimeResult({
+      finalOutput: "",
+      messages: [],
+    });
+    expect(hasCompletedAgentOutput(result, "all done")).toBe(true);
+  });
+
+  test("returns false when messages exist but have no assistant text", () => {
+    const result = makeRuntimeResult({
+      finalOutput: "",
+      messages: [
+        {
+          role: "user",
+          content: [{ type: "text", text: "hello" }],
+        } as unknown as Message,
+      ],
+    });
+    expect(hasCompletedAgentOutput(result)).toBe(false);
+  });
+});
+
+describe("getAgentEndTimeoutExitCode", () => {
+  test("returns undefined when termination cancelReason is not agent_end_timeout", () => {
+    const result = makeRuntimeResult({
+      finalOutput: "",
+      messages: [],
+    });
+    result.termination = {
+      cancelRequestedAt: Date.now(),
+      escalated: false,
+      processTreeKilled: false,
+      target: "direct",
+      cancelReason: "user_cancelled",
+    };
+    expect(
+      getAgentEndTimeoutExitCode(result, undefined, undefined),
+    ).toBeUndefined();
+  });
+
+  test("returns undefined when termination is absent", () => {
+    const result = makeRuntimeResult({
+      finalOutput: "",
+      messages: [],
+    });
+    expect(
+      getAgentEndTimeoutExitCode(result, undefined, undefined),
+    ).toBeUndefined();
+  });
+
+  test("returns undefined when spawnError is present", () => {
+    const result = makeRuntimeResult({
+      finalOutput: "",
+      messages: [],
+    });
+    result.termination = {
+      cancelRequestedAt: Date.now(),
+      escalated: false,
+      processTreeKilled: false,
+      target: "direct",
+      cancelReason: "agent_end_timeout",
+    };
+    const spawnError = new Error("spawn failed");
+    expect(
+      getAgentEndTimeoutExitCode(result, spawnError, undefined),
+    ).toBeUndefined();
+  });
+
+  test.each([
+    { name: "returns undefined when stopReason is error", stopReason: "error" },
+    {
+      name: "returns undefined when stopReason is aborted",
+      stopReason: "aborted",
+    },
+  ])("$name", (row) => {
+    const result = makeRuntimeResult({
+      finalOutput: "",
+      messages: [],
+      stopReason: row.stopReason,
+    });
+    result.termination = {
+      cancelRequestedAt: Date.now(),
+      escalated: false,
+      processTreeKilled: false,
+      target: "direct",
+      cancelReason: "agent_end_timeout",
+    };
+    expect(
+      getAgentEndTimeoutExitCode(result, undefined, undefined),
+    ).toBeUndefined();
+  });
+
+  test("returns undefined when errorMessage has non-whitespace content", () => {
+    const result = makeRuntimeResult({
+      finalOutput: "",
+      messages: [],
+      errorMessage: "something went wrong",
+    });
+    result.termination = {
+      cancelRequestedAt: Date.now(),
+      escalated: false,
+      processTreeKilled: false,
+      target: "direct",
+      cancelReason: "agent_end_timeout",
+    };
+    expect(
+      getAgentEndTimeoutExitCode(result, undefined, undefined),
+    ).toBeUndefined();
+  });
+
+  test("returns 1 when errorMessage is whitespace-only and no output", () => {
+    const result = makeRuntimeResult({
+      finalOutput: "",
+      messages: [],
+      errorMessage: "   ",
+    });
+    result.termination = {
+      cancelRequestedAt: Date.now(),
+      escalated: false,
+      processTreeKilled: false,
+      target: "direct",
+      cancelReason: "agent_end_timeout",
+    };
+    expect(getAgentEndTimeoutExitCode(result, undefined, undefined)).toBe(1);
+  });
+
+  test.each([
+    {
+      name: "returns 0 when agent completed output and agent_end_timeout",
+      finalOutput: "task completed",
+      expectedExitCode: 0,
+    },
+    {
+      name: "returns 1 when agent did not complete output and agent_end_timeout",
+      finalOutput: "",
+      expectedExitCode: 1,
+    },
+  ])("$name", (row) => {
+    const result = makeRuntimeResult({
+      finalOutput: row.finalOutput,
+      messages: [],
+    });
+    result.termination = {
+      cancelRequestedAt: Date.now(),
+      escalated: false,
+      processTreeKilled: false,
+      target: "direct",
+      cancelReason: "agent_end_timeout",
+    };
+    expect(getAgentEndTimeoutExitCode(result, undefined, undefined)).toBe(
+      row.expectedExitCode,
+    );
+  });
+
+  test("returns 0 when outcome provides content for agent_end_timeout", () => {
+    const result = makeRuntimeResult({
+      finalOutput: "",
+      messages: [],
+    });
+    result.termination = {
+      cancelRequestedAt: Date.now(),
+      escalated: false,
+      processTreeKilled: false,
+      target: "direct",
+      cancelReason: "agent_end_timeout",
+    };
+    expect(getAgentEndTimeoutExitCode(result, undefined, "done")).toBe(0);
+  });
+
+  test("returns 0 when messages contain output for agent_end_timeout with no finalOutput", () => {
+    const result = makeRuntimeResult({
+      finalOutput: "",
+      messages: [
+        {
+          role: "assistant",
+          content: [{ type: "text", text: "result text" }],
+        } as unknown as Message,
+      ],
+    });
+    result.termination = {
+      cancelRequestedAt: Date.now(),
+      escalated: false,
+      processTreeKilled: false,
+      target: "direct",
+      cancelReason: "agent_end_timeout",
+    };
+    expect(getAgentEndTimeoutExitCode(result, undefined, undefined)).toBe(0);
+  });
 });

@@ -24,24 +24,35 @@ function result(overrides: Partial<SingleResult>): SingleResult {
   return makeSingleResult(overrides);
 }
 
-test("parent formatter returns all non-noise lines", () => {
+test.each([
+  {
+    name: "parent formatter returns all non-noise lines",
+    finalOutput: "line one\nline two\nline three\nline four",
+    expected: "line one\nline two\nline three\nline four",
+  },
+  {
+    name: "parent formatter remains raw formatted content",
+    finalOutput: "Outcome: Shipped fix.\nVerification: bun test",
+    expected: "Outcome: Shipped fix.\nVerification: bun test",
+  },
+])("$name", (row) => {
   expect(
-    formatSubagentResultForParent(
-      result({ finalOutput: "line one\nline two\nline three\nline four" }),
-    ),
-  ).toBe("line one\nline two\nline three\nline four");
+    formatSubagentResultForParent(result({ finalOutput: row.finalOutput })),
+  ).toBe(row.expected);
 });
 
-test("parent formatter preserves transcript-like and diagnostic lines", () => {
-  const output =
-    "Hello! I can help.\nError: bad import\nFailed: command exited\nTraceback (most recent call last):\nat Object.<anonymous> (/tmp/test.ts:1:1)\nActual result here.";
-  expect(formatSubagentResultForParent(result({ finalOutput: output }))).toBe(
-    output,
-  );
-});
-
-test("parent formatter preserves blank lines and surrounding whitespace", () => {
-  const output = "  \n\n  padded result  \n\n";
+test.each([
+  {
+    name: "parent formatter preserves transcript-like and diagnostic lines",
+    finalOutput:
+      "Hello! I can help.\nError: bad import\nFailed: command exited\nTraceback (most recent call last):\nat Object.<anonymous> (/tmp/test.ts:1:1)\nActual result here.",
+  },
+  {
+    name: "parent formatter preserves blank lines and surrounding whitespace",
+    finalOutput: "  \n\n  padded result  \n\n",
+  },
+])("$name", (row) => {
+  const output = row.finalOutput;
   expect(formatSubagentResultForParent(result({ finalOutput: output }))).toBe(
     output,
   );
@@ -73,36 +84,33 @@ test("feedback UI summarizer strips labels and cleans markdown", () => {
   ).toBe("updated src/ui.ts");
 });
 
-test("feedback UI summarizer prefers concrete action candidates", () => {
-  expect(
-    summarizeFeedbackUiFinalOutput(
+test.each([
+  {
+    name: "feedback UI summarizer prefers concrete action candidates",
+    finalOutput:
       "Verification: bun test passed.\nProject summary: Routed run result cards through summarized message content.",
-    ),
-  ).toBe("routed run result cards through summarized message content");
-});
-
-test("feedback UI summarizer does not prefer legacy outcome label, so summary label wins", () => {
-  expect(
-    summarizeFeedbackUiFinalOutput(
+    expected: "routed run result cards through summarized message content",
+  },
+  {
+    name: "feedback UI summarizer does not prefer legacy outcome label, so summary label wins",
+    finalOutput:
       "Summary: Updated fallback rendering.\nOutcome: Preserved outcome precedence for feedback cards.",
-    ),
-  ).toBe("updated fallback rendering");
-});
-
-test("feedback UI summarizer does not prefer legacy outcome label, so status label wins", () => {
-  expect(
-    summarizeFeedbackUiFinalOutput(
+    expected: "updated fallback rendering",
+  },
+  {
+    name: "feedback UI summarizer does not prefer legacy outcome label, so status label wins",
+    finalOutput:
       "Status: Added summary candidates.\nOutcome: Selected outcome before status labels.",
-    ),
-  ).toBe("added summary candidates");
-});
-
-test("feedback UI summarizer prefers new labels over unlabeled candidates", () => {
-  expect(
-    summarizeFeedbackUiFinalOutput(
+    expected: "added summary candidates",
+  },
+  {
+    name: "feedback UI summarizer prefers new labels over unlabeled candidates",
+    finalOutput:
       "Plain fallback candidate works.\nMessage: Recognized message label first.",
-    ),
-  ).toBe("recognized message label first");
+    expected: "recognized message label first",
+  },
+])("$name", (row) => {
+  expect(summarizeFeedbackUiFinalOutput(row.finalOutput)).toBe(row.expected);
 });
 
 test("feedback UI summarizer lower-cases and trims punctuation clutter without outcome-specific stripping", () => {
@@ -125,14 +133,6 @@ test("feedback UI summarizer falls back for generic status-only output", () => {
   );
 });
 
-test("parent formatter remains raw formatted content", () => {
-  expect(
-    formatSubagentResultForParent(
-      result({ finalOutput: "Outcome: Shipped fix.\nVerification: bun test" }),
-    ),
-  ).toBe("Outcome: Shipped fix.\nVerification: bun test");
-});
-
 test("extractSemanticToolTarget hides unknown args unless forced", () => {
   const secretArgs = {
     token: "secret-token",
@@ -145,18 +145,35 @@ test("extractSemanticToolTarget hides unknown args unless forced", () => {
   );
 });
 
-test("parent formatter prepends thinking warning when present", () => {
+test.each([
+  {
+    name: "parent formatter prepends thinking warning when present",
+    finalOutput: "task completed",
+    expected:
+      '[thinking] Thinking level "xhigh" is not supported; using "high" instead (provider: openai, model: gpt-4o)\n\ntask completed',
+  },
+  {
+    name: "parent formatter prepends warning even when finalOutput is empty",
+    finalOutput: "",
+    expected:
+      '[thinking] Thinking level "xhigh" is not supported; using "high" instead (provider: openai, model: gpt-4o)\n\n',
+  },
+  {
+    name: "parent formatter prepends warning even when finalOutput is only whitespace",
+    finalOutput: "  \n\n  ",
+    expected:
+      '[thinking] Thinking level "xhigh" is not supported; using "high" instead (provider: openai, model: gpt-4o)\n\n  \n\n  ',
+  },
+])("$name", (row) => {
   expect(
     formatSubagentResultForParent(
       result({
-        finalOutput: "task completed",
+        finalOutput: row.finalOutput,
         thinkingWarning:
           'Thinking level "xhigh" is not supported; using "high" instead (provider: openai, model: gpt-4o)',
       }),
     ),
-  ).toBe(
-    '[thinking] Thinking level "xhigh" is not supported; using "high" instead (provider: openai, model: gpt-4o)\n\ntask completed',
-  );
+  ).toBe(row.expected);
 });
 
 test("parent formatter returns output unchanged when no thinking warning", () => {
@@ -173,34 +190,6 @@ test("parent formatter returns output unchanged when thinking warning is empty",
   ).toBe("task completed");
 });
 
-test("parent formatter prepends warning even when finalOutput is empty", () => {
-  expect(
-    formatSubagentResultForParent(
-      result({
-        finalOutput: "",
-        thinkingWarning:
-          'Thinking level "xhigh" is not supported; using "high" instead (provider: openai, model: gpt-4o)',
-      }),
-    ),
-  ).toBe(
-    '[thinking] Thinking level "xhigh" is not supported; using "high" instead (provider: openai, model: gpt-4o)\n\n',
-  );
-});
-
-test("parent formatter prepends warning even when finalOutput is only whitespace", () => {
-  expect(
-    formatSubagentResultForParent(
-      result({
-        finalOutput: "  \n\n  ",
-        thinkingWarning:
-          'Thinking level "xhigh" is not supported; using "high" instead (provider: openai, model: gpt-4o)',
-      }),
-    ),
-  ).toBe(
-    '[thinking] Thinking level "xhigh" is not supported; using "high" instead (provider: openai, model: gpt-4o)\n\n  \n\n  ',
-  );
-});
-
 describe("unconfirmed thinking parent summary propagation", () => {
   test("parent formatter prepends exact unconfirmed warning for non-off request", () => {
     const warning = unconfirmedWarning("high", "unknown", "unknown");
@@ -215,17 +204,6 @@ describe("unconfirmed thinking parent summary propagation", () => {
   });
 
   test("parent formatter omits thinking prefix for unresolved off request", () => {
-    expect(
-      formatSubagentResultForParent(
-        result({
-          finalOutput: "task completed",
-          thinkingWarning: undefined,
-        }),
-      ),
-    ).toBe("task completed");
-  });
-
-  test("parent formatter omits thinking prefix for confirmed model without warning", () => {
     expect(
       formatSubagentResultForParent(
         result({
@@ -477,22 +455,24 @@ test("failure formatter returns error message unchanged without latest result", 
   expect(formatSubagentFailureForParent("spawn failed")).toBe("spawn failed");
 });
 
-test("failure formatter returns only prefix for whitespace-only formatted output", () => {
+test.each([
+  {
+    name: "failure formatter returns only prefix for whitespace-only formatted output",
+    finalOutput: "  \n\n  ",
+    expected: "(failed) child failed",
+  },
+  {
+    name: "failure formatter appends formatted final output after one blank line",
+    finalOutput: "partial output\nmore output",
+    expected: "(failed) child failed\n\npartial output\nmore output",
+  },
+])("$name", (row) => {
   expect(
     formatSubagentFailureForParent(
       "child failed",
-      result({ finalOutput: "  \n\n  " }),
+      result({ finalOutput: row.finalOutput }),
     ),
-  ).toBe("(failed) child failed");
-});
-
-test("failure formatter appends formatted final output after one blank line", () => {
-  expect(
-    formatSubagentFailureForParent(
-      "child failed",
-      result({ finalOutput: "partial output\nmore output" }),
-    ),
-  ).toBe("(failed) child failed\n\npartial output\nmore output");
+  ).toBe(row.expected);
 });
 
 test("failure formatter includes thinking warning in appended formatted output", () => {
@@ -507,4 +487,27 @@ test("failure formatter includes thinking warning in appended formatted output",
   ).toBe(
     '(failed) child failed\n\n[thinking] Thinking level "xhigh" not supported\n\npartial output',
   );
+});
+
+test("parent success formatter preserves raw final output", () => {
+  const output = "Result: implemented fix\nDetails: none";
+  expect(
+    formatSubagentResultForParent(makeSingleResult({ finalOutput: output })),
+  ).toBe(output);
+});
+
+test("parent failure formatter follows shared contract", () => {
+  expect(formatSubagentFailureForParent("spawn failed")).toBe("spawn failed");
+  expect(
+    formatSubagentFailureForParent(
+      "child failed",
+      makeSingleResult({ finalOutput: "partial output" }),
+    ),
+  ).toBe("(failed) child failed\n\npartial output");
+  expect(
+    formatSubagentFailureForParent(
+      "child failed",
+      makeSingleResult({ finalOutput: "  \n\n  " }),
+    ),
+  ).toBe("(failed) child failed");
 });

@@ -2,7 +2,6 @@ import { describe, expect, test } from "bun:test";
 import type { Message } from "@earendil-works/pi-ai";
 import type {
   AgentToolResult,
-  ExtensionCommandContext,
   ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
 import {
@@ -28,8 +27,9 @@ import {
   makeBareCtx,
   makeSubagentToolUpdateLine,
   type RegisteredMessageRenderer,
+  requestIdOf,
+  runTool,
   type SendMessageArg,
-  setupFakePi,
   setupHooks,
   setupTest,
   shellQuote,
@@ -311,17 +311,9 @@ printf '%s\n' '{"type":"agent_end"}'
 exit 0
 `,
   });
-  await tool.execute(
-    "test-tool-call",
-    { agent: "hang", task: "test" },
-    undefined,
-    undefined,
-    makeBareCtx(cwd),
-  );
+  await runTool(tool, { agent: "hang", task: "test" }, makeBareCtx(cwd));
   await waitForSentMessageCount(sentMessages, 2);
-  const requestId = (sentMessages[0]?.details as { requestId?: string })
-    ?.requestId;
-  if (!requestId) throw new Error("requestId missing");
+  const requestId = requestIdOf(sentMessages);
   const state = getProgressState(requestId);
   expect(state?.toolCount).toBeGreaterThanOrEqual(1);
   const resultDetails = sentMessages.at(-1)?.details as
@@ -341,13 +333,7 @@ printf '%s\n' '{"type":"agent_end"}'
 exit 0
 `,
   });
-  await tool.execute(
-    "test-tool-call",
-    { agent: "hang", task: "test" },
-    undefined,
-    undefined,
-    makeBareCtx(cwd),
-  );
+  await runTool(tool, { agent: "hang", task: "test" }, makeBareCtx(cwd));
   await waitForSentMessageCount(sentMessages, 2);
   const resultDetails = sentMessages.at(-1)?.details as
     | SubagentDetails
@@ -373,13 +359,7 @@ printf '%s\\n' '{"type":"agent_end"}'
 exit 0
 `,
   });
-  await tool.execute(
-    "test-tool-call",
-    { agent: "hang", task: "test" },
-    undefined,
-    undefined,
-    makeBareCtx(cwd),
-  );
+  await runTool(tool, { agent: "hang", task: "test" }, makeBareCtx(cwd));
   await waitForSentMessageCount(sentMessages, 2);
   const details = sentMessages.at(-1)?.details as SubagentDetails | undefined;
   const result = details?.results[0];
@@ -407,11 +387,9 @@ printf '%s\n' '{"type":"agent_end"}'
 exit 0
 `,
   });
-  await tool.execute(
-    "test-tool-call",
+  await runTool(
+    tool,
     { agent: "hang", task: "test", debug: true },
-    undefined,
-    undefined,
     makeBareCtx(cwd),
   );
   await waitForSentMessageCount(sentMessages, 2);
@@ -1699,39 +1677,6 @@ test("subagent-result renderer uses compact content instead of full final output
   expect(details).toEqual(originalDetails);
 });
 
-test("/run final result message renderer hides header and keeps success background", async () => {
-  const { cwd } = await setupFakePi();
-  const sentMessages: SendMessageArg[] = [];
-  const { registeredCommands, registeredMessageRenderers } = getSubagentTool({
-    sendMessage: (msg) => sentMessages.push(msg),
-  });
-  const runCommand = registeredCommands.get("run");
-  await runCommand?.handler("hang test task", {
-    cwd,
-    ui: { notify: () => {} },
-  } as unknown as ExtensionCommandContext);
-  const renderer = registeredMessageRenderers.get("subagent-result");
-  if (!renderer) throw new Error("subagent-result renderer missing");
-  const fakeTheme = createDefaultFakeTheme();
-  const rendered = renderer(
-    sentMessages.at(-1) as Parameters<RegisteredMessageRenderer>[0],
-    {} as Parameters<RegisteredMessageRenderer>[1],
-    fakeTheme as Parameters<RegisteredMessageRenderer>[2],
-  ) as unknown as { render: (width: number) => string[] };
-  const renderedText = rendered.render(10000).join("\n");
-  expect(renderedText).not.toContain("[success]✓[/success]");
-  expect(renderedText).not.toContain("[toolTitle]*hang*[/toolTitle]");
-  expect(
-    rendered
-      .render(120)
-      .every(
-        (line) =>
-          line.startsWith("[toolSuccessBg]") &&
-          line.endsWith("[/toolSuccessBg]"),
-      ),
-  ).toBe(true);
-});
-
 test("formatResultFooter excludes duration from output", () => {
   const footer = formatResultFooter(
     {
@@ -1788,24 +1733,28 @@ describe("unconfirmed thinking UI footer propagation", () => {
     return rendered.render(120).join("\n");
   }
 
-  test("renderSubagentResult footer includes requested unconfirmed level", () => {
-    const text = renderResultModel({
+  test.each([
+    {
+      name: "renderSubagentResult footer includes requested unconfirmed level",
       model: "unknown ･ unknown ･ high",
+      expectedText: "[dim]unknown ･ unknown ･ high · 1 turn[/dim]",
+    },
+    {
+      name: "renderSubagentResult footer shows confirmed requested level",
+      model: "custom ･ reasoner ･ medium",
+      expectedText: "[dim]custom ･ reasoner ･ medium · 1 turn[/dim]",
+    },
+  ])("$name", (row) => {
+    const text = renderResultModel({
+      model: row.model,
     });
-    expect(text).toContain("[dim]unknown ･ unknown ･ high · 1 turn[/dim]");
+    expect(text).toContain(row.expectedText);
   });
 
   test("renderSubagentResult footer omits model when absent", () => {
     const text = renderResultModel({});
     expect(text).toContain("[dim]1 turn[/dim]");
     expect(text).not.toContain("unknown");
-  });
-
-  test("renderSubagentResult footer shows confirmed requested level", () => {
-    const text = renderResultModel({
-      model: "custom ･ reasoner ･ medium",
-    });
-    expect(text).toContain("[dim]custom ･ reasoner ･ medium · 1 turn[/dim]");
   });
 });
 
@@ -2600,11 +2549,9 @@ printf '%s\n' '{"type":"agent_end"}'
 exit 0
 `,
   });
-  await tool.execute(
-    "test-tool-call",
+  await runTool(
+    tool,
     { agent: "hang", task: "shape compat" },
-    undefined,
-    undefined,
     makeBareCtx(cwd),
   );
   await waitForSentMessageCount(sentMessages, 2);
@@ -2630,11 +2577,9 @@ printf '%s\n' '{"type":"agent_end"}'
 exit 0
 `,
   });
-  await tool.execute(
-    "test-tool-call",
+  await runTool(
+    tool,
     { agent: "hang", task: "sanitized progress" },
-    undefined,
-    undefined,
     makeBareCtx(cwd),
   );
   await waitForSentMessageCount(sentMessages, 2);
@@ -2944,58 +2889,50 @@ test("formatResultFooter outputs model only when all usage fields are zero", () 
   expect(footer).not.toContain(" · ");
 });
 
-test("formatResultFooter with model and turns only suppresses context and cost when zero", () => {
+test.each([
+  {
+    name: "formatResultFooter with model and turns only suppresses context and cost when zero",
+    turns: 3,
+    cost: 0,
+    contextTokens: 0,
+    expectedFooter: "provider/model · 3 turns",
+    absentFragmentA: "ctx",
+    absentFragmentB: "$",
+  },
+  {
+    name: "formatResultFooter with model and contextTokens only suppresses turns and cost when zero",
+    turns: 0,
+    cost: 0,
+    contextTokens: 38000,
+    expectedFooter: "provider/model · ctx:38k",
+    absentFragmentA: "turn",
+    absentFragmentB: "$",
+  },
+  {
+    name: "formatResultFooter with model and cost only suppresses turns and context when zero",
+    turns: 0,
+    cost: 0.01,
+    contextTokens: 0,
+    expectedFooter: "provider/model · $0.0100",
+    absentFragmentA: "turn",
+    absentFragmentB: "ctx",
+  },
+])("$name", (row) => {
   const footer = formatResultFooter(
     {
-      turns: 3,
+      turns: row.turns,
       input: 0,
       output: 0,
       cacheRead: 0,
       cacheWrite: 0,
-      cost: 0,
-      contextTokens: 0,
+      cost: row.cost,
+      contextTokens: row.contextTokens,
     },
     "provider/model",
   );
-  expect(footer).toBe("provider/model · 3 turns");
-  expect(footer).not.toContain("ctx");
-  expect(footer).not.toContain("$");
-});
-
-test("formatResultFooter with model and contextTokens only suppresses turns and cost when zero", () => {
-  const footer = formatResultFooter(
-    {
-      turns: 0,
-      input: 0,
-      output: 0,
-      cacheRead: 0,
-      cacheWrite: 0,
-      cost: 0,
-      contextTokens: 38000,
-    },
-    "provider/model",
-  );
-  expect(footer).toBe("provider/model · ctx:38k");
-  expect(footer).not.toContain("turn");
-  expect(footer).not.toContain("$");
-});
-
-test("formatResultFooter with model and cost only suppresses turns and context when zero", () => {
-  const footer = formatResultFooter(
-    {
-      turns: 0,
-      input: 0,
-      output: 0,
-      cacheRead: 0,
-      cacheWrite: 0,
-      cost: 0.01,
-      contextTokens: 0,
-    },
-    "provider/model",
-  );
-  expect(footer).toBe("provider/model · $0.0100");
-  expect(footer).not.toContain("turn");
-  expect(footer).not.toContain("ctx");
+  expect(footer).toBe(row.expectedFooter);
+  expect(footer).not.toContain(row.absentFragmentA);
+  expect(footer).not.toContain(row.absentFragmentB);
 });
 
 test("formatResultFooter without model but with usage fields keeps correct order", () => {

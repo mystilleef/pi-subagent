@@ -37,8 +37,11 @@ describe("parseSamplingParams", () => {
     expect(parseSamplingParams("")).toBeUndefined();
   });
 
-  test("returns undefined for malformed JSON", () => {
-    expect(parseSamplingParams("{not json}")).toBeUndefined();
+  test.each([
+    { name: "returns undefined for malformed JSON", params: "{not json}" },
+    { name: "returns undefined for empty object input", params: "{}" },
+  ])("$name", (row) => {
+    expect(parseSamplingParams(row.params)).toBeUndefined();
   });
 
   test("returns undefined for non-object JSON", () => {
@@ -46,10 +49,6 @@ describe("parseSamplingParams", () => {
     expect(parseSamplingParams('"string"')).toBeUndefined();
     expect(parseSamplingParams("[]")).toBeUndefined();
     expect(parseSamplingParams("null")).toBeUndefined();
-  });
-
-  test("returns undefined for empty object input", () => {
-    expect(parseSamplingParams("{}")).toBeUndefined();
   });
 
   test("parses valid temperature and topP", () => {
@@ -87,15 +86,22 @@ describe("serializeSamplingParams", () => {
     expect(serializeSamplingParams({ topP: 0.8 })).toBe('{"topP":0.8}');
   });
 
-  test("serializes both fields", () => {
-    expect(serializeSamplingParams({ temperature: 0.5, topP: 0.8 })).toBe(
-      '{"temperature":0.5,"topP":0.8}',
-    );
-  });
-
-  test("serializes boundary zero values", () => {
-    expect(serializeSamplingParams({ temperature: 0, topP: 0 })).toBe(
-      '{"temperature":0,"topP":0}',
-    );
+  test.each([
+    {
+      name: "serializes both fields",
+      temperature: 0.5,
+      topP: 0.8,
+      expected: '{"temperature":0.5,"topP":0.8}',
+    },
+    {
+      name: "serializes boundary zero values",
+      temperature: 0,
+      topP: 0,
+      expected: '{"temperature":0,"topP":0}',
+    },
+  ])("$name", (row) => {
+    expect(
+      serializeSamplingParams({ temperature: row.temperature, topP: row.topP }),
+    ).toBe(row.expected);
   });
 });

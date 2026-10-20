@@ -43,9 +43,38 @@ describe("resolveCompleteExtensionPath", () => {
 });
 
 describe("appendWithByteLimit", () => {
-  test("appends string data within byte limit", () => {
-    const result = appendWithByteLimit("abc", "def", 1024);
-    expect(result).toBe("abcdef");
+  test.each([
+    {
+      name: "appends string data within byte limit",
+      current: "abc",
+      incoming: "def",
+      maxBytes: 1024,
+      expected: "abcdef",
+    },
+    {
+      name: "truncates at byte limit preserving valid UTF-8",
+      current: "abc",
+      incoming: "defghijklmno",
+      maxBytes: 8,
+      expected: "abcdefgh",
+    },
+    {
+      name: "handles empty current with incoming data",
+      current: "",
+      incoming: "hello",
+      maxBytes: 1024,
+      expected: "hello",
+    },
+    {
+      name: "handles empty incoming data",
+      current: "hello",
+      incoming: "",
+      maxBytes: 1024,
+      expected: "hello",
+    },
+  ])("$name", (row) => {
+    const result = appendWithByteLimit(row.current, row.incoming, row.maxBytes);
+    expect(result).toBe(row.expected);
   });
 
   test("appends Buffer data within byte limit", () => {
@@ -63,25 +92,25 @@ describe("appendWithByteLimit", () => {
     expect(result).toBe("abc");
   });
 
-  test("returns current when already exceeding byte limit", () => {
-    const current = "abcdef";
-    const result = appendWithByteLimit(current, "ghi", 3);
-    expect(result).toBe("abcdef");
-  });
-
-  test("truncates at byte limit preserving valid UTF-8", () => {
-    const result = appendWithByteLimit("abc", "defghijklmno", 8);
-    expect(result).toBe("abcdefgh");
-  });
-
-  test("handles empty current with incoming data", () => {
-    const result = appendWithByteLimit("", "hello", 1024);
-    expect(result).toBe("hello");
-  });
-
-  test("handles empty incoming data", () => {
-    const result = appendWithByteLimit("hello", "", 1024);
-    expect(result).toBe("hello");
+  test.each([
+    {
+      name: "returns current when already exceeding byte limit",
+      current: "abcdef",
+      incoming: "ghi",
+      maxBytes: 3,
+      expected: "abcdef",
+    },
+    {
+      name: "returns empty string when max is 0",
+      current: "",
+      incoming: "abc",
+      maxBytes: 0,
+      expected: "",
+    },
+  ])("$name", (row) => {
+    const current = row.current;
+    const result = appendWithByteLimit(current, row.incoming, row.maxBytes);
+    expect(result).toBe(row.expected);
   });
 
   test("handles multi-byte UTF-8 truncation at boundary", () => {
@@ -91,25 +120,38 @@ describe("appendWithByteLimit", () => {
     const result = appendWithByteLimit(current, data, max);
     expect(result).toBe("ab€");
   });
-
-  test("returns empty string when max is 0", () => {
-    const current = "";
-    const result = appendWithByteLimit(current, "abc", 0);
-    expect(result).toBe("");
-  });
 });
 
 describe("truncateValidUtf8", () => {
-  test("returns full buffer when within limit", () => {
-    const buf = Buffer.from("hello", "utf-8");
-    const result = truncateValidUtf8(buf, 1024);
-    expect(result).toBe("hello");
-  });
-
-  test("truncates at exact byte boundary", () => {
-    const buf = Buffer.from("abcdef", "utf-8");
-    const result = truncateValidUtf8(buf, 3);
-    expect(result).toBe("abc");
+  test.each([
+    {
+      name: "returns full buffer when within limit",
+      text: "hello",
+      maxBytes: 1024,
+      expected: "hello",
+    },
+    {
+      name: "truncates at exact byte boundary",
+      text: "abcdef",
+      maxBytes: 3,
+      expected: "abc",
+    },
+    {
+      name: "returns empty string when max is 0 and buffer starts with multi-byte",
+      text: "€",
+      maxBytes: 0,
+      expected: "",
+    },
+    {
+      name: "handles max larger than buffer length",
+      text: "hi",
+      maxBytes: 100,
+      expected: "hi",
+    },
+  ])("$name", (row) => {
+    const buf = Buffer.from(row.text, "utf-8");
+    const result = truncateValidUtf8(buf, row.maxBytes);
+    expect(result).toBe(row.expected);
   });
 
   test("truncates at multi-byte character boundary by stepping back", () => {
@@ -118,22 +160,10 @@ describe("truncateValidUtf8", () => {
     expect(result).toBe("ab");
   });
 
-  test("returns empty string when max is 0 and buffer starts with multi-byte", () => {
-    const buf = Buffer.from("€", "utf-8");
-    const result = truncateValidUtf8(buf, 0);
-    expect(result).toBe("");
-  });
-
   test("returns empty string when max is less than first char bytes", () => {
     const buf = Buffer.from("€abc", "utf-8"); // € is 3 bytes
     const result = truncateValidUtf8(buf, 2); // less than 3
     expect(result).toBe("");
-  });
-
-  test("handles max larger than buffer length", () => {
-    const buf = Buffer.from("hi", "utf-8");
-    const result = truncateValidUtf8(buf, 100);
-    expect(result).toBe("hi");
   });
 
   test("handles sequences of multi-byte characters", () => {

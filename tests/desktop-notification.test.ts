@@ -21,6 +21,7 @@ import {
   NOTIFICATION_TITLE,
 } from "../src/notification/desktop-notification.js";
 import type { SubagentProgressState } from "../src/progress/progress-state.js";
+import { withEnv } from "./helpers.js";
 
 function makeState(
   overrides: Partial<SubagentProgressState> = {},
@@ -57,13 +58,18 @@ function makeRequest(
 describe("desktop-notification.ts", () => {
   describe("isDesktopNotificationsEnabled", () => {
     test("missing env value returns true (default enabled)", () => {
-      expect(isDesktopNotificationsEnabled({})).toBe(true);
+      withEnv({ PI_SUBAGENT_DESKTOP_NOTIFICATIONS: undefined }, () => {
+        expect(isDesktopNotificationsEnabled({})).toBe(true);
+      });
     });
 
-    test("empty string returns true", () => {
+    test.each([
+      { name: "empty string returns true", envValue: "" },
+      { name: "value '1' returns true", envValue: "1" },
+    ])("$name", (row) => {
       expect(
         isDesktopNotificationsEnabled({
-          PI_SUBAGENT_DESKTOP_NOTIFICATIONS: "",
+          PI_SUBAGENT_DESKTOP_NOTIFICATIONS: row.envValue,
         }),
       ).toBe(true);
     });
@@ -74,14 +80,6 @@ describe("desktop-notification.ts", () => {
           PI_SUBAGENT_DESKTOP_NOTIFICATIONS: "0",
         }),
       ).toBe(false);
-    });
-
-    test("value '1' returns true", () => {
-      expect(
-        isDesktopNotificationsEnabled({
-          PI_SUBAGENT_DESKTOP_NOTIFICATIONS: "1",
-        }),
-      ).toBe(true);
     });
 
     test("invalid value keeps notifications enabled", () => {
@@ -113,7 +111,9 @@ describe("desktop-notification.ts", () => {
     });
 
     test("undefined env object returns true", () => {
-      expect(isDesktopNotificationsEnabled(undefined)).toBe(true);
+      withEnv({ PI_SUBAGENT_DESKTOP_NOTIFICATIONS: undefined }, () => {
+        expect(isDesktopNotificationsEnabled(undefined)).toBe(true);
+      });
     });
   });
 
@@ -122,9 +122,14 @@ describe("desktop-notification.ts", () => {
       expect(isPerJobNotificationEnabled({})).toBe(false);
     });
 
-    test("empty string returns false", () => {
+    test.each([
+      { name: "empty string returns false", envValue: "" },
+      { name: "value '0' returns false", envValue: "0" },
+    ])("$name", (row) => {
       expect(
-        isPerJobNotificationEnabled({ PI_SUBAGENT_NOTIFY_PER_JOB: "" }),
+        isPerJobNotificationEnabled({
+          PI_SUBAGENT_NOTIFY_PER_JOB: row.envValue,
+        }),
       ).toBe(false);
     });
 
@@ -132,12 +137,6 @@ describe("desktop-notification.ts", () => {
       expect(
         isPerJobNotificationEnabled({ PI_SUBAGENT_NOTIFY_PER_JOB: "1" }),
       ).toBe(true);
-    });
-
-    test("value '0' returns false", () => {
-      expect(
-        isPerJobNotificationEnabled({ PI_SUBAGENT_NOTIFY_PER_JOB: "0" }),
-      ).toBe(false);
     });
 
     test("invalid value returns false", () => {
@@ -161,9 +160,20 @@ describe("desktop-notification.ts", () => {
   });
 
   describe("deriveDurationMs", () => {
-    test("returns durationMs when present", () => {
-      const state = makeState({ durationMs: 5000 });
-      expect(deriveDurationMs(state)).toBe(5000);
+    test.each([
+      {
+        name: "returns durationMs when present",
+        durationMs: 5000,
+        expectedDurationMs: 5000,
+      },
+      {
+        name: "zero durationMs returns zero",
+        durationMs: 0,
+        expectedDurationMs: 0,
+      },
+    ])("$name", (row) => {
+      const state = makeState({ durationMs: row.durationMs });
+      expect(deriveDurationMs(state)).toBe(row.expectedDurationMs);
     });
 
     test("computes from Date.now() when durationMs absent", () => {
@@ -172,60 +182,70 @@ describe("desktop-notification.ts", () => {
       const duration = deriveDurationMs(state);
       expect(duration).toBeGreaterThanOrEqual(3000);
     });
-
-    test("zero durationMs returns zero", () => {
-      const state = makeState({ durationMs: 0 });
-      expect(deriveDurationMs(state)).toBe(0);
-    });
   });
 
   describe("formatNotificationBody", () => {
-    test("success state produces '<agent> finished in <duration>'", () => {
-      expect(formatNotificationBody("my-agent", "success", 5200)).toBe(
-        "my-agent finished in 5.2s",
-      );
-    });
-
-    test("error state produces '<agent> failed after <duration>'", () => {
-      expect(formatNotificationBody("my-agent", "error", 5200)).toBe(
-        "my-agent failed after 5.2s",
-      );
-    });
-
-    test("running state produces finished message", () => {
-      expect(formatNotificationBody("my-agent", "running", 5200)).toBe(
-        "my-agent finished in 5.2s",
-      );
-    });
-
-    test("cancelled state produces finished message", () => {
-      expect(formatNotificationBody("my-agent", "cancelled", 5200)).toBe(
-        "my-agent finished in 5.2s",
-      );
-    });
-
-    test("zero duration formats as 0.0s", () => {
-      expect(formatNotificationBody("agent", "success", 0)).toBe(
-        "agent finished in 0.0s",
-      );
-    });
-
-    test("long duration formats as minutes and seconds", () => {
-      expect(formatNotificationBody("agent", "success", 125000)).toBe(
-        "agent finished in 2m 5s",
-      );
-    });
-
-    test("unusual agent names with special characters", () => {
-      expect(formatNotificationBody("my-agent_v2.0", "success", 1000)).toBe(
-        "my-agent_v2.0 finished in 1.0s",
-      );
-    });
-
-    test("agent name with spaces", () => {
-      expect(formatNotificationBody("my agent", "error", 1000)).toBe(
-        "my agent failed after 1.0s",
-      );
+    test.each([
+      {
+        name: "success state produces '<agent> finished in <duration>'",
+        agent: "my-agent",
+        status: "success",
+        durationMs: 5200,
+        expectedBody: "my-agent finished in 5.2s",
+      },
+      {
+        name: "error state produces '<agent> failed after <duration>'",
+        agent: "my-agent",
+        status: "error",
+        durationMs: 5200,
+        expectedBody: "my-agent failed after 5.2s",
+      },
+      {
+        name: "running state produces finished message",
+        agent: "my-agent",
+        status: "running",
+        durationMs: 5200,
+        expectedBody: "my-agent finished in 5.2s",
+      },
+      {
+        name: "cancelled state produces finished message",
+        agent: "my-agent",
+        status: "cancelled",
+        durationMs: 5200,
+        expectedBody: "my-agent finished in 5.2s",
+      },
+      {
+        name: "zero duration formats as 0.0s",
+        agent: "agent",
+        status: "success",
+        durationMs: 0,
+        expectedBody: "agent finished in 0.0s",
+      },
+      {
+        name: "long duration formats as minutes and seconds",
+        agent: "agent",
+        status: "success",
+        durationMs: 125000,
+        expectedBody: "agent finished in 2m 5s",
+      },
+      {
+        name: "unusual agent names with special characters",
+        agent: "my-agent_v2.0",
+        status: "success",
+        durationMs: 1000,
+        expectedBody: "my-agent_v2.0 finished in 1.0s",
+      },
+      {
+        name: "agent name with spaces",
+        agent: "my agent",
+        status: "error",
+        durationMs: 1000,
+        expectedBody: "my agent failed after 1.0s",
+      },
+    ])("$name", (row) => {
+      expect(
+        formatNotificationBody(row.agent, row.status, row.durationMs),
+      ).toBe(row.expectedBody);
     });
   });
 
@@ -297,19 +317,18 @@ describe("desktop-notification.ts", () => {
       expect(request.body).toContain("3m 5s");
     });
 
-    test("cancelled status produces normal urgency finished message", () => {
-      const state = makeState({
+    test.each([
+      {
+        name: "cancelled status produces normal urgency finished message",
         status: "cancelled",
-        durationMs: 2000,
-      });
-      const request = buildNotificationRequest(state);
-      expect(request.urgency).toBe("normal");
-      expect(request.body).toBe("test-agent finished in 2.0s");
-    });
-
-    test("running status produces normal urgency finished message", () => {
-      const state = makeState({
+      },
+      {
+        name: "running status produces normal urgency finished message",
         status: "running",
+      },
+    ])("$name", (row) => {
+      const state = makeState({
+        status: row.status,
         durationMs: 2000,
       });
       const request = buildNotificationRequest(state);
@@ -333,11 +352,32 @@ describe("defaultCommandExists", () => {
     }
   });
 
-  test("regular file with execute permission returns true", async () => {
+  test.each([
+    {
+      name: "regular file with execute permission returns true",
+      pathEnv: "/usr/bin",
+      command: "sh",
+    },
+    {
+      name: "PATH with trailing slash entries correctly joins",
+      pathEnv: "/usr/bin/",
+      command: "ls",
+    },
+    {
+      name: "duplicate PATH entries no error, first match wins",
+      pathEnv: "/usr/bin:/usr/bin:/usr/bin",
+      command: "ls",
+    },
+    {
+      name: "multiple PATH entries finds command in later entry",
+      pathEnv: "/nonexistent:/usr/bin",
+      command: "ls",
+    },
+  ])("$name", async (row) => {
     const originalPath = process.env.PATH;
-    process.env.PATH = "/usr/bin";
+    process.env.PATH = row.pathEnv;
     try {
-      const result = await defaultCommandExists("sh");
+      const result = await defaultCommandExists(row.command);
       expect(result).toBe(true);
     } finally {
       if (originalPath !== undefined) process.env.PATH = originalPath;
@@ -345,23 +385,18 @@ describe("defaultCommandExists", () => {
     }
   });
 
-  test("non-existent command returns false", async () => {
+  test.each([
+    {
+      name: "non-existent command returns false",
+      pathEnv: "/usr/bin",
+      command: "nonexistent_cmd_xyz_12345",
+    },
+    { name: "empty PATH returns false", pathEnv: "", command: "ls" },
+  ])("$name", async (row) => {
     const originalPath = process.env.PATH;
-    process.env.PATH = "/usr/bin";
+    process.env.PATH = row.pathEnv;
     try {
-      const result = await defaultCommandExists("nonexistent_cmd_xyz_12345");
-      expect(result).toBe(false);
-    } finally {
-      if (originalPath !== undefined) process.env.PATH = originalPath;
-      else delete process.env.PATH;
-    }
-  });
-
-  test("empty PATH returns false", async () => {
-    const originalPath = process.env.PATH;
-    process.env.PATH = "";
-    try {
-      const result = await defaultCommandExists("ls");
+      const result = await defaultCommandExists(row.command);
       expect(result).toBe(false);
     } finally {
       if (originalPath !== undefined) process.env.PATH = originalPath;
@@ -388,42 +423,6 @@ describe("defaultCommandExists", () => {
       // "bin" is a directory at root
       const result = await defaultCommandExists("bin");
       expect(result).toBe(false);
-    } finally {
-      if (originalPath !== undefined) process.env.PATH = originalPath;
-      else delete process.env.PATH;
-    }
-  });
-
-  test("PATH with trailing slash entries correctly joins", async () => {
-    const originalPath = process.env.PATH;
-    process.env.PATH = "/usr/bin/";
-    try {
-      const result = await defaultCommandExists("ls");
-      expect(result).toBe(true);
-    } finally {
-      if (originalPath !== undefined) process.env.PATH = originalPath;
-      else delete process.env.PATH;
-    }
-  });
-
-  test("duplicate PATH entries no error, first match wins", async () => {
-    const originalPath = process.env.PATH;
-    process.env.PATH = "/usr/bin:/usr/bin:/usr/bin";
-    try {
-      const result = await defaultCommandExists("ls");
-      expect(result).toBe(true);
-    } finally {
-      if (originalPath !== undefined) process.env.PATH = originalPath;
-      else delete process.env.PATH;
-    }
-  });
-
-  test("multiple PATH entries finds command in later entry", async () => {
-    const originalPath = process.env.PATH;
-    process.env.PATH = "/nonexistent:/usr/bin";
-    try {
-      const result = await defaultCommandExists("ls");
-      expect(result).toBe(true);
     } finally {
       if (originalPath !== undefined) process.env.PATH = originalPath;
       else delete process.env.PATH;
@@ -651,12 +650,34 @@ describe("delivery.ts", () => {
       expect(script).toContain("Pi Subagent");
     });
 
-    test("escapes double quotes in title and body", async () => {
+    test.each([
+      {
+        name: "escapes double quotes in title and body",
+        title: 'He said "hello"',
+        body: 'It\'s a "test"',
+        escapedTitle: 'He said \\"hello\\"',
+        escapedBody: 'It\'s a \\"test\\"',
+      },
+      {
+        name: "escapes backslashes in title and body",
+        title: "C:\\Users\\test",
+        body: "path\\to\\file",
+        escapedTitle: "C:\\\\Users\\\\test",
+        escapedBody: "path\\\\to\\\\file",
+      },
+      {
+        name: "escapes both backslashes and double quotes together",
+        title: 'Path "C:\\dir" is invalid',
+        body: 'See "doc\\readme"',
+        escapedTitle: 'Path \\"C:\\\\dir\\" is invalid',
+        escapedBody: 'See \\"doc\\\\readme\\"',
+      },
+    ])("$name", async (row) => {
       let capturedArgs: string[] = [];
       await deliverMacOSNotification(
         makeRequest({
-          title: 'He said "hello"',
-          body: 'It\'s a "test"',
+          title: row.title,
+          body: row.body,
         }),
         {
           platform: "darwin",
@@ -667,48 +688,8 @@ describe("delivery.ts", () => {
         },
       );
       const script = capturedArgs[1];
-      expect(script).toContain('He said \\"hello\\"');
-      expect(script).toContain('It\'s a \\"test\\"');
-    });
-
-    test("escapes backslashes in title and body", async () => {
-      let capturedArgs: string[] = [];
-      await deliverMacOSNotification(
-        makeRequest({
-          title: "C:\\Users\\test",
-          body: "path\\to\\file",
-        }),
-        {
-          platform: "darwin",
-          spawnProcess: (_cmd, args) => {
-            capturedArgs = args;
-            return {};
-          },
-        },
-      );
-      const script = capturedArgs[1];
-      expect(script).toContain("C:\\\\Users\\\\test");
-      expect(script).toContain("path\\\\to\\\\file");
-    });
-
-    test("escapes both backslashes and double quotes together", async () => {
-      let capturedArgs: string[] = [];
-      await deliverMacOSNotification(
-        makeRequest({
-          title: 'Path "C:\\dir" is invalid',
-          body: 'See "doc\\readme"',
-        }),
-        {
-          platform: "darwin",
-          spawnProcess: (_cmd, args) => {
-            capturedArgs = args;
-            return {};
-          },
-        },
-      );
-      const script = capturedArgs[1];
-      expect(script).toContain('Path \\"C:\\\\dir\\" is invalid');
-      expect(script).toContain('See \\"doc\\\\readme\\"');
+      expect(script).toContain(row.escapedTitle);
+      expect(script).toContain(row.escapedBody);
     });
 
     test("handles strings with no special characters", async () => {
@@ -787,12 +768,27 @@ describe("delivery.ts", () => {
       expect(script).toContain("5000");
     });
 
-    test("escapes single quotes in title and body", async () => {
+    test.each([
+      {
+        name: "escapes single quotes in title and body",
+        title: "It's a test",
+        body: "don't worry",
+        escapedTitle: "It''s a test",
+        escapedBody: "don''t worry",
+      },
+      {
+        name: "escapes multiple single quotes in same string",
+        title: "It's a 'test'",
+        body: "don't don't don't",
+        escapedTitle: "It''s a ''test''",
+        escapedBody: "don''t don''t don''t",
+      },
+    ])("$name", async (row) => {
       let capturedArgs: string[] = [];
       await deliverWindowsNotification(
         makeRequest({
-          title: "It's a test",
-          body: "don't worry",
+          title: row.title,
+          body: row.body,
         }),
         {
           platform: "win32",
@@ -803,28 +799,8 @@ describe("delivery.ts", () => {
         },
       );
       const script = capturedArgs[5];
-      expect(script).toContain("It''s a test");
-      expect(script).toContain("don''t worry");
-    });
-
-    test("escapes multiple single quotes in same string", async () => {
-      let capturedArgs: string[] = [];
-      await deliverWindowsNotification(
-        makeRequest({
-          title: "It's a 'test'",
-          body: "don't don't don't",
-        }),
-        {
-          platform: "win32",
-          spawnProcess: (_cmd, args) => {
-            capturedArgs = args;
-            return {};
-          },
-        },
-      );
-      const script = capturedArgs[5];
-      expect(script).toContain("It''s a ''test''");
-      expect(script).toContain("don''t don''t don''t");
+      expect(script).toContain(row.escapedTitle);
+      expect(script).toContain(row.escapedBody);
     });
 
     test("handles strings with no single quotes", async () => {
@@ -877,28 +853,27 @@ describe("deliverNotification", () => {
     expect(capturedCmd).toBe("notify-send");
   });
 
-  test("routes to macOS notification on darwin", async () => {
-    let capturedCmd = "";
-    await deliverNotification(makeRequest(), {
+  test.each([
+    {
+      name: "routes to macOS notification on darwin",
       platform: "darwin",
-      spawnProcess: (cmd) => {
-        capturedCmd = cmd;
-        return {};
-      },
-    });
-    expect(capturedCmd).toBe("osascript");
-  });
-
-  test("routes to windows notification on win32", async () => {
+      expectedCommand: "osascript",
+    },
+    {
+      name: "routes to windows notification on win32",
+      platform: "win32",
+      expectedCommand: "powershell.exe",
+    },
+  ])("$name", async (row) => {
     let capturedCmd = "";
     await deliverNotification(makeRequest(), {
-      platform: "win32",
+      platform: row.platform,
       spawnProcess: (cmd) => {
         capturedCmd = cmd;
         return {};
       },
     });
-    expect(capturedCmd).toBe("powershell.exe");
+    expect(capturedCmd).toBe(row.expectedCommand);
   });
 
   test("does nothing on unsupported platform", async () => {
@@ -935,19 +910,6 @@ describe("deliverNotification", () => {
       },
     });
     expect(spawned).toBe(false);
-  });
-
-  test("runDetached swallows spawn throws for linux", async () => {
-    resetNotifySendCache();
-    expect(
-      await deliverLinuxNotification(makeRequest(), {
-        platform: "linux",
-        commandExists: async () => true,
-        spawnProcess: () => {
-          throw new Error("spawn failed");
-        },
-      }),
-    ).toBeUndefined();
   });
 
   test("checkNotifySendExists accepts synchronous boolean true", async () => {

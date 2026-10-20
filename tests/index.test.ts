@@ -2,30 +2,45 @@ import { describe, expect, test } from "bun:test";
 import type { ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import {
   getCachedAgentCompletions,
+  getCachedAgentDiscovery,
   resetAgentDiscoveryCache,
 } from "../src/agent/agent-cache.js";
 import { resetAgentCache } from "../src/index.js";
 import { listRunJobs } from "../src/orchestration/run-registry.js";
 import {
+  emitSessionStart,
   type RegisteredEventHandler,
   setupFakePi,
   setupHooks,
   setupTest,
   waitForRunJobCount,
+  waitForRunJobsCleared,
 } from "./helpers.js";
 
 setupHooks();
 
-async function emitSessionStart(
-  tool: { registeredEventHandlers: Map<string, RegisteredEventHandler[]> },
-  cwd: string | undefined,
-) {
-  for (const handler of tool.registeredEventHandlers.get("session_start") ??
-    []) {
-    await handler({ type: "session_start", reason: "startup" }, {
-      cwd,
-    } as ExtensionCommandContext);
-  }
+/**
+ * Event-driven completion signal for fire-and-forget root runs: resolves when
+ * the lifecycle sends its terminal result message.
+ */
+function trackResultMessage(): {
+  sendMessage: (msg: import("./helpers.js").SendMessageArg) => void;
+  resultMessage: Promise<import("./helpers.js").SendMessageArg>;
+} {
+  const deferred: {
+    resolve?: (msg: import("./helpers.js").SendMessageArg) => void;
+  } = {};
+  const resultMessage = new Promise<import("./helpers.js").SendMessageArg>(
+    (resolve) => {
+      deferred.resolve = resolve;
+    },
+  );
+  return {
+    sendMessage: (msg) => {
+      if (msg.customType === "subagent-result") deferred.resolve?.(msg);
+    },
+    resultMessage,
+  };
 }
 
 async function emitResourcesDiscover(
@@ -47,7 +62,10 @@ describe("index.ts", () => {
     test("delegates to resetAgentDiscoveryCache", async () => {
       const { cwd } = await setupFakePi();
       await getCachedAgentCompletions("", cwd);
+      const cached = await getCachedAgentDiscovery(cwd, "both");
+      expect(await getCachedAgentDiscovery(cwd, "both")).toBe(cached);
       resetAgentCache();
+      expect(await getCachedAgentDiscovery(cwd, "both")).not.toBe(cached);
       resetAgentDiscoveryCache();
     });
   });
@@ -61,17 +79,18 @@ describe("index.ts", () => {
       expect(completions).toBeDefined();
     });
 
-    test("session_start with empty string ctx.cwd clears workspace root", async () => {
+    test.each([
+      {
+        name: "session_start with empty string ctx.cwd clears workspace root",
+        cwd: "",
+      },
+      {
+        name: "session_start with whitespace-only ctx.cwd clears workspace root",
+        cwd: "   ",
+      },
+    ])("$name", async (row) => {
       const { tool } = await setupTest();
-      await emitSessionStart(tool, "");
-      const runCommand = tool.registeredCommands.get("run");
-      const completions = await runCommand?.getArgumentCompletions?.("hang");
-      expect(completions).toEqual([]);
-    });
-
-    test("session_start with whitespace-only ctx.cwd clears workspace root", async () => {
-      const { tool } = await setupTest();
-      await emitSessionStart(tool, "   ");
+      await emitSessionStart(tool, row.cwd);
       const runCommand = tool.registeredCommands.get("run");
       const completions = await runCommand?.getArgumentCompletions?.("hang");
       expect(completions).toEqual([]);
@@ -172,17 +191,19 @@ describe("index.ts", () => {
   });
 
   describe("registered renderers", () => {
-    test("registers subagent-progress message renderer", async () => {
+    test.each([
+      {
+        name: "registers subagent-progress message renderer",
+        rendererType: "subagent-progress",
+      },
+      {
+        name: "registers subagent-result message renderer",
+        rendererType: "subagent-result",
+      },
+    ])("$name", async (row) => {
       const { tool } = await setupTest();
       expect(
-        tool.registeredMessageRenderers.get("subagent-progress"),
-      ).toBeDefined();
-    });
-
-    test("registers subagent-result message renderer", async () => {
-      const { tool } = await setupTest();
-      expect(
-        tool.registeredMessageRenderers.get("subagent-result"),
+        tool.registeredMessageRenderers.get(row.rendererType),
       ).toBeDefined();
     });
   });
@@ -268,6 +289,7 @@ describe("index.ts", () => {
       await runCommand?.handler?.("hang hello", ctx);
       const completions = await runCommand?.getArgumentCompletions?.("hang");
       expect(completions).toBeDefined();
+      await waitForRunJobsCleared();
     });
 
     test("notifies usage when args are whitespace", async () => {
@@ -306,7 +328,23 @@ describe("index.ts", () => {
   });
 
   describe("cancel-subagent command handler", () => {
-    test("notifies no active jobs when no jobs running and args empty", async () => {
+    test.each([
+      {
+        name: "notifies no active jobs when no jobs running and args empty",
+        args: "",
+        expectedNotification: "No active /run jobs.",
+      },
+      {
+        name: "notifies no active jobs when target 'all' and no jobs running",
+        args: "all",
+        expectedNotification: "No active /run jobs.",
+      },
+      {
+        name: "notifies no active job when specific requestId not found",
+        args: "nonexistent-id",
+        expectedNotification: "No active /run job nonexistent-id.",
+      },
+    ])("$name", async (row) => {
       const notifications: string[] = [];
       const { tool } = await setupTest();
       const ctx = {
@@ -317,38 +355,8 @@ describe("index.ts", () => {
         },
       } as unknown as ExtensionCommandContext;
       const cancelCommand = tool.registeredCommands.get("cancel-subagent");
-      await cancelCommand?.handler?.("", ctx);
-      expect(notifications[0]).toBe("No active /run jobs.");
-    });
-
-    test("notifies no active jobs when target 'all' and no jobs running", async () => {
-      const notifications: string[] = [];
-      const { tool } = await setupTest();
-      const ctx = {
-        cwd: "/tmp",
-        ui: {
-          notify: (msg: string) => notifications.push(msg),
-          select: async () => undefined,
-        },
-      } as unknown as ExtensionCommandContext;
-      const cancelCommand = tool.registeredCommands.get("cancel-subagent");
-      await cancelCommand?.handler?.("all", ctx);
-      expect(notifications[0]).toBe("No active /run jobs.");
-    });
-
-    test("notifies no active job when specific requestId not found", async () => {
-      const notifications: string[] = [];
-      const { tool } = await setupTest();
-      const ctx = {
-        cwd: "/tmp",
-        ui: {
-          notify: (msg: string) => notifications.push(msg),
-          select: async () => undefined,
-        },
-      } as unknown as ExtensionCommandContext;
-      const cancelCommand = tool.registeredCommands.get("cancel-subagent");
-      await cancelCommand?.handler?.("nonexistent-id", ctx);
-      expect(notifications[0]).toBe("No active /run job nonexistent-id.");
+      await cancelCommand?.handler?.(row.args, ctx);
+      expect(notifications[0]).toBe(row.expectedNotification);
     });
 
     test("presents selection UI when jobs are active and no args", async () => {
@@ -385,6 +393,7 @@ describe("index.ts", () => {
       expect(
         selections[0]?.some((o) => o.includes("All running subagents")),
       ).toBe(true);
+      await waitForRunJobsCleared();
     });
 
     test("cancels specific job when requestId matches active job", async () => {
@@ -418,6 +427,7 @@ describe("index.ts", () => {
       const cancelCommand = tool.registeredCommands.get("cancel-subagent");
       await cancelCommand?.handler?.(requestId, cancelCtx);
       expect(notifications[0]).toBe(`Cancelled /run job ${requestId}.`);
+      await waitForRunJobsCleared();
     });
 
     test("cancels all jobs when target is 'all' and jobs are active", async () => {
@@ -448,6 +458,7 @@ describe("index.ts", () => {
       const cancelCommand = tool.registeredCommands.get("cancel-subagent");
       await cancelCommand?.handler?.("all", cancelCtx);
       expect(notifications[0]).toContain("Cancelled");
+      await waitForRunJobsCleared();
     });
   });
 
@@ -478,8 +489,12 @@ describe("index.ts", () => {
   describe("tool execute", () => {
     test("returns formatted result for successful run", async () => {
       const sentMessages: import("./helpers.js").SendMessageArg[] = [];
+      const tracker = trackResultMessage();
       const { tool, cwd } = await setupTest({
-        sendMessage: (msg) => sentMessages.push(msg),
+        sendMessage: (msg) => {
+          sentMessages.push(msg);
+          tracker.sendMessage(msg);
+        },
       });
       const ctx = {
         cwd,
@@ -501,6 +516,7 @@ describe("index.ts", () => {
       expect(result.content).toBeDefined();
       expect(result.details).toBeDefined();
       expect(result.details.mode).toBe("single");
+      await tracker.resultMessage;
     });
 
     test("returns not_found result for unknown agent", async () => {
@@ -540,10 +556,23 @@ describe("index.ts", () => {
       expect(rendered).toBeDefined();
     });
 
-    test("renderResult returns content", async () => {
+    test.each([
+      {
+        name: "renderResult returns content",
+        contentText: "done",
+        finalOutput: "done",
+        displayMode: "inline",
+      },
+      {
+        name: "renderResult with block display mode",
+        contentText: "block output",
+        finalOutput: "block output",
+        displayMode: "block",
+      },
+    ])("$name", async (row) => {
       const { tool } = await setupTest();
       const mockResult = {
-        content: [{ type: "text" as const, text: "done" }],
+        content: [{ type: "text" as const, text: row.contentText }],
         details: {
           mode: "single" as const,
           agentScope: "both" as const,
@@ -553,7 +582,7 @@ describe("index.ts", () => {
               agent: "hang",
               task: "test",
               exitCode: 0,
-              finalOutput: "done",
+              finalOutput: row.finalOutput,
               stderr: "",
               usage: {
                 input: 1,
@@ -571,50 +600,7 @@ describe("index.ts", () => {
       };
       const rendered = tool.renderResult(
         mockResult as never,
-        "inline" as never,
-        {
-          fg: (_c: string, t: string) => t,
-          bg: (_c: string, t: string) => t,
-          bold: (t: string) => t,
-          italic: (t: string) => t,
-        } as unknown as import("@earendil-works/pi-coding-agent").Theme,
-        undefined as never,
-      );
-      expect(rendered).toBeDefined();
-    });
-
-    test("renderResult with block display mode", async () => {
-      const { tool } = await setupTest();
-      const mockResult = {
-        content: [{ type: "text" as const, text: "block output" }],
-        details: {
-          mode: "single" as const,
-          agentScope: "both" as const,
-          projectAgentsDir: null,
-          results: [
-            {
-              agent: "hang",
-              task: "test",
-              exitCode: 0,
-              finalOutput: "block output",
-              stderr: "",
-              usage: {
-                input: 1,
-                output: 1,
-                cacheRead: 0,
-                cacheWrite: 0,
-                cost: 0,
-                contextTokens: 0,
-                turns: 1,
-              },
-              agentSource: "user" as const,
-            },
-          ],
-        },
-      };
-      const rendered = tool.renderResult(
-        mockResult as never,
-        "block" as never,
+        row.displayMode as never,
         {
           fg: (_c: string, t: string) => t,
           bg: (_c: string, t: string) => t,
@@ -627,7 +613,10 @@ describe("index.ts", () => {
     });
 
     test("execute with undefined signal and onUpdate", async () => {
-      const { tool, cwd } = await setupTest();
+      const tracker = trackResultMessage();
+      const { tool, cwd } = await setupTest({
+        sendMessage: tracker.sendMessage,
+      });
       const ctx = {
         cwd,
         signal: AbortSignal.timeout(10000),
@@ -646,6 +635,7 @@ describe("index.ts", () => {
       );
       expect(result).toBeDefined();
       expect(result.content).toBeDefined();
+      await tracker.resultMessage;
     });
   });
 });

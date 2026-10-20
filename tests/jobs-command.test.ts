@@ -1,4 +1,4 @@
-import { beforeEach, expect, test } from "bun:test";
+import { beforeEach, describe, expect, test } from "bun:test";
 import { jobsCommandHandler } from "../src/orchestration/jobs-command.js";
 import {
   registerRunJob,
@@ -21,11 +21,14 @@ beforeEach(() => {
   resetProgressStore();
 });
 
-test("/jobs empty board shows no-jobs message", async () => {
+test.each([
+  { name: "/jobs empty board shows no-jobs message", args: "" },
+  { name: "/jobs ignores arguments", args: "some garbage args" },
+])("$name", async (row) => {
   const notices: string[] = [];
   await jobsCommandHandler(
     makeCommandContext((msg) => notices.push(msg)),
-    "",
+    row.args,
   );
   expect(notices).toEqual(["No /run jobs in this session."]);
 });
@@ -150,15 +153,6 @@ test("/jobs shows cancelled and error jobs", async () => {
   expect(output).toContain("something broke");
   expect(output).toContain("user aborted");
   expect(output).not.toContain("COMPLETED");
-});
-
-test("/jobs ignores arguments", async () => {
-  const notices: string[] = [];
-  await jobsCommandHandler(
-    makeCommandContext((msg) => notices.push(msg)),
-    "some garbage args",
-  );
-  expect(notices).toEqual(["No /run jobs in this session."]);
 });
 
 test("/jobs active job not in progress store is skipped", async () => {
@@ -333,4 +327,59 @@ test("/jobs truncates body text at 121 chars", async () => {
   const output = notices[0] ?? "";
   expect(output).not.toContain(text121);
   expect(output).toContain("…");
+});
+
+describe("jobs-command.ts coverage gaps", () => {
+  test("jobsCommandHandler renders board with active and completed jobs", async () => {
+    resetRunRegistry();
+    resetProgressStore();
+
+    const notices: string[] = [];
+    const ctx = makeCommandContext((msg) => notices.push(msg));
+
+    // Create some progress states
+    const activeRid = "active-job";
+    const completedRid = "completed-job";
+
+    createProgressState(activeRid, "active-agent", "running task", "inst-1");
+    createProgressState(
+      completedRid,
+      "completed-agent",
+      "finished task",
+      "inst-2",
+    );
+
+    // Register active job
+    registerRunJob({
+      requestId: activeRid,
+      agentName: "active-agent",
+      instanceName: "inst-1",
+      controller: new AbortController(),
+      startedAt: Date.now(),
+    });
+
+    // Finalize completed job
+    finalizeProgressState(completedRid, "output");
+
+    await jobsCommandHandler(ctx, "");
+
+    expect(notices).toHaveLength(1);
+    const output = notices[0] ?? "";
+    expect(output).toContain("active-agent");
+    expect(output).toContain("completed-agent");
+    expect(output).toContain("ACTIVE (1)");
+    expect(output).toContain("SUCCEEDED (1)");
+  });
+
+  test("jobsCommandHandler handles empty board", async () => {
+    resetRunRegistry();
+    resetProgressStore();
+
+    const notices: string[] = [];
+    const ctx = makeCommandContext((msg) => notices.push(msg));
+
+    await jobsCommandHandler(ctx, "");
+
+    expect(notices).toEqual(["No /run jobs in this session."]);
+  });
 });

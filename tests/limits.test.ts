@@ -8,7 +8,10 @@ import {
   getSubagentOutputLimits,
   getSubagentRuntimeLimits,
   truncateOutput,
-} from "../src/shared/limits.js";
+} from "../src/shared/utils.js";
+import { setupHooks } from "./helpers.js";
+
+setupHooks();
 
 const ALL_LIMIT_ENV_VARS = [
   "PI_SUBAGENT_MAX_OUTPUT_BYTES",
@@ -25,6 +28,66 @@ function clearLimitEnv() {
 }
 
 afterEach(clearLimitEnv);
+
+test("subagent runtime limits parse env values safely", () => {
+  expect(DEFAULT_AGENT_END_GRACE_MS).toBe(250);
+  expect(DEFAULT_MAX_STDERR_BYTES).toBe(10_000);
+  expect(DEFAULT_MAX_SUBAGENT_DEPTH).toBe(5);
+  expect(getSubagentRuntimeLimits()).toEqual({
+    agentEndGraceMs: 250,
+    maxStderrBytes: 10_000,
+    maxDepth: 5,
+  });
+  expect(
+    getSubagentRuntimeLimits({
+      PI_SUBAGENT_AGENT_END_GRACE_MS: "125",
+      PI_SUBAGENT_MAX_STDERR_BYTES: "2048",
+      PI_SUBAGENT_MAX_DEPTH: "7",
+    }),
+  ).toEqual({ agentEndGraceMs: 125, maxStderrBytes: 2048, maxDepth: 7 });
+  expect(
+    getSubagentRuntimeLimits({
+      PI_SUBAGENT_AGENT_END_GRACE_MS: 75,
+      PI_SUBAGENT_MAX_STDERR_BYTES: 512,
+      PI_SUBAGENT_MAX_DEPTH: 2,
+    }),
+  ).toEqual({ agentEndGraceMs: 75, maxStderrBytes: 512, maxDepth: 2 });
+});
+
+test("subagent runtime limits fall back for invalid env values", () => {
+  const invalidValues = [
+    undefined,
+    "",
+    "0",
+    "-1",
+    "1.5",
+    "Infinity",
+    "NaN",
+    "not-a-number",
+  ];
+  for (const value of invalidValues) {
+    expect(
+      getSubagentRuntimeLimits({
+        PI_SUBAGENT_AGENT_END_GRACE_MS: value,
+        PI_SUBAGENT_MAX_STDERR_BYTES: value,
+        PI_SUBAGENT_MAX_DEPTH: value,
+      }),
+    ).toEqual({ agentEndGraceMs: 250, maxStderrBytes: 10_000, maxDepth: 5 });
+  }
+});
+
+test("subagent runtime max depth clamps above ceiling", () => {
+  expect(getSubagentRuntimeLimits({ PI_SUBAGENT_MAX_DEPTH: "10" })).toEqual({
+    agentEndGraceMs: 250,
+    maxStderrBytes: 10_000,
+    maxDepth: 10,
+  });
+  expect(getSubagentRuntimeLimits({ PI_SUBAGENT_MAX_DEPTH: "11" })).toEqual({
+    agentEndGraceMs: 250,
+    maxStderrBytes: 10_000,
+    maxDepth: 10,
+  });
+});
 
 describe("getSubagentOutputLimits", () => {
   test("returns defaults when no env vars are set", () => {
@@ -56,33 +119,30 @@ describe("getSubagentOutputLimits", () => {
     expect(limits.maxLines).toBe(77);
   });
 
-  test("falls back to defaults when env vars are non-numeric strings", () => {
-    process.env.PI_SUBAGENT_MAX_OUTPUT_BYTES = "abc";
-    process.env.PI_SUBAGENT_MAX_OUTPUT_LINES = "xyz";
-    const limits = getSubagentOutputLimits();
-    expect(limits.maxBytes).toBe(DEFAULT_MAX_OUTPUT_BYTES);
-    expect(limits.maxLines).toBe(DEFAULT_MAX_OUTPUT_LINES);
-  });
-
-  test("falls back to defaults when env vars are zero", () => {
-    process.env.PI_SUBAGENT_MAX_OUTPUT_BYTES = "0";
-    process.env.PI_SUBAGENT_MAX_OUTPUT_LINES = "0";
-    const limits = getSubagentOutputLimits();
-    expect(limits.maxBytes).toBe(DEFAULT_MAX_OUTPUT_BYTES);
-    expect(limits.maxLines).toBe(DEFAULT_MAX_OUTPUT_LINES);
-  });
-
-  test("falls back to defaults when env vars are negative", () => {
-    process.env.PI_SUBAGENT_MAX_OUTPUT_BYTES = "-5";
-    process.env.PI_SUBAGENT_MAX_OUTPUT_LINES = "-1";
-    const limits = getSubagentOutputLimits();
-    expect(limits.maxBytes).toBe(DEFAULT_MAX_OUTPUT_BYTES);
-    expect(limits.maxLines).toBe(DEFAULT_MAX_OUTPUT_LINES);
-  });
-
-  test("falls back to defaults when env vars are non-integer floats", () => {
-    process.env.PI_SUBAGENT_MAX_OUTPUT_BYTES = "3.14";
-    process.env.PI_SUBAGENT_MAX_OUTPUT_LINES = "1.5";
+  test.each([
+    {
+      name: "falls back to defaults when env vars are non-numeric strings",
+      maxOutputBytes: "abc",
+      maxOutputLines: "xyz",
+    },
+    {
+      name: "falls back to defaults when env vars are zero",
+      maxOutputBytes: "0",
+      maxOutputLines: "0",
+    },
+    {
+      name: "falls back to defaults when env vars are negative",
+      maxOutputBytes: "-5",
+      maxOutputLines: "-1",
+    },
+    {
+      name: "falls back to defaults when env vars are non-integer floats",
+      maxOutputBytes: "3.14",
+      maxOutputLines: "1.5",
+    },
+  ])("$name", (row) => {
+    process.env.PI_SUBAGENT_MAX_OUTPUT_BYTES = row.maxOutputBytes;
+    process.env.PI_SUBAGENT_MAX_OUTPUT_LINES = row.maxOutputLines;
     const limits = getSubagentOutputLimits();
     expect(limits.maxBytes).toBe(DEFAULT_MAX_OUTPUT_BYTES);
     expect(limits.maxLines).toBe(DEFAULT_MAX_OUTPUT_LINES);
@@ -132,20 +192,12 @@ describe("getSubagentRuntimeLimits", () => {
     expect(limits.maxDepth).toBe(5);
   });
 
-  test("caps maxDepth at the ceiling of 10", () => {
-    process.env.PI_SUBAGENT_MAX_DEPTH = "99";
-    const limits = getSubagentRuntimeLimits();
-    expect(limits.maxDepth).toBe(10);
-  });
-
-  test("caps maxDepth at ceiling when set to exactly 10", () => {
-    process.env.PI_SUBAGENT_MAX_DEPTH = "10";
-    const limits = getSubagentRuntimeLimits();
-    expect(limits.maxDepth).toBe(10);
-  });
-
-  test("caps maxDepth at ceiling when set to 11", () => {
-    process.env.PI_SUBAGENT_MAX_DEPTH = "11";
+  test.each([
+    { name: "caps maxDepth at the ceiling of 10", maxDepth: "99" },
+    { name: "caps maxDepth at ceiling when set to exactly 10", maxDepth: "10" },
+    { name: "caps maxDepth at ceiling when set to 11", maxDepth: "11" },
+  ])("$name", (row) => {
+    process.env.PI_SUBAGENT_MAX_DEPTH = row.maxDepth;
     const limits = getSubagentRuntimeLimits();
     expect(limits.maxDepth).toBe(10);
   });
@@ -205,9 +257,23 @@ describe("getSubagentRuntimeLimits", () => {
 });
 
 describe("truncateOutput", () => {
-  test("returns text unchanged when within limits", () => {
-    const text = "short text\nwith two lines";
-    const result = truncateOutput(text, { maxBytes: 1000, maxLines: 10 });
+  test.each([
+    {
+      name: "returns text unchanged when within limits",
+      text: "short text\nwith two lines",
+      maxLines: 10,
+    },
+    {
+      name: "handles text with exactly maxLines",
+      text: "a\nb\nc",
+      maxLines: 3,
+    },
+  ])("$name", (row) => {
+    const text = row.text;
+    const result = truncateOutput(text, {
+      maxBytes: 1000,
+      maxLines: row.maxLines,
+    });
     expect(result).toBe(text);
   });
 
@@ -287,12 +353,6 @@ describe("truncateOutput", () => {
   test("handles empty string", () => {
     const result = truncateOutput("", { maxBytes: 100, maxLines: 10 });
     expect(result).toBe("");
-  });
-
-  test("handles text with exactly maxLines", () => {
-    const text = "a\nb\nc";
-    const result = truncateOutput(text, { maxBytes: 1000, maxLines: 3 });
-    expect(result).toBe(text);
   });
 
   test("handles text with exactly maxBytes", () => {

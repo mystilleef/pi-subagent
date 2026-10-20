@@ -42,16 +42,19 @@ function toolResult(overrides: Record<string, unknown>): Message {
 }
 
 describe("getOutcomeString", () => {
-  test("returns trimmed outcome from valid source", () => {
-    expect(getOutcomeString({ outcome: "Great success" })).toBe(
-      "Great success",
-    );
-  });
-
-  test("trims whitespace from outcome", () => {
-    expect(getOutcomeString({ outcome: "  padded outcome  " })).toBe(
-      "padded outcome",
-    );
+  test.each([
+    {
+      name: "returns trimmed outcome from valid source",
+      outcome: "Great success",
+      expected: "Great success",
+    },
+    {
+      name: "trims whitespace from outcome",
+      outcome: "  padded outcome  ",
+      expected: "padded outcome",
+    },
+  ])("$name", (row) => {
+    expect(getOutcomeString({ outcome: row.outcome })).toBe(row.expected);
   });
 
   test("returns undefined for null source", () => {
