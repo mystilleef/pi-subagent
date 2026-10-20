@@ -1,9 +1,11 @@
 # Subagents for pi
 
-Designed to orchestrate agents for the
-[SPAE framework](https://github.com/mystilleef/spae-framework). Agents
-in
-[action](https://raw.githubusercontent.com/mystilleef/pi-subagent/main/assets/parallel-agents-demo.mp4).
+> Official compatibility with the
+> [SPAE framework](https://github.com/mystilleef/spae-framework).
+
+Run sub-agents in [Pi](https://github.com/earendil-works/pi).
+
+_[Agents in action](https://raw.githubusercontent.com/mystilleef/pi-subagent/main/assets/parallel-agents-demo.mp4)._
 
 ---
 
@@ -191,8 +193,8 @@ replace_prompt: true
   child context window.
 - `thinking`: Controls the model thinking level (values: `off`,
   `minimal`, `low`, `medium`, `high`, `xhigh`, `max`). `xhigh` and `max`
-  are model-specific, opt-in levels. The child runner clamps
-  unsupported levels to supported values and prints warnings.
+  are model-specific, opt-in levels. The child runner clamps unsupported
+  levels to supported values and prints warnings.
 - `provider`: Specifies the model provider. Requires setting the `model`
   field. Omission of the `model` field when defining a `provider`
   invalidates the agent configuration.
