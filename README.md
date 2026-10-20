@@ -5,7 +5,7 @@
 
 Run sub-agents in [Pi](https://github.com/earendil-works/pi).
 
-_[Agents in action](https://raw.githubusercontent.com/mystilleef/pi-subagent/main/assets/parallel-agents-demo.mp4)._
+![Agents in action](https://raw.githubusercontent.com/mystilleef/pi-subagent/main/assets/parallel-agents-demo.gif)
 
 ---
 
