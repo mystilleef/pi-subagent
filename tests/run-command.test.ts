@@ -22,6 +22,7 @@ import {
 import {
   emitSessionStart,
   type FakeTheme,
+  makeMessageRenderOptions,
   type RegisteredMessageRenderer,
   requestIdOf,
   type SendMessageArg,
@@ -1392,7 +1393,7 @@ test("/run final result message renderer shows header and keeps success backgrou
   };
   const rendered = renderer(
     sentMessages.at(-1) as Parameters<RegisteredMessageRenderer>[0],
-    { expanded: false, outputPad: 2 },
+    makeMessageRenderOptions(),
     fakeTheme as Parameters<RegisteredMessageRenderer>[2],
   ) as unknown as { render: (width: number) => string[] };
   const renderedText = rendered.render(10000).join("\n");
@@ -1598,7 +1599,7 @@ exit 0
   };
   const rendered = renderer(
     sentMessages.at(-1) as Parameters<RegisteredMessageRenderer>[0],
-    { expanded: false, outputPad: 2 },
+    makeMessageRenderOptions(),
     fakeTheme as Parameters<RegisteredMessageRenderer>[2],
   ) as unknown as { render: (width: number) => string[] };
   const renderedText = rendered.render(10000).join("\n");

@@ -1,5 +1,4 @@
 import type { AgentToolUpdateCallback } from "@earendil-works/pi-agent-core";
-import { StringEnum } from "@earendil-works/pi-ai";
 import type {
   ExtensionAPI,
   ExtensionContext,
@@ -55,7 +54,12 @@ import {
   removeRunJob,
 } from "./run-registry.js";
 
-const AgentScopeSchema = StringEnum(["user", "project", "both"] as const, {
+// Plain `enum` schema (not `anyOf` of literals) keeps Google-compatible
+// providers happy; mirrors Pi's in-host `StringEnum`, whose published pi-ai
+// typing returns a pi-schema `Schema` that `Type.Object` cannot infer.
+const AgentScopeSchema = Type.Unsafe<AgentScope>({
+  type: "string",
+  enum: ["user", "project", "both"],
   description:
     'Which agent directories to use. Default: "both" (user + project-local agents).',
   default: "both",

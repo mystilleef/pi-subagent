@@ -25,6 +25,7 @@ import {
   createDefaultFakeTheme,
   getSubagentTool,
   makeBareCtx,
+  makeMessageRenderOptions,
   makeSubagentToolUpdateLine,
   type RegisteredMessageRenderer,
   requestIdOf,
@@ -968,7 +969,7 @@ test("subagent-result message renderer uses summarized content and preserves res
       timestamp: 0,
       details,
     },
-    { expanded: false, outputPad: 2 },
+    makeMessageRenderOptions(),
     fakeTheme as never,
   ) as unknown as { render: (width: number) => string[] };
   const lines = rendered.render(120);

@@ -737,11 +737,11 @@ describe("resolveThinkingLevel", () => {
     {
       name: "clamps max down to highest supported level",
       requestedLevel: "max",
-      modelId: "gpt-5.2-chat-latest",
+      modelId: "gpt-5.2",
       expectedLevel: "xhigh",
       warnedRequested: "max",
       warnedClamped: "xhigh",
-      warnedModelId: "gpt-5.2-chat-latest",
+      warnedModelId: "gpt-5.2",
     },
     {
       name: "preserves reasoning-disabled warning even when requested is off",

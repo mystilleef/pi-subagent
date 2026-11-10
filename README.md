@@ -120,6 +120,7 @@ YAML `frontmatter` and a Markdown system prompt body.
 <!-- prettier-ignore-start -->
 ```md
 ---
+
 name: lifehacks
 description: Daily lifehacks
 replace_prompt: true

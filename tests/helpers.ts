@@ -462,6 +462,16 @@ export async function runTool(
 export type RegisteredMessageRenderer = Parameters<
   ExtensionAPI["registerMessageRenderer"]
 >[1];
+
+/** Collapsed render options with keybinding hints that echo their inputs. */
+export function makeMessageRenderOptions(): Parameters<RegisteredMessageRenderer>[1] {
+  return {
+    expanded: false,
+    outputPad: 2,
+    keyText: (keybinding) => keybinding,
+    keyHint: (keybinding, description) => `${keybinding} ${description}`,
+  };
+}
 export type RegisteredEventHandler = (
   event: unknown,
   ctx: ExtensionContext,

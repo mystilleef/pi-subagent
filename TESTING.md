@@ -54,7 +54,7 @@ Restore shared state after every test from the preload file:
 
 ```ts
 // test/setup.ts
-import {afterEach, jest, mock, setSystemTime} from "bun:test";
+import { afterEach, jest, mock, setSystemTime } from "bun:test";
 
 afterEach(() => {
   mock.restore(); // Restores spied methods
@@ -75,18 +75,18 @@ afterEach(() => {
   copy-paste test bodies.
 
 ```ts
-import {describe, expect, test} from "bun:test";
-import {parsePort} from "./config.ts";
+import { describe, expect, test } from "bun:test";
+import { parsePort } from "./config.ts";
 
 describe("parsePort", () => {
   test.each([
     ["80", 80],
-    ["65535", 65535]
+    ["65535", 65535],
   ])("parses %p as port %p", (input, port) => {
     expect(parsePort(input)).toBe(port);
   });
 
-  test.each(["0", "65536", "-1"])("throws RangeError for %p", input => {
+  test.each(["0", "65536", "-1"])("throws RangeError for %p", (input) => {
     expect(() => parsePort(input)).toThrow(RangeError);
   });
 });
@@ -152,10 +152,10 @@ describe.skipIf(!databaseUrl)("OrderRepository", () => {
 Create and remove temp directories per test:
 
 ```ts
-import {afterEach, beforeEach} from "bun:test";
-import {mkdtemp, rm} from "node:fs/promises";
-import {tmpdir} from "node:os";
-import {join} from "node:path";
+import { afterEach, beforeEach } from "bun:test";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 let workDir: string;
 
@@ -164,7 +164,7 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
-  await rm(workDir, {recursive: true, force: true});
+  await rm(workDir, { recursive: true, force: true });
 });
 ```
 
@@ -184,7 +184,7 @@ bits in containers:
 ```ts
 test("emits drained after the last job completes", async () => {
   const queue = new JobQueue();
-  const {promise: drained, resolve} = Promise.withResolvers<void>();
+  const { promise: drained, resolve } = Promise.withResolvers<void>();
   queue.once("drained", resolve);
 
   queue.push(async () => {});
@@ -200,11 +200,11 @@ test("emits drained after the last job completes", async () => {
 ```ts
 test("rejects with AbortError when the caller aborts", async () => {
   const controller = new AbortController();
-  const pending = exportReport({signal: controller.signal});
+  const pending = exportReport({ signal: controller.signal });
 
   controller.abort();
 
-  await expect(pending).rejects.toMatchObject({name: "AbortError"});
+  await expect(pending).rejects.toMatchObject({ name: "AbortError" });
 });
 ```
 
@@ -223,7 +223,7 @@ test(
   "drains every job under concurrent pushes",
   async () => {
     const queue = new JobQueue();
-    const {promise: drained, resolve} = Promise.withResolvers<void>();
+    const { promise: drained, resolve } = Promise.withResolvers<void>();
     queue.once("drained", resolve);
 
     queue.push(async () => {});
@@ -232,7 +232,7 @@ test(
 
     expect(queue.completed).toBe(2);
   },
-  {repeats: 50}
+  { repeats: 50 },
 );
 ```
 
@@ -241,10 +241,10 @@ test(
 Use fake timers for time-dependent logic; never introduce real delays:
 
 ```ts
-import {expect, jest, mock, test} from "bun:test";
+import { expect, jest, mock, test } from "bun:test";
 
 test("retries the request after one second of backoff", () => {
-  jest.useFakeTimers({now: new Date("2026-01-01T00:00:00.000Z")});
+  jest.useFakeTimers({ now: new Date("2026-01-01T00:00:00.000Z") });
   const send = mock();
 
   scheduleRetry(send, 1000);
@@ -310,7 +310,7 @@ effects:
 ```ts
 test("fetches each profile once across repeated lookups", async () => {
   const fetchSpy = spyOn(globalThis, "fetch").mockResolvedValue(
-    Response.json({id: 1, name: "Ada"})
+    Response.json({ id: 1, name: "Ada" }),
   );
   const profiles = createProfileClient();
 
@@ -330,12 +330,12 @@ test("fetches each profile once across repeated lookups", async () => {
 ```ts
 test("reports unreadable config when the read fails with EACCES", async () => {
   const denied = Object.assign(new Error("permission denied"), {
-    code: "EACCES"
+    code: "EACCES",
   });
   const readFile = mock().mockRejectedValue(denied);
 
-  await expect(loadConfig("app.json", {readFile})).rejects.toThrow(
-    "unreadable config"
+  await expect(loadConfig("app.json", { readFile })).rejects.toThrow(
+    "unreadable config",
   );
   expect(readFile).toHaveBeenCalledWith("app.json", "utf8");
 });
@@ -350,7 +350,7 @@ Reserve `mock.module()` for modules lacking an injection seam:
 
 ```ts
 mock.module("./client.ts", () => ({
-  fetchData: mock(async () => ({data: "mocked"}))
+  fetchData: mock(async () => ({ data: "mocked" })),
 }));
 ```
 
@@ -396,7 +396,7 @@ exists.
 
 ```ts
 test("infers the normalized config shape", () => {
-  expectTypeOf(normalizeConfig({port: 80})).toMatchObjectType<{
+  expectTypeOf(normalizeConfig({ port: 80 })).toMatchObjectType<{
     port: number;
   }>();
 });
@@ -412,7 +412,7 @@ test("infers the normalized config shape", () => {
 test("serializes a new session with masked dynamic fields", () => {
   expect(createSession("ada")).toMatchSnapshot({
     id: expect.any(String),
-    createdAt: expect.any(Date)
+    createdAt: expect.any(Date),
   });
 });
 ```
@@ -481,7 +481,7 @@ preload = ["./test/happydom.ts", "./test/setup.ts"]
 
 ```ts
 // test/happydom.ts
-import {GlobalRegistrator} from "@happy-dom/global-registrator";
+import { GlobalRegistrator } from "@happy-dom/global-registrator";
 
 GlobalRegistrator.register();
 ```
@@ -489,7 +489,7 @@ GlobalRegistrator.register();
 Register `jest-dom` matchers in `test/setup.ts`:
 
 ```ts
-import {expect} from "bun:test";
+import { expect } from "bun:test";
 import * as matchers from "@testing-library/jest-dom/matchers";
 
 expect.extend(matchers);
@@ -499,14 +499,15 @@ Type the matchers:
 
 ```ts
 // test/matchers.d.ts
-import type {TestingLibraryMatchers} from "@testing-library/jest-dom/matchers";
-import type {expect} from "bun:test";
+import type { TestingLibraryMatchers } from "@testing-library/jest-dom/matchers";
+import type { expect } from "bun:test";
 
 declare module "bun:test" {
-  interface Matchers<T> extends TestingLibraryMatchers<
-    ReturnType<typeof expect.stringContaining>,
-    T
-  > {}
+  interface Matchers<T>
+    extends TestingLibraryMatchers<
+      ReturnType<typeof expect.stringContaining>,
+      T
+    > {}
 }
 ```
 
@@ -515,9 +516,9 @@ Scope `DOM` types per file with a triple-slash directive:
 ```tsx
 /// <reference lib="dom" />
 
-import {expect, test} from "bun:test";
-import {render, screen} from "@testing-library/react";
-import {Welcome} from "./welcome.tsx";
+import { expect, test } from "bun:test";
+import { render, screen } from "@testing-library/react";
+import { Welcome } from "./welcome.tsx";
 
 test("renders the greeting heading with the user name", () => {
   render(<Welcome name="Ada" />);
