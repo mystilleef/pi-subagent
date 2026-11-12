@@ -329,6 +329,32 @@ test("/jobs truncates body text at 121 chars", async () => {
   expect(output).toContain("…");
 });
 
+test("/jobs propagates renderer failure without notifying", async () => {
+  const rid = "failing-renderer-job";
+  createProgressState(rid, "renderer-agent", "task", "inst");
+  registerRunJob({
+    requestId: rid,
+    agentName: "renderer-agent",
+    instanceName: "inst",
+    controller: new AbortController(),
+    startedAt: Date.now(),
+  });
+  const notices: string[] = [];
+  const ctx = {
+    cwd: "/tmp",
+    ui: {
+      notify: (msg: string): void => {
+        notices.push(msg);
+      },
+      custom: async (): Promise<string> => {
+        throw new Error("renderer down");
+      },
+    },
+  } as unknown as Parameters<typeof jobsCommandHandler>[0];
+  await expect(jobsCommandHandler(ctx, "")).rejects.toThrow("renderer down");
+  expect(notices).toEqual([]);
+});
+
 describe("jobs board rendering", () => {
   test("jobsCommandHandler renders board with active and completed jobs", async () => {
     resetRunRegistry();
