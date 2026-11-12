@@ -9,11 +9,11 @@ import {
   normalizeTerminalSentence,
   truncateText,
 } from "../src/output/normalize.js";
-import { setupHooks } from "./helpers.js";
+import { setupFixtureHooks } from "./fixtures.js";
 
-setupHooks();
+setupFixtureHooks();
 
-describe("normalize.ts coverage gaps", () => {
+describe("normalization", () => {
   test("normalizeSummaryValue strips backticks and bold markers", () => {
     expect(normalizeSummaryValue("`hello`")).toBe("hello");
     expect(normalizeSummaryValue("**world**")).toBe("world");
@@ -86,6 +86,15 @@ describe("normalize.ts coverage gaps", () => {
     expect(normalizeTerminalSentence("status: done")).toBe("done");
     expect(normalizeTerminalSentence("summary: brief")).toBe("brief");
     expect(normalizeTerminalSentence("result: output")).toBe("output");
+  });
+
+  test("normalizeTerminalSentence preserves the outcome: label while stripping error:", () => {
+    expect(normalizeTerminalSentence("outcome: success")).toBe(
+      "outcome: success",
+    );
+    expect(normalizeTerminalSentence("error: file not found")).toBe(
+      "file not found",
+    );
   });
 
   test("normalizeTerminalSentence strips trailing punctuation", () => {
@@ -161,7 +170,7 @@ describe("normalize.ts coverage gaps", () => {
   });
 });
 
-describe("normalize.ts uncovered branches", () => {
+describe("normalization branches", () => {
   describe("normalizeAndTruncate wrapper regex", () => {
     test.each([
       {

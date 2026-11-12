@@ -12,9 +12,9 @@ import {
   patchProgressState,
   resetProgressStore,
 } from "../src/progress/progress.js";
-import { makeCommandContext, setupHooks } from "./helpers.js";
+import { makeCommandContext, setupFixtureHooks } from "./fixtures.js";
 
-setupHooks();
+setupFixtureHooks();
 
 beforeEach(() => {
   resetRunRegistry();
@@ -329,7 +329,7 @@ test("/jobs truncates body text at 121 chars", async () => {
   expect(output).toContain("…");
 });
 
-describe("jobs-command.ts coverage gaps", () => {
+describe("jobs board rendering", () => {
   test("jobsCommandHandler renders board with active and completed jobs", async () => {
     resetRunRegistry();
     resetProgressStore();

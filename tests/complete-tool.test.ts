@@ -1,32 +1,22 @@
 import { describe, expect, test } from "bun:test";
-import * as fs from "node:fs";
-import path from "node:path";
 import type {
   ExtensionAPI,
   ExtensionToolContext,
 } from "@earendil-works/pi-coding-agent";
 import { Value } from "typebox/value";
-import type { AgentConfig } from "../src/agent/agents.js";
 import registerExtension, {
   completeParams,
   completeTool,
 } from "../src/child/complete-extension.js";
 import { runSingleAgent } from "../src/child/process.js";
 import { SUBAGENT_RESULT_CONTRACT } from "../src/child/prompt-contract.js";
-import { normalizeTerminalSentence } from "../src/output/normalize.js";
-import { summarizeFeedbackUiFinalOutput } from "../src/output/summary.js";
 import {
-  createProgressState,
-  finalizeProgressState,
-  getProgressState,
-} from "../src/progress/progress-state.js";
-import {
-  getFeedbackSummaryText,
   sanitizeDetailsForDisplay,
   sanitizeResultDetails,
 } from "../src/progress/result-details.js";
 import {
-  CAPTURE_ARGS_PI_SCRIPT,
+  captureRunSingleAgentArgs,
+  emitAgentEnd,
   flagValues,
   hangAgent,
   makeModelAgent,
@@ -123,30 +113,6 @@ describe("complete-extension default export", () => {
 });
 
 describe("allowlist merging and duplicate complete entries", () => {
-  async function captureRunSingleAgentArgs(
-    agent: AgentConfig,
-  ): Promise<string[]> {
-    const { cwd } = await setupTest({
-      piScript: CAPTURE_ARGS_PI_SCRIPT,
-    });
-    const { result } = await runSingleAgent(
-      cwd,
-      [agent],
-      agent.name,
-      "task",
-      undefined,
-      undefined,
-      makeSubagentDetails,
-      undefined,
-      "off",
-    );
-    expect(result.exitCode).toBe(0);
-    return fs
-      .readFileSync(path.join(cwd, "args.txt"), "utf8")
-      .trimEnd()
-      .split("\n");
-  }
-
   test("injects complete extension and handles duplicate tools list elegantly", async () => {
     const agentWithComplete = makeModelAgent({
       tools: ["read", "complete", "write"],
@@ -171,7 +137,7 @@ describe("JSON Event Fixtures / Outcome Extraction", () => {
       piScript: `#!/bin/sh
 printf '%s\\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"toolCall","id":"tc-1","name":"complete","arguments":{"outcome":"A beautiful outcome"}}]}}'
 printf '%s\\n' '{"type":"tool_result_end","message":{"role":"toolResult","toolCallId":"tc-1","details":{"outcome":"A beautiful outcome"}}}'
-printf '%s\\n' '{"type":"agent_end","messages":[]}'
+${emitAgentEnd([])}
 exit 0
 `,
       expectedOutcome: "A beautiful outcome",
@@ -180,7 +146,7 @@ exit 0
       name: "extracts outcome from call arguments without requiring toolResult",
       piScript: `#!/bin/sh
 printf '%s\\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"toolCall","id":"tc-1","name":"complete","arguments":{"outcome":"Assistant outcome"}}]}}'
-printf '%s\\n' '{"type":"agent_end","messages":[]}'
+${emitAgentEnd([])}
 exit 0
 `,
       expectedOutcome: "Assistant outcome",
@@ -192,7 +158,7 @@ printf '%s\\n' '{"type":"message_end","message":{"role":"assistant","content":[{
 printf '%s\\n' '{"type":"tool_result_end","message":{"role":"toolResult","toolCallId":"tc-1","details":{"outcome":"First outcome"}}}'
 printf '%s\\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"toolCall","id":"tc-2","name":"complete","arguments":{"outcome":"Second outcome"}}]}}'
 printf '%s\\n' '{"type":"tool_result_end","message":{"role":"toolResult","toolCallId":"tc-2","details":{"outcome":"Second outcome"}}}'
-printf '%s\\n' '{"type":"agent_end","messages":[]}'
+${emitAgentEnd([])}
 exit 0
 `,
       expectedOutcome: "Second outcome",
@@ -202,7 +168,7 @@ exit 0
       piScript: `#!/bin/sh
 printf '%s\\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"toolCall","id":"tc-1","name":"complete","arguments":{"outcome":"Errored outcome"}}]}}'
 printf '%s\\n' '{"type":"tool_result_end","message":{"role":"toolResult","toolCallId":"tc-1","isError":true,"details":{"outcome":"Errored outcome"}}}'
-printf '%s\\n' '{"type":"agent_end","messages":[]}'
+${emitAgentEnd([])}
 exit 0
 `,
       expectedOutcome: "Errored outcome",
@@ -214,7 +180,7 @@ printf '%s\\n' '{"type":"message_end","message":{"role":"assistant","content":[{
 printf '%s\\n' '{"type":"tool_result_end","message":{"role":"toolResult","toolCallId":"tc-1","details":{"outcome":"First outcome"}}}'
 printf '%s\\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"toolCall","id":"tc-2","name":"complete","arguments":{"outcome":"Second outcome"}}]}}'
 printf '%s\\n' '{"type":"tool_result_end","message":{"role":"toolResult","toolCallId":"tc-2","details":{"outcome":""}}}'
-printf '%s\\n' '{"type":"agent_end","messages":[]}'
+${emitAgentEnd([])}
 exit 0
 `,
       expectedOutcome: "Second outcome",
@@ -227,7 +193,7 @@ printf '%s\\n' '{"type":"tool_result_end","message":{"role":"toolResult","toolCa
 printf '%s\\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"toolCall","id":"tc-2","name":"complete","arguments":{"outcome":"Second errored outcome"}}]}}'
 printf '%s\\n' '{"type":"tool_result_end","message":{"role":"toolResult","toolCallId":"tc-2","isError":true,"details":{"outcome":"Second errored outcome"}}}'
 printf '%s\\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"Done with errored complete"}]}}'
-printf '%s\\n' '{"type":"agent_end","messages":[]}'
+${emitAgentEnd([])}
 exit 0
 `,
       expectedOutcome: "Second errored outcome",
@@ -256,7 +222,7 @@ exit 0
       piScript: `#!/bin/sh
 printf '%s\\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"toolCall","id":"tc-complete-only","name":"complete","arguments":{"outcome":"Tool-only outcome text"}}]}}'
 printf '%s\\n' '{"type":"tool_result_end","message":{"role":"toolResult","toolCallId":"tc-complete-only","details":{"outcome":"Tool-only outcome text"}}}'
-printf '%s\\n' '{"type":"agent_end","messages":[]}'
+${emitAgentEnd([])}
 exit 0
 `,
       expectedOutcome: "Tool-only outcome text",
@@ -267,7 +233,7 @@ exit 0
       piScript: `#!/bin/sh
 printf '%s\\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"My helper response text."},{"type":"toolCall","id":"tc-complete-asst","name":"complete","arguments":{"outcome":"Companion outcome text"}}]}}'
 printf '%s\\n' '{"type":"tool_result_end","message":{"role":"toolResult","toolCallId":"tc-complete-asst","details":{"outcome":"Companion outcome text"}}}'
-printf '%s\\n' '{"type":"agent_end","messages":[]}'
+${emitAgentEnd([])}
 exit 0
 `,
       expectedOutcome: "Companion outcome text",
@@ -295,7 +261,7 @@ exit 0
   test("handles blank/non-string outcomes by ignoring them", async () => {
     const piScript = `#!/bin/sh
 printf '%s\\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"Assistant result text."},{"type":"toolCall","id":"tc-1","name":"complete","arguments":{"outcome":"   "}}]}}'
-printf '%s\\n' '{"type":"agent_end","messages":[]}'
+${emitAgentEnd([])}
 exit 0
 `;
     const { cwd } = await setupTest({ piScript });
@@ -316,138 +282,11 @@ exit 0
   });
 });
 
-describe("Progress & Feedback Preference and Normalization", () => {
-  test("finalizeProgressState prefers outcome parameter when supplied", () => {
-    createProgressState("req-pref-1", "agent-x", "task-x");
-    finalizeProgressState(
-      "req-pref-1",
-      "some final output text",
-      "Awesome outcome text",
-    );
-    expect(getProgressState("req-pref-1")?.finalOutput).toBe(
-      "awesome outcome text",
-    );
-  });
-
-  test("finalizeProgressState falls back to finalOutput when outcome parameter is absent or blank", () => {
-    createProgressState("req-pref-2", "agent-x", "task-x");
-    finalizeProgressState("req-pref-2", "Outcome: Fallback parsed text", "");
-    expect(getProgressState("req-pref-2")?.finalOutput).toBe(
-      "outcome: fallback parsed text",
-    );
-    createProgressState("req-pref-3", "agent-x", "task-x");
-    finalizeProgressState(
-      "req-pref-3",
-      "Outcome: Fallback parsed text",
-      undefined,
-    );
-    expect(getProgressState("req-pref-3")?.finalOutput).toBe(
-      "outcome: fallback parsed text",
-    );
-  });
-
-  test.each([
-    {
-      name: "getFeedbackSummaryText prefers outcome inside SingleResult",
-      contentText: "raw text content",
-      finalOutput: "raw final output",
-      outcome: "Typed outcome has high precedence!",
-      expectedSummary: "typed outcome has high precedence",
-    },
-    {
-      name: "getFeedbackSummaryText falls back to finalOutput when outcome is whitespace-only",
-      contentText: "raw text content",
-      finalOutput: "raw final output",
-      outcome: " \t\r\n ",
-      expectedSummary: "raw final output",
-    },
-    {
-      name: "getFeedbackSummaryText returns (no output) when outcome and finalOutput are blank",
-      contentText: "stale streaming activity",
-      finalOutput: "   \n  ",
-      outcome: " \t\r\n ",
-      expectedSummary: "(no output)",
-    },
-  ])("$name", (row) => {
-    const toolResult = {
-      content: [{ type: "text", text: row.contentText }],
-      details: {
-        mode: "single",
-        agentScope: "project",
-        projectAgentsDir: null,
-        results: [
-          {
-            agent: "tester",
-            agentSource: "project",
-            task: "check",
-            exitCode: 0,
-            finalOutput: row.finalOutput,
-            outcome: row.outcome,
-            stderr: "",
-          },
-        ],
-      },
-    };
-    const summary = getFeedbackSummaryText(
-      toolResult as unknown as Parameters<typeof getFeedbackSummaryText>[0],
-    );
-    expect(summary).toBe(row.expectedSummary);
-  });
-
-  test("summarizeFeedbackUiFinalOutput prefers explicit outcome first", () => {
-    expect(
-      summarizeFeedbackUiFinalOutput(
-        "some raw final output",
-        "My custom outcome text",
-      ),
-    ).toBe("my custom outcome text");
-  });
-
-  test("normalizeTerminalSentence preserves outcome: label but strips others", () => {
-    expect(normalizeTerminalSentence("outcome: success")).toBe(
-      "outcome: success",
-    );
-    expect(normalizeTerminalSentence("error: file not found")).toBe(
-      "file not found",
-    );
-  });
-
-  test("finalizeProgressState truncates long outcomes to 120 characters", () => {
-    createProgressState("req-pref-long", "agent-x", "task-x");
-    const longOutcome = "A".repeat(150);
-    finalizeProgressState(
-      "req-pref-long",
-      "some final output text",
-      longOutcome,
-    );
-    expect(getProgressState("req-pref-long")?.finalOutput).toBe(
-      `${"a".repeat(119)}…`,
-    );
-  });
-
-  test("summarizeFeedbackUiFinalOutput truncates long outcomes to 120 characters", () => {
-    const longOutcome = "B".repeat(150);
-    const summary = summarizeFeedbackUiFinalOutput(
-      "some raw final output",
-      longOutcome,
-    );
-    expect(summary).toBe(`${"b".repeat(119)}…`);
-  });
-
-  test("finalizeProgressState falls back to finalOutput when outcome is whitespace-only", () => {
-    createProgressState("req-pref-ws", "agent-x", "task-x");
-    finalizeProgressState("req-pref-ws", "Fallback parsed text", "   \n  ");
-    expect(getProgressState("req-pref-ws")?.finalOutput).toBe(
-      "fallback parsed text",
-    );
-  });
-});
-
 describe("Negative / Failure Scenarios", () => {
   test("outcome is undefined if complete is missing", async () => {
     const piScript = `#!/bin/sh
 printf '%s\\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"My helper response text with no complete tool call."}]}}'
-printf '%s\\n' '{"type":"agent_end","messages":[]}'
+${emitAgentEnd([])}
 exit 0
 `;
     const { cwd } = await setupTest({ piScript });
@@ -473,7 +312,7 @@ exit 0
     const piScript = `#!/bin/sh
 printf '%s\\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"toolCall","id":"tc-1","name":"complete","arguments":{"outcome":"Aborted outcome"}}]}}'
 printf '%s\\n' '{"type":"tool_result_end","message":{"role":"toolResult","toolCallId":"tc-1","details":{"outcome":"Aborted outcome"}}}'
-printf '%s\\n' '{"type":"agent_end","messages":[]}'
+${emitAgentEnd([])}
 exit 0
 `;
     const { cwd } = await setupTest({ piScript });
@@ -495,30 +334,6 @@ exit 0
     expect(outcome.result.termination?.cancelReason).toBe(
       "The operation was aborted.",
     );
-  });
-
-  test("outcome is undefined on timeout child process run", async () => {
-    const piScript = `#!/bin/sh
-sleep 10
-`;
-    const { cwd } = await setupTest({ piScript });
-    const controller = new AbortController();
-    setTimeout(() => {
-      controller.abort();
-    }, 10);
-    const outcome = await runSingleAgent(
-      cwd,
-      [hangAgent],
-      "hang",
-      "task",
-      controller.signal,
-      undefined,
-      makeSubagentDetails,
-      undefined,
-      "off",
-    );
-    expect(outcome.kind).toBe("aborted");
-    expect(outcome.result.outcome).toBeUndefined();
   });
 
   test("outcome is undefined on failed child process run", async () => {

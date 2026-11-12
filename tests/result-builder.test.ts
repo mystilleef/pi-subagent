@@ -7,9 +7,9 @@ import {
   rebuildResultFromMessages,
 } from "../src/child/result-builder.js";
 import { TOOL_RESULT_FAILED_MESSAGE } from "../src/shared/types.js";
-import { setupHooks } from "./helpers.js";
+import { setupFixtureHooks } from "./fixtures.js";
 
-setupHooks();
+setupFixtureHooks();
 
 describe("runtime finalOutput construction invariants", () => {
   function makeResult(model?: string): RuntimeResult {

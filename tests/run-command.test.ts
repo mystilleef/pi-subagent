@@ -1,5 +1,4 @@
 import { expect, jest, test } from "bun:test";
-import { existsSync } from "node:fs";
 import path from "node:path";
 import {
   DefaultResourceLoader,
@@ -20,15 +19,20 @@ import {
   patchProgressState,
 } from "../src/progress/progress.js";
 import {
+  CAPTURE_ARGS_PI_SCRIPT,
+  emitAgentEnd,
+  emitMessageEnd,
   emitSessionStart,
   type FakeTheme,
+  makeAssistantMessage,
   makeMessageRenderOptions,
   type RegisteredMessageRenderer,
+  readCapturedArgs,
   requestIdOf,
   type SendMessageArg,
   setupHooks,
   setupTest,
-  waitFor,
+  waitForPath,
   waitForRunJobCount,
   waitForRunJobsCleared,
   waitForSentMessage,
@@ -488,8 +492,8 @@ test("run slash command sends one subagent-progress message and one final result
     sendMessage: (msg) => sentMessages.push(msg),
     piScript: `#!/bin/sh
 while [ ! -f release-child ]; do sleep 0.01; done
-printf '%s\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"done"}],"api":"fake","provider":"fake","model":"fake","usage":{"input":1,"output":1,"cacheRead":0,"cacheWrite":0,"totalTokens":2,"cost":{"total":0}},"stopReason":"stop","timestamp":0}}'
-printf '%s\n' '{"type":"agent_end","messages":[]}'
+${emitMessageEnd(makeAssistantMessage("done"))}
+${emitAgentEnd([])}
 exit 0
 `,
   });
@@ -524,7 +528,7 @@ test("run slash command patches context window into progress state", async () =>
     sendMessage: (msg) => sentMessages.push(msg),
     piScript: `#!/bin/sh
 printf '%s\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"done"}],"provider":"openai","model":"gpt-4o-mini","usage":{"input":10,"output":20,"cacheRead":0,"cacheWrite":0,"totalTokens":30,"cost":{"total":0}}}}'
-printf '%s\n' '{"type":"agent_end","messages":[]}'
+${emitAgentEnd([])}
 exit 0
 `,
   });
@@ -551,7 +555,7 @@ test("run slash command keeps context window unknown without metadata", async ()
     sendMessage: (msg) => sentMessages.push(msg),
     piScript: `#!/bin/sh
 printf '%s\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"done"}],"usage":{"input":10,"output":20,"cacheRead":0,"cacheWrite":0,"totalTokens":30,"cost":{"total":0}}}}'
-printf '%s\n' '{"type":"agent_end","messages":[]}'
+${emitAgentEnd([])}
 exit 0
 `,
   });
@@ -591,8 +595,8 @@ test("run slash command does not append progress refresh messages", async () => 
       if (msg.customType === "subagent-result") resultSent.resolve();
     },
     piScript: `#!/bin/sh
-printf '%s\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"done"}],"api":"fake","provider":"fake","model":"fake","usage":{"input":1,"output":1,"cacheRead":0,"cacheWrite":0,"totalTokens":2,"cost":{"total":0}},"stopReason":"stop","timestamp":0}}'
-printf '%s\n' '{"type":"agent_end","messages":[]}'
+${emitMessageEnd(makeAssistantMessage("done"))}
+${emitAgentEnd([])}
 exit 0
 `,
   });
@@ -641,12 +645,7 @@ exit 0
 
 test("/run without task sends an agent-default prompt instead of empty Task label", async () => {
   const { tool, cwd } = await setupTest({
-    piScript: `#!/bin/sh
-printf '%s\n' "$*" > args.txt
-printf '%s\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"done"}],"api":"fake","provider":"fake","model":"fake","usage":{"input":1,"output":1,"cacheRead":0,"cacheWrite":0,"totalTokens":2,"cost":{"total":0}},"stopReason":"stop","timestamp":0}}'
-printf '%s\n' '{"type":"agent_end","messages":[]}'
-exit 0
-`,
+    piScript: CAPTURE_ARGS_PI_SCRIPT,
   });
   const runCommand = tool.registeredCommands.get("run");
   const runPromise = runCommand?.handler("hang", {
@@ -655,19 +654,15 @@ exit 0
   } as unknown as ExtensionCommandContext);
   await runPromise;
   await waitForRunJobsCleared();
-  const argsText = await Bun.file(path.join(cwd, "args.txt")).text();
+  const args = await readCapturedArgs(cwd);
+  const argsText = args.join(" ");
   expect(argsText).not.toContain("Task:");
   expect(argsText).toContain("Run according to your system prompt");
 });
 
 test("/run with task preserves Task label", async () => {
   const { tool, cwd } = await setupTest({
-    piScript: `#!/bin/sh
-printf '%s\n' "$*" > args.txt
-printf '%s\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"done"}],"api":"fake","provider":"fake","model":"fake","usage":{"input":1,"output":1,"cacheRead":0,"cacheWrite":0,"totalTokens":2,"cost":{"total":0}},"stopReason":"stop","timestamp":0}}'
-printf '%s\n' '{"type":"agent_end","messages":[]}'
-exit 0
-`,
+    piScript: CAPTURE_ARGS_PI_SCRIPT,
   });
   const runCommand = tool.registeredCommands.get("run");
   const runPromise = runCommand?.handler("hang explicit task", {
@@ -676,8 +671,8 @@ exit 0
   } as unknown as ExtensionCommandContext);
   await runPromise;
   await waitForRunJobsCleared();
-  const argsText = await Bun.file(path.join(cwd, "args.txt")).text();
-  expect(argsText).toContain("Task: explicit task");
+  const args = await readCapturedArgs(cwd);
+  expect(args.join(" ")).toContain("Task: explicit task");
 });
 
 test("getArgumentCompletions returns matching active workspace suggestions", async () => {
@@ -719,7 +714,7 @@ test("/run progress onUpdate mutates state without refresh messages", async () =
     piScript: `#!/bin/sh
 printf '%s\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"toolCall","name":"bash","id":"tc-1","arguments":{"command":"ls"}}]}}'
 printf '%s\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"done"}],"usage":{"input":1,"output":1,"totalTokens":2,"cost":{"total":0}}}}'
-printf '%s\n' '{"type":"agent_end"}'
+${emitAgentEnd()}
 exit 0
 `,
   });
@@ -750,7 +745,7 @@ test("/run non-debug progress consumes derived data without raw messages", async
 printf '%s\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"toolCall","name":"bash","id":"tc-1","arguments":{"command":"ls"}}],"provider":"openai","model":"gpt-4o-mini","usage":{"input":2,"output":3,"totalTokens":5,"cost":{"total":0}}}}'
 printf '%s\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"toolCall","name":"read","id":"tc-2","arguments":{"path":"/tmp/foo"}},{"type":"toolCall","name":"read","id":"tc-2","arguments":{"path":"/tmp/foo"}}],"provider":"openai","model":"gpt-4o-mini","usage":{"input":4,"output":5,"totalTokens":9,"cost":{"total":0}}}}'
 printf '%s\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"Feedback:\\nLooks good.\\n\\nOutcome: shipped fix"}],"provider":"openai","model":"gpt-4o-mini","usage":{"input":6,"output":7,"totalTokens":13,"cost":{"total":0}}}}'
-printf '%s\n' '{"type":"agent_end"}'
+${emitAgentEnd()}
 exit 0
 `,
   });
@@ -790,7 +785,7 @@ test("/run progress refresh does not emit fallback notifications", async () => {
 printf '%s\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"toolCall","name":"bash","id":"tc-1","arguments":{"command":"ls"}}]}}'
 printf '%s\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"toolCall","name":"read","id":"tc-2","arguments":{"path":"/tmp/x"}}]}}'
 printf '%s\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"done"}],"usage":{"input":1,"output":1,"totalTokens":2,"cost":{"total":0}}}}'
-printf '%s\n' '{"type":"agent_end"}'
+${emitAgentEnd()}
 exit 0
 `,
   });
@@ -812,7 +807,7 @@ test("/run fallback is silent when hasUI is false", async () => {
     piScript: `#!/bin/sh
 printf '%s\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"toolCall","name":"bash","id":"tc-1","arguments":{"command":"ls"}}]}}'
 printf '%s\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"done"}],"usage":{"input":1,"output":1,"totalTokens":2,"cost":{"total":0}}}}'
-printf '%s\n' '{"type":"agent_end"}'
+${emitAgentEnd()}
 exit 0
 `,
   });
@@ -855,7 +850,7 @@ test("/run whitespace-only output treats as no-output for result and progress st
     sendMessage: (msg) => sentMessages.push(msg),
     piScript: `#!/bin/sh
 printf '%s\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"   "}],"usage":{"input":1,"output":1,"totalTokens":2,"cost":{"total":0}}}}'
-printf '%s\n' '{"type":"agent_end"}'
+${emitAgentEnd()}
 exit 0
 `,
   });
@@ -1019,7 +1014,7 @@ test("/run result dumps subagent summary and feedback keeps semantic one-liner",
     piScript: `#!/bin/sh
 printf '%s\n' '${JSON.stringify({ type: "message_end", message: { role: "assistant", content: [{ type: "toolCall", name: "bash", id: "tc-1", arguments: { command: "SECRET_COMMAND" } }] } })}'
 printf '%s\n' '${JSON.stringify({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: finalOutput }], usage: { input: 1, output: 1, totalTokens: 2, cost: { total: 0 } } } })}'
-printf '%s\n' '{"type":"agent_end"}'
+${emitAgentEnd()}
 exit 0
 `,
   });
@@ -1052,7 +1047,7 @@ test("/run debug includes child messages in final details", async () => {
 printf '%s\n' '${JSON.stringify({ type: "message_end", message: { role: "assistant", content: [{ type: "toolCall", name: "bash", id: "tc-1", arguments: { command: "DEBUG_COMMAND", token: "password-value" } }] } })}'
 printf '%s\n' '${JSON.stringify({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "benign preface token=abc benign suffix" }] } })}'
 printf '%s\n' '${JSON.stringify({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "Outcome: done" }], usage: { input: 1, output: 1, totalTokens: 2, cost: { total: 0 } } } })}'
-printf '%s\n' '{"type":"agent_end"}'
+${emitAgentEnd()}
 exit 0
 `,
   });
@@ -1083,7 +1078,7 @@ test("/run debug without env opt-in uses non-debug details", async () => {
 printf '%s\n' 'STDERR_SECRET' >&2
 printf '%s\n' '${JSON.stringify({ type: "message_end", message: { role: "assistant", content: [{ type: "toolCall", name: "bash", id: "tc-1", arguments: { command: "DEBUG_COMMAND", token: "password-value" } }] } })}'
 printf '%s\n' '${JSON.stringify({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "Outcome: done" }], usage: { input: 1, output: 1, totalTokens: 2, cost: { total: 0 } } } })}'
-printf '%s\n' '{"type":"agent_end"}'
+${emitAgentEnd()}
 exit 0
 `,
   });
@@ -1135,7 +1130,7 @@ exit 0
   expect(sentMessages[0]?.details).toMatchObject({
     agent: "hang",
     instanceName: expect.stringMatching(/^[a-z]+-[a-z]+$/),
-    requestId: (sentMessages[0]?.details as { requestId?: string })?.requestId,
+    requestId: requestIdOf(sentMessages),
   });
   expect(sentMessages.at(-1)?.content).toBe("done");
   const requestId = requestIdOf(sentMessages);
@@ -1191,13 +1186,7 @@ node -e "process.stderr.write('E'.repeat(5000));process.exit(7);"
     cwd,
     ui: { notify: () => {} },
   } as unknown as ExtensionCommandContext);
-  await waitFor(() => {
-    const requestId = (sentMessages[0]?.details as { requestId?: string })
-      ?.requestId;
-    return requestId && getProgressState(requestId)?.status === "error"
-      ? true
-      : undefined;
-  }, "error progress state");
+  await waitForSentMessageCount(sentMessages, 2);
   const requestId = requestIdOf(sentMessages);
   const state = getProgressState(requestId);
   expect(state?.status).toBe("error");
@@ -1213,7 +1202,7 @@ printf '%s\n' '{"type":"message_end","message":{"role":"assistant","content":[{"
 printf '%s\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"toolCall","name":"read","id":"tc-2","arguments":{"path":"/tmp/x"}}]}}'
 printf '%s\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"toolCall","name":"write","id":"tc-3","arguments":{"path":"/tmp/y"}}]}}'
 printf '%s\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"done"}],"usage":{"input":1,"output":1,"totalTokens":2,"cost":{"total":0}}}}'
-printf '%s\n' '{"type":"agent_end"}'
+${emitAgentEnd()}
 exit 0
 `,
   });
@@ -1295,10 +1284,7 @@ wait $!
     ui: { notify: () => {} },
   } as unknown as ExtensionCommandContext);
   await waitForSentMessage(sentMessages);
-  await waitFor(
-    () => existsSync(path.join(cwd, "started.txt")) || undefined,
-    "child process start",
-  );
+  await waitForPath(path.join(cwd, "started.txt"), "child process start");
   controller.abort("host stopped");
   await waitForRunJobsCleared();
   const requestId = requestIdOf(sentMessages);
@@ -1580,7 +1566,7 @@ test("/run final result renders raw summary and feedback uses semantic content",
     sendMessage: (msg) => sentMessages.push(msg),
     piScript: `#!/bin/sh
 printf '%s\n' '${JSON.stringify({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: finalOutput }], usage: { input: 1, output: 1, totalTokens: 2, cost: { total: 0 } } } })}'
-printf '%s\n' '{"type":"agent_end"}'
+${emitAgentEnd()}
 exit 0
 `,
   });
@@ -1609,60 +1595,6 @@ exit 0
   expect(renderedText).toContain("Outcome: Updated semantic summary");
   const requestId = requestIdOf(sentMessages);
   expect(getProgressState(requestId)?.finalOutput).toBe("noisy stack line");
-});
-
-test("/run repeated completions reuse cached discovery without redundant scans", async () => {
-  resetRunRegistry();
-  const { tool, cwd } = await setupTest();
-  const projectAgentsDir = path.join(cwd, ".pi", "agents");
-  await Bun.$`mkdir -p ${projectAgentsDir}`;
-  await Bun.write(
-    path.join(projectAgentsDir, "agent-alpha.md"),
-    `---\nname: agent-alpha\ndescription: Alpha\n---\nAlpha prompt`,
-  );
-  await Bun.write(
-    path.join(projectAgentsDir, "agent-beta.md"),
-    `---\nname: agent-beta\ndescription: Beta\n---\nBeta prompt`,
-  );
-  resetAgentCache();
-  await emitSessionStart(tool, cwd);
-  const runCommand = tool.registeredCommands.get("run");
-  const result1 = await runCommand?.getArgumentCompletions?.("agent");
-  const result2 = await runCommand?.getArgumentCompletions?.("agent");
-  const result3 = await runCommand?.getArgumentCompletions?.("agent");
-  const sorted1 = result1?.sort((a, b) => a.value.localeCompare(b.value));
-  const sorted2 = result2?.sort((a, b) => a.value.localeCompare(b.value));
-  const sorted3 = result3?.sort((a, b) => a.value.localeCompare(b.value));
-  expect(sorted1).toEqual([
-    { value: "agent-alpha", label: "agent-alpha" },
-    { value: "agent-beta", label: "agent-beta" },
-  ]);
-  expect(sorted2).toEqual(sorted1);
-  expect(sorted3).toEqual(sorted1);
-});
-
-test("/run completion with different prefixes reuses same cache entry", async () => {
-  resetRunRegistry();
-  const { tool, cwd } = await setupTest();
-  const projectAgentsDir = path.join(cwd, ".pi", "agents");
-  await Bun.$`mkdir -p ${projectAgentsDir}`;
-  await Bun.write(
-    path.join(projectAgentsDir, "reviewer.md"),
-    `---\nname: reviewer\ndescription: Reviewer\n---\nReviewer prompt`,
-  );
-  await Bun.write(
-    path.join(projectAgentsDir, "builder.md"),
-    `---\nname: builder\ndescription: Builder\n---\nBuilder prompt`,
-  );
-  resetAgentCache();
-  await emitSessionStart(tool, cwd);
-  const runCommand = tool.registeredCommands.get("run");
-  const revResult = await runCommand?.getArgumentCompletions?.("rev");
-  const buildResult = await runCommand?.getArgumentCompletions?.("build");
-  const emptyResult = await runCommand?.getArgumentCompletions?.("xyz");
-  expect(revResult).toEqual([{ value: "reviewer", label: "reviewer" }]);
-  expect(buildResult).toEqual([{ value: "builder", label: "builder" }]);
-  expect(emptyResult).toEqual([]);
 });
 
 test("resources_discover event sets active workspace root for completion", async () => {

@@ -32,42 +32,95 @@ describe("isValidSamplingValue", () => {
 });
 
 describe("parseSamplingParams", () => {
-  test("returns undefined for missing or empty input", () => {
+  test.each([
+    {
+      name: "parses valid full sampling parameters",
+      params: '{"temperature":0.5,"topP":0.8}',
+      expectedTemperature: 0.5,
+      expectedTopP: 0.8,
+    },
+    {
+      name: "accepts boundary values 0 and 1",
+      params: '{"temperature":0,"topP":1}',
+      expectedTemperature: 0,
+      expectedTopP: 1,
+    },
+  ])("$name", (row) => {
+    const res = parseSamplingParams(row.params);
+    expect(res).toEqual({
+      temperature: row.expectedTemperature,
+      topP: row.expectedTopP,
+    });
+  });
+
+  test.each([
+    {
+      name: "parses valid single temperature parameter",
+      params: '{"temperature":0.7}',
+      expectedTemperature: 0.7,
+    },
+    {
+      name: "ignores unsupported keys",
+      params: '{"temperature":0.5,"unsupported":123}',
+      expectedTemperature: 0.5,
+    },
+  ])("$name", (row) => {
+    const res = parseSamplingParams(row.params);
+    expect(res).toEqual({ temperature: row.expectedTemperature });
+  });
+
+  test("parses valid single topP parameter", () => {
+    const res = parseSamplingParams('{"topP":0.1}');
+    expect(res).toEqual({ topP: 0.1 });
+  });
+
+  test("returns undefined for missing or empty env val", () => {
     expect(parseSamplingParams()).toBeUndefined();
     expect(parseSamplingParams("")).toBeUndefined();
   });
 
+  test("returns undefined for malformed JSON", () => {
+    expect(parseSamplingParams("{invalid}")).toBeUndefined();
+  });
+
   test.each([
-    { name: "returns undefined for malformed JSON", params: "{not json}" },
-    { name: "returns undefined for empty object input", params: "{}" },
+    {
+      name: "returns undefined for non-object JSON",
+      params1: "42",
+      params2: '"string"',
+      params3: "[]",
+    },
+    {
+      name: "ignores invalid topP values",
+      params1: '{"topP":1.1}',
+      params2: '{"topP":-0.01}',
+      params3: '{"topP":null}',
+    },
+    {
+      name: "returns undefined for unsupported-only and invalid-only inputs",
+      params1: '{"unsupported":123}',
+      params2: '{"temperature":-1}',
+      params3: '{"topP":2}',
+    },
   ])("$name", (row) => {
-    expect(parseSamplingParams(row.params)).toBeUndefined();
+    expect(parseSamplingParams(row.params1)).toBeUndefined();
+    expect(parseSamplingParams(row.params2)).toBeUndefined();
+    expect(parseSamplingParams(row.params3)).toBeUndefined();
   });
 
-  test("returns undefined for non-object JSON", () => {
-    expect(parseSamplingParams("42")).toBeUndefined();
-    expect(parseSamplingParams('"string"')).toBeUndefined();
-    expect(parseSamplingParams("[]")).toBeUndefined();
-    expect(parseSamplingParams("null")).toBeUndefined();
+  test("ignores invalid temperature values", () => {
+    expect(parseSamplingParams('{"temperature":1.5}')).toBeUndefined();
+    expect(parseSamplingParams('{"temperature":-0.1}')).toBeUndefined();
+    expect(parseSamplingParams('{"temperature":"0.5"}')).toBeUndefined();
+    expect(parseSamplingParams('{"temperature":NaN}')).toBeUndefined();
+    expect(parseSamplingParams('{"temperature":Infinity}')).toBeUndefined();
   });
 
-  test("parses valid temperature and topP", () => {
-    expect(parseSamplingParams('{"temperature":0.5,"topP":0.8}')).toEqual({
-      temperature: 0.5,
-      topP: 0.8,
-    });
-  });
-
-  test("drops unsupported keys and invalid values", () => {
-    expect(
-      parseSamplingParams('{"temperature":0.5,"topP":2,"extra":true}'),
-    ).toEqual({ temperature: 0.5 });
-  });
-
-  test("returns undefined when all values are invalid", () => {
-    expect(
-      parseSamplingParams('{"temperature":-1,"topP":1.5}'),
-    ).toBeUndefined();
+  test("accepts valid value when other value is invalid in both directions", () => {
+    const res1 = parseSamplingParams('{"temperature":0.5,"topP":1.5}');
+    expect(res1).toEqual({ temperature: 0.5 });
+    const res2 = parseSamplingParams('{"temperature":-0.5,"topP":0.8}');
+    expect(res2).toEqual({ topP: 0.8 });
   });
 });
 

@@ -7,6 +7,7 @@ import * as os from "node:os";
 import path from "node:path";
 import type {
   SleepInhibitorAdapter,
+  SleepInhibitorAdapterHandle,
   SleepInhibitorHelperProcess,
   TerminationSignal,
 } from "../src/child/termination.js";
@@ -18,9 +19,9 @@ import {
   makeHostSleepInhibitorAdapter,
   terminateChildProcess,
 } from "../src/child/termination.js";
-import { setupHooks } from "./helpers.js";
+import { setupFixtureHooks } from "./fixtures.js";
 
-setupHooks();
+setupFixtureHooks();
 
 type FakeChild = EventEmitter & {
   pid?: number;
@@ -1648,7 +1649,7 @@ describe("terminateChildProcess", () => {
   });
 });
 
-describe("termination.ts coverage gaps", () => {
+describe("child termination targets", () => {
   test("terminateChildProcess handles child without PID", async () => {
     const { EventEmitter } = await import("node:events");
     const proc =
@@ -1667,21 +1668,33 @@ describe("termination.ts coverage gaps", () => {
         stdio: "ignore",
         detached: true,
       });
+      try {
+        const metadata = await terminateChildProcess(proc, {
+          tree: true,
+          platform: "linux",
+          processTreeDetached: true,
+        });
 
-      const metadata = await terminateChildProcess(proc, {
-        tree: true,
-        platform: "linux",
-        processTreeDetached: true,
-      });
-
-      expect(metadata.target).toBe("tree");
-      expect(metadata.processTreeKilled).toBe(true);
-      expect(metadata.terminationSignal).toBe("SIGTERM");
+        expect(metadata.target).toBe("tree");
+        expect(metadata.processTreeKilled).toBe(true);
+        expect(metadata.terminationSignal).toBe("SIGTERM");
+      } finally {
+        // The detached child leads its own process group; owning the group
+        // here keeps a failed termination from leaking the sleeper.
+        const pid = proc.pid;
+        if (pid !== undefined) {
+          try {
+            process.kill(-pid, "SIGKILL");
+          } catch {
+            /* process group already exited */
+          }
+        }
+      }
     });
   });
 });
 
-describe("termination.ts coverage gaps", () => {
+describe("host sleep inhibitor behavior", () => {
   describe("defaultCommandExists", () => {
     test("returns false for non-existent command", async () => {
       const adapter = makeHostSleepInhibitorAdapter({
@@ -1914,6 +1927,17 @@ describe("termination.ts coverage gaps", () => {
       });
       const supported = await adapter.supported?.();
       expect(supported).toBe(true);
+    });
+
+    test("default spawnHelper degrades gracefully when the helper binary is missing", () => {
+      if (os.platform() !== "linux") return;
+      // caffeinate ships only on macOS, so on Linux the default
+      // helper's spawn fails without creating a process. The
+      // missing-binary error is swallowed and release stays safe.
+      const adapter = makeHostSleepInhibitorAdapter({ platform: "darwin" });
+      const handle = adapter.acquire(424242) as SleepInhibitorAdapterHandle;
+      expect(typeof handle.release).toBe("function");
+      expect(() => handle.release?.()).not.toThrow();
     });
   });
 });

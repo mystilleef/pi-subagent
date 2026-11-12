@@ -8,10 +8,10 @@ import {
   getSubagentOutputLimits,
   getSubagentRuntimeLimits,
   truncateOutput,
-} from "../src/shared/utils.js";
-import { setupHooks } from "./helpers.js";
+} from "../src/shared/limits.js";
+import { setupFixtureHooks } from "./fixtures.js";
 
-setupHooks();
+setupFixtureHooks();
 
 const ALL_LIMIT_ENV_VARS = [
   "PI_SUBAGENT_MAX_OUTPUT_BYTES",
@@ -90,6 +90,10 @@ test("subagent runtime max depth clamps above ceiling", () => {
 });
 
 describe("getSubagentOutputLimits", () => {
+  test("default output constants match documented values", () => {
+    expect(DEFAULT_MAX_OUTPUT_BYTES).toBe(50_000);
+    expect(DEFAULT_MAX_OUTPUT_LINES).toBe(500);
+  });
   test("returns defaults when no env vars are set", () => {
     clearLimitEnv();
     const limits = getSubagentOutputLimits();
@@ -348,6 +352,21 @@ describe("truncateOutput", () => {
     const shortText = "a";
     const result = truncateOutput(shortText);
     expect(result).toBe(shortText);
+  });
+
+  test("truncates 501 lines to the default 500-line limit when no options are provided", () => {
+    clearLimitEnv();
+    const text = Array.from({ length: 501 }, (_v, i) => `line-${i}`).join("\n");
+    const result = truncateOutput(text);
+    expect(result).toContain("[TRUNCATED: first 500 of 501 lines]");
+    expect(result).not.toContain("line-500");
+  });
+
+  test("truncates 50,000 multibyte characters to the default byte limit without a replacement character", () => {
+    clearLimitEnv();
+    const result = truncateOutput("é".repeat(50_000));
+    expect(result).toContain("[TRUNCATED: first 1 of 1 lines]");
+    expect(result).not.toContain("\uFFFD");
   });
 
   test("handles empty string", () => {

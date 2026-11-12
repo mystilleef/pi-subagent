@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, jest, test } from "bun:test";
 import type { Message } from "@earendil-works/pi-ai";
 import type { ThemeColor } from "@earendil-works/pi-coding-agent";
 import { summarizeFeedbackUiFinalOutput } from "../src/output/summary.js";
@@ -20,10 +20,7 @@ import {
   isToolCallPart,
 } from "../src/progress/progress-state.js";
 import type { SubagentDetails } from "../src/shared/types.js";
-import { CANONICAL_SUMMARY_FIXTURES } from "./fixtures.js";
-// Explicit agent/agentSource overrides preserve the former local
-// makeSingleResult defaults at each migrated call site.
-import { makeSingleResult } from "./helpers.js";
+import { CANONICAL_SUMMARY_FIXTURES, makeSingleResult } from "./fixtures.js";
 
 test("progress final output matches feedback summary for canonical fixtures", () => {
   const requestId = `contract-${Date.now()}`;
@@ -36,7 +33,7 @@ test("progress final output matches feedback summary for canonical fixtures", ()
   );
 });
 
-describe("progress-state.ts coverage gaps", () => {
+describe("progress state", () => {
   describe("extractProgressFromExistingProgress edge cases", () => {
     test("progress with activeToolActivity sets activeToolActivity in state", () => {
       const details: SubagentDetails = {
@@ -457,7 +454,7 @@ describe("progress-state.ts coverage gaps", () => {
   });
 });
 
-describe("progress-state.ts extractProgressFromExistingProgress branches", () => {
+describe("extractProgressFromExistingProgress", () => {
   describe("activityText normalization", () => {
     test("progress with whitespace-only activityText does not set activityText", () => {
       const details: SubagentDetails = {
@@ -648,7 +645,7 @@ describe("progress-state.ts extractProgressFromExistingProgress branches", () =>
   });
 });
 
-describe("progress-state.ts isToolCallPart validation", () => {
+describe("isToolCallPart", () => {
   describe("isToolCallPart edge cases", () => {
     test("null returns false", () => {
       expect(isToolCallPart(null)).toBe(false);
@@ -948,14 +945,14 @@ test("cancelProgressState with no reason leaves errorText undefined", () => {
 });
 
 test("terminal helpers capture deterministic duration", () => {
-  setDateNow(1000);
+  jest.setSystemTime(1000);
   createProgressState("req-1", "agent-a", "task a");
-  setDateNow(3450);
+  jest.setSystemTime(3450);
   finalizeProgressState("req-1", "all done");
   expect(getProgressState("req-1")?.durationMs).toBe(2450);
-  setDateNow(2000);
+  jest.setSystemTime(2000);
   createProgressState("req-2", "agent-b", "task b");
-  setDateNow(7600);
+  jest.setSystemTime(7600);
   failProgressState("req-2", "something exploded");
   expect(getProgressState("req-2")?.durationMs).toBe(5600);
 });
@@ -966,10 +963,10 @@ test("terminal helper no-ops for missing state", () => {
 });
 
 test("terminal helpers preserve existing duration", () => {
-  setDateNow(1000);
+  jest.setSystemTime(1000);
   createProgressState("req-1", "agent-a", "task a");
   patchProgressState("req-1", { durationMs: 123 });
-  setDateNow(9000);
+  jest.setSystemTime(9000);
   cancelProgressState("req-1", "user aborted");
   const state = getProgressState("req-1");
   expect(state?.durationMs).toBe(123);
@@ -977,22 +974,22 @@ test("terminal helpers preserve existing duration", () => {
 });
 
 test("terminal durations stay isolated by request", () => {
-  setDateNow(1000);
+  jest.setSystemTime(1000);
   createProgressState("iso-success", "agent-a", "task a");
-  setDateNow(2000);
+  jest.setSystemTime(2000);
   createProgressState("iso-error", "agent-b", "task b");
-  setDateNow(3000);
+  jest.setSystemTime(3000);
   createProgressState("iso-running", "agent-c", "task c");
-  setDateNow(5500);
+  jest.setSystemTime(5500);
   finalizeProgressState("iso-success", "all done");
   expect(getProgressState("iso-success")?.durationMs).toBe(4500);
   expect(getProgressState("iso-error")?.durationMs).toBeUndefined();
   expect(getProgressState("iso-running")?.durationMs).toBeUndefined();
-  setDateNow(9000);
+  jest.setSystemTime(9000);
   failProgressState("iso-error", "child failed");
   expect(getProgressState("iso-success")?.durationMs).toBe(4500);
   expect(getProgressState("iso-error")?.durationMs).toBe(7000);
-  setDateNow(12_500);
+  jest.setSystemTime(12_500);
   const theme = makeTheme();
   const runningResult = renderSubagentProgress(
     {
@@ -2181,34 +2178,45 @@ test("finalizeProgressState prefers outcome parameter when supplied", () => {
   );
 });
 
-test("finalizeProgressState falls back to finalOutput when outcome parameter is absent or blank", () => {
-  createProgressState("req-out-2", "agent-x", "task-x");
-  finalizeProgressState("req-out-2", "Outcome: Parsed text fallback", "");
-  expect(getProgressState("req-out-2")?.finalOutput).toBe(
-    "outcome: parsed text fallback",
-  );
+test.each([
+  { label: "empty", outcome: "" },
+  { label: "absent", outcome: undefined },
+  { label: "whitespace-only", outcome: "   \n  " },
+])(
+  "finalizeProgressState falls back to finalOutput when outcome is $label",
+  ({ outcome }) => {
+    createProgressState("req-out-fallback", "agent-x", "task-x");
+    finalizeProgressState(
+      "req-out-fallback",
+      "Outcome: Parsed text fallback",
+      outcome,
+    );
+    expect(getProgressState("req-out-fallback")?.finalOutput).toBe(
+      "outcome: parsed text fallback",
+    );
+  },
+);
 
-  createProgressState("req-out-3", "agent-x", "task-x");
+test("finalizeProgressState truncates long outcomes to 120 characters", () => {
+  createProgressState("req-out-long", "agent-x", "task-x");
   finalizeProgressState(
-    "req-out-3",
-    "Outcome: Parsed text fallback",
-    undefined,
+    "req-out-long",
+    "some final output text",
+    "A".repeat(150),
   );
-  expect(getProgressState("req-out-3")?.finalOutput).toBe(
-    "outcome: parsed text fallback",
+  expect(getProgressState("req-out-long")?.finalOutput).toBe(
+    `${"a".repeat(119)}…`,
   );
 });
 
-const realDateNow = Date.now;
-
-afterEach(() => {
-  Date.now = realDateNow;
+beforeEach(() => {
   resetProgressStore();
 });
 
-function setDateNow(now: number): void {
-  Date.now = () => now;
-}
+afterEach(() => {
+  jest.useRealTimers();
+  resetProgressStore();
+});
 
 function makeTheme() {
   return {

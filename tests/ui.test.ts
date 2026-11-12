@@ -23,9 +23,11 @@ import { getProgressState } from "../src/progress/progress.js";
 import type { SubagentDetails } from "../src/shared/types.js";
 import {
   createDefaultFakeTheme,
+  emitAgentEnd,
   getSubagentTool,
   makeBareCtx,
   makeMessageRenderOptions,
+  makeSingleResult,
   makeSubagentToolUpdateLine,
   type RegisteredMessageRenderer,
   requestIdOf,
@@ -197,23 +199,12 @@ test("renderResult suppresses direct nested result when message rendered it", ()
         projectAgentsDir: null,
         renderedByMessage: true as const,
         results: [
-          {
+          makeSingleResult({
             agent: "nested-agent",
-            agentSource: "user" as const,
+            agentSource: "user",
             task: "nested",
-            exitCode: 0,
             finalOutput: "done",
-            stderr: "",
-            usage: {
-              input: 0,
-              output: 0,
-              cacheRead: 0,
-              cacheWrite: 0,
-              cost: 0,
-              contextTokens: 0,
-              turns: 0,
-            },
-          },
+          }),
         ],
       },
     } as AgentToolResult<SubagentDetails>,
@@ -308,7 +299,7 @@ test("result details track tool calls from subagent execution", async () => {
     piScript: `#!/bin/sh
 printf '%s\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"toolCall","name":"bash","id":"1","arguments":{"command":"ls"}}]}}'
 printf '%s\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"final"}]}}'
-printf '%s\n' '{"type":"agent_end"}'
+${emitAgentEnd()}
 exit 0
 `,
   });
@@ -330,7 +321,7 @@ test("result details show tool call name not final output text", async () => {
     piScript: `#!/bin/sh
 printf '%s\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"toolCall","name":"bash","id":"1","arguments":{"command":"ls"}}]}}'
 printf '%s\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"final"}]}}'
-printf '%s\n' '{"type":"agent_end"}'
+${emitAgentEnd()}
 exit 0
 `,
   });
@@ -356,7 +347,7 @@ printf '%s\\n' '{"type":"message_end","message":{"role":"toolResult","content":[
 printf '%s\\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"checkpoint"}]}}'
 printf '%s\\n' '{"type":"message_end","message":{"role":"toolResult","content":[{"type":"text","text":"fresh result"}],"toolCallId":"1"}}'
 printf '%s\\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"toolCall","name":"bash","id":"2","arguments":{"command":"${longCommand}"}}]}}'
-printf '%s\\n' '{"type":"agent_end"}'
+${emitAgentEnd()}
 exit 0
 `,
   });
@@ -384,7 +375,7 @@ test("debug result details include child messages in sent result card", async ()
     piScript: `#!/bin/sh
 printf '%s\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"checkpoint"}]}}'
 printf '%s\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"toolCall","name":"read","id":"debug-1","arguments":{"path":"safe.txt"}}]}}'
-printf '%s\n' '{"type":"agent_end"}'
+${emitAgentEnd()}
 exit 0
 `,
   });
@@ -413,22 +404,10 @@ test("renderResult with partial details after tool error does not show error ico
       agentScope: "user" as const,
       projectAgentsDir: null,
       results: [
-        {
+        makeSingleResult({
           agent: "hang",
-          agentSource: "user" as const,
+          agentSource: "user",
           task: "test",
-          exitCode: 0,
-          finalOutput: "",
-          stderr: "",
-          usage: {
-            input: 0,
-            output: 0,
-            cacheRead: 0,
-            cacheWrite: 0,
-            cost: 0,
-            contextTokens: 0,
-            turns: 0,
-          },
           messages: [
             {
               role: "assistant" as const,
@@ -448,7 +427,7 @@ test("renderResult with partial details after tool error does not show error ico
               isError: true,
             },
           ] as never[],
-        },
+        }),
       ],
     },
   };
@@ -772,24 +751,12 @@ test("renderSubagentResult formats units, fallback output, and failed tool resul
         agentScope: "both",
         projectAgentsDir: null,
         results: [
-          {
+          makeSingleResult({
             agent: "tool-success",
-            agentSource: "project",
             task: "pass",
-            exitCode: 0,
             finalOutput: "done",
             messages: [],
-            stderr: "",
-            usage: {
-              input: 0,
-              output: 0,
-              cacheRead: 0,
-              cacheWrite: 0,
-              cost: 0,
-              contextTokens: 0,
-              turns: 0,
-            },
-          },
+          }),
         ],
       },
     },
@@ -804,11 +771,9 @@ test("renderSubagentResult formats units, fallback output, and failed tool resul
         projectAgentsDir: null,
         results: [
           {
-            agent: "tool-failure",
             agentSource: "project",
-            task: "fail",
             exitCode: 0,
-            messages: [{ role: "toolResult", content: [], isError: true }],
+            finalOutput: "",
             stderr: "",
             usage: {
               input: 0,
@@ -819,6 +784,9 @@ test("renderSubagentResult formats units, fallback output, and failed tool resul
               contextTokens: 0,
               turns: 0,
             },
+            agent: "tool-failure",
+            task: "fail",
+            messages: [{ role: "toolResult", content: [], isError: true }],
           },
         ],
       },
@@ -879,25 +847,13 @@ test("subagent result markdown invokes theme callbacks", () => {
         agentScope: "both",
         projectAgentsDir: null,
         results: [
-          {
+          makeSingleResult({
             agent: "builder",
             instanceName: "able-falcon",
-            agentSource: "project",
             task: "pass",
-            exitCode: 0,
             finalOutput: markdown,
             messages: [],
-            stderr: "",
-            usage: {
-              input: 0,
-              output: 0,
-              cacheRead: 0,
-              cacheWrite: 0,
-              cost: 0,
-              contextTokens: 0,
-              turns: 0,
-            },
-          },
+          }),
         ],
       },
     },
@@ -939,14 +895,11 @@ test("subagent-result message renderer uses summarized content and preserves res
     agentScope: "both",
     projectAgentsDir: null,
     results: [
-      {
+      makeSingleResult({
         agent: "runner",
-        agentSource: "project",
         task: "pass",
-        exitCode: 0,
         finalOutput: "raw child output must stay hidden from run card",
         messages: [],
-        stderr: "",
         usage: {
           input: 10,
           output: 20,
@@ -956,7 +909,7 @@ test("subagent-result message renderer uses summarized content and preserves res
           contextTokens: 0,
           turns: 1,
         },
-      },
+      }),
     ],
   };
   if (!renderer) throw new Error("subagent-result renderer missing");
@@ -999,25 +952,14 @@ test("normal subagent tool rendering continues to use raw final output", () => {
         agentScope: "both",
         projectAgentsDir: null,
         results: [
-          {
+          makeSingleResult({
             agent: "tool",
             instanceName: "clear-marten",
             agentSource: "user",
             task: "pass",
-            exitCode: 0,
             finalOutput: "raw final output remains body",
             messages: [],
-            stderr: "",
-            usage: {
-              input: 0,
-              output: 0,
-              cacheRead: 0,
-              cacheWrite: 0,
-              cost: 0,
-              contextTokens: 0,
-              turns: 0,
-            },
-          },
+          }),
         ],
       },
     },
@@ -1045,10 +987,11 @@ test("subagent result backgrounds cover representative success and failure cards
         projectAgentsDir: null,
         results: [
           {
-            agent: "builder",
             agentSource: "project",
-            task: "pass",
             exitCode: 0,
+            stderr: "",
+            agent: "builder",
+            task: "pass",
             finalOutput:
               "Outcome: shipped\nChanged: src/ui.ts\nVerification: bun test\nNext: none",
             messages: [
@@ -1064,7 +1007,6 @@ test("subagent result backgrounds cover representative success and failure cards
                 ],
               },
             ],
-            stderr: "",
             usage: {
               input: 1000,
               output: 2000,
@@ -1089,6 +1031,7 @@ test("subagent result backgrounds cover representative success and failure cards
         projectAgentsDir: null,
         results: [
           {
+            stderr: "",
             agent: "breaker",
             agentSource: "user",
             task: "fail",
@@ -1107,7 +1050,6 @@ test("subagent result backgrounds cover representative success and failure cards
                 ],
               },
             ],
-            stderr: "",
             usage: {
               input: 3000,
               output: 4000,
@@ -1166,25 +1108,14 @@ test("subagent result renders cancelled result with appropriate icon and error b
         agentScope: "both",
         projectAgentsDir: null,
         results: [
-          {
+          makeSingleResult({
             agent: "runner",
             agentSource: "user",
             task: "abort",
-            exitCode: 0,
             stopReason: "aborted",
             finalOutput: "was doing work",
             messages: [],
-            stderr: "",
-            usage: {
-              input: 0,
-              output: 0,
-              cacheRead: 0,
-              cacheWrite: 0,
-              cost: 0,
-              contextTokens: 0,
-              turns: 0,
-            },
-          },
+          }),
         ],
       },
     },
@@ -1215,24 +1146,12 @@ test("subagent result renders outcome-only output instead of no output", () => {
         agentScope: "both",
         projectAgentsDir: null,
         results: [
-          {
+          makeSingleResult({
             agent: "builder",
-            agentSource: "project",
             task: "pass",
-            exitCode: 0,
             finalOutput: "Outcome: shipped",
             messages: [],
-            stderr: "",
-            usage: {
-              input: 0,
-              output: 0,
-              cacheRead: 0,
-              cacheWrite: 0,
-              cost: 0,
-              contextTokens: 0,
-              turns: 0,
-            },
-          },
+          }),
         ],
       },
     },
@@ -1253,15 +1172,12 @@ test("subagent result renders compact structured success output", () => {
         agentScope: "both",
         projectAgentsDir: null,
         results: [
-          {
+          makeSingleResult({
             agent: "builder",
-            agentSource: "project",
             task: "pass",
-            exitCode: 0,
             finalOutput:
               "Outcome: shipped\nChanged: src/ui.ts\nVerification: bun test\nNext: none",
             messages: [],
-            stderr: "",
             model: "provider/model:high",
             durationMs: 1234,
             usage: {
@@ -1273,7 +1189,7 @@ test("subagent result renders compact structured success output", () => {
               contextTokens: 38_000,
               turns: 3,
             },
-          },
+          }),
         ],
       },
     },
@@ -1359,24 +1275,12 @@ test("subagent result parses labels and normalizes display without mutating raw 
       agentScope: "both",
       projectAgentsDir: null,
       results: [
-        {
+        makeSingleResult({
           agent: "builder",
-          agentSource: "project",
           task: "pass",
-          exitCode: 0,
           finalOutput: rawOutput,
           messages: [],
-          stderr: "",
-          usage: {
-            input: 0,
-            output: 0,
-            cacheRead: 0,
-            cacheWrite: 0,
-            cost: 0,
-            contextTokens: 0,
-            turns: 0,
-          },
-        },
+        }),
       ],
     },
   };
@@ -1404,24 +1308,12 @@ test("subagent result compacts only clear changed path lists", () => {
           agentScope: "both",
           projectAgentsDir: null,
           results: [
-            {
+            makeSingleResult({
               agent: "builder",
-              agentSource: "project",
               task: "pass",
-              exitCode: 0,
               finalOutput: `Outcome: shipped\nChanged: ${changed}\nVerification: bun test\nNext: none`,
               messages: [],
-              stderr: "",
-              usage: {
-                input: 0,
-                output: 0,
-                cacheRead: 0,
-                cacheWrite: 0,
-                cost: 0,
-                contextTokens: 0,
-                turns: 0,
-              },
-            },
+            }),
           ],
         },
       },
@@ -1455,7 +1347,7 @@ test("subagent result renders compact structured failure output", () => {
         agentScope: "both",
         projectAgentsDir: null,
         results: [
-          {
+          makeSingleResult({
             agent: "builder",
             agentSource: "user",
             task: "fail",
@@ -1463,17 +1355,7 @@ test("subagent result renders compact structured failure output", () => {
             finalOutput:
               "Cause: compile failed\nVerification: tsc error\nNext: fix types",
             messages: [],
-            stderr: "",
-            usage: {
-              input: 0,
-              output: 0,
-              cacheRead: 0,
-              cacheWrite: 0,
-              cost: 0,
-              contextTokens: 0,
-              turns: 0,
-            },
-          },
+          }),
         ],
       },
     },
@@ -1552,7 +1434,7 @@ test("subagent result suppresses failure no-op fields and keeps fallback", () =>
         agentScope: "both",
         projectAgentsDir: null,
         results: [
-          {
+          makeSingleResult({
             agent: "builder",
             agentSource: "user",
             task: "fail",
@@ -1560,17 +1442,7 @@ test("subagent result suppresses failure no-op fields and keeps fallback", () =>
             finalOutput:
               "Cause: none\nVerification: not applicable\nNext: unchanged",
             messages: [],
-            stderr: "",
-            usage: {
-              input: 0,
-              output: 0,
-              cacheRead: 0,
-              cacheWrite: 0,
-              cost: 0,
-              contextTokens: 0,
-              turns: 0,
-            },
-          },
+          }),
         ],
       },
     },
@@ -1595,25 +1467,14 @@ test("subagent result preserves raw output lines in UI", () => {
         agentScope: "both",
         projectAgentsDir: null,
         results: [
-          {
+          makeSingleResult({
             agent: "plain",
             agentSource: "user",
             task: "plain",
-            exitCode: 0,
             finalOutput:
               "hello\nsorry about that\nerror: details\nfirst\n\nsecond\nthird",
             messages: [],
-            stderr: "",
-            usage: {
-              input: 0,
-              output: 0,
-              cacheRead: 0,
-              cacheWrite: 0,
-              cost: 0,
-              contextTokens: 0,
-              turns: 0,
-            },
-          },
+          }),
         ],
       },
     },
@@ -1638,24 +1499,13 @@ test("subagent-result renderer uses compact content instead of full final output
     agentScope: "both",
     projectAgentsDir: null,
     results: [
-      {
+      makeSingleResult({
         agent: "plain",
         agentSource: "user",
         task: "plain",
-        exitCode: 0,
         finalOutput: "# Full result\n\nParagraph one.\n\nParagraph two.",
         messages: [],
-        stderr: "",
-        usage: {
-          input: 0,
-          output: 0,
-          cacheRead: 0,
-          cacheWrite: 0,
-          cost: 0,
-          contextTokens: 0,
-          turns: 0,
-        },
-      },
+      }),
     ],
   };
   const originalDetails = structuredClone(details);
@@ -1707,13 +1557,9 @@ describe("unconfirmed thinking UI footer propagation", () => {
           agentScope: "both" as const,
           projectAgentsDir: null,
           results: [
-            {
-              agent: "test-agent",
-              agentSource: "user" as const,
-              task: "test task",
-              exitCode: 0,
+            makeSingleResult({
+              agentSource: "user",
               finalOutput: result.finalOutput ?? "done",
-              stderr: "",
               model: result.model,
               usage: {
                 input: 0,
@@ -1725,7 +1571,7 @@ describe("unconfirmed thinking UI footer propagation", () => {
                 turns: 1,
               },
               messages: [],
-            },
+            }),
           ],
         },
       },
@@ -1774,8 +1620,8 @@ test("renderSubagentResult includes metadata in header with tools, context, and 
             agentSource: "project",
             task: "test task",
             exitCode: 0,
-            finalOutput: "done",
             stderr: "",
+            finalOutput: "done",
             usage: {
               input: 10000,
               output: 2000,
@@ -1819,13 +1665,8 @@ test("renderSubagentResult metadata handles undefined toolCalls", () => {
         agentScope: "both",
         projectAgentsDir: null,
         results: [
-          {
-            agent: "test-agent",
-            agentSource: "project",
-            task: "test task",
-            exitCode: 0,
+          makeSingleResult({
             finalOutput: "done",
-            stderr: "",
             usage: {
               input: 1000,
               output: 500,
@@ -1838,7 +1679,7 @@ test("renderSubagentResult metadata handles undefined toolCalls", () => {
             },
             durationMs: 1500,
             messages: [],
-          },
+          }),
         ],
       },
     },
@@ -1864,8 +1705,8 @@ test("renderSubagentResult metadata handles undefined contextWindowTokens", () =
             agentSource: "project",
             task: "test task",
             exitCode: 0,
-            finalOutput: "done",
             stderr: "",
+            finalOutput: "done",
             usage: {
               input: 1000,
               output: 500,
@@ -1906,8 +1747,8 @@ test("renderSubagentResult metadata handles undefined durationMs", () => {
             agentSource: "project",
             task: "test task",
             exitCode: 0,
-            finalOutput: "done",
             stderr: "",
+            finalOutput: "done",
             usage: {
               input: 1000,
               output: 500,
@@ -2469,14 +2310,11 @@ test("full status card footer still renders after abridged footer support", () =
         agentScope: "both" as const,
         projectAgentsDir: null,
         results: [
-          {
+          makeSingleResult({
             agent: "builder",
-            agentSource: "project" as const,
             task: "pass",
-            exitCode: 0,
             finalOutput: "done",
             messages: [],
-            stderr: "",
             model: "provider/model",
             usage: {
               input: 0,
@@ -2487,7 +2325,7 @@ test("full status card footer still renders after abridged footer support", () =
               contextTokens: 0,
               turns: 1,
             },
-          },
+          }),
         ],
       },
     },
@@ -2507,24 +2345,12 @@ test("empty footer text does not render a blank footer line on status card", () 
         agentScope: "both" as const,
         projectAgentsDir: null,
         results: [
-          {
+          makeSingleResult({
             agent: "builder",
-            agentSource: "project" as const,
             task: "pass",
-            exitCode: 0,
             finalOutput: "done",
             messages: [],
-            stderr: "",
-            usage: {
-              input: 0,
-              output: 0,
-              cacheRead: 0,
-              cacheWrite: 0,
-              cost: 0,
-              contextTokens: 0,
-              turns: 0,
-            },
-          },
+          }),
         ],
       },
     },
@@ -2546,7 +2372,7 @@ test("result detail shape compatible with preserved nested activity progress", a
 printf '%s\n' ${shellQuote(makeSubagentToolUpdateLine("Reading config.ts"))}
 printf '%s\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"toolCall","name":"bash","id":"tc-1","arguments":{"command":"ls"}}]}}'
 printf '%s\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"Outcome: completed"}],"usage":{"input":10,"output":20,"totalTokens":30,"cost":{"total":0.01}}}}'
-printf '%s\n' '{"type":"agent_end"}'
+${emitAgentEnd()}
 exit 0
 `,
   });
@@ -2574,7 +2400,7 @@ test("sanitized result details preserve progress tool calls without internal fie
 printf '%s\n' ${shellQuote(makeSubagentToolUpdateLine("Scanning dependencies"))}
 printf '%s\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"toolCall","name":"read","id":"tc-read","arguments":{"path":"package.json"}}]}}'
 printf '%s\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"done"}],"usage":{"input":5,"output":10,"totalTokens":15,"cost":{"total":0.005}}}}'
-printf '%s\n' '{"type":"agent_end"}'
+${emitAgentEnd()}
 exit 0
 `,
   });
@@ -2605,8 +2431,6 @@ test("renderResult isPartial=true uses content[0].text when finalOutput is empty
         results: [
           {
             agent: "test-agent",
-            agentSource: "user" as const,
-            task: "test",
             exitCode: 0,
             finalOutput: "",
             stderr: "",
@@ -2619,6 +2443,8 @@ test("renderResult isPartial=true uses content[0].text when finalOutput is empty
               contextTokens: 0,
               turns: 0,
             },
+            agentSource: "user",
+            task: "test",
             progress: {
               activityText: "running bash: ls",
               lastToolPreview: "bash: ls",
@@ -2648,8 +2474,6 @@ test("renderResult isPartial=true falls back to activityText when content[0].tex
         results: [
           {
             agent: "test-agent",
-            agentSource: "user" as const,
-            task: "test",
             exitCode: 0,
             finalOutput: "",
             stderr: "",
@@ -2662,6 +2486,8 @@ test("renderResult isPartial=true falls back to activityText when content[0].tex
               contextTokens: 0,
               turns: 0,
             },
+            agentSource: "user",
+            task: "test",
             progress: { activityText: "reading file" },
             messages: [],
           },
@@ -2688,8 +2514,6 @@ test("renderResult isPartial=true falls back to activityText when content[0].tex
         results: [
           {
             agent: "test-agent",
-            agentSource: "user" as const,
-            task: "test",
             exitCode: 0,
             finalOutput: "",
             stderr: "",
@@ -2702,6 +2526,8 @@ test("renderResult isPartial=true falls back to activityText when content[0].tex
               contextTokens: 0,
               turns: 0,
             },
+            agentSource: "user",
+            task: "test",
             progress: { activityText: "reading file" },
             messages: [],
           },
@@ -2728,8 +2554,6 @@ test("renderResult isPartial=true falls back to lastToolPreview when activityTex
         results: [
           {
             agent: "test-agent",
-            agentSource: "user" as const,
-            task: "test",
             exitCode: 0,
             finalOutput: "",
             stderr: "",
@@ -2742,6 +2566,8 @@ test("renderResult isPartial=true falls back to lastToolPreview when activityTex
               contextTokens: 0,
               turns: 0,
             },
+            agentSource: "user",
+            task: "test",
             progress: { lastToolPreview: "read: config.ts" },
             messages: [],
           },
@@ -2766,24 +2592,11 @@ test("renderResult isPartial=true falls back to (running...) when all sources ar
         agentScope: "both" as const,
         projectAgentsDir: null,
         results: [
-          {
-            agent: "test-agent",
-            agentSource: "user" as const,
+          makeSingleResult({
+            agentSource: "user",
             task: "test",
-            exitCode: 0,
-            finalOutput: "",
-            stderr: "",
-            usage: {
-              input: 0,
-              output: 0,
-              cacheRead: 0,
-              cacheWrite: 0,
-              cost: 0,
-              contextTokens: 0,
-              turns: 0,
-            },
             messages: [],
-          },
+          }),
         ],
       },
     },
@@ -2805,24 +2618,12 @@ test("renderResult isPartial=false keeps using finalOutput as body", () => {
         agentScope: "both" as const,
         projectAgentsDir: null,
         results: [
-          {
-            agent: "test-agent",
-            agentSource: "user" as const,
+          makeSingleResult({
+            agentSource: "user",
             task: "test",
-            exitCode: 0,
             finalOutput: "final result text",
-            stderr: "",
-            usage: {
-              input: 0,
-              output: 0,
-              cacheRead: 0,
-              cacheWrite: 0,
-              cost: 0,
-              contextTokens: 0,
-              turns: 0,
-            },
             messages: [],
-          },
+          }),
         ],
       },
     },
@@ -2844,24 +2645,12 @@ test("renderResult isPartial=true with non-empty finalOutput still uses finalOut
         agentScope: "both" as const,
         projectAgentsDir: null,
         results: [
-          {
-            agent: "test-agent",
-            agentSource: "user" as const,
+          makeSingleResult({
+            agentSource: "user",
             task: "test",
-            exitCode: 0,
             finalOutput: "final result text",
-            stderr: "",
-            usage: {
-              input: 0,
-              output: 0,
-              cacheRead: 0,
-              cacheWrite: 0,
-              cost: 0,
-              contextTokens: 0,
-              turns: 0,
-            },
             messages: [],
-          },
+          }),
         ],
       },
     },
@@ -2963,14 +2752,11 @@ test("completed result card footer renders model, turns, context, cost in fixed 
         agentScope: "both" as const,
         projectAgentsDir: null,
         results: [
-          {
+          makeSingleResult({
             agent: "builder",
-            agentSource: "project" as const,
             task: "pass",
-            exitCode: 0,
             finalOutput: "done",
             messages: [],
-            stderr: "",
             model: "claude-sonnet-4-20250514",
             usage: {
               input: 0,
@@ -2981,7 +2767,7 @@ test("completed result card footer renders model, turns, context, cost in fixed 
               contextTokens: 12400,
               turns: 3,
             },
-          },
+          }),
         ],
       },
     },
@@ -3014,14 +2800,11 @@ test("completed result card footer excludes token arrow metrics", () => {
         agentScope: "both" as const,
         projectAgentsDir: null,
         results: [
-          {
+          makeSingleResult({
             agent: "builder",
-            agentSource: "project" as const,
             task: "pass",
-            exitCode: 0,
             finalOutput: "done",
             messages: [],
-            stderr: "",
             model: "provider/model",
             usage: {
               input: 5000,
@@ -3032,7 +2815,7 @@ test("completed result card footer excludes token arrow metrics", () => {
               contextTokens: 10000,
               turns: 2,
             },
-          },
+          }),
         ],
       },
     },
@@ -3056,14 +2839,11 @@ test("completed result card footer suppresses model segment when model is undefi
         agentScope: "both" as const,
         projectAgentsDir: null,
         results: [
-          {
+          makeSingleResult({
             agent: "builder",
-            agentSource: "project" as const,
             task: "pass",
-            exitCode: 0,
             finalOutput: "done",
             messages: [],
-            stderr: "",
             model: undefined,
             usage: {
               input: 0,
@@ -3074,7 +2854,7 @@ test("completed result card footer suppresses model segment when model is undefi
               contextTokens: 0,
               turns: 1,
             },
-          },
+          }),
         ],
       },
     },
@@ -3095,14 +2875,11 @@ test("completed result card footer suppresses context segment when contextTokens
         agentScope: "both" as const,
         projectAgentsDir: null,
         results: [
-          {
+          makeSingleResult({
             agent: "builder",
-            agentSource: "project" as const,
             task: "pass",
-            exitCode: 0,
             finalOutput: "done",
             messages: [],
-            stderr: "",
             model: "test-model",
             usage: {
               input: 0,
@@ -3113,7 +2890,7 @@ test("completed result card footer suppresses context segment when contextTokens
               contextTokens: 0,
               turns: 1,
             },
-          },
+          }),
         ],
       },
     },
@@ -3135,14 +2912,11 @@ test("completed result card footer suppresses cost segment when cost is zero", (
         agentScope: "both" as const,
         projectAgentsDir: null,
         results: [
-          {
+          makeSingleResult({
             agent: "builder",
-            agentSource: "project" as const,
             task: "pass",
-            exitCode: 0,
             finalOutput: "done",
             messages: [],
-            stderr: "",
             model: "test-model",
             usage: {
               input: 0,
@@ -3153,7 +2927,7 @@ test("completed result card footer suppresses cost segment when cost is zero", (
               contextTokens: 10000,
               turns: 1,
             },
-          },
+          }),
         ],
       },
     },
@@ -3164,66 +2938,61 @@ test("completed result card footer suppresses cost segment when cost is zero", (
   expect(renderedText).not.toContain("$");
 });
 
-test("abridged job card renders modelDisplay footer for error state", () => {
-  const now = Date.now();
-  const state: SubagentProgressState = {
-    requestId: "r1",
-    agent: "builder",
-    taskPreview: "build failed",
+test.each<{
+  status: SubagentProgressState["status"];
+  fields: Partial<SubagentProgressState>;
+  expected: string[];
+}>([
+  {
     status: "error",
-    startTime: now - 30000,
-    durationMs: 25000,
-    toolCount: 2,
-    errorText: "build collapsed",
-    modelDisplay: "provider/model:err",
-  };
-  const fakeTheme = createDefaultFakeTheme();
-  const rendered = renderRunsBoard([state], fakeTheme as never);
-  const text = renderToString(rendered);
-  expect(text).toContain("[dim]provider/model:err[/dim]");
-  expect(text).toContain("FAILED");
-  expect(text).toContain("build collapsed");
-});
-
-test("abridged job card renders modelDisplay footer for cancelled state", () => {
-  const now = Date.now();
-  const state: SubagentProgressState = {
-    requestId: "r1",
-    agent: "builder",
-    taskPreview: "cancelled task",
+    fields: {
+      taskPreview: "build failed",
+      toolCount: 2,
+      errorText: "build collapsed",
+      modelDisplay: "provider/model:err",
+    },
+    expected: ["[dim]provider/model:err[/dim]", "FAILED", "build collapsed"],
+  },
+  {
     status: "cancelled",
-    startTime: now - 30000,
-    durationMs: 25000,
-    toolCount: 1,
-    modelDisplay: "provider/model:cancel",
-  };
-  const fakeTheme = createDefaultFakeTheme();
-  const rendered = renderRunsBoard([state], fakeTheme as never);
-  const text = renderToString(rendered);
-  expect(text).toContain("[dim]provider/model:cancel[/dim]");
-  expect(text).toContain("CANCELLED");
-});
-
-test("abridged job card renders modelDisplay footer for success state", () => {
-  const now = Date.now();
-  const state: SubagentProgressState = {
-    requestId: "r1",
-    agent: "builder",
-    taskPreview: "passed tests",
+    fields: {
+      taskPreview: "cancelled task",
+      toolCount: 1,
+      modelDisplay: "provider/model:cancel",
+    },
+    expected: ["[dim]provider/model:cancel[/dim]", "CANCELLED"],
+  },
+  {
     status: "success",
-    startTime: now - 30000,
-    durationMs: 25000,
-    toolCount: 3,
-    finalOutput: "all tests pass",
-    modelDisplay: "provider/model:ok",
-  };
-  const fakeTheme = createDefaultFakeTheme();
-  const rendered = renderRunsBoard([state], fakeTheme as never);
-  const text = renderToString(rendered);
-  expect(text).toContain("[dim]provider/model:ok[/dim]");
-  expect(text).toContain("SUCCEEDED");
-  expect(text).toContain("all tests pass");
-});
+    fields: {
+      taskPreview: "passed tests",
+      toolCount: 3,
+      finalOutput: "all tests pass",
+      modelDisplay: "provider/model:ok",
+    },
+    expected: ["[dim]provider/model:ok[/dim]", "SUCCEEDED", "all tests pass"],
+  },
+])(
+  "abridged job card renders modelDisplay footer for $status state",
+  ({ status, fields, expected }) => {
+    const state: SubagentProgressState = {
+      requestId: "r1",
+      agent: "builder",
+      taskPreview: "",
+      status,
+      startTime: Date.now() - 30000,
+      durationMs: 25000,
+      toolCount: 0,
+      ...fields,
+    };
+    const text = renderToString(
+      renderRunsBoard([state], createDefaultFakeTheme() as never),
+    );
+    for (const fragment of expected) {
+      expect(text).toContain(fragment);
+    }
+  },
+);
 
 test("abridged job card with modelDisplay uses errorText as body when finalOutput is empty", () => {
   const now = Date.now();
@@ -3291,25 +3060,13 @@ test("completed result card footer is empty when model and usage all missing", (
         agentScope: "both" as const,
         projectAgentsDir: null,
         results: [
-          {
+          makeSingleResult({
             agent: "builder",
-            agentSource: "project" as const,
             task: "pass",
-            exitCode: 0,
             finalOutput: "done",
             messages: [],
-            stderr: "",
             model: undefined,
-            usage: {
-              input: 0,
-              output: 0,
-              cacheRead: 0,
-              cacheWrite: 0,
-              cost: 0,
-              contextTokens: 0,
-              turns: 0,
-            },
-          },
+          }),
         ],
       },
     },
@@ -3334,25 +3091,13 @@ test("renderSubagentResult shows finalOutput only from assistant text and perfor
         agentScope: "both",
         projectAgentsDir: null,
         results: [
-          {
+          makeSingleResult({
             agent: "builder",
-            agentSource: "project",
             task: "pass",
-            exitCode: 0,
             finalOutput: "pure assistant text here",
             outcome: "should-not-be-synthesized-into-body",
             messages: [],
-            stderr: "",
-            usage: {
-              input: 0,
-              output: 0,
-              cacheRead: 0,
-              cacheWrite: 0,
-              cost: 0,
-              contextTokens: 0,
-              turns: 0,
-            },
-          },
+          }),
         ],
       },
     },
@@ -3397,24 +3142,11 @@ test("getFinalOutput returns last assistant text and tolerates non-array content
         agentScope: "both",
         projectAgentsDir: null,
         results: [
-          {
+          makeSingleResult({
             agent: "fallback",
-            agentSource: "project",
             task: "task",
-            exitCode: 0,
-            finalOutput: "",
             messages: textMessages,
-            stderr: "",
-            usage: {
-              input: 0,
-              output: 0,
-              cacheRead: 0,
-              cacheWrite: 0,
-              cost: 0,
-              contextTokens: 0,
-              turns: 0,
-            },
-          },
+          }),
         ],
       },
     },
@@ -3436,19 +3168,8 @@ test("completed result card renders from finalOutput and ignores stale messages"
         projectAgentsDir: null,
         results: [
           {
-            agent: "builder",
-            agentSource: "project" as const,
-            task: "pass",
+            agentSource: "project",
             exitCode: 0,
-            finalOutput: "preserved final output",
-            messages: [
-              {
-                role: "assistant" as const,
-                content: [
-                  { type: "text" as const, text: "stale message output" },
-                ],
-              },
-            ],
             stderr: "",
             usage: {
               input: 0,
@@ -3459,6 +3180,17 @@ test("completed result card renders from finalOutput and ignores stale messages"
               contextTokens: 0,
               turns: 0,
             },
+            agent: "builder",
+            task: "pass",
+            finalOutput: "preserved final output",
+            messages: [
+              {
+                role: "assistant" as const,
+                content: [
+                  { type: "text" as const, text: "stale message output" },
+                ],
+              },
+            ],
           },
         ],
       },
@@ -3481,17 +3213,8 @@ test("completed result card shows (no output) when finalOutput is blank even wit
         projectAgentsDir: null,
         results: [
           {
-            agent: "builder",
-            agentSource: "project" as const,
-            task: "pass",
+            agentSource: "project",
             exitCode: 0,
-            finalOutput: "   ",
-            messages: [
-              {
-                role: "assistant" as const,
-                content: [{ type: "text" as const, text: "message text" }],
-              },
-            ],
             stderr: "",
             usage: {
               input: 0,
@@ -3502,6 +3225,15 @@ test("completed result card shows (no output) when finalOutput is blank even wit
               contextTokens: 0,
               turns: 0,
             },
+            agent: "builder",
+            task: "pass",
+            finalOutput: "   ",
+            messages: [
+              {
+                role: "assistant" as const,
+                content: [{ type: "text" as const, text: "message text" }],
+              },
+            ],
           },
         ],
       },
@@ -3523,23 +3255,11 @@ test("completed result card renders sanitized details without messages from fina
         agentScope: "both" as const,
         projectAgentsDir: null,
         results: [
-          {
+          makeSingleResult({
             agent: "builder",
-            agentSource: "project" as const,
             task: "pass",
-            exitCode: 0,
             finalOutput: "sanitized final output",
-            stderr: "",
-            usage: {
-              input: 0,
-              output: 0,
-              cacheRead: 0,
-              cacheWrite: 0,
-              cost: 0,
-              contextTokens: 0,
-              turns: 0,
-            },
-          },
+          }),
         ],
       },
     },
@@ -3560,12 +3280,8 @@ test("partial result card still prefers finalOutput over live content", () => {
         projectAgentsDir: null,
         results: [
           {
-            agent: "builder",
-            agentSource: "project" as const,
-            task: "pass",
+            agentSource: "project",
             exitCode: 0,
-            finalOutput: "existing final output",
-            progress: { activityText: "running activity" },
             stderr: "",
             usage: {
               input: 0,
@@ -3576,6 +3292,10 @@ test("partial result card still prefers finalOutput over live content", () => {
               contextTokens: 0,
               turns: 0,
             },
+            agent: "builder",
+            task: "pass",
+            finalOutput: "existing final output",
+            progress: { activityText: "running activity" },
             messages: [],
           },
         ],

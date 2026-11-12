@@ -10,7 +10,10 @@ import type {
 // Explicit agent/agentSource/task overrides preserve the former local
 // makeRuntimeResult defaults at each migrated call site.
 import {
+  emitAgentEnd,
+  emitMessageEnd,
   hangAgent,
+  makeAssistantMessage,
   makeRuntimeResult,
   makeSingleResult,
   makeSubagentDetails,
@@ -720,9 +723,9 @@ test("nested activity triggers onUpdate without appending messages", async () =>
   const updates: { text: string; messageCount: number }[] = [];
   const { cwd } = await setupTest({
     piScript: `#!/bin/sh
-printf '%s\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"hello"}],"api":"fake","provider":"fake","model":"fake","usage":{"input":1,"output":1,"cacheRead":0,"cacheWrite":0,"totalTokens":2,"cost":{"total":0}},"stopReason":"stop","timestamp":0}}'
+${emitMessageEnd(makeAssistantMessage("hello"))}
 printf '%s\n' ${shellQuote(makeSubagentToolUpdateLine("Reading file.ts"))}
-printf '%s\n' '{"type":"agent_end","messages":[]}'
+${emitAgentEnd([])}
 exit 0
 `,
   });
@@ -755,7 +758,7 @@ test("nested activity with sensitive keywords is redacted", async () => {
   const { cwd } = await setupTest({
     piScript: `#!/bin/sh
 printf '%s\n' ${shellQuote(makeSubagentToolUpdateLine("Reading secret-token.yaml"))}
-printf '%s\n' '{"type":"agent_end","messages":[]}'
+${emitAgentEnd([])}
 exit 0
 `,
   });
@@ -813,7 +816,7 @@ test("child tool events replace nested activity in subsequent updates", async ()
     piScript: `#!/bin/sh
 printf '%s\n' ${shellQuote(makeSubagentToolUpdateLine("Grandchild working"))}
 printf '%s\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"toolCall","id":"tc-1","name":"bash","arguments":{"command":"ls"}}],"api":"fake","provider":"fake","model":"fake","usage":{"input":1,"output":1,"cacheRead":0,"cacheWrite":0,"totalTokens":2,"cost":{"total":0}},"stopReason":"stop","timestamp":0}}'
-printf '%s\n' '{"type":"agent_end","messages":[]}'
+${emitAgentEnd([])}
 exit 0
 `,
   });
@@ -840,8 +843,8 @@ exit 0
 test("makeEmitUpdate handles toolResultCompleted without toolActivity", async () => {
   const { cwd } = await setupTest({
     piScript: `#!/bin/sh
-printf '%s\\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"done"}],"api":"fake","provider":"fake","model":"fake","usage":{"input":1,"output":1,"cacheRead":0,"cacheWrite":0,"totalTokens":2,"cost":{"total":0}},"stopReason":"stop","timestamp":0}}'
-printf '%s\\n' '{"type":"agent_end","messages":[]}'
+${emitMessageEnd(makeAssistantMessage("done"))}
+${emitAgentEnd([])}
 exit 0
 `,
   });

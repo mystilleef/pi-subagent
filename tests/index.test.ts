@@ -429,37 +429,6 @@ describe("index.ts", () => {
       expect(notifications[0]).toBe(`Cancelled /run job ${requestId}.`);
       await waitForRunJobsCleared();
     });
-
-    test("cancels all jobs when target is 'all' and jobs are active", async () => {
-      const notifications: string[] = [];
-      const sentMessages: import("./helpers.js").SendMessageArg[] = [];
-      const { tool, cwd } = await setupTest({
-        sendMessage: (msg) => sentMessages.push(msg),
-      });
-      const runCommand = tool.registeredCommands.get("run");
-      const runCtx = {
-        cwd,
-        signal: AbortSignal.timeout(30000),
-        ui: {
-          notify: () => {},
-          select: async () => undefined,
-          custom: async () => "",
-        },
-      } as unknown as ExtensionCommandContext;
-      await runCommand?.handler?.("hang hello", runCtx);
-      await waitForRunJobCount(1);
-      const cancelCtx = {
-        cwd,
-        ui: {
-          notify: (msg: string) => notifications.push(msg),
-          select: async () => undefined,
-        },
-      } as unknown as ExtensionCommandContext;
-      const cancelCommand = tool.registeredCommands.get("cancel-subagent");
-      await cancelCommand?.handler?.("all", cancelCtx);
-      expect(notifications[0]).toContain("Cancelled");
-      await waitForRunJobsCleared();
-    });
   });
 
   describe("jobs command handler", () => {

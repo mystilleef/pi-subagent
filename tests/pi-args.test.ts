@@ -1,8 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import * as fs from "node:fs";
-import path from "node:path";
 import type { AgentConfig } from "../src/agent/agents.js";
-import type { ModelRegistry } from "../src/child/model-resolution.js";
 import { buildPiArgs } from "../src/child/pi-args.js";
 import { runSingleAgent } from "../src/child/process.js";
 import {
@@ -10,23 +7,20 @@ import {
   resolveSamplingExtensionPath,
 } from "../src/child/process-utils.js";
 import { SUBAGENT_RESULT_CONTRACT } from "../src/child/prompt-contract.js";
-import type { SingleResult } from "../src/shared/types.js";
 import {
   CAPTURE_ARGS_PI_SCRIPT,
+  captureRunSingleAgentArgs,
   flagValues,
   hangAgent,
   makeSubagentDetails,
+  readCapturedArgs,
   registryFixture,
+  runCapturedModelAgent,
   setupHooks,
   setupTest,
 } from "./helpers.js";
 
 setupHooks();
-
-type CapturableParentModel = {
-  provider?: string | undefined;
-  id?: string | undefined;
-};
 
 function buildArgsWithExtensions(
   agentOverrides: Partial<AgentConfig>,
@@ -62,50 +56,10 @@ function buildContractArgs(
   });
 }
 
-async function captureRunSingleAgentArgs(
-  agent: AgentConfig,
-  parentModel: CapturableParentModel | undefined,
-  options: { registry?: ModelRegistry } = { registry: registryFixture([]) },
-): Promise<string[]> {
-  return (await runCapturedModelAgent(agent, parentModel, "off", options)).args;
-}
-
 function extensionFlags(args: string[]): { path: string; index: number }[] {
   return args.flatMap((arg, i) =>
     arg === "--extension" ? [{ path: args[i + 1] ?? "", index: i }] : [],
   );
-}
-
-async function runCapturedModelAgent(
-  agent: AgentConfig,
-  parentModel: CapturableParentModel | undefined,
-  parentThinking: AgentConfig["thinking"] = "off",
-  options?: { registry?: ModelRegistry },
-): Promise<{ args: string[]; result: SingleResult }> {
-  const { cwd } = await setupTest({
-    piScript: CAPTURE_ARGS_PI_SCRIPT,
-  });
-  const { result } = await runSingleAgent(
-    cwd,
-    [agent],
-    agent.name,
-    "task",
-    undefined,
-    undefined,
-    makeSubagentDetails,
-    parentModel,
-    parentThinking ?? "off",
-    false,
-    options,
-  );
-  expect(result.exitCode).toBe(0);
-  return {
-    args: fs
-      .readFileSync(path.join(cwd, "args.txt"), "utf8")
-      .trimEnd()
-      .split("\n"),
-    result,
-  };
 }
 
 describe("buildPiArgs contract delivery invariants", () => {
@@ -396,7 +350,7 @@ describe("buildPiArgs contract delivery invariants", () => {
     const args = buildContractArgs(
       "task",
       { filePath: "/tmp/fake-prompt.md" },
-      { replacePrompt: true, context: false, tools: ["bash"] },
+      { replacePrompt: true, context: false, tools: ["bash", "read"] },
     );
     expect(flagValues(args, "--system-prompt")).toEqual([
       "/tmp/fake-prompt.md",
@@ -405,7 +359,9 @@ describe("buildPiArgs contract delivery invariants", () => {
       SUBAGENT_RESULT_CONTRACT,
     ]);
     expect(args).toContain("--no-context-files");
-    expect(flagValues(args, "--tools")[0]?.split(",")).toContain("bash");
+    const tools = flagValues(args, "--tools")[0]?.split(",") ?? [];
+    expect(tools).toContain("bash");
+    expect(tools).toContain("read");
     expect(args.at(-1)).toBe("Task: task");
   });
 
@@ -492,12 +448,7 @@ test("buildPiArgs --no-context-files coexists with approval, model, provider, th
 
 test("buildPiArgs --no-context-files coexists with sampling extension args", async () => {
   const { cwd } = await setupTest({
-    piScript: `#!/bin/sh
-printf '%s\\n' "$@" > args.txt
-printf '%s\\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"done"}],"api":"fake","provider":"fake","model":"fake","usage":{"input":1,"output":1,"cacheRead":0,"cacheWrite":0,"totalTokens":2,"cost":{"total":0}},"stopReason":"stop","timestamp":0}}'
-printf '%s\\n' '{"type":"agent_end","messages":[]}'
-exit 0
-`,
+    piScript: CAPTURE_ARGS_PI_SCRIPT,
   });
   const agent: AgentConfig = {
     ...hangAgent,
@@ -516,10 +467,7 @@ exit 0
     "off",
   );
   expect(result.exitCode).toBe(0);
-  const args = fs
-    .readFileSync(path.join(cwd, "args.txt"), "utf8")
-    .trimEnd()
-    .split("\n");
+  const args = await readCapturedArgs(cwd);
   expect(args).toContain("--no-context-files");
   expect(flagValues(args, "--extension")).toContain(
     resolveSamplingExtensionPath(),
@@ -605,29 +553,13 @@ test("buildPiArgs appends --no-skills with no paths when agent.skills is empty a
   );
 });
 
-test("buildPiArgs omitted extensions emits no --no-extensions and no index extension", () => {
-  const agent: AgentConfig = { ...hangAgent };
-  expect(Object.hasOwn(agent, "extensions")).toBe(false);
-  const args = buildArgsWithExtensions(agent);
-  expect(args).not.toContain("--no-extensions");
-  const pkgPath = resolvePackageExtensionPath();
-  expect(args).not.toContain(pkgPath);
-  expect(flagValues(args, "--extension")).not.toContain(pkgPath);
-});
-
-test("buildPiArgs extensions false emits --no-extensions and package index", () => {
+test("buildPiArgs extensions false emits --no-extensions and the package index exactly once", () => {
   const args = buildArgsWithExtensions({ extensions: [] });
   expect(args).toContain("--no-extensions");
   const pkgPath = resolvePackageExtensionPath();
-  expect(flagValues(args, "--extension")).toContain(pkgPath);
-});
-
-test("buildPiArgs extensions empty parsed string emits --no-extensions and package index", () => {
-  const args = buildArgsWithExtensions({ extensions: [] });
-  const argFlags = extensionFlags(args);
-  const pkgPath = resolvePackageExtensionPath();
-  expect(args).toContain("--no-extensions");
-  expect(argFlags.map((f) => f.path)).toContain(pkgPath);
+  expect(
+    flagValues(args, "--extension").filter((p) => p === pkgPath),
+  ).toHaveLength(1);
 });
 
 test("buildPiArgs named extensions emits --no-extensions, index, and named paths", () => {
@@ -658,14 +590,6 @@ test("buildPiArgs named extensions with resolved path equal to index de-duplicat
   expect(exts).toContain("/ext/unique.js");
 });
 
-test("buildPiArgs index extension appears exactly once when no named paths provided", () => {
-  const args = buildArgsWithExtensions({ extensions: [] });
-  const pkgPath = resolvePackageExtensionPath();
-  const exts = flagValues(args, "--extension");
-  const pkgCount = exts.filter((p) => p === pkgPath).length;
-  expect(pkgCount).toBe(1);
-});
-
 test("buildPiArgs complete extension present when extensions disabled", () => {
   const args = buildArgsWithExtensions({ extensions: [] });
   const exts = extensionFlags(args);
@@ -675,11 +599,14 @@ test("buildPiArgs complete extension present when extensions disabled", () => {
   expect(completeIdx).toBeGreaterThanOrEqual(0);
 });
 
-test("buildPiArgs absent extension field regression: no --no-extensions and no index injection", () => {
-  const args = buildArgsWithExtensions({});
+test("buildPiArgs omitted extensions emits no --no-extensions and no index extension", () => {
+  const agent: AgentConfig = { ...hangAgent };
+  expect(Object.hasOwn(agent, "extensions")).toBe(false);
+  const args = buildArgsWithExtensions(agent);
   expect(args).not.toContain("--no-extensions");
-  const pkgPath = resolvePackageExtensionPath();
-  expect(flagValues(args, "--extension")).not.toContain(pkgPath);
+  expect(flagValues(args, "--extension")).not.toContain(
+    resolvePackageExtensionPath(),
+  );
   expect(args).toContain("--approve");
   expect(args).toContain("--no-themes");
 });

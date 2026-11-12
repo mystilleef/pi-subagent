@@ -1,4 +1,4 @@
-import { describe, expect, spyOn, test } from "bun:test";
+import { describe, expect, jest, spyOn, test } from "bun:test";
 import * as fsPromises from "node:fs/promises";
 import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
@@ -9,10 +9,67 @@ import {
   resetResolvedAgentSkillArgsCache,
   resolveAgentExtensionPaths,
   resolveAgentSkillArgs,
-} from "../src/shared/utils.js";
-import { makeTempDir, setupHooks } from "./helpers.js";
+} from "../src/shared/resource-resolution.js";
+import { makeTempDir, setupFixtureHooks } from "./fixtures.js";
 
-setupHooks();
+setupFixtureHooks(
+  resetResolvedAgentSkillArgsCache,
+  resetResolvedAgentExtensionPathsCache,
+);
+
+type StubExtensionEntry = {
+  path: string;
+  resolvedPath: string;
+  source: string;
+  scope: "project" | "user";
+  origin: "package" | "top-level";
+};
+
+type StubbedExtensions = ReturnType<
+  DefaultResourceLoader["getExtensions"]
+>["extensions"];
+
+/**
+ * Installs a stubbed extension loader for one assertion, restoring the
+ * original loader and discovery cache afterward. Every entry keeps its
+ * own path, source, scope, and origin; only the repeated loader
+ * wiring is shared.
+ */
+async function withStubbedExtensionLoader(
+  entries: StubExtensionEntry[],
+  fn: () => Promise<void>,
+): Promise<void> {
+  const originalGetExtensions = DefaultResourceLoader.prototype.getExtensions;
+  const originalReload = DefaultResourceLoader.prototype.reload;
+  DefaultResourceLoader.prototype.reload = async () => {};
+  DefaultResourceLoader.prototype.getExtensions = () => ({
+    extensions: entries.map((entry): StubbedExtensions[number] => ({
+      path: entry.path,
+      resolvedPath: entry.resolvedPath,
+      sourceInfo: {
+        path: entry.resolvedPath,
+        source: entry.source,
+        scope: entry.scope,
+        origin: entry.origin,
+      },
+      handlers: new Map(),
+      tools: new Map(),
+      messageRenderers: new Map(),
+      commands: new Map(),
+      flags: new Map(),
+      shortcuts: new Map(),
+    })),
+    errors: [],
+    runtime: {} as never,
+  });
+  try {
+    await fn();
+  } finally {
+    DefaultResourceLoader.prototype.getExtensions = originalGetExtensions;
+    DefaultResourceLoader.prototype.reload = originalReload;
+    resetResolvedAgentExtensionPathsCache();
+  }
+}
 
 test("resolveAgentSkillArgs reports skill discovery errors", async () => {
   const originalReload = DefaultResourceLoader.prototype.reload;
@@ -314,24 +371,26 @@ description: Helps tests
 # Helper
 `,
   );
-  const originalNow = Date.now;
   const originalReload = DefaultResourceLoader.prototype.reload;
   let now = 1000;
   let reloads = 0;
-  Date.now = () => now;
+  jest.useFakeTimers();
+  jest.setSystemTime(now);
   DefaultResourceLoader.prototype.reload = async function (...args) {
     reloads += 1;
     return originalReload.apply(this, args);
   };
   try {
     await resolveAgentSkillArgs(cwd, ["helper"]);
+    jest.advanceTimersByTime(300000);
     now += 300000;
     await resolveAgentSkillArgs(cwd, ["helper"]);
+    jest.advanceTimersByTime(1);
     now += 1;
     await resolveAgentSkillArgs(cwd, ["helper"]);
     expect(reloads).toBe(2);
   } finally {
-    Date.now = originalNow;
+    jest.useRealTimers();
     DefaultResourceLoader.prototype.reload = originalReload;
     resetResolvedAgentSkillArgsCache();
   }
@@ -411,61 +470,34 @@ test("resolveAgentExtensionPaths resolves npm short names to resolved paths", as
     "helper",
     "index.js",
   );
-  const originalGetExtensions = DefaultResourceLoader.prototype.getExtensions;
-  const originalReload = DefaultResourceLoader.prototype.reload;
-  DefaultResourceLoader.prototype.reload = async () => {};
-  DefaultResourceLoader.prototype.getExtensions = () => ({
-    extensions: [
+  await withStubbedExtensionLoader(
+    [
       {
         path: "npm:context-mode",
         resolvedPath: resolvedPath1,
-        sourceInfo: {
-          path: resolvedPath1,
-          source: "npm:context-mode",
-          scope: "user",
-          origin: "package",
-        },
-        handlers: new Map(),
-        tools: new Map(),
-        messageRenderers: new Map(),
-        commands: new Map(),
-        flags: new Map(),
-        shortcuts: new Map(),
+        source: "npm:context-mode",
+        scope: "user",
+        origin: "package",
       },
       {
         path: "npm:@scope/helper",
         resolvedPath: resolvedPath2,
-        sourceInfo: {
-          path: resolvedPath2,
-          source: "npm:@scope/helper",
-          scope: "user",
-          origin: "package",
-        },
-        handlers: new Map(),
-        tools: new Map(),
-        messageRenderers: new Map(),
-        commands: new Map(),
-        flags: new Map(),
-        shortcuts: new Map(),
+        source: "npm:@scope/helper",
+        scope: "user",
+        origin: "package",
       },
     ],
-    errors: [],
-    runtime: {} as never,
-  });
-  try {
-    const resolved = await resolveAgentExtensionPaths(cwd, [
-      "context-mode",
-      "helper",
-    ]);
-    expect("resolvedPaths" in resolved).toBe(true);
-    if ("resolvedPaths" in resolved) {
-      expect(resolved.resolvedPaths).toEqual([resolvedPath1, resolvedPath2]);
-    }
-  } finally {
-    DefaultResourceLoader.prototype.getExtensions = originalGetExtensions;
-    DefaultResourceLoader.prototype.reload = originalReload;
-    resetResolvedAgentExtensionPathsCache();
-  }
+    async () => {
+      const resolved = await resolveAgentExtensionPaths(cwd, [
+        "context-mode",
+        "helper",
+      ]);
+      expect("resolvedPaths" in resolved).toBe(true);
+      if ("resolvedPaths" in resolved) {
+        expect(resolved.resolvedPaths).toEqual([resolvedPath1, resolvedPath2]);
+      }
+    },
+  );
 });
 
 test("resolveAgentExtensionPaths resolves project path short names to resolved paths", async () => {
@@ -479,42 +511,24 @@ test("resolveAgentExtensionPaths resolves project path short names to resolved p
     "my-ext",
     "index.js",
   );
-  const originalGetExtensions = DefaultResourceLoader.prototype.getExtensions;
-  const originalReload = DefaultResourceLoader.prototype.reload;
-  DefaultResourceLoader.prototype.reload = async () => {};
-  DefaultResourceLoader.prototype.getExtensions = () => ({
-    extensions: [
+  await withStubbedExtensionLoader(
+    [
       {
         path: ".pi/extensions/my-ext",
         resolvedPath,
-        sourceInfo: {
-          path: resolvedPath,
-          source: ".pi/extensions/my-ext",
-          scope: "project",
-          origin: "top-level",
-        },
-        handlers: new Map(),
-        tools: new Map(),
-        messageRenderers: new Map(),
-        commands: new Map(),
-        flags: new Map(),
-        shortcuts: new Map(),
+        source: ".pi/extensions/my-ext",
+        scope: "project",
+        origin: "top-level",
       },
     ],
-    errors: [],
-    runtime: {} as never,
-  });
-  try {
-    const resolved = await resolveAgentExtensionPaths(cwd, ["my-ext"]);
-    expect("resolvedPaths" in resolved).toBe(true);
-    if ("resolvedPaths" in resolved) {
-      expect(resolved.resolvedPaths).toEqual([resolvedPath]);
-    }
-  } finally {
-    DefaultResourceLoader.prototype.getExtensions = originalGetExtensions;
-    DefaultResourceLoader.prototype.reload = originalReload;
-    resetResolvedAgentExtensionPathsCache();
-  }
+    async () => {
+      const resolved = await resolveAgentExtensionPaths(cwd, ["my-ext"]);
+      expect("resolvedPaths" in resolved).toBe(true);
+      if ("resolvedPaths" in resolved) {
+        expect(resolved.resolvedPaths).toEqual([resolvedPath]);
+      }
+    },
+  );
 });
 
 test("resolveAgentExtensionPaths resolves absolute path short names to resolved paths", async () => {
@@ -522,42 +536,24 @@ test("resolveAgentExtensionPaths resolves absolute path short names to resolved 
   const cwd = path.join(root, "work");
   await mkdir(cwd, { recursive: true });
   const resolvedPath = path.join(root, "custom-ext", "index.js");
-  const originalGetExtensions = DefaultResourceLoader.prototype.getExtensions;
-  const originalReload = DefaultResourceLoader.prototype.reload;
-  DefaultResourceLoader.prototype.reload = async () => {};
-  DefaultResourceLoader.prototype.getExtensions = () => ({
-    extensions: [
+  await withStubbedExtensionLoader(
+    [
       {
         path: resolvedPath,
         resolvedPath,
-        sourceInfo: {
-          path: resolvedPath,
-          source: resolvedPath,
-          scope: "project",
-          origin: "top-level",
-        },
-        handlers: new Map(),
-        tools: new Map(),
-        messageRenderers: new Map(),
-        commands: new Map(),
-        flags: new Map(),
-        shortcuts: new Map(),
+        source: resolvedPath,
+        scope: "project",
+        origin: "top-level",
       },
     ],
-    errors: [],
-    runtime: {} as never,
-  });
-  try {
-    const resolved = await resolveAgentExtensionPaths(cwd, ["custom-ext"]);
-    expect("resolvedPaths" in resolved).toBe(true);
-    if ("resolvedPaths" in resolved) {
-      expect(resolved.resolvedPaths).toEqual([resolvedPath]);
-    }
-  } finally {
-    DefaultResourceLoader.prototype.getExtensions = originalGetExtensions;
-    DefaultResourceLoader.prototype.reload = originalReload;
-    resetResolvedAgentExtensionPathsCache();
-  }
+    async () => {
+      const resolved = await resolveAgentExtensionPaths(cwd, ["custom-ext"]);
+      expect("resolvedPaths" in resolved).toBe(true);
+      if ("resolvedPaths" in resolved) {
+        expect(resolved.resolvedPaths).toEqual([resolvedPath]);
+      }
+    },
+  );
 });
 
 test("resolveAgentExtensionPaths deduplicates requested names by first occurrence", async () => {
@@ -571,46 +567,28 @@ test("resolveAgentExtensionPaths deduplicates requested names by first occurrenc
     "helper",
     "index.js",
   );
-  const originalGetExtensions = DefaultResourceLoader.prototype.getExtensions;
-  const originalReload = DefaultResourceLoader.prototype.reload;
-  DefaultResourceLoader.prototype.reload = async () => {};
-  DefaultResourceLoader.prototype.getExtensions = () => ({
-    extensions: [
+  await withStubbedExtensionLoader(
+    [
       {
         path: "npm:helper",
         resolvedPath,
-        sourceInfo: {
-          path: resolvedPath,
-          source: "npm:helper",
-          scope: "user",
-          origin: "package",
-        },
-        handlers: new Map(),
-        tools: new Map(),
-        messageRenderers: new Map(),
-        commands: new Map(),
-        flags: new Map(),
-        shortcuts: new Map(),
+        source: "npm:helper",
+        scope: "user",
+        origin: "package",
       },
     ],
-    errors: [],
-    runtime: {} as never,
-  });
-  try {
-    const resolved = await resolveAgentExtensionPaths(cwd, [
-      "helper",
-      "helper",
-      "helper",
-    ]);
-    expect("resolvedPaths" in resolved).toBe(true);
-    if ("resolvedPaths" in resolved) {
-      expect(resolved.resolvedPaths).toEqual([resolvedPath]);
-    }
-  } finally {
-    DefaultResourceLoader.prototype.getExtensions = originalGetExtensions;
-    DefaultResourceLoader.prototype.reload = originalReload;
-    resetResolvedAgentExtensionPathsCache();
-  }
+    async () => {
+      const resolved = await resolveAgentExtensionPaths(cwd, [
+        "helper",
+        "helper",
+        "helper",
+      ]);
+      expect("resolvedPaths" in resolved).toBe(true);
+      if ("resolvedPaths" in resolved) {
+        expect(resolved.resolvedPaths).toEqual([resolvedPath]);
+      }
+    },
+  );
 });
 
 test("resolveAgentExtensionPaths returns error when no extensions installed", async () => {
@@ -823,20 +801,22 @@ test("resolveAgentExtensionPaths expires cache after TTL", async () => {
     errors: [],
     runtime: {} as never,
   });
-  const originalNow = Date.now;
   let now = 1000;
-  Date.now = () => now;
+  jest.useFakeTimers();
+  jest.setSystemTime(now);
   try {
     await resolveAgentExtensionPaths(cwd, ["helper"]);
+    jest.advanceTimersByTime(EXTENSION_DISCOVERY_CACHE_TTL_MS);
     now += EXTENSION_DISCOVERY_CACHE_TTL_MS;
     await resolveAgentExtensionPaths(cwd, ["helper"]);
+    jest.advanceTimersByTime(1);
     now += 1;
     await resolveAgentExtensionPaths(cwd, ["helper"]);
     expect(reloadCalls).toBe(2);
   } finally {
     DefaultResourceLoader.prototype.reload = originalReload;
     DefaultResourceLoader.prototype.getExtensions = originalGetExtensions;
-    Date.now = originalNow;
+    jest.useRealTimers();
     resetResolvedAgentExtensionPathsCache();
   }
 });
@@ -1016,42 +996,24 @@ test("resolveAgentExtensionPaths resolves npm unscoped version-pinned package by
     "helper",
     "index.js",
   );
-  const originalGetExtensions = DefaultResourceLoader.prototype.getExtensions;
-  const originalReload = DefaultResourceLoader.prototype.reload;
-  DefaultResourceLoader.prototype.reload = async () => {};
-  DefaultResourceLoader.prototype.getExtensions = () => ({
-    extensions: [
+  await withStubbedExtensionLoader(
+    [
       {
         path: "npm:helper@1.2.3",
         resolvedPath,
-        sourceInfo: {
-          path: resolvedPath,
-          source: "npm:helper@1.2.3",
-          scope: "user",
-          origin: "package",
-        },
-        handlers: new Map(),
-        tools: new Map(),
-        messageRenderers: new Map(),
-        commands: new Map(),
-        flags: new Map(),
-        shortcuts: new Map(),
+        source: "npm:helper@1.2.3",
+        scope: "user",
+        origin: "package",
       },
     ],
-    errors: [],
-    runtime: {} as never,
-  });
-  try {
-    const resolved = await resolveAgentExtensionPaths(cwd, ["helper"]);
-    expect("resolvedPaths" in resolved).toBe(true);
-    if ("resolvedPaths" in resolved) {
-      expect(resolved.resolvedPaths).toEqual([resolvedPath]);
-    }
-  } finally {
-    DefaultResourceLoader.prototype.getExtensions = originalGetExtensions;
-    DefaultResourceLoader.prototype.reload = originalReload;
-    resetResolvedAgentExtensionPathsCache();
-  }
+    async () => {
+      const resolved = await resolveAgentExtensionPaths(cwd, ["helper"]);
+      expect("resolvedPaths" in resolved).toBe(true);
+      if ("resolvedPaths" in resolved) {
+        expect(resolved.resolvedPaths).toEqual([resolvedPath]);
+      }
+    },
+  );
 });
 
 test.each([
@@ -1085,42 +1047,26 @@ test.each([
     row.packageDir,
     "index.js",
   );
-  const originalGetExtensions = DefaultResourceLoader.prototype.getExtensions;
-  const originalReload = DefaultResourceLoader.prototype.reload;
-  DefaultResourceLoader.prototype.reload = async () => {};
-  DefaultResourceLoader.prototype.getExtensions = () => ({
-    extensions: [
+  await withStubbedExtensionLoader(
+    [
       {
         path: row.extensionPath,
         resolvedPath,
-        sourceInfo: {
-          path: resolvedPath,
-          source: row.sourcePath,
-          scope: "user",
-          origin: "package",
-        },
-        handlers: new Map(),
-        tools: new Map(),
-        messageRenderers: new Map(),
-        commands: new Map(),
-        flags: new Map(),
-        shortcuts: new Map(),
+        source: row.sourcePath,
+        scope: "user",
+        origin: "package",
       },
     ],
-    errors: [],
-    runtime: {} as never,
-  });
-  try {
-    const resolved = await resolveAgentExtensionPaths(cwd, [row.extensionName]);
-    expect("resolvedPaths" in resolved).toBe(true);
-    if ("resolvedPaths" in resolved) {
-      expect(resolved.resolvedPaths).toEqual([resolvedPath]);
-    }
-  } finally {
-    DefaultResourceLoader.prototype.getExtensions = originalGetExtensions;
-    DefaultResourceLoader.prototype.reload = originalReload;
-    resetResolvedAgentExtensionPathsCache();
-  }
+    async () => {
+      const resolved = await resolveAgentExtensionPaths(cwd, [
+        row.extensionName,
+      ]);
+      expect("resolvedPaths" in resolved).toBe(true);
+      if ("resolvedPaths" in resolved) {
+        expect(resolved.resolvedPaths).toEqual([resolvedPath]);
+      }
+    },
+  );
 });
 
 test("resolveAgentExtensionPaths reports unknown extension for versioned requested name", async () => {
@@ -1344,42 +1290,24 @@ test("resolveAgentExtensionPaths resolves nested src/index.* short names to root
     "src",
     "index.js",
   );
-  const originalGetExtensions = DefaultResourceLoader.prototype.getExtensions;
-  const originalReload = DefaultResourceLoader.prototype.reload;
-  DefaultResourceLoader.prototype.reload = async () => {};
-  DefaultResourceLoader.prototype.getExtensions = () => ({
-    extensions: [
+  await withStubbedExtensionLoader(
+    [
       {
         path: ".pi/extensions/my-ext",
         resolvedPath,
-        sourceInfo: {
-          path: resolvedPath,
-          source: ".pi/extensions/my-ext",
-          scope: "project",
-          origin: "top-level",
-        },
-        handlers: new Map(),
-        tools: new Map(),
-        messageRenderers: new Map(),
-        commands: new Map(),
-        flags: new Map(),
-        shortcuts: new Map(),
+        source: ".pi/extensions/my-ext",
+        scope: "project",
+        origin: "top-level",
       },
     ],
-    errors: [],
-    runtime: {} as never,
-  });
-  try {
-    const resolved = await resolveAgentExtensionPaths(cwd, ["my-ext"]);
-    expect("resolvedPaths" in resolved).toBe(true);
-    if ("resolvedPaths" in resolved) {
-      expect(resolved.resolvedPaths).toEqual([resolvedPath]);
-    }
-  } finally {
-    DefaultResourceLoader.prototype.getExtensions = originalGetExtensions;
-    DefaultResourceLoader.prototype.reload = originalReload;
-    resetResolvedAgentExtensionPathsCache();
-  }
+    async () => {
+      const resolved = await resolveAgentExtensionPaths(cwd, ["my-ext"]);
+      expect("resolvedPaths" in resolved).toBe(true);
+      if ("resolvedPaths" in resolved) {
+        expect(resolved.resolvedPaths).toEqual([resolvedPath]);
+      }
+    },
+  );
 });
 
 test("resolveAgentExtensionPaths resolves home-relative short names to resolved paths", async () => {
@@ -1389,42 +1317,24 @@ test("resolveAgentExtensionPaths resolves home-relative short names to resolved 
   const agentDir = path.join(root, "agent");
   const extDir = path.join(agentDir, "extensions");
   const resolvedPath = path.join(extDir, "my-ext", "index.js");
-  const originalGetExtensions = DefaultResourceLoader.prototype.getExtensions;
-  const originalReload = DefaultResourceLoader.prototype.reload;
-  DefaultResourceLoader.prototype.reload = async () => {};
-  DefaultResourceLoader.prototype.getExtensions = () => ({
-    extensions: [
+  await withStubbedExtensionLoader(
+    [
       {
         path: path.join(extDir, "my-ext"),
         resolvedPath,
-        sourceInfo: {
-          path: resolvedPath,
-          source: path.join(extDir, "my-ext"),
-          scope: "user",
-          origin: "top-level",
-        },
-        handlers: new Map(),
-        tools: new Map(),
-        messageRenderers: new Map(),
-        commands: new Map(),
-        flags: new Map(),
-        shortcuts: new Map(),
+        source: path.join(extDir, "my-ext"),
+        scope: "user",
+        origin: "top-level",
       },
     ],
-    errors: [],
-    runtime: {} as never,
-  });
-  try {
-    const resolved = await resolveAgentExtensionPaths(cwd, ["my-ext"]);
-    expect("resolvedPaths" in resolved).toBe(true);
-    if ("resolvedPaths" in resolved) {
-      expect(resolved.resolvedPaths).toEqual([resolvedPath]);
-    }
-  } finally {
-    DefaultResourceLoader.prototype.getExtensions = originalGetExtensions;
-    DefaultResourceLoader.prototype.reload = originalReload;
-    resetResolvedAgentExtensionPathsCache();
-  }
+    async () => {
+      const resolved = await resolveAgentExtensionPaths(cwd, ["my-ext"]);
+      expect("resolvedPaths" in resolved).toBe(true);
+      if ("resolvedPaths" in resolved) {
+        expect(resolved.resolvedPaths).toEqual([resolvedPath]);
+      }
+    },
+  );
 });
 
 test("resolveAgentExtensionPaths resolves package-source local path short names to resolved paths", async () => {
@@ -1432,42 +1342,24 @@ test("resolveAgentExtensionPaths resolves package-source local path short names 
   const cwd = path.join(root, "work");
   await mkdir(cwd, { recursive: true });
   const resolvedPath = path.join(root, "my-ext", "index.js");
-  const originalGetExtensions = DefaultResourceLoader.prototype.getExtensions;
-  const originalReload = DefaultResourceLoader.prototype.reload;
-  DefaultResourceLoader.prototype.reload = async () => {};
-  DefaultResourceLoader.prototype.getExtensions = () => ({
-    extensions: [
+  await withStubbedExtensionLoader(
+    [
       {
         path: `file:${root}/my-ext`,
         resolvedPath,
-        sourceInfo: {
-          path: resolvedPath,
-          source: `file:${root}/my-ext`,
-          scope: "project",
-          origin: "package",
-        },
-        handlers: new Map(),
-        tools: new Map(),
-        messageRenderers: new Map(),
-        commands: new Map(),
-        flags: new Map(),
-        shortcuts: new Map(),
+        source: `file:${root}/my-ext`,
+        scope: "project",
+        origin: "package",
       },
     ],
-    errors: [],
-    runtime: {} as never,
-  });
-  try {
-    const resolved = await resolveAgentExtensionPaths(cwd, ["my-ext"]);
-    expect("resolvedPaths" in resolved).toBe(true);
-    if ("resolvedPaths" in resolved) {
-      expect(resolved.resolvedPaths).toEqual([resolvedPath]);
-    }
-  } finally {
-    DefaultResourceLoader.prototype.getExtensions = originalGetExtensions;
-    DefaultResourceLoader.prototype.reload = originalReload;
-    resetResolvedAgentExtensionPathsCache();
-  }
+    async () => {
+      const resolved = await resolveAgentExtensionPaths(cwd, ["my-ext"]);
+      expect("resolvedPaths" in resolved).toBe(true);
+      if ("resolvedPaths" in resolved) {
+        expect(resolved.resolvedPaths).toEqual([resolvedPath]);
+      }
+    },
+  );
 });
 
 test("resolveAgentExtensionPaths resolves npm scoped package with dist/index.* via parent directory basename", async () => {
@@ -1483,42 +1375,24 @@ test("resolveAgentExtensionPaths resolves npm scoped package with dist/index.* v
     "dist",
     "index.js",
   );
-  const originalGetExtensions = DefaultResourceLoader.prototype.getExtensions;
-  const originalReload = DefaultResourceLoader.prototype.reload;
-  DefaultResourceLoader.prototype.reload = async () => {};
-  DefaultResourceLoader.prototype.getExtensions = () => ({
-    extensions: [
+  await withStubbedExtensionLoader(
+    [
       {
         path: "npm:@scope/my-lib",
         resolvedPath,
-        sourceInfo: {
-          path: resolvedPath,
-          source: "npm:@scope/my-lib",
-          scope: "user",
-          origin: "package",
-        },
-        handlers: new Map(),
-        tools: new Map(),
-        messageRenderers: new Map(),
-        commands: new Map(),
-        flags: new Map(),
-        shortcuts: new Map(),
+        source: "npm:@scope/my-lib",
+        scope: "user",
+        origin: "package",
       },
     ],
-    errors: [],
-    runtime: {} as never,
-  });
-  try {
-    const resolved = await resolveAgentExtensionPaths(cwd, ["my-lib"]);
-    expect("resolvedPaths" in resolved).toBe(true);
-    if ("resolvedPaths" in resolved) {
-      expect(resolved.resolvedPaths).toEqual([resolvedPath]);
-    }
-  } finally {
-    DefaultResourceLoader.prototype.getExtensions = originalGetExtensions;
-    DefaultResourceLoader.prototype.reload = originalReload;
-    resetResolvedAgentExtensionPathsCache();
-  }
+    async () => {
+      const resolved = await resolveAgentExtensionPaths(cwd, ["my-lib"]);
+      expect("resolvedPaths" in resolved).toBe(true);
+      if ("resolvedPaths" in resolved) {
+        expect(resolved.resolvedPaths).toEqual([resolvedPath]);
+      }
+    },
+  );
 });
 
 test.each([
@@ -1551,42 +1425,26 @@ test.each([
   const cwd = path.join(root, "work");
   await mkdir(cwd, { recursive: true });
   const resolvedPath = path.join(cwd, ".pi", "extensions", row.fileName);
-  const originalGetExtensions = DefaultResourceLoader.prototype.getExtensions;
-  const originalReload = DefaultResourceLoader.prototype.reload;
-  DefaultResourceLoader.prototype.reload = async () => {};
-  DefaultResourceLoader.prototype.getExtensions = () => ({
-    extensions: [
+  await withStubbedExtensionLoader(
+    [
       {
         path: row.extensionPath,
         resolvedPath,
-        sourceInfo: {
-          path: resolvedPath,
-          source: row.source,
-          scope: "project",
-          origin: "top-level",
-        },
-        handlers: new Map(),
-        tools: new Map(),
-        messageRenderers: new Map(),
-        commands: new Map(),
-        flags: new Map(),
-        shortcuts: new Map(),
+        source: row.source,
+        scope: "project",
+        origin: "top-level",
       },
     ],
-    errors: [],
-    runtime: {} as never,
-  });
-  try {
-    const resolved = await resolveAgentExtensionPaths(cwd, [row.extensionName]);
-    expect("resolvedPaths" in resolved).toBe(true);
-    if ("resolvedPaths" in resolved) {
-      expect(resolved.resolvedPaths).toEqual([resolvedPath]);
-    }
-  } finally {
-    DefaultResourceLoader.prototype.getExtensions = originalGetExtensions;
-    DefaultResourceLoader.prototype.reload = originalReload;
-    resetResolvedAgentExtensionPathsCache();
-  }
+    async () => {
+      const resolved = await resolveAgentExtensionPaths(cwd, [
+        row.extensionName,
+      ]);
+      expect("resolvedPaths" in resolved).toBe(true);
+      if ("resolvedPaths" in resolved) {
+        expect(resolved.resolvedPaths).toEqual([resolvedPath]);
+      }
+    },
+  );
 });
 
 test("resolveAgentExtensionPaths resolves user single-file .js entry by file stem", async () => {
@@ -1596,42 +1454,24 @@ test("resolveAgentExtensionPaths resolves user single-file .js entry by file ste
   const agentDir = path.join(root, "agent");
   const extDir = path.join(agentDir, "extensions");
   const resolvedPath = path.join(extDir, "my-tool.js");
-  const originalGetExtensions = DefaultResourceLoader.prototype.getExtensions;
-  const originalReload = DefaultResourceLoader.prototype.reload;
-  DefaultResourceLoader.prototype.reload = async () => {};
-  DefaultResourceLoader.prototype.getExtensions = () => ({
-    extensions: [
+  await withStubbedExtensionLoader(
+    [
       {
         path: path.join(extDir, "my-tool.js"),
         resolvedPath,
-        sourceInfo: {
-          path: resolvedPath,
-          source: path.join(extDir, "my-tool.js"),
-          scope: "user",
-          origin: "top-level",
-        },
-        handlers: new Map(),
-        tools: new Map(),
-        messageRenderers: new Map(),
-        commands: new Map(),
-        flags: new Map(),
-        shortcuts: new Map(),
+        source: path.join(extDir, "my-tool.js"),
+        scope: "user",
+        origin: "top-level",
       },
     ],
-    errors: [],
-    runtime: {} as never,
-  });
-  try {
-    const resolved = await resolveAgentExtensionPaths(cwd, ["my-tool"]);
-    expect("resolvedPaths" in resolved).toBe(true);
-    if ("resolvedPaths" in resolved) {
-      expect(resolved.resolvedPaths).toEqual([resolvedPath]);
-    }
-  } finally {
-    DefaultResourceLoader.prototype.getExtensions = originalGetExtensions;
-    DefaultResourceLoader.prototype.reload = originalReload;
-    resetResolvedAgentExtensionPathsCache();
-  }
+    async () => {
+      const resolved = await resolveAgentExtensionPaths(cwd, ["my-tool"]);
+      expect("resolvedPaths" in resolved).toBe(true);
+      if ("resolvedPaths" in resolved) {
+        expect(resolved.resolvedPaths).toEqual([resolvedPath]);
+      }
+    },
+  );
 });
 
 test("resolveAgentExtensionPaths selects first-discovered path when version-pinned and non-pinned npm packages share terminal name", async () => {
@@ -2022,7 +1862,7 @@ test("resolveAgentExtensionPaths preserves request order with mixed single-file 
   }
 });
 
-describe("utils.ts coverage gaps", () => {
+describe("resolveAgentSkillArgs", () => {
   test("resolveAgentSkillArgs returns error for missing skills", async () => {
     const result = await resolveAgentSkillArgs("/tmp", ["nonexistent-skill"]);
     expect("error" in result).toBe(true);
@@ -2033,7 +1873,7 @@ describe("utils.ts coverage gaps", () => {
   });
 });
 
-describe("utils.ts coverage gaps", () => {
+describe("resolveAgentSkillArgs", () => {
   test("resolveAgentSkillArgs returns empty args for empty skill list", async () => {
     const result = await resolveAgentSkillArgs("/tmp", []);
     expect(result).toEqual({ args: [] });

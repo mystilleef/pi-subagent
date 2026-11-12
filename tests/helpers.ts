@@ -1,22 +1,25 @@
-import { afterEach, beforeEach, spyOn } from "bun:test";
-import * as fs from "node:fs";
-import * as fsPromises from "node:fs/promises";
-import { chmod, mkdtemp, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { afterEach, beforeEach, expect } from "bun:test";
+import { existsSync, type FSWatcher, watch } from "node:fs";
+import { chmod, writeFile } from "node:fs/promises";
 import path from "node:path";
 import type { AgentToolUpdateCallback } from "@earendil-works/pi-agent-core";
-import type { Api, Message, Model } from "@earendil-works/pi-ai";
 import type {
   AgentToolResult,
   ExtensionAPI,
   ExtensionCommandContext,
   ExtensionContext,
-  ThemeColor,
   ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
-import type { AgentConfig, ThinkingLevel } from "../src/agent/agents.js";
-import type { ModelRegistry } from "../src/child/model-resolution.js";
-import type { RuntimeResult } from "../src/child/result-builder.js";
+import type { AgentConfig } from "../src/agent/agents.js";
+import type {
+  ChildModelSettings,
+  ModelRegistry,
+} from "../src/child/model-resolution.js";
+import {
+  resetDefaultSleepInhibitorAcquirer,
+  runSingleAgent,
+  setDefaultSleepInhibitorAcquirer,
+} from "../src/child/process.js";
 import registerSubagentExtension, {
   resetAgentCache,
   type SubagentParams,
@@ -29,38 +32,77 @@ import {
   listRunJobs,
   resetRunRegistry,
 } from "../src/orchestration/run-registry.js";
+import { resetProgressStore } from "../src/progress/progress-state.js";
+import {
+  resetResolvedAgentExtensionPathsCache,
+  resetResolvedAgentSkillArgsCache,
+} from "../src/shared/resource-resolution.js";
 import type { SingleResult, SubagentDetails } from "../src/shared/types.js";
+import {
+  emitAgentEnd,
+  emitMessageEnd,
+  HANG_AGENT_MD,
+  hangAgent,
+  makeAssistantMessage,
+  makeTempDir as makeFixtureTempDir,
+  makeSubagentDetails,
+  registerFixturePidLog,
+  registryFixture,
+  setupFixtureHooks,
+  shellQuote,
+  withEnv,
+} from "./fixtures.js";
 
-const ORIGINAL_ARGV_1 = process.argv[1] ?? "";
+export {
+  assistantMessage,
+  captureStdout,
+  createDefaultFakeTheme,
+  denyFsAccess,
+  emitAgentEnd,
+  emitMessageEnd,
+  type FakeTheme,
+  type FixtureHooks,
+  flagValues,
+  hangAgent,
+  makeAssistantMessage,
+  makeBareCtx,
+  makeCommandContext,
+  makeMessageRenderOptions,
+  makeModelAgent,
+  makeRuntimeResult,
+  makeSingleResult,
+  makeSubagentDetails,
+  makeSubagentToolUpdateLine,
+  makeTempDir,
+  modelFixture,
+  registryFixture,
+  requestIdOf,
+  type SendMessageArg,
+  setupFixtureHooks,
+  shellQuote,
+  toolResultMessage,
+  unconfirmedWarning,
+  unsupportedWarning,
+  userMessage,
+  withEnv,
+  withMkdtempCapture,
+} from "./fixtures.js";
+
+import type { SendMessageArg } from "./fixtures.js";
+
 const ORIGINAL_PATH = process.env.PATH;
-const ORIGINAL_AGENT_DIR = process.env.PI_CODING_AGENT_DIR;
-const ORIGINAL_SUBAGENT_DEPTH = process.env.PI_SUBAGENT_DEPTH;
-const ORIGINAL_AGENT_END_GRACE_MS = process.env.PI_SUBAGENT_AGENT_END_GRACE_MS;
-const ORIGINAL_MAX_STDERR_BYTES = process.env.PI_SUBAGENT_MAX_STDERR_BYTES;
-const ORIGINAL_MAX_DEPTH = process.env.PI_SUBAGENT_MAX_DEPTH;
-const ORIGINAL_DEBUG_ENABLED = process.env.PI_SUBAGENT_DEBUG_ENABLED;
-const ORIGINAL_DESKTOP_NOTIFICATIONS =
-  process.env.PI_SUBAGENT_DESKTOP_NOTIFICATIONS;
-const ORIGINAL_NOTIFY_PER_JOB = process.env.PI_SUBAGENT_NOTIFY_PER_JOB;
 
-function restoreEnv(key: string, original: string | undefined): void {
-  if (original === undefined) delete process.env[key];
-  else process.env[key] = original;
-}
-
-let tempDirs: string[] = [];
-
-export type FakeTheme = {
-  fg: (color: ThemeColor | string, text: string) => string;
-  bg: (color: string, text: string) => string;
-  bold: (text: string) => string;
-  italic?: (text: string) => string;
-};
-
+/**
+ * Polls `predicate` until it holds, for registry state that carries no
+ * delivery event of its own. Every other wait synchronizes on the event or
+ * barrier that produces its state.
+ */
 export async function waitFor<T>(
   predicate: () => T | undefined | false,
   label: string,
 ): Promise<T> {
+  const immediate = predicate();
+  if (immediate) return immediate;
   const deadline = Date.now() + 2000;
   while (Date.now() < deadline) {
     const value = predicate();
@@ -84,126 +126,169 @@ export async function waitForRunJobsCleared() {
   );
 }
 
-export async function waitForSentMessage(sentMessages: SendMessageArg[]) {
-  await waitFor(() => sentMessages[0], "first sent message");
+const DELIVERY_WAIT_TIMEOUT_MS = 2000;
+
+type DeliveryWaiter = {
+  isSatisfied: () => boolean;
+  resolve: () => void;
+};
+
+/**
+ * Settles every pending wait whose delivery condition now holds. Each event
+ * source calls it as it delivers, so each wait resolves on the delivery
+ * instead of polling for it.
+ */
+function settleWaiters(waiters: Set<DeliveryWaiter>): void {
+  for (const waiter of [...waiters]) {
+    if (!waiter.isSatisfied()) continue;
+    waiters.delete(waiter);
+    waiter.resolve();
+  }
+}
+
+/**
+ * Resolves on the delivery whose push satisfies `isSatisfied`, including one
+ * that already holds. Never polls: `waiters` settles the wait. The bounded
+ * guard rejects with `label` when no delivery ever satisfies it.
+ */
+function awaitSatisfiedDelivery(
+  waiters: Set<DeliveryWaiter>,
+  isSatisfied: () => boolean,
+  label: string,
+): Promise<void> {
+  if (isSatisfied()) return Promise.resolve();
+  const pending = new Promise<void>((resolve, reject) => {
+    let timer: ReturnType<typeof setTimeout>;
+    const waiter: DeliveryWaiter = {
+      isSatisfied,
+      resolve: () => {
+        clearTimeout(timer);
+        resolve();
+      },
+    };
+    timer = setTimeout(() => {
+      waiters.delete(waiter);
+      reject(new Error(`Timed out waiting for ${label}`));
+    }, DELIVERY_WAIT_TIMEOUT_MS);
+    waiters.add(waiter);
+  });
+  // A wait abandoned at case teardown must not surface as an unhandled
+  // rejection; an awaited wait still observes the timeout error.
+  pending.catch(() => {});
+  return pending;
+}
+
+const sentMessageWaiters = new Set<DeliveryWaiter>();
+
+export async function waitForSentMessage(
+  sentMessages: SendMessageArg[],
+): Promise<void> {
+  await awaitSatisfiedDelivery(
+    sentMessageWaiters,
+    () => sentMessages.length > 0,
+    "first sent message",
+  );
 }
 
 export async function waitForSentMessageCount(
   sentMessages: SendMessageArg[],
   count: number,
-) {
-  await waitFor(
-    () => sentMessages.length >= count || undefined,
+): Promise<void> {
+  await awaitSatisfiedDelivery(
+    sentMessageWaiters,
+    () => sentMessages.length >= count,
     `${count} sent message(s)`,
   );
 }
 
-export async function makeTempDir(prefix: string): Promise<string> {
-  const dir = await mkdtemp(path.join(tmpdir(), prefix));
-  tempDirs.push(dir);
-  return dir;
+/**
+ * Resolves once `target` exists, driven by watch events on its parent directory
+ * rather than by polling. The bounded guard rejects with `label` when it never
+ * appears.
+ */
+export async function waitForPath(
+  target: string,
+  label: string,
+): Promise<void> {
+  if (existsSync(target)) return;
+  const directory = path.dirname(target);
+  const pending = new Promise<void>((resolve, reject) => {
+    let timer: ReturnType<typeof setTimeout>;
+    let watcher: FSWatcher;
+    const finish = () => {
+      clearTimeout(timer);
+      watcher.close();
+    };
+    watcher = watch(directory, () => {
+      if (!existsSync(target)) return;
+      finish();
+      resolve();
+    });
+    watcher.on("error", (error) => {
+      finish();
+      reject(error);
+    });
+    timer = setTimeout(() => {
+      finish();
+      reject(new Error(`Timed out waiting for ${label}`));
+    }, DELIVERY_WAIT_TIMEOUT_MS);
+    // The target may appear between the initial check and the first event.
+    if (existsSync(target)) {
+      finish();
+      resolve();
+    }
+  });
+  pending.catch(() => {});
+  return pending;
 }
 
-/** Default fixture agent markdown shared by discovery and fake-pi fixtures. */
-const HANG_AGENT_MD = `---
-name: hang
-description: Test agent
-thinking: off
----
-Test agent prompt.
-`;
+export type ProgressRenderBarrier = {
+  /** Extension context that settles every progress wait its renders satisfy. */
+  ctx: ExtensionContext;
+  /**
+   * Resolves on the progress render that satisfies `isSatisfied`, including one
+   * that already holds. Progress state is patched before the render request, so
+   * a settled wait observes the patched state and never polls.
+   */
+  when: (isSatisfied: () => boolean, label: string) => Promise<void>;
+};
 
 /**
- * Discovery-only fixture: cleanup-registered home with `agents/` and working
- * directories plus the default fixture agent, and no fake `pi` executable.
+ * Event-driven progress barrier for a tool run: the orchestrator requests a
+ * progress render after every patch, including patches it does not forward as
+ * host updates, so each render settles the waits it satisfies.
  */
-export async function makeAgentHome(): Promise<{
-  agentDir: string;
-  cwd: string;
-}> {
-  const root = await makeTempDir("pi-subagent-test-");
-  const agentDir = path.join(root, "agent");
-  const agentsDir = path.join(agentDir, "agents");
-  const cwd = path.join(root, "work");
-  await Bun.$`mkdir -p ${agentsDir} ${cwd}`;
-  await writeFile(path.join(agentsDir, "hang.md"), HANG_AGENT_MD);
-  process.env.PI_CODING_AGENT_DIR = agentDir;
-  resetAgentCache();
-  return { agentDir, cwd };
-}
-
-function eaccesError(syscall: string, target: string): NodeJS.ErrnoException {
-  const error: NodeJS.ErrnoException = new Error(
-    `EACCES: permission denied, ${syscall} '${target}'`,
-  );
-  error.code = "EACCES";
-  error.syscall = syscall;
-  error.path = target;
-  return error;
-}
-
-function isInside(target: unknown, root: string): boolean {
-  return (
-    typeof target === "string" &&
-    path.resolve(target).startsWith(`${path.resolve(root)}${path.sep}`)
-  );
-}
-
-function isAtOrInside(target: unknown, root: string): boolean {
-  return (
-    (typeof target === "string" &&
-      path.resolve(target) === path.resolve(root)) ||
-    isInside(target, root)
-  );
-}
-
-/**
- * Simulates `chmod 0o000` on `root` by failing `fs/promises` reads with
- * `EACCES`. Root ignores mode bits, so real `chmod` cannot exercise
- * permission paths in containers that run tests as root.
- */
-export function denyFsAccess(root: string): { restore: () => void } {
-  const { readFile, readdir, stat } = fsPromises;
-  const spies = [
-    spyOn(fsPromises, "readFile").mockImplementation(((
-      ...args: Parameters<typeof readFile>
-    ) =>
-      isAtOrInside(args[0], root)
-        ? Promise.reject(eaccesError("open", String(args[0])))
-        : readFile(...args)) as typeof readFile),
-    spyOn(fsPromises, "readdir").mockImplementation(((
-      ...args: Parameters<typeof readdir>
-    ) =>
-      isAtOrInside(args[0], root)
-        ? Promise.reject(eaccesError("scandir", String(args[0])))
-        : readdir(...args)) as typeof readdir),
-    spyOn(fsPromises, "stat").mockImplementation(((
-      ...args: Parameters<typeof stat>
-    ) =>
-      isInside(args[0], root)
-        ? Promise.reject(eaccesError("stat", String(args[0])))
-        : stat(...args)) as typeof stat),
-  ];
+export function progressRenderBarrier(
+  ctx: ExtensionContext,
+): ProgressRenderBarrier {
+  const waiters = new Set<DeliveryWaiter>();
+  const setStatus = ctx.ui?.setStatus;
   return {
-    restore: () => {
-      for (const spy of spies) spy.mockRestore();
-    },
+    ctx: {
+      ...ctx,
+      ui: {
+        ...ctx.ui,
+        setStatus: (key, status) => {
+          settleWaiters(waiters);
+          setStatus?.(key, status);
+        },
+      },
+    } as ExtensionContext,
+    when: (isSatisfied, label) =>
+      awaitSatisfiedDelivery(waiters, isSatisfied, label),
   };
-}
-
-export function shellQuote(value: string): string {
-  return `'${value.replaceAll("'", "'\\''")}'`;
 }
 
 /**
  * Shell fragment for fake `pi` scripts: captures child argv null-delimited into
  * `args.txt` so multi-line `--append-system-prompt` values (such as the literal
  * result contract) survive as single argv elements, and resolves file-path
- * append values into `prompt.txt`. Literal contract text is not a file path, so
- * the file check safely skips it — proving fake `pi` never treats the contract
- * as a file.
+ * append values into `prompt.txt`. Emits one delimiter per argument, so zero
+ * arguments capture as an empty file and an empty argument as a lone delimiter.
+ * Literal contract text is not a file path, so the file check safely skips it —
+ * proving fake `pi` never treats the contract as a file.
  */
-export const CAPTURE_PI_ARGS_SH = `printf '%s\\0' "$@" > args.txt
+export const CAPTURE_PI_ARGS_SH = `for arg in "$@"; do printf '%s\\0' "$arg"; done > args.txt
 while [ "$#" -gt 0 ]; do
   if [ "$1" = "--append-system-prompt" ] || [ "$1" = "--system-prompt" ]; then
     shift
@@ -213,20 +298,22 @@ while [ "$#" -gt 0 ]; do
 done`;
 
 /**
- * A complete fake-pi shell script that captures argv, emits a `message_end`
- * with "done" text, then emits an empty `agent_end` and exits 0.
- * Common pattern used by multiple test files for arg-capture tests.
+ * A complete fake-pi shell script that captures argv null-delimited, emits a
+ * `message_end` with "done" text, then emits an empty `agent_end` and exits 0.
+ * Shared null-delimited format preserves multiline prompts and argument
+ * boundaries across process and tool consumers.
  */
 export const CAPTURE_ARGS_PI_SCRIPT = `#!/bin/sh
-printf '%s\n' "$@" > args.txt
-printf '%s\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"done"}],"api":"fake","provider":"fake","model":"fake","usage":{"input":1,"output":1,"cacheRead":0,"cacheWrite":0,"totalTokens":2,"cost":{"total":0}},"stopReason":"stop","timestamp":0}}'
-printf '%s\n' '{"type":"agent_end","messages":[]}'
+${CAPTURE_PI_ARGS_SH}
+${emitMessageEnd(makeAssistantMessage("done"))}
+${emitAgentEnd([])}
 exit 0
 `;
 
 /**
  * Reads null-delimited argv captured by `CAPTURE_PI_ARGS_SH` into a `string[]`,
- * dropping the trailing empty element produced by the final delimiter.
+ * dropping the trailing empty element produced by the final delimiter; an empty
+ * capture decodes as zero arguments.
  */
 export async function readCapturedArgs(
   cwd: string,
@@ -238,127 +325,52 @@ export async function readCapturedArgs(
   return argv;
 }
 
-export function makeSubagentToolUpdateLine(
-  preview: string,
-  instanceName?: string,
-  toolName = "subagent",
-): string {
-  const result: Record<string, unknown> = {
-    progress: {
-      toolCalls: [],
-      lastToolPreview: preview,
-      activityText: preview,
-      activeToolActivity: { toolName: "tool", inputSummary: preview },
-    },
-  };
-  if (instanceName !== undefined) result["instanceName"] = instanceName;
-  return JSON.stringify({
-    type: "tool_execution_update",
-    toolName,
-    partialResult: {
-      content: [{ type: "text", text: preview }],
-      details: { results: [result] },
-    },
-  });
-}
-
-/**
- * Builds a minimal assistant message object for fake-pi JSON emission.
- * Merges overrides on top of sensible defaults (fake provider/model/usage).
- */
-export function makeAssistantMessage(
-  text: string,
-  overrides: Record<string, unknown> = {},
-): Record<string, unknown> {
-  return {
-    role: "assistant",
-    content: [{ type: "text", text }],
-    api: "fake",
-    provider: "fake",
-    model: "fake",
-    usage: {
-      input: 1,
-      output: 1,
-      cacheRead: 0,
-      cacheWrite: 0,
-      totalTokens: 2,
-      cost: { total: 0 },
-    },
-    stopReason: "stop",
-    timestamp: 0,
-    ...overrides,
-  };
-}
-
-/** Build a minimal assistant message with given content items. */
-export function assistantMessage(content: unknown[]): Message {
-  return {
-    role: "assistant",
-    content: content as Message extends { role: "assistant" }
-      ? Message["content"]
-      : never,
-    api: "anthropic-messages",
-    provider: "anthropic",
-    model: "claude-3-5-sonnet-latest",
-    usage: {
-      input: 0,
-      output: 0,
-      cacheRead: 0,
-      cacheWrite: 0,
-      totalTokens: 0,
-      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
-    },
-    stopReason: "stop",
-    timestamp: Date.now(),
-  } as unknown as Message;
-}
-
-/** Build a minimal user message with empty content. */
-export function userMessage(): Message {
-  return {
-    role: "user",
-    content: [],
-    timestamp: Date.now(),
-  } as unknown as Message;
-}
-
-/** Build a minimal tool-result message for the fixed `tc1` tool call. */
-export function toolResultMessage(isError = false): Message {
-  return {
-    role: "toolResult",
-    toolCallId: "tc1",
-    toolName: "test",
-    content: [],
-    isError,
-    timestamp: Date.now(),
-  } as unknown as Message;
-}
-
-/**
- * Shell fragment that emits a `message_end` JSON event line from a message object.
- */
-export function emitMessageEnd(message: Record<string, unknown>): string {
-  return `printf '%s\\n' ${shellQuote(JSON.stringify({ type: "message_end", message }))}`;
-}
-
-/**
- * Shell fragment that emits an `agent_end` JSON event line with the given messages.
- */
-export function emitAgentEnd(messages: Record<string, unknown>[]): string {
-  return `printf '%s\\n' ${shellQuote(JSON.stringify({ type: "agent_end", messages }))}`;
-}
-
 /**
  * Writes a fake `pi` executable into `binDir` and marks it mode `0o755`.
  * Overwriting keeps the executable mode, so callers may reinstall scripts.
+ * Every script first logs its own PID, so fixture teardown terminates the
+ * process group it leads even when a case fails before cancelling its run.
  */
 export async function installFakePi(
   binDir: string,
   script: string,
 ): Promise<void> {
   const piPath = path.join(binDir, "pi");
-  await writeFile(piPath, script);
+  const pidLog = path.join(binDir, "fake-pi-pids");
+  registerFixturePidLog(pidLog);
+  await writeFile(piPath, withPidRegistration(script, pidLog));
   await chmod(piPath, 0o755);
+}
+
+/**
+ * Inserts PID registration after a fake `pi` script's shebang, so the kernel
+ * still execs the script directly and the logged PID leads its own process
+ * group. A script without a shebang keeps the registration on line one.
+ */
+function withPidRegistration(script: string, pidLog: string): string {
+  const registration = `printf '%s\\n' "$$" >> ${shellQuote(pidLog)}\n`;
+  const shebangEnd = script.startsWith("#!") ? script.indexOf("\n") : -1;
+  if (shebangEnd === -1) return `${registration}${script}`;
+  return `${script.slice(0, shebangEnd + 1)}${registration}${script.slice(shebangEnd + 1)}`;
+}
+
+/**
+ * Discovery-only fixture: cleanup-registered home with `agents/` and working
+ * directories plus the default fixture agent, and no fake `pi` executable.
+ */
+export async function makeAgentHome(): Promise<{
+  agentDir: string;
+  cwd: string;
+}> {
+  const root = await makeFixtureTempDir("pi-subagent-test-");
+  const agentDir = path.join(root, "agent");
+  const agentsDir = path.join(agentDir, "agents");
+  const cwd = path.join(root, "work");
+  await Bun.$`mkdir -p ${agentsDir} ${cwd}`;
+  await writeFile(path.join(agentsDir, "hang.md"), HANG_AGENT_MD);
+  process.env.PI_CODING_AGENT_DIR = agentDir;
+  resetAgentCache();
+  return { agentDir, cwd };
 }
 
 export async function setupFakePi(): Promise<{
@@ -366,7 +378,7 @@ export async function setupFakePi(): Promise<{
   cwd: string;
   binDir: string;
 }> {
-  const root = await makeTempDir("pi-subagent-test-");
+  const root = await makeFixtureTempDir("pi-subagent-test-");
   const agentDir = path.join(root, "agent");
   const agentsDir = path.join(agentDir, "agents");
   const binDir = path.join(root, "bin");
@@ -391,21 +403,6 @@ exit 0
   return { agentDir, cwd, binDir };
 }
 
-export type SendMessageArg = Parameters<ExtensionAPI["sendMessage"]>[0];
-
-/**
- * Returns the first sent message's `details.requestId`, throwing when the
- * message, its details, or the request id is absent.
- */
-export function requestIdOf(sentMessages: SendMessageArg[]): string {
-  const details = sentMessages[0]?.details as
-    | { requestId?: string }
-    | undefined;
-  const requestId = details?.requestId;
-  if (!requestId) throw new Error("requestId missing");
-  return requestId;
-}
-
 export async function setupTest(overrides?: {
   sendMessage?: (msg: SendMessageArg) => void;
   piScript?: string;
@@ -420,6 +417,70 @@ export async function setupTest(overrides?: {
       : undefined,
   );
   return { binDir, cwd, agentDir, tool };
+}
+
+export type AgentEndTimeoutScenario = {
+  result: SingleResult;
+  releases: number;
+  elapsedMs: number;
+};
+
+/**
+ * One spawn per distinct agent-end-timeout child behavior: the
+ * inhibitor-release and explicit-grace cases share this byte-identical
+ * fake-child run so the behavior spawns exactly once per layer. Each
+ * caller creates its own runner, preserving per-file scheduling
+ * independence and one spawn per owning file.
+ */
+export function createAgentEndTimeoutScenarioRunner(): () => Promise<AgentEndTimeoutScenario> {
+  let sharedAgentEndTimeoutScenario:
+    | Promise<AgentEndTimeoutScenario>
+    | undefined;
+  const runAgentEndTimeoutScenario = (): Promise<AgentEndTimeoutScenario> => {
+    sharedAgentEndTimeoutScenario ??= (async () => {
+      const scenario = await withEnv(
+        { PI_SUBAGENT_AGENT_END_GRACE_MS: "25" },
+        async () => {
+          let releases = 0;
+          const { cwd } = await setupTest({
+            piScript: `#!/bin/sh
+trap 'exit 0' TERM
+printf '%s\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"done"}],"api":"fake","provider":"fake","model":"fake","usage":{"input":1,"output":1,"cacheRead":0,"cacheWrite":0,"totalTokens":2,"cost":{"total":0}},"stopReason":"stop","timestamp":0}}'
+printf '%s\n' '{"type":"agent_end","messages":[]}'
+sleep 10 &
+wait $!
+`,
+          });
+          const startedAt = Date.now();
+          const { result } = await runSingleAgent(
+            cwd,
+            [hangAgent],
+            "hang",
+            "task",
+            undefined,
+            undefined,
+            makeSubagentDetails,
+            undefined,
+            "off",
+            false,
+            {
+              async acquireSleepInhibitor() {
+                return {
+                  async release() {
+                    releases += 1;
+                  },
+                };
+              },
+            },
+          );
+          return { result, releases, elapsedMs: Date.now() - startedAt };
+        },
+      );
+      return scenario;
+    })();
+    return sharedAgentEndTimeoutScenario;
+  };
+  return runAgentEndTimeoutScenario;
 }
 
 type RegisteredTool = Parameters<ExtensionAPI["registerTool"]>[0];
@@ -463,15 +524,6 @@ export type RegisteredMessageRenderer = Parameters<
   ExtensionAPI["registerMessageRenderer"]
 >[1];
 
-/** Collapsed render options with keybinding hints that echo their inputs. */
-export function makeMessageRenderOptions(): Parameters<RegisteredMessageRenderer>[1] {
-  return {
-    expanded: false,
-    outputPad: 2,
-    keyText: (keybinding) => keybinding,
-    keyHint: (keybinding, description) => `${keybinding} ${description}`,
-  };
-}
 export type RegisteredEventHandler = (
   event: unknown,
   ctx: ExtensionContext,
@@ -489,7 +541,7 @@ export async function emitSessionStart(
     []) {
     await handler({ type: "session_start", reason: "startup" }, {
       cwd,
-    } as ExtensionCommandContext);
+    } as unknown as ExtensionCommandContext);
   }
 }
 
@@ -526,7 +578,10 @@ export function getSubagentTool(overrides?: {
     registerMessageRenderer(name: string, renderer: RegisteredMessageRenderer) {
       registeredMessageRenderers.set(name, renderer);
     },
-    sendMessage: overrides?.sendMessage ?? (() => {}),
+    sendMessage: (message: SendMessageArg) => {
+      overrides?.sendMessage?.(message);
+      settleWaiters(sentMessageWaiters);
+    },
   } as unknown as ExtensionAPI;
   registerSubagentExtension(fakePi);
   if (!registeredTool) throw new Error("subagent tool was not registered");
@@ -537,304 +592,100 @@ export function getSubagentTool(overrides?: {
   });
 }
 
-export function flagValues(args: string[], flag: string): string[] {
-  return args.flatMap((arg, index) =>
-    arg === flag ? [args[index + 1] ?? ""] : [],
-  );
-}
-
-export async function withMkdtempCapture<T>(
-  callback: (getTmpDir: () => string | undefined) => T | Promise<T>,
-): Promise<T> {
-  const originalMkdtemp = fs.promises.mkdtemp;
-  let tmpDir: string | undefined;
-  Object.defineProperty(fs.promises, "mkdtemp", {
-    configurable: true,
-    value: async (...args: unknown[]) => {
-      const dir = Reflect.apply(
-        originalMkdtemp,
-        fs.promises,
-        args,
-      ) as Promise<string>;
-      tmpDir = await dir;
-      return tmpDir;
-    },
-  });
-  try {
-    return await callback(() => tmpDir);
-  } finally {
-    Object.defineProperty(fs.promises, "mkdtemp", {
-      value: originalMkdtemp,
-      writable: true,
-      enumerable: true,
-      configurable: true,
-    });
-  }
-}
-
-export function captureStdout<T>(
-  ttyMode: boolean,
-  callback: (writeCalls: string[]) => T | Promise<T>,
-): T | Promise<T> {
-  const writeCalls: string[] = [];
-  const origWrite = process.stdout.write;
-  const origIsTTY = Object.getOwnPropertyDescriptor(process.stdout, "isTTY");
-  Object.defineProperty(process.stdout, "isTTY", {
-    value: ttyMode,
-    configurable: true,
-  });
-  (process.stdout as unknown as { write: (s: string) => boolean }).write = (
-    s: string,
-  ) => {
-    writeCalls.push(s);
-    return true;
-  };
-  const restore = () => {
-    process.stdout.write = origWrite;
-    if (origIsTTY) {
-      Object.defineProperty(process.stdout, "isTTY", origIsTTY);
-    } else {
-      delete (process.stdout as unknown as { isTTY?: boolean }).isTTY;
-    }
-  };
-  const result = callback(writeCalls);
-  if (result instanceof Promise) {
-    return result.finally(restore) as T;
-  }
-  restore();
-  return result;
-}
-
-export function withEnv<T>(
-  vars: Record<string, string | undefined>,
-  callback: () => T | Promise<T>,
-): T | Promise<T> {
-  const originals = new Map<string, string | undefined>();
-  for (const key of Object.keys(vars)) {
-    originals.set(key, process.env[key]);
-  }
-  const restore = () => {
-    for (const [key, value] of originals) {
-      if (value === undefined) delete process.env[key];
-      else process.env[key] = value;
-    }
-  };
-  for (const [key, value] of Object.entries(vars)) {
-    if (value === undefined) delete process.env[key];
-    else process.env[key] = value;
-  }
-  const result = callback();
-  if (result instanceof Promise) {
-    return result.finally(restore) as T;
-  }
-  restore();
-  return result;
-}
-
-export function makeSingleResult(
-  overrides: Partial<SingleResult> = {},
-): SingleResult {
-  return {
-    agent: "test-agent",
-    agentSource: "project",
-    task: "test task",
-    exitCode: 0,
-    finalOutput: "",
-    stderr: "",
-    usage: {
-      input: 0,
-      output: 0,
-      cacheRead: 0,
-      cacheWrite: 0,
-      cost: 0,
-      contextTokens: 0,
-      turns: 0,
-    },
-    ...overrides,
-  };
-}
-
-/**
- * Builds a `RuntimeResult` fixture on `makeSingleResult` defaults with
- * `messages` defaulting to empty; explicit overrides win over every default.
- */
-export function makeRuntimeResult(
-  overrides: Partial<RuntimeResult> = {},
-): RuntimeResult {
-  const base = makeSingleResult(overrides as Partial<SingleResult>);
-  if (!("messages" in base)) {
-    (base as RuntimeResult).messages = [];
-  }
-  return base as RuntimeResult;
-}
-
-/**
- * Creates a minimal Model fixture with sensible defaults.
- * Merge fields override defaults; `id` and `provider` are required.
- */
-export function modelFixture(
-  fields: Partial<Model<Api>> & { id: string; provider: string },
-): Model<Api> {
-  return {
-    api: "openai-responses",
-    name: fields.id,
-    baseUrl: "https://api.example.com",
-    reasoning: true,
-    input: ["text"],
-    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-    contextWindow: 128_000,
-    maxTokens: 4096,
-    ...fields,
-  };
-}
-
-/**
- * Creates a ModelRegistry backed by the given model list.
- * Lookup matches on both `provider` and `id`.
- */
-export function registryFixture(models: Model<Api>[]): ModelRegistry {
-  return {
-    find: (provider, modelId) =>
-      models.find((m) => m.provider === provider && m.id === modelId),
-  };
-}
-
-/**
- * Builds the canonical unsupported-thinking-level warning string.
- * Mirrors the production format from `model-resolution.ts`.
- */
-export function unsupportedWarning(
-  requested: ThinkingLevel,
-  effective: ThinkingLevel,
-  provider?: string,
-  modelId?: string,
-): string {
-  const providerLabel = provider ?? "unknown";
-  const modelLabel = modelId ?? "unknown";
-  return `Thinking level "${requested}" is not supported; using "${effective}" instead (provider: ${providerLabel}, model: ${modelLabel})`;
-}
-
-/**
- * Builds the canonical unconfirmed-thinking-level warning string.
- * Mirrors the production format from `model-resolution.ts`.
- */
-export function unconfirmedWarning(
-  requested: ThinkingLevel,
-  provider?: string,
-  modelId?: string,
-): string {
-  const providerLabel = provider ?? "unknown";
-  const modelLabel = modelId ?? "unknown";
-  return `Thinking level "${requested}" support could not be confirmed; requesting as-is (provider: ${providerLabel}, model: ${modelLabel})`;
-}
-
-export function setupHooks() {
-  beforeEach(() => {
-    tempDirs = [];
-    resetRunRegistry();
-    resetAgentCache();
-    process.env.PI_SUBAGENT_DEPTH = "0";
-    process.env.PI_SUBAGENT_DESKTOP_NOTIFICATIONS = "0";
-    delete process.env.PI_SUBAGENT_DEBUG_ENABLED;
-  });
-  afterEach(async () => {
-    process.argv[1] = ORIGINAL_ARGV_1;
-    restoreEnv("PATH", ORIGINAL_PATH);
-    restoreEnv("PI_CODING_AGENT_DIR", ORIGINAL_AGENT_DIR);
-    restoreEnv("PI_SUBAGENT_DEPTH", ORIGINAL_SUBAGENT_DEPTH);
-    restoreEnv("PI_SUBAGENT_AGENT_END_GRACE_MS", ORIGINAL_AGENT_END_GRACE_MS);
-    restoreEnv("PI_SUBAGENT_MAX_STDERR_BYTES", ORIGINAL_MAX_STDERR_BYTES);
-    restoreEnv("PI_SUBAGENT_MAX_DEPTH", ORIGINAL_MAX_DEPTH);
-    restoreEnv("PI_SUBAGENT_DEBUG_ENABLED", ORIGINAL_DEBUG_ENABLED);
-    restoreEnv(
-      "PI_SUBAGENT_DESKTOP_NOTIFICATIONS",
-      ORIGINAL_DESKTOP_NOTIFICATIONS,
-    );
-    restoreEnv("PI_SUBAGENT_NOTIFY_PER_JOB", ORIGINAL_NOTIFY_PER_JOB);
-    resetNotifySendCache();
-    resetDefaultDeliveryDeps();
-    await Promise.all(
-      tempDirs.map((dir) => rm(dir, { recursive: true, force: true })),
-    );
-  });
-}
-
-export const hangAgent: AgentConfig = {
-  name: "hang",
-  description: "Test agent",
-  thinking: "off",
-  systemPrompt: "Test agent prompt.",
-  source: "user",
-  filePath: "hang.md",
+export type TestHooks = {
+  /**
+   * Removes registered fixtures and restores shared globals; registered as
+   * `afterEach`, and callable directly to verify cleanup in isolation.
+   */
+  teardown: () => Promise<void>;
 };
 
-export function makeModelAgent(overrides: Partial<AgentConfig>): AgentConfig {
-  return { ...hangAgent, ...overrides };
+/** Module state the tool and child layers mutate through the extension. */
+function resetHarnessState(): void {
+  resetAgentCache();
+  resetResolvedAgentSkillArgsCache();
+  resetResolvedAgentExtensionPathsCache();
+  resetNotifySendCache();
+  resetDefaultDeliveryDeps();
+  resetRunRegistry();
+  resetProgressStore();
 }
 
-export const makeSubagentDetails = (
-  results: SubagentDetails["results"],
-): SubagentDetails => ({
-  mode: "single",
-  agentScope: "both",
-  projectAgentsDir: null,
-  results,
-});
-
-export function createDefaultFakeTheme(): FakeTheme {
+async function noopSleepInhibitorAcquirer(): Promise<{
+  release: () => Promise<void>;
+}> {
   return {
-    fg: (color, text) => `[${color}]${text}[/${color}]`,
-    bg: (color, text) => `[${color}]${text}[/${color}]`,
-    bold: (text) => `*${text}*`,
+    async release() {},
   };
 }
 
-function createCommandFakeTheme(): FakeTheme {
+function installNoopSleepInhibitor(): void {
+  setDefaultSleepInhibitorAcquirer(noopSleepInhibitorAcquirer);
+}
+
+/**
+ * Fixture hooks plus harness state resets and a no-op default sleep
+ * inhibitor, so no case spawns a host power-manager helper. The returned
+ * teardown performs the same cleanup for direct verification.
+ */
+export function setupHooks(): TestHooks {
+  const fixtureHooks = setupFixtureHooks(resetHarnessState);
+  beforeEach(installNoopSleepInhibitor);
+  afterEach(resetDefaultSleepInhibitorAcquirer);
   return {
-    fg: (color, text) => `<fg:${color}>${text}</fg:${color}>`,
-    bg: (color, text) => `<bg:${color}>${text}</bg:${color}>`,
-    bold: (text) => `<b>${text}</b>`,
-    italic: (text) => `<i>${text}</i>`,
+    teardown: async () => {
+      resetDefaultSleepInhibitorAcquirer();
+      await fixtureHooks.teardown();
+    },
+  };
+}
+
+export type CapturableParentModel = ChildModelSettings | undefined;
+
+/**
+ * Runs a single agent under the null-delimited capture script and returns
+ * exact argv plus the result; null delimiters keep multi-line prompt values
+ * intact as single arguments.
+ */
+export async function runCapturedModelAgent(
+  agent: AgentConfig,
+  parentModel?: CapturableParentModel,
+  parentThinking?: AgentConfig["thinking"],
+  options?: { registry?: ModelRegistry },
+): Promise<{ args: string[]; result: SingleResult }> {
+  const { cwd } = await setupTest({
+    piScript: CAPTURE_ARGS_PI_SCRIPT,
+  });
+  const { result } = await runSingleAgent(
+    cwd,
+    [agent],
+    agent.name,
+    "task",
+    undefined,
+    undefined,
+    makeSubagentDetails,
+    parentModel,
+    parentThinking ?? "off",
+    false,
+    options?.registry !== undefined
+      ? { registry: options.registry }
+      : undefined,
+  );
+  expect(result.exitCode).toBe(0);
+  return {
+    args: await readCapturedArgs(cwd),
+    result,
   };
 }
 
 /**
- * Builds a minimal ExtensionContext with `hasUI: false` for the given cwd.
- * Replaces the repeated `{ cwd, hasUI: false } as unknown as ExtensionContext`
- * cast scattered across test files. Includes an empty model registry so
- * agents with an explicit provider/model don't trip the real
- * "Live model registry unavailable" console.warn diagnostic.
+ * Shared argv-only capture: delegates to `runCapturedModelAgent` with the
+ * standard `off` thinking level and returns exact argv.
  */
-export function makeBareCtx(cwd: string): ExtensionContext {
-  return {
-    cwd,
-    hasUI: false,
-    modelRegistry: registryFixture([]),
-  } as unknown as ExtensionContext;
-}
-
-export function makeCommandContext(
-  notify: (msg: string) => void,
-  renderWidth = 80,
-): ExtensionCommandContext {
-  const theme = createCommandFakeTheme();
-  return {
-    cwd: "/tmp",
-    ui: {
-      notify,
-      custom: async (factory) => {
-        let result = "";
-        const component = await factory(
-          undefined as never,
-          theme as never,
-          undefined as never,
-          (value) => {
-            result = value as string;
-          },
-        );
-        component.render(renderWidth);
-        return result;
-      },
-    } as ExtensionCommandContext["ui"],
-  } as ExtensionCommandContext;
+export async function captureRunSingleAgentArgs(
+  agent: AgentConfig,
+  parentModel?: CapturableParentModel,
+  options: { registry?: ModelRegistry } = { registry: registryFixture([]) },
+): Promise<string[]> {
+  return (await runCapturedModelAgent(agent, parentModel, "off", options)).args;
 }

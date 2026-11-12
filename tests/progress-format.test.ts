@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, jest, test } from "bun:test";
 import { formatElapsed, formatHeaderStats } from "../src/progress/progress.js";
 import {
   formatContextPercent,
@@ -173,7 +173,8 @@ test("format header stats pluralizes zero singular and plural tool counts", () =
 });
 
 test("format header stats handles zero usage and context fallbacks", () => {
-  withDateNow(4000, () => {
+  jest.setSystemTime(4000);
+  try {
     const base = {
       requestId: "req-1",
       agent: "agent-a",
@@ -208,31 +209,9 @@ test("format header stats handles zero usage and context fallbacks", () => {
         contextWindowTokens: Number.POSITIVE_INFINITY,
       }),
     ).toBe("0 tools · --% ctx · 3.0s");
-  });
-});
-
-test("withDateNow restores captured Date.now reference after normal return", () => {
-  const previousNow = Date.now;
-  withDateNow(4000, () => {
-    expect(Date.now()).toBe(4000);
-  });
-  expect(Date.now).toBe(previousNow);
-});
-
-test("withDateNow restores captured Date.now reference when the scope throws deliberately", () => {
-  const previousNow = Date.now;
-  const deliberate = new Error("deliberate clock-scope throw");
-  let caught: unknown;
-  try {
-    withDateNow(4000, () => {
-      expect(Date.now()).toBe(4000);
-      throw deliberate;
-    });
-  } catch (error) {
-    caught = error;
+  } finally {
+    jest.useRealTimers();
   }
-  expect(caught).toBe(deliberate);
-  expect(Date.now).toBe(previousNow);
 });
 
 test("renderToolActivity returns undefined for undefined activity", () => {
@@ -544,13 +523,3 @@ test("renderToolActivity depth-2 retains truncation for stored previews", () => 
     expect(result).toContain(" - ");
   }
 });
-
-function withDateNow<T>(now: number, run: () => T): T {
-  const previousNow = Date.now;
-  Date.now = () => now;
-  try {
-    return run();
-  } finally {
-    Date.now = previousNow;
-  }
-}

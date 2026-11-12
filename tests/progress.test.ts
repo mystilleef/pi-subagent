@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, jest, test } from "bun:test";
 import type { ThemeColor } from "@earendil-works/pi-coding-agent";
 import type { SubagentTheme } from "../src/output/ui.js";
 import {
@@ -12,14 +12,8 @@ import {
   renderSubagentProgress,
 } from "../src/progress/progress.js";
 
-const realDateNow = Date.now;
-
-function setDateNow(now: number): void {
-  Date.now = () => now;
-}
-
 afterEach(() => {
-  Date.now = realDateNow;
+  jest.useRealTimers();
   clearProgressState("req-1");
   clearProgressState("req-2");
   clearProgressState("rend-live");
@@ -194,9 +188,9 @@ test("renderSubagentProgress keeps single title when instance is absent or empty
 });
 
 test("renderSubagentProgress collapsed running colors tool preview segments", () => {
-  setDateNow(1000);
+  jest.setSystemTime(1000);
   createProgressState("rend-1", "my-agent", "do the thing", "rend-1");
-  setDateNow(3500);
+  jest.setSystemTime(3500);
   patchProgressState("rend-1", {
     toolCount: 3,
     activeToolActivity: { toolName: "bash", inputSummary: "bash: ls -la" },
@@ -378,177 +372,107 @@ test("renderSubagentProgress component reads patched state on later renders", ()
   expect(text).not.toContain("bash: pwd (");
 });
 
-test("renderSubagentProgress renders modelDisplay footer if present", () => {
-  createProgressState("rend-model", "model-agent", "model task");
-  patchProgressState("rend-model", { modelDisplay: "gemini-1.5-pro" });
-  const theme = makeTheme();
-  const result = renderSubagentProgress(
-    {
-      customType: "subagent-progress",
-      content: "",
-      display: true,
-      details: { requestId: "rend-model" },
-    },
-    { expanded: false },
-    theme,
-  );
-  expect(result).toBeDefined();
-  const text = renderText(result);
-  expect(text).toContain("gemini-1.5-pro");
-});
+type FooterCase = {
+  state: string;
+  expanded: boolean;
+  task: string;
+  modelDisplay: string;
+  settle?: (requestId: string) => void;
+  expected: string[];
+};
 
-test("renderSubagentProgress renders modelDisplay footer for expanded running state", () => {
-  createProgressState("rend-model-exp", "model-agent", "model task");
-  patchProgressState("rend-model-exp", {
+test.each<FooterCase>([
+  {
+    state: "collapsed running",
+    expanded: false,
+    task: "model task",
     modelDisplay: "gemini-1.5-pro",
-    activeToolActivity: { toolName: "bash", inputSummary: "bash: ls" },
-    lastToolPreview: "bash: ls",
-  });
-  const theme = makeTheme();
-  const result = renderSubagentProgress(
-    {
-      customType: "subagent-progress",
-      content: "",
-      display: true,
-      details: { requestId: "rend-model-exp" },
-    },
-    { expanded: true },
-    theme,
-  );
-  expect(result).toBeDefined();
-  const text = renderText(result);
-  expect(text).toContain("gemini-1.5-pro");
-  expect(text).toContain("model task");
-  expect(text).toContain("bash: ls");
-});
-
-test("renderSubagentProgress renders modelDisplay footer for error state", () => {
-  createProgressState("rend-err", "err-agent", "error task");
-  failProgressState("rend-err", "something exploded");
-  patchProgressState("rend-err", { modelDisplay: "claude-3-5-sonnet" });
-  const theme = makeTheme();
-  const result = renderSubagentProgress(
-    {
-      customType: "subagent-progress",
-      content: "",
-      display: true,
-      details: { requestId: "rend-err" },
-    },
-    { expanded: false },
-    theme,
-  );
-  expect(result).toBeDefined();
-  const text = renderText(result);
-  expect(text).toContain("claude-3-5-sonnet");
-  expect(text).toContain("something exploded");
-});
-
-test("renderSubagentProgress renders modelDisplay footer for expanded error state", () => {
-  createProgressState("rend-err-exp", "err-agent", "error task");
-  failProgressState("rend-err-exp", "something exploded");
-  patchProgressState("rend-err-exp", { modelDisplay: "claude-3-5-sonnet" });
-  const theme = makeTheme();
-  const result = renderSubagentProgress(
-    {
-      customType: "subagent-progress",
-      content: "",
-      display: true,
-      details: { requestId: "rend-err-exp" },
-    },
-    { expanded: true },
-    theme,
-  );
-  expect(result).toBeDefined();
-  const text = renderText(result);
-  expect(text).toContain("claude-3-5-sonnet");
-  expect(text).toContain("something exploded");
-  expect(text).toContain("error task");
-});
-
-test("renderSubagentProgress renders modelDisplay footer for cancelled state", () => {
-  createProgressState("rend-cancel", "cancel-agent", "cancel task");
-  cancelProgressState("rend-cancel", "user cancelled");
-  patchProgressState("rend-cancel", { modelDisplay: "gpt-4o" });
-  const theme = makeTheme();
-  const result = renderSubagentProgress(
-    {
-      customType: "subagent-progress",
-      content: "",
-      display: true,
-      details: { requestId: "rend-cancel" },
-    },
-    { expanded: false },
-    theme,
-  );
-  expect(result).toBeDefined();
-  const text = renderText(result);
-  expect(text).toContain("gpt-4o");
-  expect(text).toContain("cancelled");
-});
-
-test("renderSubagentProgress renders modelDisplay footer for expanded cancelled state", () => {
-  createProgressState("rend-cancel-exp", "cancel-agent", "cancel task");
-  cancelProgressState("rend-cancel-exp", "user cancelled");
-  patchProgressState("rend-cancel-exp", { modelDisplay: "gpt-4o" });
-  const theme = makeTheme();
-  const result = renderSubagentProgress(
-    {
-      customType: "subagent-progress",
-      content: "",
-      display: true,
-      details: { requestId: "rend-cancel-exp" },
-    },
-    { expanded: true },
-    theme,
-  );
-  expect(result).toBeDefined();
-  const text = renderText(result);
-  expect(text).toContain("gpt-4o");
-  expect(text).toContain("cancel task");
-});
-
-test("renderSubagentProgress renders modelDisplay footer for success state", () => {
-  createProgressState("rend-ok", "ok-agent", "success task");
-  finalizeProgressState("rend-ok", "all done");
-  patchProgressState("rend-ok", { modelDisplay: "provider/model:compact" });
-  const theme = makeTheme();
-  const result = renderSubagentProgress(
-    {
-      customType: "subagent-progress",
-      content: "",
-      display: true,
-      details: { requestId: "rend-ok" },
-    },
-    { expanded: false },
-    theme,
-  );
-  expect(result).toBeDefined();
-  const text = renderText(result);
-  expect(text).toContain("provider/model:compact");
-  expect(text).toContain("all done");
-});
-
-test("renderSubagentProgress renders modelDisplay footer for expanded success state", () => {
-  createProgressState("rend-ok-exp", "ok-agent", "success task");
-  finalizeProgressState("rend-ok-exp", "all done");
-  patchProgressState("rend-ok-exp", { modelDisplay: "provider/model:compact" });
-  const theme = makeTheme();
-  const result = renderSubagentProgress(
-    {
-      customType: "subagent-progress",
-      content: "",
-      display: true,
-      details: { requestId: "rend-ok-exp" },
-    },
-    { expanded: true },
-    theme,
-  );
-  expect(result).toBeDefined();
-  const text = renderText(result);
-  expect(text).toContain("provider/model:compact");
-  expect(text).toContain("success task");
-  expect(text).toContain("all done");
-});
+    expected: [],
+  },
+  {
+    state: "expanded running",
+    expanded: true,
+    task: "model task",
+    modelDisplay: "gemini-1.5-pro",
+    settle: (requestId) =>
+      patchProgressState(requestId, {
+        activeToolActivity: { toolName: "bash", inputSummary: "bash: ls" },
+        lastToolPreview: "bash: ls",
+      }),
+    expected: ["model task", "bash: ls"],
+  },
+  {
+    state: "collapsed error",
+    expanded: false,
+    task: "error task",
+    modelDisplay: "claude-3-5-sonnet",
+    settle: (requestId) => failProgressState(requestId, "something exploded"),
+    expected: ["something exploded"],
+  },
+  {
+    state: "expanded error",
+    expanded: true,
+    task: "error task",
+    modelDisplay: "claude-3-5-sonnet",
+    settle: (requestId) => failProgressState(requestId, "something exploded"),
+    expected: ["something exploded", "error task"],
+  },
+  {
+    state: "collapsed cancelled",
+    expanded: false,
+    task: "cancel task",
+    modelDisplay: "gpt-4o",
+    settle: (requestId) => cancelProgressState(requestId, "user cancelled"),
+    expected: ["cancelled"],
+  },
+  {
+    state: "expanded cancelled",
+    expanded: true,
+    task: "cancel task",
+    modelDisplay: "gpt-4o",
+    settle: (requestId) => cancelProgressState(requestId, "user cancelled"),
+    expected: ["cancel task"],
+  },
+  {
+    state: "collapsed success",
+    expanded: false,
+    task: "success task",
+    modelDisplay: "provider/model:compact",
+    settle: (requestId) => finalizeProgressState(requestId, "all done"),
+    expected: ["all done"],
+  },
+  {
+    state: "expanded success",
+    expanded: true,
+    task: "success task",
+    modelDisplay: "provider/model:compact",
+    settle: (requestId) => finalizeProgressState(requestId, "all done"),
+    expected: ["success task", "all done"],
+  },
+])(
+  "renderSubagentProgress renders modelDisplay footer for $state state",
+  ({ state, expanded, task, modelDisplay, settle, expected }) => {
+    const requestId = `rend-footer-${state}`;
+    createProgressState(requestId, "footer-agent", task);
+    settle?.(requestId);
+    patchProgressState(requestId, { modelDisplay });
+    const text = renderText(
+      renderSubagentProgress(
+        {
+          customType: "subagent-progress",
+          content: "",
+          display: true,
+          details: { requestId },
+        },
+        { expanded },
+        makeTheme(),
+      ),
+    );
+    for (const fragment of [modelDisplay, ...expected]) {
+      expect(text).toContain(fragment);
+    }
+  },
+);
 
 test("renderSubagentProgress error state shows error text", () => {
   createProgressState("rend-3", "err-agent", "a task", "rend-3");
@@ -744,11 +668,11 @@ test("renderSubagentProgress expanded error includes error text", () => {
 });
 
 test("renderSubagentProgress freezes success elapsed after completion", () => {
-  setDateNow(1000);
+  jest.setSystemTime(1000);
   createProgressState("rend-7", "ok-agent", "a task");
-  setDateNow(2500);
+  jest.setSystemTime(2500);
   finalizeProgressState("rend-7", "final result text");
-  setDateNow(9000);
+  jest.setSystemTime(9000);
   const theme = makeTheme();
   const result = renderSubagentProgress(
     {
@@ -765,11 +689,11 @@ test("renderSubagentProgress freezes success elapsed after completion", () => {
 });
 
 test("renderSubagentProgress freezes error and cancelled elapsed after completion", () => {
-  setDateNow(1000);
+  jest.setSystemTime(1000);
   createProgressState("rend-8", "err-agent", "error task");
-  setDateNow(4000);
+  jest.setSystemTime(4000);
   failProgressState("rend-8", "child failed");
-  setDateNow(10_000);
+  jest.setSystemTime(10_000);
   const theme = makeTheme();
   const errorResult = renderSubagentProgress(
     {
@@ -783,11 +707,11 @@ test("renderSubagentProgress freezes error and cancelled elapsed after completio
   );
   expect(renderText(errorResult)).toContain("3.0s");
   expect(renderText(errorResult)).not.toContain("9.0s");
-  setDateNow(2000);
+  jest.setSystemTime(2000);
   createProgressState("rend-9", "cancel-agent", "cancel task");
-  setDateNow(6500);
+  jest.setSystemTime(6500);
   cancelProgressState("rend-9", "user cancelled");
-  setDateNow(12_000);
+  jest.setSystemTime(12_000);
   const cancelResult = renderSubagentProgress(
     {
       customType: "subagent-progress",
@@ -820,7 +744,7 @@ test("DynamicSubagentProgressText invalidate is a no-op", () => {
 });
 
 test("renderSubagentProgress keeps running elapsed live", () => {
-  setDateNow(1000);
+  jest.setSystemTime(1000);
   createProgressState("rend-live", "live-agent", "live task");
   const theme = makeTheme();
   const result = renderSubagentProgress(
@@ -833,9 +757,9 @@ test("renderSubagentProgress keeps running elapsed live", () => {
     { expanded: false },
     theme,
   );
-  setDateNow(2500);
+  jest.setSystemTime(2500);
   expect(renderText(result)).toContain("1.5s");
-  setDateNow(5200);
+  jest.setSystemTime(5200);
   expect(renderText(result)).toContain("4.2s");
 });
 
@@ -1295,41 +1219,39 @@ const fakeTheme: SubagentTheme = {
   bold: (text) => text,
 };
 
-describe("progress.ts uncovered branches", () => {
-  describe("renderSubagentProgress", () => {
-    test("message without details returns undefined", () => {
-      const result = renderSubagentProgress({}, { expanded: false }, fakeTheme);
-      expect(result).toBeUndefined();
-    });
+describe("renderSubagentProgress", () => {
+  test("message without details returns undefined", () => {
+    const result = renderSubagentProgress({}, { expanded: false }, fakeTheme);
+    expect(result).toBeUndefined();
+  });
 
-    test("message with details but no requestId returns undefined", () => {
-      const result = renderSubagentProgress(
-        { details: {} },
-        { expanded: false },
-        fakeTheme,
-      );
-      expect(result).toBeUndefined();
-    });
+  test("message with details but no requestId returns undefined", () => {
+    const result = renderSubagentProgress(
+      { details: {} },
+      { expanded: false },
+      fakeTheme,
+    );
+    expect(result).toBeUndefined();
+  });
 
-    test("message with requestId but no progress state returns undefined", () => {
-      const result = renderSubagentProgress(
-        { details: { requestId: "nonexistent-id" } },
-        { expanded: false },
-        fakeTheme,
-      );
-      expect(result).toBeUndefined();
-    });
+  test("message with requestId but no progress state returns undefined", () => {
+    const result = renderSubagentProgress(
+      { details: { requestId: "nonexistent-id" } },
+      { expanded: false },
+      fakeTheme,
+    );
+    expect(result).toBeUndefined();
+  });
 
-    test("message with valid requestId returns component", () => {
-      const requestId = `test-render-${Date.now()}`;
-      createProgressState(requestId, "test-agent", "user", "test task");
-      const result = renderSubagentProgress(
-        { details: { requestId } },
-        { expanded: false },
-        fakeTheme,
-      );
-      expect(result).toBeDefined();
-      clearProgressState(requestId);
-    });
+  test("message with valid requestId returns component", () => {
+    const requestId = `test-render-${Date.now()}`;
+    createProgressState(requestId, "test-agent", "user", "test task");
+    const result = renderSubagentProgress(
+      { details: { requestId } },
+      { expanded: false },
+      fakeTheme,
+    );
+    expect(result).toBeDefined();
+    clearProgressState(requestId);
   });
 });

@@ -17,8 +17,11 @@ import {
   sanitizeResultDetails,
 } from "../src/progress/result-details.js";
 import type { SingleResult } from "../src/shared/types.js";
-import { CANONICAL_SUMMARY_FIXTURES } from "./fixtures.js";
-import { makeSingleResult, unconfirmedWarning } from "./helpers.js";
+import {
+  CANONICAL_SUMMARY_FIXTURES,
+  makeSingleResult,
+  unconfirmedWarning,
+} from "./fixtures.js";
 
 function result(overrides: Partial<SingleResult>): SingleResult {
   return makeSingleResult(overrides);

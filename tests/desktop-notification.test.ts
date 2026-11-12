@@ -21,7 +21,9 @@ import {
   NOTIFICATION_TITLE,
 } from "../src/notification/desktop-notification.js";
 import type { SubagentProgressState } from "../src/progress/progress-state.js";
-import { withEnv } from "./helpers.js";
+import { setupFixtureHooks, withEnv } from "./fixtures.js";
+
+setupFixtureHooks(resetNotifySendCache, resetDefaultDeliveryDeps);
 
 function makeState(
   overrides: Partial<SubagentProgressState> = {},
@@ -450,7 +452,6 @@ describe("defaultCommandExists", () => {
 describe("delivery.ts", () => {
   describe("deliverLinuxNotification", () => {
     test("skips on non-linux platform", async () => {
-      resetNotifySendCache();
       let spawned = false;
       await deliverLinuxNotification(makeRequest(), {
         platform: "darwin",
@@ -463,7 +464,6 @@ describe("delivery.ts", () => {
     });
 
     test("skips when notify-send not found", async () => {
-      resetNotifySendCache();
       let spawned = false;
       await deliverLinuxNotification(makeRequest(), {
         platform: "linux",
@@ -477,7 +477,6 @@ describe("delivery.ts", () => {
     });
 
     test("spawns notify-send with correct args for normal urgency", async () => {
-      resetNotifySendCache();
       let capturedCmd = "";
       let capturedArgs: string[] = [];
       await deliverLinuxNotification(
@@ -505,7 +504,6 @@ describe("delivery.ts", () => {
     });
 
     test("spawns notify-send with critical urgency for error requests", async () => {
-      resetNotifySendCache();
       let capturedArgs: string[] = [];
       await deliverLinuxNotification(makeRequest({ urgency: "critical" }), {
         platform: "linux",
@@ -519,7 +517,6 @@ describe("delivery.ts", () => {
     });
 
     test("unrefs child process", async () => {
-      resetNotifySendCache();
       let unrefed = false;
       await deliverLinuxNotification(makeRequest(), {
         platform: "linux",
@@ -533,21 +530,7 @@ describe("delivery.ts", () => {
       expect(unrefed).toBe(true);
     });
 
-    test("swallows spawn throws", async () => {
-      resetNotifySendCache();
-      expect(
-        await deliverLinuxNotification(makeRequest(), {
-          platform: "linux",
-          commandExists: async () => true,
-          spawnProcess: () => {
-            throw new Error("spawn failed");
-          },
-        }),
-      ).toBeUndefined();
-    });
-
     test("caches notify-send availability on subsequent calls", async () => {
-      resetNotifySendCache();
       let checkCount = 0;
       const commandExists = async () => {
         checkCount++;
@@ -567,7 +550,6 @@ describe("delivery.ts", () => {
     });
 
     test("caches notify-send unavailability on subsequent calls", async () => {
-      resetNotifySendCache();
       let checkCount = 0;
       const commandExists = async () => {
         checkCount++;
@@ -587,7 +569,6 @@ describe("delivery.ts", () => {
     });
 
     test("uses defaultCommandExists when deps.commandExists absent", async () => {
-      resetNotifySendCache();
       const tmpDir = mkdtempSync(join(tmpdir(), "notify-test-"));
       const fakeNotifySend = join(tmpDir, "notify-send");
       writeFileSync(fakeNotifySend, "#!/bin/sh\nexit 0\n");
@@ -712,17 +693,6 @@ describe("delivery.ts", () => {
         'display notification "Simple body" with title "Simple title"',
       );
     });
-
-    test("swallows spawn throws", async () => {
-      expect(
-        await deliverMacOSNotification(makeRequest(), {
-          platform: "darwin",
-          spawnProcess: () => {
-            throw new Error("spawn failed");
-          },
-        }),
-      ).toBeUndefined();
-    });
   });
 
   describe("deliverWindowsNotification", () => {
@@ -824,23 +794,30 @@ describe("delivery.ts", () => {
       expect(script).toContain("Simple body");
       expect(script).toContain("3000");
     });
+  });
 
-    test("swallows spawn throws", async () => {
+  test.each([
+    { platform: "linux", deliver: deliverLinuxNotification },
+    { platform: "darwin", deliver: deliverMacOSNotification },
+    { platform: "win32", deliver: deliverWindowsNotification },
+  ] as const)(
+    "$platform delivery swallows spawn throws",
+    async ({ platform, deliver }) => {
       expect(
-        await deliverWindowsNotification(makeRequest(), {
-          platform: "win32",
+        await deliver(makeRequest(), {
+          platform,
+          commandExists: async () => true,
           spawnProcess: () => {
             throw new Error("spawn failed");
           },
         }),
       ).toBeUndefined();
-    });
-  });
+    },
+  );
 });
 
 describe("deliverNotification", () => {
   test("routes to linux notification on linux", async () => {
-    resetNotifySendCache();
     let capturedCmd = "";
     await deliverNotification(makeRequest(), {
       platform: "linux",
@@ -889,7 +866,6 @@ describe("deliverNotification", () => {
   });
 
   test("checkNotifySendExists catch caches false when commandExists throws", async () => {
-    resetNotifySendCache();
     let spawned = false;
     await deliverLinuxNotification(makeRequest(), {
       platform: "linux",
@@ -913,7 +889,6 @@ describe("deliverNotification", () => {
   });
 
   test("checkNotifySendExists accepts synchronous boolean true", async () => {
-    resetNotifySendCache();
     let spawned = false;
     await deliverLinuxNotification(makeRequest(), {
       platform: "linux",
@@ -927,7 +902,6 @@ describe("deliverNotification", () => {
   });
 
   test("checkNotifySendExists accepts synchronous boolean false", async () => {
-    resetNotifySendCache();
     let spawned = false;
     await deliverLinuxNotification(makeRequest(), {
       platform: "linux",
@@ -941,7 +915,6 @@ describe("deliverNotification", () => {
   });
 
   test("checkNotifySendExists caches synchronous true on subsequent calls", async () => {
-    resetNotifySendCache();
     let checkCount = 0;
     const commandExists = () => {
       checkCount++;
@@ -961,7 +934,6 @@ describe("deliverNotification", () => {
   });
 
   test("getSpawnProcess prefers deps.spawnProcess over default spawn", async () => {
-    resetNotifySendCache();
     let fallbackUsed = true;
     await deliverLinuxNotification(makeRequest(), {
       platform: "linux",
@@ -1015,7 +987,6 @@ describe("deliverNotification", () => {
 
   describe("default delivery deps override", () => {
     test("defaultDeliveryDeps are used when no explicit deps provided", async () => {
-      resetDefaultDeliveryDeps();
       let capturedCmd = "";
       setDefaultDeliveryDeps({
         platform: "darwin",
@@ -1033,7 +1004,6 @@ describe("deliverNotification", () => {
     });
 
     test("explicit deps override defaultDeliveryDeps", async () => {
-      resetDefaultDeliveryDeps();
       let capturedCmd = "";
       setDefaultDeliveryDeps({
         platform: "darwin",
@@ -1055,7 +1025,6 @@ describe("deliverNotification", () => {
     });
 
     test("defaultDeliveryDeps are ignored when explicit {} is passed", async () => {
-      resetDefaultDeliveryDeps();
       setDefaultDeliveryDeps({
         platform: "darwin",
         spawnProcess: () => ({}),
@@ -1079,7 +1048,6 @@ describe("deliverNotification", () => {
     });
 
     test("resetDefaultDeliveryDeps clears the override", async () => {
-      resetDefaultDeliveryDeps();
       setDefaultDeliveryDeps({
         platform: "darwin",
         spawnProcess: () => ({}),

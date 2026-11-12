@@ -7,10 +7,10 @@ import {
   getPiInvocation,
   getSubagentDepth,
   subagentDepthEnv,
-} from "../src/shared/utils.js";
-import { setupHooks } from "./helpers.js";
+} from "../src/shared/invocation.js";
+import { setupFixtureHooks } from "./fixtures.js";
 
-setupHooks();
+setupFixtureHooks();
 
 test("getPiInvocation keeps custom non-generic runtimes", () => {
   const originalArgv1 = process.argv[1] ?? "";
@@ -35,7 +35,7 @@ test("getPiInvocation keeps custom non-generic runtimes", () => {
   }
 });
 
-describe("utils.ts coverage gaps", () => {
+describe("getSubagentDepth", () => {
   test("getSubagentDepth returns depth from environment", () => {
     process.env.PI_SUBAGENT_DEPTH = "3";
     expect(getSubagentDepth()).toBe(3);
@@ -44,7 +44,7 @@ describe("utils.ts coverage gaps", () => {
   });
 });
 
-describe("utils.ts coverage gaps", () => {
+describe("subagentDepthEnv", () => {
   test("subagentDepthEnv returns depth environment variable", () => {
     process.env.PI_SUBAGENT_DEPTH = "5";
     const result = subagentDepthEnv();
@@ -55,7 +55,7 @@ describe("utils.ts coverage gaps", () => {
   });
 });
 
-describe("utils.ts coverage gaps", () => {
+describe("getPiInvocation", () => {
   test("getPiInvocation returns current script when argv[1] exists", () => {
     const originalArgv1 = process.argv[1] ?? "";
     const originalExecPath = process.execPath;
@@ -80,7 +80,7 @@ describe("utils.ts coverage gaps", () => {
   });
 });
 
-describe("utils.ts coverage gaps", () => {
+describe("getPiInvocation", () => {
   test.each([
     {
       name: "getPiInvocation returns pi command when script doesn't exist",
@@ -115,6 +115,66 @@ describe("utils.ts coverage gaps", () => {
   });
 });
 
-describe("utils.ts coverage gaps", () => {});
-
-describe("utils.ts coverage gaps", () => {});
+describe("getSubagentDepth", () => {
+  test.each([
+    {
+      name: "undefined depth defaults to 0 with next 1",
+      value: undefined,
+      depth: 0,
+      nextDepth: "1",
+    },
+    {
+      name: "not-a-number depth defaults to 0 with next 1",
+      value: "not-a-number",
+      depth: 0,
+      nextDepth: "1",
+    },
+    {
+      name: "Infinity depth defaults to 0 with next 1",
+      value: "Infinity",
+      depth: 0,
+      nextDepth: "1",
+    },
+    {
+      name: "negative depth defaults to 0 with next 1",
+      value: "-1",
+      depth: 0,
+      nextDepth: "1",
+    },
+    {
+      name: "negative fractional depth defaults to 0 with next 1",
+      value: "-0.5",
+      depth: 0,
+      nextDepth: "1",
+    },
+    {
+      name: "fractional depth below one defaults to 0 with next 1",
+      value: "0.9",
+      depth: 0,
+      nextDepth: "1",
+    },
+    {
+      name: "fractional depth above one floors with next 2",
+      value: "1.7",
+      depth: 1,
+      nextDepth: "2",
+    },
+    {
+      name: "integer depth passes through with next 3",
+      value: "2",
+      depth: 2,
+      nextDepth: "3",
+    },
+  ])("$name", (row) => {
+    const original = process.env.PI_SUBAGENT_DEPTH;
+    try {
+      if (row.value === undefined) delete process.env.PI_SUBAGENT_DEPTH;
+      else process.env.PI_SUBAGENT_DEPTH = row.value;
+      expect(getSubagentDepth()).toBe(row.depth);
+      expect(subagentDepthEnv()).toEqual({ PI_SUBAGENT_DEPTH: row.nextDepth });
+    } finally {
+      if (original === undefined) delete process.env.PI_SUBAGENT_DEPTH;
+      else process.env.PI_SUBAGENT_DEPTH = original;
+    }
+  });
+});

@@ -1,4 +1,4 @@
-import { expect, spyOn, test } from "bun:test";
+import { expect, jest, spyOn, test } from "bun:test";
 import * as fsPromises from "node:fs/promises";
 import { mkdir, rename, writeFile } from "node:fs/promises";
 import path from "node:path";
@@ -9,9 +9,9 @@ import {
   getCachedAgentDiscovery,
   resetAgentDiscoveryCache,
 } from "../src/agent/agent-cache.js";
-import { denyFsAccess, makeTempDir, setupHooks } from "./helpers.js";
+import { denyFsAccess, makeTempDir, setupFixtureHooks } from "./fixtures.js";
 
-setupHooks();
+setupFixtureHooks(resetAgentDiscoveryCache);
 
 test("agent discovery cache separates cwd and scope, reuses completions, and expires", async () => {
   const root = await makeTempDir("pi-subagent-cache-");
@@ -51,8 +51,8 @@ Project B prompt`,
   process.env.PI_CODING_AGENT_DIR = agentDir;
   const cache: AgentDiscoveryCache = new Map();
   let now = 1000;
-  const originalNow = Date.now;
-  Date.now = () => now;
+  jest.useFakeTimers();
+  jest.setSystemTime(now);
   try {
     expect(AGENT_DISCOVERY_CACHE_TTL_MS).toBe(300_000);
     const bothA = await getCachedAgentDiscovery(cwdA, "both", cache, 3000);
@@ -87,6 +87,7 @@ Project C prompt`,
     expect(await getCachedAgentDiscovery(cwdA, "both", cache, 3000)).toBe(
       bothA,
     );
+    jest.advanceTimersByTime(3001);
     now += 3001;
     expect(
       (await getCachedAgentDiscovery(cwdA, "both", cache, 3000)).agents.some(
@@ -94,7 +95,7 @@ Project C prompt`,
       ),
     ).toBe(true);
   } finally {
-    Date.now = originalNow;
+    jest.useRealTimers();
   }
 });
 
@@ -126,21 +127,22 @@ Project prompt`,
   const cache: AgentDiscoveryCache = new Map();
   const originalReaddir = fsPromises.readdir;
   let listingReadCount = 0;
-  let activePrimingReads = 0;
-  let peakPrimingReads = 0;
+  // Priming listings resolve out of order; only the start/finish timeline can
+  // prove they overlap without a delay.
+  const primingEvents: string[] = [];
   const readdirSpy = spyOn(fsPromises, "readdir").mockImplementation((async (
     ...args: Parameters<typeof fsPromises.readdir>
   ) => {
-    if (args[0] === userDir || args[0] === projectDir) {
-      listingReadCount += 1;
-      if (listingReadCount > 4) {
-        activePrimingReads += 1;
-        peakPrimingReads = Math.max(peakPrimingReads, activePrimingReads);
-        await new Promise((resolve) => setTimeout(resolve, 20));
-        activePrimingReads -= 1;
-      }
+    if (args[0] !== userDir && args[0] !== projectDir) {
+      return originalReaddir(...args);
     }
-    return originalReaddir(...args);
+    listingReadCount += 1;
+    const priming = listingReadCount > 4;
+    const label = args[0] === userDir ? "user" : "project";
+    if (priming) primingEvents.push(`start:${label}`);
+    const entries = await originalReaddir(...args);
+    if (priming) primingEvents.push(`finish:${label}`);
+    return entries;
   }) as typeof fsPromises.readdir);
   try {
     const both = await getCachedAgentDiscovery(cwd, "both", cache, 3000);
@@ -151,7 +153,13 @@ Project prompt`,
     expect(project?.agents.map((agent) => agent.name)).toEqual(["project"]);
     expect(user?.ts).toBe(both.ts);
     expect(project?.ts).toBe(both.ts);
-    expect(peakPrimingReads).toBe(2);
+    expect(primingEvents.filter((event) => event.startsWith("start:"))).toEqual(
+      ["start:user", "start:project"],
+    );
+    // Both priming listings began before either finished: they ran together.
+    expect(
+      primingEvents.findIndex((event) => event.startsWith("finish:")),
+    ).toBe(2);
   } finally {
     readdirSpy.mockRestore();
   }
@@ -200,8 +208,8 @@ Project prompt`,
   process.env.PI_CODING_AGENT_DIR = agentDir;
   const cache: AgentDiscoveryCache = new Map();
   let now = 5000;
-  const originalNow = Date.now;
-  Date.now = () => now;
+  jest.useFakeTimers();
+  jest.setSystemTime(now);
   try {
     const both = await getCachedAgentDiscovery(cwd, "both", cache, 3000);
     expect(cache.size).toBe(3);
@@ -212,6 +220,7 @@ Project prompt`,
         throw new Error("derived cache must not hash markdown contents");
       }) as typeof fsPromises.readFile,
     );
+    jest.advanceTimersByTime(1);
     now += 1;
     const user = await getCachedAgentDiscovery(cwd, "user", cache, 3000);
     const project = await getCachedAgentDiscovery(cwd, "project", cache, 3000);
@@ -230,7 +239,7 @@ Project prompt`,
     expect(user.scopes.project).toEqual({ agents: [], markdownFiles: [] });
     expect(project.scopes.user).toEqual({ agents: [], markdownFiles: [] });
   } finally {
-    Date.now = originalNow;
+    jest.useRealTimers();
   }
 });
 
@@ -245,8 +254,8 @@ test("agent discovery cache trusts successful empty derived listings", async () 
   process.env.PI_CODING_AGENT_DIR = agentDir;
   const cache: AgentDiscoveryCache = new Map();
   let now = 6000;
-  const originalNow = Date.now;
-  Date.now = () => now;
+  jest.useFakeTimers();
+  jest.setSystemTime(now);
   try {
     const both = await getCachedAgentDiscovery(cwd, "both", cache, 3000);
     expect(both.snapshots?.user.listingTrusted).toBe(true);
@@ -258,6 +267,7 @@ test("agent discovery cache trusts successful empty derived listings", async () 
         );
       }) as typeof fsPromises.readFile,
     );
+    jest.advanceTimersByTime(1);
     now += 1;
     const user = await getCachedAgentDiscovery(cwd, "user", cache, 3000);
     readFileSpy.mockRestore();
@@ -265,7 +275,7 @@ test("agent discovery cache trusts successful empty derived listings", async () 
     expect(user.scopes.user.markdownFiles).toEqual([]);
     expect(user.ts).toBe(both.ts);
   } finally {
-    Date.now = originalNow;
+    jest.useRealTimers();
   }
 });
 
@@ -288,9 +298,9 @@ Old prompt`,
   process.env.PI_CODING_AGENT_DIR = agentDir;
   const cache: AgentDiscoveryCache = new Map();
   let now = 6500;
-  const originalNow = Date.now;
   const originalReaddir = fsPromises.readdir;
-  Date.now = () => now;
+  jest.useFakeTimers();
+  jest.setSystemTime(now);
   try {
     const both = await getCachedAgentDiscovery(cwd, "both", cache, 3000);
     expect(both.snapshots?.user.listingTrusted).toBe(true);
@@ -313,6 +323,7 @@ New prompt`,
         return originalReaddir(...args);
       }) as typeof fsPromises.readdir,
     );
+    jest.advanceTimersByTime(1);
     now += 1;
     try {
       const user = await getCachedAgentDiscovery(cwd, "user", cache, 3000);
@@ -323,7 +334,7 @@ New prompt`,
       freshReaddirSpy.mockRestore();
     }
   } finally {
-    Date.now = originalNow;
+    jest.useRealTimers();
   }
 });
 
@@ -346,8 +357,8 @@ Old prompt`,
   process.env.PI_CODING_AGENT_DIR = agentDir;
   const cache: AgentDiscoveryCache = new Map();
   let now = 6800;
-  const originalNow = Date.now;
-  Date.now = () => now;
+  jest.useFakeTimers();
+  jest.setSystemTime(now);
   try {
     await getCachedAgentDiscovery(cwd, "both", cache, 3000);
     cache.delete(userKey);
@@ -359,12 +370,13 @@ description: Reviewer new
 ---
 New prompt`,
     );
+    jest.advanceTimersByTime(3001);
     now += 3001;
     const user = await getCachedAgentDiscovery(cwd, "user", cache, 3000);
     expect(user.agents.map((agent) => agent.name)).toEqual(["reviewer-new"]);
     expect(user.ts).toBe(now);
   } finally {
-    Date.now = originalNow;
+    jest.useRealTimers();
   }
 });
 
@@ -387,8 +399,8 @@ Old prompt`,
   process.env.PI_CODING_AGENT_DIR = agentDir;
   const cache: AgentDiscoveryCache = new Map();
   let now = 7000;
-  const originalNow = Date.now;
-  Date.now = () => now;
+  jest.useFakeTimers();
+  jest.setSystemTime(now);
   try {
     await getCachedAgentDiscovery(cwd, "both", cache, 3000);
     cache.delete(userKey);
@@ -400,6 +412,7 @@ description: Reviewer new
 ---
 New prompt`,
     );
+    jest.advanceTimersByTime(1);
     now += 1;
     const contentChanged = await getCachedAgentDiscovery(
       cwd,
@@ -424,6 +437,7 @@ description: Renamed reviewer
 ---
 Renamed prompt`,
     );
+    jest.advanceTimersByTime(1);
     now += 1;
     const listingChanged = await getCachedAgentDiscovery(
       cwd,
@@ -436,7 +450,7 @@ Renamed prompt`,
     ]);
     expect(listingChanged.ts).toBe(now);
   } finally {
-    Date.now = originalNow;
+    jest.useRealTimers();
   }
 });
 
@@ -459,8 +473,8 @@ Old prompt`,
   process.env.PI_CODING_AGENT_DIR = agentDir;
   const cache: AgentDiscoveryCache = new Map();
   let now = 9000;
-  const originalNow = Date.now;
-  Date.now = () => now;
+  jest.useFakeTimers();
+  jest.setSystemTime(now);
   try {
     const both = await getCachedAgentDiscovery(cwd, "both", cache, 3000);
     if (!both.snapshots) throw new Error("missing discovery snapshots");
@@ -474,12 +488,13 @@ description: Reviewer new
 ---
 New prompt`,
     );
+    jest.advanceTimersByTime(1);
     now += 1;
     const user = await getCachedAgentDiscovery(cwd, "user", cache, 3000);
     expect(user.agents.map((agent) => agent.name)).toEqual(["reviewer-new"]);
     expect(user.ts).toBe(now);
   } finally {
-    Date.now = originalNow;
+    jest.useRealTimers();
   }
 });
 
@@ -502,8 +517,8 @@ Old prompt`,
   process.env.PI_CODING_AGENT_DIR = agentDir;
   const cache: AgentDiscoveryCache = new Map();
   let now = 9200;
-  const originalNow = Date.now;
-  Date.now = () => now;
+  jest.useFakeTimers();
+  jest.setSystemTime(now);
   try {
     const both = await getCachedAgentDiscovery(cwd, "both", cache, 3000);
     if (!both.snapshots) throw new Error("missing discovery snapshots");
@@ -517,12 +532,13 @@ description: Reviewer new
 ---
 New prompt`,
     );
+    jest.advanceTimersByTime(1);
     now += 1;
     const user = await getCachedAgentDiscovery(cwd, "user", cache, 3000);
     expect(user.agents.map((agent) => agent.name)).toEqual(["reviewer-new"]);
     expect(user.ts).toBe(now);
   } finally {
-    Date.now = originalNow;
+    jest.useRealTimers();
   }
 });
 
@@ -545,8 +561,8 @@ Old prompt`,
   process.env.PI_CODING_AGENT_DIR = agentDir;
   const cache: AgentDiscoveryCache = new Map();
   let now = 9400;
-  const originalNow = Date.now;
-  Date.now = () => now;
+  jest.useFakeTimers();
+  jest.setSystemTime(now);
   try {
     const both = await getCachedAgentDiscovery(cwd, "both", cache, 3000);
     if (!both.snapshots) throw new Error("missing discovery snapshots");
@@ -560,12 +576,13 @@ description: Reviewer new
 ---
 New prompt`,
     );
+    jest.advanceTimersByTime(1);
     now += 1;
     const user = await getCachedAgentDiscovery(cwd, "user", cache, 3000);
     expect(user.agents.map((agent) => agent.name)).toEqual(["reviewer-new"]);
     expect(user.ts).toBe(now);
   } finally {
-    Date.now = originalNow;
+    jest.useRealTimers();
   }
 });
 
@@ -582,9 +599,9 @@ test("agent discovery cache falls back when empty derived listing trust read fai
   process.env.PI_CODING_AGENT_DIR = agentDir;
   const cache: AgentDiscoveryCache = new Map();
   let now = 6700;
-  const originalNow = Date.now;
   const originalReaddir = fsPromises.readdir;
-  Date.now = () => now;
+  jest.useFakeTimers();
+  jest.setSystemTime(now);
   try {
     const both = await getCachedAgentDiscovery(cwd, "both", cache, 3000);
     expect(both.agents).toEqual([]);
@@ -603,6 +620,7 @@ test("agent discovery cache falls back when empty derived listing trust read fai
       }
       return originalReaddir(...args);
     }) as typeof fsPromises.readdir);
+    jest.advanceTimersByTime(1);
     now += 1;
     try {
       const user = await getCachedAgentDiscovery(cwd, "user", cache, 3000);
@@ -614,7 +632,7 @@ test("agent discovery cache falls back when empty derived listing trust read fai
       readdirSpy.mockRestore();
     }
   } finally {
-    Date.now = originalNow;
+    jest.useRealTimers();
   }
 });
 
@@ -637,8 +655,8 @@ Old prompt`,
   process.env.PI_CODING_AGENT_DIR = agentDir;
   const cache: AgentDiscoveryCache = new Map();
   let now = 9600;
-  const originalNow = Date.now;
-  Date.now = () => now;
+  jest.useFakeTimers();
+  jest.setSystemTime(now);
   try {
     const both = await getCachedAgentDiscovery(cwd, "both", cache, 3000);
     delete both.snapshots;
@@ -651,12 +669,13 @@ description: Reviewer new
 ---
 New prompt`,
     );
+    jest.advanceTimersByTime(1);
     now += 1;
     const user = await getCachedAgentDiscovery(cwd, "user", cache, 3000);
     expect(user.agents.map((agent) => agent.name)).toEqual(["reviewer-new"]);
     expect(user.ts).toBe(now);
   } finally {
-    Date.now = originalNow;
+    jest.useRealTimers();
   }
 });
 
@@ -679,8 +698,8 @@ Old prompt`,
   process.env.PI_CODING_AGENT_DIR = agentDir;
   const cache: AgentDiscoveryCache = new Map();
   let now = 9800;
-  const originalNow = Date.now;
-  Date.now = () => now;
+  jest.useFakeTimers();
+  jest.setSystemTime(now);
   try {
     const both = await getCachedAgentDiscovery(cwd, "both", cache, 3000);
     // biome-ignore lint/suspicious/noExplicitAny: runtime type mutation for test
@@ -694,12 +713,13 @@ description: Reviewer new
 ---
 New prompt`,
     );
+    jest.advanceTimersByTime(1);
     now += 1;
     const user = await getCachedAgentDiscovery(cwd, "user", cache, 3000);
     expect(user.agents.map((agent) => agent.name)).toEqual(["reviewer-new"]);
     expect(user.ts).toBe(now);
   } finally {
-    Date.now = originalNow;
+    jest.useRealTimers();
   }
 });
 
@@ -722,8 +742,8 @@ Old prompt`,
   process.env.PI_CODING_AGENT_DIR = agentDir;
   const cache: AgentDiscoveryCache = new Map();
   let now = 9900;
-  const originalNow = Date.now;
-  Date.now = () => now;
+  jest.useFakeTimers();
+  jest.setSystemTime(now);
   try {
     const both = await getCachedAgentDiscovery(cwd, "both", cache, 3000);
     // biome-ignore lint/suspicious/noExplicitAny: runtime type mutation for test
@@ -737,12 +757,13 @@ description: Reviewer new
 ---
 New prompt`,
     );
+    jest.advanceTimersByTime(1);
     now += 1;
     const user = await getCachedAgentDiscovery(cwd, "user", cache, 3000);
     expect(user.agents.map((agent) => agent.name)).toEqual(["reviewer-new"]);
     expect(user.ts).toBe(now);
   } finally {
-    Date.now = originalNow;
+    jest.useRealTimers();
   }
 });
 
@@ -813,8 +834,8 @@ Beta prompt`,
   process.env.PI_CODING_AGENT_DIR = agentDir;
   const cache: AgentDiscoveryCache = new Map();
   const now = 10000;
-  const originalNow = Date.now;
-  Date.now = () => now;
+  jest.useFakeTimers();
+  jest.setSystemTime(now);
   try {
     const result1 = await getCachedAgentCompletions("a", cwd, cache, 3000);
     const result2 = await getCachedAgentCompletions("a", cwd, cache, 3000);
@@ -827,7 +848,7 @@ Beta prompt`,
     const bothEntry = cache.get(bothKey);
     expect(bothEntry?.ts).toBe(10000);
   } finally {
-    Date.now = originalNow;
+    jest.useRealTimers();
   }
 });
 
@@ -903,11 +924,12 @@ Project prompt`,
   process.env.PI_CODING_AGENT_DIR = agentDir;
   const cache: AgentDiscoveryCache = new Map();
   let now = 20000;
-  const originalNow = Date.now;
-  Date.now = () => now;
+  jest.useFakeTimers();
+  jest.setSystemTime(now);
   try {
     const both = await getCachedAgentDiscovery(cwd, "both", cache, 3000);
     expect(cache.size).toBe(3);
+    jest.advanceTimersByTime(100);
     now += 100;
     const user = await getCachedAgentDiscovery(cwd, "user", cache, 3000);
     const project = await getCachedAgentDiscovery(cwd, "project", cache, 3000);
@@ -920,7 +942,7 @@ Project prompt`,
       "project",
     );
   } finally {
-    Date.now = originalNow;
+    jest.useRealTimers();
   }
 });
 
@@ -1048,18 +1070,20 @@ Prompt`,
   process.env.PI_CODING_AGENT_DIR = agentDir;
   const cache: AgentDiscoveryCache = new Map();
   let now = 10000;
-  const originalNow = Date.now;
-  Date.now = () => now;
+  jest.useFakeTimers();
+  jest.setSystemTime(now);
   try {
     const first = await getCachedAgentDiscovery(cwd, "user", cache, 3000);
     expect(first.ts).toBe(10000);
+    jest.setSystemTime(13000);
     now = 13000;
     const exact = await getCachedAgentDiscovery(cwd, "user", cache, 3000);
     expect(exact.ts).toBe(10000);
+    jest.setSystemTime(13001);
     now = 13001;
     const expired = await getCachedAgentDiscovery(cwd, "user", cache, 3000);
     expect(expired.ts).toBe(13001);
   } finally {
-    Date.now = originalNow;
+    jest.useRealTimers();
   }
 });

@@ -1,7 +1,8 @@
-import { afterAll } from "bun:test";
+import { afterAll, afterEach } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { restoreTestGlobals } from "./test-globals.js";
 
 // Keep dependency transpile caches out of the isolated test temp root.
 process.env.JITI_FS_CACHE = "false";
@@ -13,6 +14,9 @@ process.env.PI_SUBAGENT_DESKTOP_NOTIFICATIONS = "0";
 const agentHome = mkdtempSync(path.join(tmpdir(), "pi-subagent-test-"));
 
 process.env.PI_CODING_AGENT_DIR = agentHome;
+
+// Covers every case, including suites without fixture or harness hooks.
+afterEach(restoreTestGlobals);
 
 // Synchronous removal keeps the home out of temp roots even when assertions
 // fail or asynchronous work is still pending at run or process end.

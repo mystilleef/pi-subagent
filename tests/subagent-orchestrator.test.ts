@@ -27,13 +27,16 @@ import type {
 } from "../src/shared/types.js";
 import type { SendMessageArg } from "./helpers.js";
 import {
+  CAPTURE_ARGS_PI_SCRIPT,
   CAPTURE_PI_ARGS_SH,
   captureStdout,
+  emitAgentEnd,
   getSubagentTool,
   installFakePi,
   makeBareCtx,
   makeSubagentDetails,
   modelFixture,
+  readCapturedArgs,
   registryFixture,
   requestIdOf,
   runTool,
@@ -437,11 +440,8 @@ test("per-job notification completes lifecycle without crashing", async () => {
       await waitForSentMessageCount(sentMessages, 2);
       expect((result.content[0] as TextContent).text).toBe("done");
       expect(sentMessages.at(-1)?.customType).toBe("subagent-result");
-      const requestId = (sentMessages[0]?.details as { requestId?: string })
-        ?.requestId;
-      if (requestId) {
-        expect(getProgressState(requestId)?.status).toBe("success");
-      }
+      const requestId = requestIdOf(sentMessages);
+      expect(getProgressState(requestId)?.status).toBe("success");
       expect(listRunJobs()).toHaveLength(0);
     },
   );
@@ -461,7 +461,7 @@ test("per-job notification completes lifecycle for error jobs", async () => {
         binDir,
         `#!/bin/sh
 printf '%s\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"error output"}],"usage":{"input":1,"output":1,"totalTokens":2,"cost":{"total":0}},"errorMessage":"child failure"}}'
-printf '%s\n' '{"type":"agent_end"}'
+${emitAgentEnd()}
 exit 1
 `,
       );
@@ -476,14 +476,9 @@ exit 1
       );
       await waitForSentMessageCount(sentMessages, 2);
       expect(sentMessages.at(-1)?.customType).toBe("subagent-result");
-      const requestId = (sentMessages[0]?.details as { requestId?: string })
-        ?.requestId;
-      if (requestId) {
-        expect(getProgressState(requestId)?.status).toBe("error");
-        expect(getProgressState(requestId)?.errorText).toContain(
-          "child failure",
-        );
-      }
+      const requestId = requestIdOf(sentMessages);
+      expect(getProgressState(requestId)?.status).toBe("error");
+      expect(getProgressState(requestId)?.errorText).toContain("child failure");
       expect(result.details.renderedByMessage).toBe(true);
       expect(listRunJobs()).toHaveLength(0);
     },
@@ -522,11 +517,8 @@ wait $!
       controller.abort();
       const result = await executePromise;
       expect((result.content[0] as TextContent).text).toBe("Canceled");
-      const requestId = (sentMessages[0]?.details as { requestId?: string })
-        ?.requestId;
-      if (requestId) {
-        expect(getProgressState(requestId)?.status).toBe("cancelled");
-      }
+      const requestId = requestIdOf(sentMessages);
+      expect(getProgressState(requestId)?.status).toBe("cancelled");
       expect(listRunJobs()).toHaveLength(0);
     },
   );
@@ -539,11 +531,11 @@ test("per-job notification delivers at depth 0 via lifecycle", async () => {
       PI_SUBAGENT_NOTIFY_PER_JOB: "1",
     },
     async () => {
-      let spawned = false;
+      const notified = Promise.withResolvers<void>();
       setDefaultDeliveryDeps({
         commandExists: () => true,
         spawnProcess: () => {
-          spawned = true;
+          notified.resolve();
           return {};
         },
       });
@@ -559,8 +551,7 @@ test("per-job notification delivers at depth 0 via lifecycle", async () => {
       );
       await waitForSentMessageCount(sentMessages, 2);
       expect(sentMessages.at(-1)?.customType).toBe("subagent-result");
-      await Bun.sleep(20);
-      expect(spawned).toBe(true);
+      await notified.promise;
       await waitForRunJobsCleared();
       expect(listRunJobs()).toHaveLength(0);
     },
@@ -664,11 +655,8 @@ test("batch notification does not crash for successful lifecycle completion", as
       await waitForSentMessageCount(sentMessages, 2);
       expect((result.content[0] as TextContent).text).toBe("done");
       expect(sentMessages.at(-1)?.customType).toBe("subagent-result");
-      const requestId = (sentMessages[0]?.details as { requestId?: string })
-        ?.requestId;
-      if (requestId) {
-        expect(getProgressState(requestId)?.status).toBe("success");
-      }
+      const requestId = requestIdOf(sentMessages);
+      expect(getProgressState(requestId)?.status).toBe("success");
       expect(listRunJobs()).toHaveLength(0);
     },
   );
@@ -760,12 +748,7 @@ test("prepareSubagentJob omits parent model when ctx.model is absent", async () 
   const sentMessages: SendMessageArg[] = [];
   const { tool, cwd } = await setupTest({
     sendMessage: (msg) => sentMessages.push(msg),
-    piScript: `#!/bin/sh
-printf '%s\n' "$*" > args.txt
-printf '%s\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"done"}],"usage":{"input":1,"output":1,"totalTokens":2,"cost":{"total":0}}}}'
-printf '%s\n' '{"type":"agent_end"}'
-exit 0
-`,
+    piScript: CAPTURE_ARGS_PI_SCRIPT,
   });
   process.env.PI_SUBAGENT_DEPTH = "1";
   const result = await runTool(
@@ -774,7 +757,8 @@ exit 0
     makeBareCtx(cwd),
   );
   expect((result.content[0] as TextContent).text).toBe("done");
-  const argsText = await Bun.file(path.join(cwd, "args.txt")).text();
+  const args = await readCapturedArgs(cwd);
+  const argsText = args.join(" ");
   expect(argsText).not.toContain("--provider");
   expect(argsText).not.toContain("--model");
   const details = result.details as SubagentDetails;
@@ -901,7 +885,7 @@ test("orchestrator forwards ctx.modelRegistry to runSingleAgent affecting thinki
     `#!/bin/sh
 ${CAPTURE_PI_ARGS_SH}
 printf '%s\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"done"}],"usage":{"input":1,"output":1,"totalTokens":2,"cost":{"total":0}}}}'
-printf '%s\n' '{"type":"agent_end"}'
+${emitAgentEnd()}
 exit 0
 `,
   );
@@ -957,7 +941,7 @@ test("orchestrator registry miss falls back to static catalog thinking resolutio
     `#!/bin/sh
 ${CAPTURE_PI_ARGS_SH}
 printf '%s\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"done"}],"usage":{"input":1,"output":1,"totalTokens":2,"cost":{"total":0}}}}'
-printf '%s\n' '{"type":"agent_end"}'
+${emitAgentEnd()}
 exit 0
 `,
   );

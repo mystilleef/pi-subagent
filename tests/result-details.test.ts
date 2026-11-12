@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import type { Message } from "@earendil-works/pi-ai";
 import {
   cancelProgressState,
@@ -21,7 +21,7 @@ import type {
   SubagentToolResult,
   ToolActivity,
 } from "../src/shared/types.js";
-import { makeSingleResult } from "./helpers.js";
+import { makeSingleResult } from "./fixtures.js";
 
 function makeToolResult(
   result: SingleResult,
@@ -567,83 +567,47 @@ test("supersession chain: nested activity then fresh child tool then new nested 
   expect(getProgressState("req-1")?.toolCount).toBe(1);
 });
 
-test("terminal success clears preserved nested activity and rejects late patchProgressFromDetails preview", () => {
-  createProgressState("req-1", "agent-a", "task a");
-  const d1 = makeDetails([]);
-  const r1 = d1.results[0];
-  if (!r1) throw new Error("missing result");
-  r1.progress = { toolCalls: [], activityText: "Reading config.ts" };
-  const s1 = new Set<string>();
-  patchProgressFromDetails("req-1", d1, s1);
-  expect(getProgressState("req-1")?.lastToolPreview).toBe("Reading config.ts");
-  finalizeProgressState("req-1", "all done");
-  expect(getProgressState("req-1")?.lastToolPreview).toBeUndefined();
-  expect(getProgressState("req-1")?.status).toBe("success");
-  const d2 = makeDetails([]);
-  const r2 = d2.results[0];
-  if (!r2) throw new Error("missing result");
-  r2.progress = {
-    toolCalls: [{ id: "tc-late", preview: "bash: stale" }],
-    activityText: "bash: stale",
-    lastToolPreview: "bash: stale",
-  };
-  const s2 = new Set<string>();
-  patchProgressFromDetails("req-1", d2, s2);
-  expect(getProgressState("req-1")?.lastToolPreview).toBeUndefined();
-  expect(getProgressState("req-1")?.status).toBe("success");
-});
-
-test("terminal error clears preserved nested activity and rejects late patchProgressFromDetails preview", () => {
-  createProgressState("req-1", "agent-a", "task a");
-  const d1 = makeDetails([]);
-  const r1 = d1.results[0];
-  if (!r1) throw new Error("missing result");
-  r1.progress = { toolCalls: [], activityText: "Reading config.ts" };
-  const s1 = new Set<string>();
-  patchProgressFromDetails("req-1", d1, s1);
-  expect(getProgressState("req-1")?.lastToolPreview).toBe("Reading config.ts");
-  failProgressState("req-1", "child failed");
-  expect(getProgressState("req-1")?.lastToolPreview).toBeUndefined();
-  expect(getProgressState("req-1")?.status).toBe("error");
-  const d2 = makeDetails([]);
-  const r2 = d2.results[0];
-  if (!r2) throw new Error("missing result");
-  r2.progress = {
-    toolCalls: [{ id: "tc-late", preview: "bash: stale" }],
-    activityText: "bash: stale",
-    lastToolPreview: "bash: stale",
-  };
-  const s2 = new Set<string>();
-  patchProgressFromDetails("req-1", d2, s2);
-  expect(getProgressState("req-1")?.lastToolPreview).toBeUndefined();
-  expect(getProgressState("req-1")?.status).toBe("error");
-});
-
-test("terminal cancellation clears preserved nested activity and rejects late patchProgressFromDetails preview", () => {
-  createProgressState("req-1", "agent-a", "task a");
-  const d1 = makeDetails([]);
-  const r1 = d1.results[0];
-  if (!r1) throw new Error("missing result");
-  r1.progress = { toolCalls: [], activityText: "Reading config.ts" };
-  const s1 = new Set<string>();
-  patchProgressFromDetails("req-1", d1, s1);
-  expect(getProgressState("req-1")?.lastToolPreview).toBe("Reading config.ts");
-  cancelProgressState("req-1", "user aborted");
-  expect(getProgressState("req-1")?.lastToolPreview).toBeUndefined();
-  expect(getProgressState("req-1")?.status).toBe("cancelled");
-  const d2 = makeDetails([]);
-  const r2 = d2.results[0];
-  if (!r2) throw new Error("missing result");
-  r2.progress = {
-    toolCalls: [{ id: "tc-late", preview: "bash: stale" }],
-    activityText: "bash: stale",
-    lastToolPreview: "bash: stale",
-  };
-  const s2 = new Set<string>();
-  patchProgressFromDetails("req-1", d2, s2);
-  expect(getProgressState("req-1")?.lastToolPreview).toBeUndefined();
-  expect(getProgressState("req-1")?.status).toBe("cancelled");
-});
+test.each([
+  {
+    outcome: "success",
+    settle: () => finalizeProgressState("req-1", "all done"),
+  },
+  {
+    outcome: "error",
+    settle: () => failProgressState("req-1", "child failed"),
+  },
+  {
+    outcome: "cancelled",
+    settle: () => cancelProgressState("req-1", "user aborted"),
+  },
+] as const)(
+  "terminal $outcome clears preserved nested activity and rejects late patchProgressFromDetails preview",
+  ({ outcome, settle }) => {
+    createProgressState("req-1", "agent-a", "task a");
+    const d1 = makeDetails([]);
+    const r1 = d1.results[0];
+    if (!r1) throw new Error("missing result");
+    r1.progress = { toolCalls: [], activityText: "Reading config.ts" };
+    patchProgressFromDetails("req-1", d1, new Set<string>());
+    expect(getProgressState("req-1")?.lastToolPreview).toBe(
+      "Reading config.ts",
+    );
+    settle();
+    expect(getProgressState("req-1")?.lastToolPreview).toBeUndefined();
+    expect(getProgressState("req-1")?.status).toBe(outcome);
+    const d2 = makeDetails([]);
+    const r2 = d2.results[0];
+    if (!r2) throw new Error("missing result");
+    r2.progress = {
+      toolCalls: [{ id: "tc-late", preview: "bash: stale" }],
+      activityText: "bash: stale",
+      lastToolPreview: "bash: stale",
+    };
+    patchProgressFromDetails("req-1", d2, new Set<string>());
+    expect(getProgressState("req-1")?.lastToolPreview).toBeUndefined();
+    expect(getProgressState("req-1")?.status).toBe(outcome);
+  },
+);
 
 test("nested activity passes through when activityText differs from child progress lastToolPreview", () => {
   createProgressState("req-1", "agent-a", "task a");
@@ -1806,9 +1770,5 @@ function makeDetails(
   };
 }
 
-const realDateNow = Date.now;
-
-afterEach(() => {
-  Date.now = realDateNow;
-  resetProgressStore();
-});
+beforeEach(resetProgressStore);
+afterEach(resetProgressStore);

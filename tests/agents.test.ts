@@ -857,21 +857,25 @@ Prompt`,
   ).toBe(true);
 });
 
-test("context false discovery stores agent.context === false as own property", async () => {
-  const discovery = await discoverAgent(
-    `---
-name: context-false
-description: Context false agent
-context: false
+test.each([{ field: "context" }, { field: "skills" }] as const)(
+  "$field false discovery stores agent.$field === false as own property",
+  async ({ field }) => {
+    const name = `${field}-false`;
+    const discovery = await discoverAgent(
+      `---
+name: ${name}
+description: ${field} false agent
+${field}: false
 ---
 Prompt`,
-    "context-false",
-  );
-  const agent = discovery.agents.find((a) => a.name === "context-false");
-  expect(agent).toBeDefined();
-  expect(agent?.context).toBe(false);
-  if (agent) expect(Object.hasOwn(agent, "context")).toBe(true);
-});
+      name,
+    );
+    const agent = discovery.agents.find((a) => a.name === name);
+    if (!agent) throw new Error(`missing ${name}`);
+    expect(agent[field]).toBe(false);
+    expect(Object.hasOwn(agent, field)).toBe(true);
+  },
+);
 
 test.each([
   {
@@ -1116,39 +1120,60 @@ Body`,
   ).toBeUndefined();
 });
 
-test("context false coexists with sibling model tools skills sampling fields", async () => {
-  const discovery = await discoverAgent(
-    `---
-name: context-false-siblings
-description: Context false with siblings
-context: false
+test.each([
+  {
+    field: "context",
+    stored: false,
+    siblings: "skills: helper, reviewer",
+    expected: { skills: ["helper", "reviewer"] },
+  },
+  {
+    field: "skills",
+    stored: false,
+    siblings: "context: false",
+    expected: { context: false },
+  },
+  {
+    field: "extensions",
+    stored: [] as string[],
+    siblings: "skills: helper, reviewer\ncontext: false",
+    expected: { skills: ["helper", "reviewer"], context: false },
+  },
+] as const)(
+  "$field false coexists with sibling frontmatter fields",
+  async ({ field, stored, siblings, expected }) => {
+    const name = `${field}-false-siblings`;
+    const discovery = await discoverAgent(
+      `---
+name: ${name}
+description: ${field} false with siblings
+${field}: false
+${siblings}
 model: claude-sonnet-4
 provider: anthropic
 tools: bash, read
-skills: helper, reviewer
 thinking: high
 temperature: 0.5
 top_p: 0.9
 ---
 Prompt`,
-    "context-false-siblings",
-  );
-  const agent = discovery.agents.find(
-    (a) => a.name === "context-false-siblings",
-  );
-  expect(agent).toBeDefined();
-  if (agent) {
-    expect(agent.context).toBe(false);
-    expect(Object.hasOwn(agent, "context")).toBe(true);
-    expect(agent.model).toBe("claude-sonnet-4");
-    expect(agent.provider).toBe("anthropic");
-    expect(agent.tools).toEqual(["bash", "read"]);
-    expect(agent.skills).toEqual(["helper", "reviewer"]);
-    expect(agent.thinking).toBe("high");
-    expect(agent.temperature).toBe(0.5);
-    expect(agent.topP).toBe(0.9);
-  }
-});
+      name,
+    );
+    const agent = discovery.agents.find((a) => a.name === name);
+    if (!agent) throw new Error(`missing ${name}`);
+    expect(agent[field]).toEqual(stored);
+    expect(Object.hasOwn(agent, field)).toBe(true);
+    expect(agent).toMatchObject({
+      model: "claude-sonnet-4",
+      provider: "anthropic",
+      tools: ["bash", "read"],
+      thinking: "high",
+      temperature: 0.5,
+      topP: 0.9,
+      ...expected,
+    });
+  },
+);
 
 test("context true coexists with sibling fields and omits own context", async () => {
   const discovery = await discoverAgent(
@@ -1171,57 +1196,6 @@ Prompt`,
     expect(agent.context).toBeUndefined();
     expect(agent.model).toBe("gpt-5");
     expect(agent.tools).toEqual(["bash"]);
-  }
-});
-
-test("skills false discovery stores agent.skills === false as own property", async () => {
-  const discovery = await discoverAgent(
-    `---
-name: skills-false
-description: Skills false agent
-skills: false
----
-Prompt`,
-    "skills-false",
-  );
-  const agent = discovery.agents.find((a) => a.name === "skills-false");
-  expect(agent).toBeDefined();
-  if (agent) {
-    expect(agent.skills).toBe(false);
-    expect(Object.hasOwn(agent, "skills")).toBe(true);
-  }
-});
-
-test("skills false coexists with sibling model tools context sampling fields", async () => {
-  const discovery = await discoverAgent(
-    `---
-name: skills-false-siblings
-description: Skills false with siblings
-skills: false
-context: false
-model: claude-sonnet-4
-provider: anthropic
-tools: bash, read
-thinking: high
-temperature: 0.5
-top_p: 0.9
----
-Prompt`,
-    "skills-false-siblings",
-  );
-  const agent = discovery.agents.find(
-    (a) => a.name === "skills-false-siblings",
-  );
-  expect(agent).toBeDefined();
-  if (agent) {
-    expect(agent.skills).toBe(false);
-    expect(agent.context).toBe(false);
-    expect(agent.model).toBe("claude-sonnet-4");
-    expect(agent.provider).toBe("anthropic");
-    expect(agent.tools).toEqual(["bash", "read"]);
-    expect(agent.thinking).toBe("high");
-    expect(agent.temperature).toBe(0.5);
-    expect(agent.topP).toBe(0.9);
   }
 });
 
@@ -1423,42 +1397,6 @@ Prompt`,
   expect(agent).toBeDefined();
   if (agent) {
     expect(agent.extensions).toEqual(["context-mode", "npm:helper"]);
-  }
-});
-
-test("extensions false coexists with sibling model tools skills context sampling fields", async () => {
-  const discovery = await discoverAgent(
-    `---
-name: extensions-false-siblings
-description: Extensions false with siblings
-extensions: false
-model: claude-sonnet-4
-provider: anthropic
-tools: bash, read
-skills: helper, reviewer
-context: false
-thinking: high
-temperature: 0.5
-top_p: 0.9
----
-Prompt`,
-    "extensions-false-siblings",
-  );
-  const agent = discovery.agents.find(
-    (a) => a.name === "extensions-false-siblings",
-  );
-  expect(agent).toBeDefined();
-  if (agent) {
-    expect(agent.extensions).toEqual([]);
-    expect(Object.hasOwn(agent, "extensions")).toBe(true);
-    expect(agent.model).toBe("claude-sonnet-4");
-    expect(agent.provider).toBe("anthropic");
-    expect(agent.tools).toEqual(["bash", "read"]);
-    expect(agent.skills).toEqual(["helper", "reviewer"]);
-    expect(agent.context).toBe(false);
-    expect(agent.thinking).toBe("high");
-    expect(agent.temperature).toBe(0.5);
-    expect(agent.topP).toBe(0.9);
   }
 });
 

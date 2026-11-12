@@ -1,24 +1,25 @@
 import { describe, expect, spyOn, test } from "bun:test";
-import * as fs from "node:fs";
-import path from "node:path";
 import type { Api, Model } from "@earendil-works/pi-ai";
 import type { AgentConfig, ThinkingLevel } from "../src/agent/agents.js";
-import type { ModelRegistry } from "../src/child/model-resolution.js";
+import type {
+  ChildModelSettings,
+  ModelRegistry,
+} from "../src/child/model-resolution.js";
 import {
   buildModelDisplay,
   resolveEffectiveChildModelSettings,
   resolveThinkingLevel,
 } from "../src/child/model-resolution.js";
 import { runSingleAgent } from "../src/child/process.js";
-import type { SingleResult } from "../src/shared/types.js";
 import {
-  CAPTURE_ARGS_PI_SCRIPT,
+  captureRunSingleAgentArgs,
   flagValues,
   hangAgent,
   makeModelAgent,
   makeSubagentDetails,
   modelFixture,
   registryFixture,
+  runCapturedModelAgent,
   setupHooks,
   setupTest,
   unconfirmedWarning,
@@ -27,50 +28,7 @@ import {
 
 setupHooks();
 
-type CapturableParentModel = {
-  provider?: string | undefined;
-  id?: string | undefined;
-};
-
-async function captureRunSingleAgentArgs(
-  agent: AgentConfig,
-  parentModel: CapturableParentModel | undefined,
-  options: { registry?: ModelRegistry } = { registry: registryFixture([]) },
-): Promise<string[]> {
-  return (await runCapturedModelAgent(agent, parentModel, "off", options)).args;
-}
-
-async function runCapturedModelAgent(
-  agent: AgentConfig,
-  parentModel: CapturableParentModel | undefined,
-  parentThinking: AgentConfig["thinking"] = "off",
-  options?: { registry?: ModelRegistry },
-): Promise<{ args: string[]; result: SingleResult }> {
-  const { cwd } = await setupTest({
-    piScript: CAPTURE_ARGS_PI_SCRIPT,
-  });
-  const { result } = await runSingleAgent(
-    cwd,
-    [agent],
-    agent.name,
-    "task",
-    undefined,
-    undefined,
-    makeSubagentDetails,
-    parentModel,
-    parentThinking ?? "off",
-    false,
-    options,
-  );
-  expect(result.exitCode).toBe(0);
-  return {
-    args: fs
-      .readFileSync(path.join(cwd, "args.txt"), "utf8")
-      .trimEnd()
-      .split("\n"),
-    result,
-  };
-}
+type CapturableParentModel = ChildModelSettings | undefined;
 
 describe("unconfirmed thinking display propagation", () => {
   test("unknown model preserves requested level and emits exact unconfirmed warning", async () => {
