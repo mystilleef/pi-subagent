@@ -64,11 +64,11 @@
     "typebox": "*"
   },
   "devDependencies": {
-    "@biomejs/biome": "^2.6.6",
-    "@earendil-works/pi-agent-core": "^1.5.1",
-    "@earendil-works/pi-ai": "^1.5.1",
-    "@earendil-works/pi-coding-agent": "^1.5.1",
-    "@earendil-works/pi-tui": "^1.5.1",
+    "@biomejs/biome": "^2.6.7",
+    "@earendil-works/pi-agent-core": "^1.5.2",
+    "@earendil-works/pi-ai": "^1.5.2",
+    "@earendil-works/pi-coding-agent": "^1.5.2",
+    "@earendil-works/pi-tui": "^1.5.2",
     "@types/bun": "^1.4.4",
     "@types/node": "^26.6.6",
     "typebox": "^1.4.6",
