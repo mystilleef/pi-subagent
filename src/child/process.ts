@@ -80,6 +80,26 @@ function getAbortReason(signal: AbortSignal): string {
 
 const hostSleepInhibitorAdapter = makeHostSleepInhibitorAdapter();
 
+let defaultSleepInhibitorAcquirer: SleepInhibitorAcquirer | undefined;
+
+export function setDefaultSleepInhibitorAcquirer(
+  acquirer: SleepInhibitorAcquirer | undefined,
+): void {
+  defaultSleepInhibitorAcquirer = acquirer;
+}
+
+export function resetDefaultSleepInhibitorAcquirer(): void {
+  defaultSleepInhibitorAcquirer = undefined;
+}
+
+function resolveSleepInhibitorAcquirer(
+  explicit: SleepInhibitorAcquirer | undefined,
+): SleepInhibitorAcquirer {
+  return (
+    explicit ?? defaultSleepInhibitorAcquirer ?? acquireDefaultSleepInhibitor
+  );
+}
+
 async function acquireDefaultSleepInhibitor(
   pid: number,
 ): Promise<SleepInhibitorHandle> {
@@ -455,7 +475,7 @@ export async function runSingleAgent(
       orchestratorPid !== undefined
         ? acquireSubagentSleepInhibitor(
             orchestratorPid,
-            options.acquireSleepInhibitor ?? acquireDefaultSleepInhibitor,
+            resolveSleepInhibitorAcquirer(options.acquireSleepInhibitor),
           )
         : Promise.resolve(undefined);
     try {
