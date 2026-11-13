@@ -5,7 +5,10 @@ import type {
   ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
 import { listRunJobs } from "../src/orchestration/run-registry.js";
-import type { SubagentDetails } from "../src/shared/types.js";
+import type {
+  SubagentDetails,
+  UsageInstanceNode,
+} from "../src/shared/types.js";
 import type { SendMessageArg } from "./helpers.js";
 import {
   emitAgentEnd,
@@ -340,18 +343,58 @@ const BASH_LS_TOOL_CALL = JSON.stringify({
   },
 });
 
+function makeSubagentSnapshotUpdateLine(
+  preview: string,
+  usageTree: UsageInstanceNode,
+  instanceName = "keen-fox",
+): string {
+  return JSON.stringify({
+    type: "tool_execution_update",
+    toolName: "subagent",
+    partialResult: {
+      content: [{ type: "text", text: preview }],
+      details: {
+        mode: "single",
+        agentScope: "both",
+        projectAgentsDir: null,
+        results: [
+          {
+            agent: "worker",
+            instanceName,
+            agentSource: "user",
+            task: "",
+            exitCode: 0,
+            finalOutput: "",
+            stderr: "",
+            usage: {
+              input: usageTree.usage.input,
+              output: usageTree.usage.output,
+              cacheRead: usageTree.usage.cacheRead,
+              cacheWrite: usageTree.usage.cacheWrite,
+              cost: usageTree.usage.cost,
+              contextTokens: 0,
+              turns: usageTree.usage.turns,
+            },
+            progress: {
+              toolCalls: [],
+              lastToolPreview: preview,
+              activityText: preview,
+              activeToolActivity: { toolName: "tool", inputSummary: preview },
+            },
+          },
+        ],
+        usageTree,
+      },
+    },
+  });
+}
+
 test.each([
   {
-    scenario: "three identical tool calls",
-    line: BASH_LS_TOOL_CALL,
+    scenario: "three identical tool activity updates",
+    line: makeSubagentToolUpdateLine("bash: ls src"),
     repeats: 3,
-    fragment: "ls",
-  },
-  {
-    scenario: "two identical tool calls",
-    line: BASH_LS_TOOL_CALL,
-    repeats: 2,
-    fragment: "ls",
+    fragment: "ls src",
   },
   {
     scenario: "two identical tool activity updates",
@@ -392,6 +435,29 @@ exit 0
     expect(listRunJobs()).toHaveLength(0);
   },
 );
+
+test("repeated assistant message_end turns increment usageTree turns and reach hostOnUpdate", async () => {
+  const { tool, cwd } = await setupTest({
+    piScript: `#!/bin/sh
+printf '%s\\n' ${shellQuote(BASH_LS_TOOL_CALL)}
+printf '%s\\n' ${shellQuote(BASH_LS_TOOL_CALL)}
+${emitAgentEnd()}
+exit 0
+`,
+  });
+  const updates: AgentToolResult<SubagentDetails>[] = [];
+  process.env.PI_SUBAGENT_DEPTH = "1";
+  await tool.execute(
+    "test-tool-call",
+    { agent: "hang", task: "turn-updates" },
+    undefined,
+    (partial) => updates.push(partial),
+    makeBareCtx(cwd),
+  );
+  expect(updates).toHaveLength(2);
+  expect(updates[0]?.details.usageTree?.usage.turns).toBe(1);
+  expect(updates[1]?.details.usageTree?.usage.turns).toBe(2);
+});
 
 test("distinct progress events reach callback despite deduplication guard", async () => {
   const sentMessages: SendMessageArg[] = [];
@@ -506,9 +572,200 @@ exit 0
         .join(",");
       const exitCode = latestResult?.exitCode ?? 0;
       const stopReason = latestResult?.stopReason ?? "";
-      return `${contentText}|${activityText}|${toolCallIds}|${exitCode}|${stopReason}`;
+      const usageTreeKey = JSON.stringify(p.details.usageTree ?? null);
+      return `${contentText}|${activityText}|${toolCallIds}|${exitCode}|${stopReason}|${usageTreeKey}`;
     }),
   );
   expect(uniqueFingerprints.size).toBe(hostUpdates.length);
   expect(listRunJobs()).toHaveLength(0);
+});
+
+test("hostOnUpdate delivers snapshot-only usageTree changes and deduplicates identical snapshots", async () => {
+  const sentMessages: SendMessageArg[] = [];
+  const hostUpdates: AgentToolResult<SubagentDetails>[] = [];
+  const snap1: UsageInstanceNode = {
+    id: "grandchild-1",
+    agent: "worker",
+    instanceName: "keen-fox",
+    ordinal: 1,
+    startedAt: 1_000,
+    status: "running",
+    usage: {
+      input: 10,
+      output: 5,
+      cacheRead: 0,
+      cacheWrite: 0,
+      cost: 0.01,
+      turns: 1,
+    },
+    children: [],
+  };
+  const snap2: UsageInstanceNode = {
+    ...snap1,
+    usage: {
+      input: 40,
+      output: 15,
+      cacheRead: 2,
+      cacheWrite: 0,
+      cost: 0.05,
+      turns: 2,
+    },
+  };
+  const line1 = makeSubagentSnapshotUpdateLine("bash: ls", snap1);
+  const line2Duplicate = makeSubagentSnapshotUpdateLine("bash: ls", snap1);
+  const line3SnapshotOnly = makeSubagentSnapshotUpdateLine("bash: ls", snap2);
+
+  const { tool, cwd } = await setupTest({
+    sendMessage: (msg) => sentMessages.push(msg),
+    piScript: `#!/bin/sh
+printf '%s\\n' ${shellQuote(line1)}
+printf '%s\\n' ${shellQuote(line2Duplicate)}
+printf '%s\\n' ${shellQuote(line3SnapshotOnly)}
+${emitAgentEnd()}
+exit 0
+`,
+  });
+
+  process.env.PI_SUBAGENT_DEPTH = "1";
+  await tool.execute(
+    "test-tool-call",
+    { agent: "hang", task: "snapshot-only change" },
+    undefined,
+    (partial) => hostUpdates.push(partial),
+    makeBareCtx(cwd),
+  );
+  await waitForSentMessageCount(sentMessages, 2);
+
+  expect(hostUpdates).toHaveLength(2);
+  expect(hostUpdates[0]?.details.usageTree?.children[0]?.usage.input).toBe(10);
+  expect(hostUpdates[1]?.details.usageTree?.children[0]?.usage.input).toBe(40);
+});
+
+test("later current snapshot repairs missed intermediate updates via wholesale replacement", async () => {
+  const sentMessages: SendMessageArg[] = [];
+  const hostUpdates: AgentToolResult<SubagentDetails>[] = [];
+  const initialSnap: UsageInstanceNode = {
+    id: "grandchild-1",
+    agent: "worker",
+    instanceName: "keen-fox",
+    ordinal: 1,
+    startedAt: 1_000,
+    status: "running",
+    usage: {
+      input: 5,
+      output: 2,
+      cacheRead: 0,
+      cacheWrite: 0,
+      cost: 0.01,
+      turns: 1,
+    },
+    children: [],
+  };
+  // Intermediate update with input: 20 was missed; later current snapshot has input: 55 + nested grandchild.
+  const currentTerminalSnap: UsageInstanceNode = {
+    ...initialSnap,
+    status: "success",
+    durationMs: 300,
+    usage: {
+      input: 55,
+      output: 25,
+      cacheRead: 0,
+      cacheWrite: 0,
+      cost: 0.09,
+      turns: 3,
+    },
+    children: [
+      {
+        id: "great-grandchild-1",
+        agent: "reader",
+        instanceName: "warm-lark",
+        ordinal: 1,
+        startedAt: 1_100,
+        status: "success",
+        durationMs: 120,
+        usage: {
+          input: 12,
+          output: 4,
+          cacheRead: 0,
+          cacheWrite: 0,
+          cost: 0.02,
+          turns: 1,
+        },
+        children: [],
+      },
+    ],
+  };
+
+  const updateLine = makeSubagentSnapshotUpdateLine(
+    "bash: step 1",
+    initialSnap,
+  );
+  const terminalMessageLine = JSON.stringify({
+    type: "message_end",
+    message: {
+      role: "toolResult",
+      toolCallId: "tc-sub-1",
+      toolName: "subagent",
+      content: [{ type: "text", text: "ok" }],
+      details: {
+        mode: "single",
+        agentScope: "both",
+        projectAgentsDir: null,
+        results: [
+          {
+            agent: "worker",
+            instanceName: "keen-fox",
+            agentSource: "user",
+            task: "work",
+            exitCode: 0,
+            finalOutput: "ok",
+            stderr: "",
+            usage: {
+              input: 55,
+              output: 25,
+              cacheRead: 0,
+              cacheWrite: 0,
+              cost: 0.09,
+              contextTokens: 0,
+              turns: 3,
+            },
+          },
+        ],
+        usageTree: currentTerminalSnap,
+      },
+      isError: false,
+      timestamp: 2_000,
+    },
+  });
+
+  const { tool, cwd } = await setupTest({
+    sendMessage: (msg) => sentMessages.push(msg),
+    piScript: `#!/bin/sh
+printf '%s\\n' ${shellQuote(updateLine)}
+printf '%s\\n' ${shellQuote(terminalMessageLine)}
+${emitAgentEnd()}
+exit 0
+`,
+  });
+
+  process.env.PI_SUBAGENT_DEPTH = "1";
+  const result = await tool.execute(
+    "test-tool-call",
+    { agent: "hang", task: "repair missed update" },
+    undefined,
+    (partial) => hostUpdates.push(partial),
+    makeBareCtx(cwd),
+  );
+  await waitForSentMessageCount(sentMessages, 2);
+
+  expect(hostUpdates).toHaveLength(2);
+  const deliveredChild = hostUpdates[1]?.details.usageTree?.children[0];
+  expect(deliveredChild?.status).toBe("success");
+  expect(deliveredChild?.usage.input).toBe(55);
+  expect(deliveredChild?.children).toHaveLength(1);
+  expect(deliveredChild?.children[0]?.id).toBe("great-grandchild-1");
+
+  const finalTree = (result.details as SubagentDetails).usageTree;
+  expect(finalTree?.children[0]?.usage.input).toBe(55);
+  expect(finalTree?.children[0]?.children[0]?.id).toBe("great-grandchild-1");
 });

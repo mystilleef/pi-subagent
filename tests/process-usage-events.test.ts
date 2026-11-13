@@ -352,3 +352,37 @@ exit 0
     writeSpy.mockRestore();
   }
 });
+
+test("throwing onChildUsageTree callbacks never disrupt child event handling", async () => {
+  const sampleTree = { id: "nested-child", agent: "worker" };
+  const received: unknown[] = [];
+  const { cwd } = await setupTest({
+    piScript: `#!/bin/sh
+printf '%s\\n' '{"type":"tool_execution_update","toolName":"subagent","partialResult":{"content":[{"type":"text","text":"nested"}],"details":{"results":[],"usageTree":{"id":"nested-child","agent":"worker"}}}}'
+printf '%s\\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"done"}]}}'
+${emitAgentEnd([])}
+exit 0
+`,
+  });
+  const { result } = await runSingleAgent(
+    cwd,
+    [hangAgent],
+    "hang",
+    "task",
+    undefined,
+    undefined,
+    makeSubagentDetails,
+    undefined,
+    "off",
+    false,
+    {
+      onChildUsageTree: (tree) => {
+        received.push(tree);
+        throw new Error("delivery sink failure");
+      },
+    },
+  );
+  expect(result.exitCode).toBe(0);
+  expect(result.finalOutput).toBe("done");
+  expect(received).toEqual([sampleTree]);
+});

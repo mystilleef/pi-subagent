@@ -9,11 +9,15 @@ import { resolvePackageExtensionPath } from "../src/child/process-utils.js";
 import { SUBAGENT_RESULT_CONTRACT } from "../src/child/prompt-contract.js";
 import { resetAgentCache } from "../src/index.js";
 import { listRunJobs } from "../src/orchestration/run-registry.js";
+import { queryRootRunUsage } from "../src/orchestration/usage-ledger.js";
 import {
   resetResolvedAgentExtensionPathsCache,
   resetResolvedAgentSkillArgsCache,
 } from "../src/shared/resource-resolution.js";
-import type { SubagentDetails } from "../src/shared/types.js";
+import type {
+  SubagentDetails,
+  UsageInstanceNode,
+} from "../src/shared/types.js";
 import type { SendMessageArg } from "./helpers.js";
 import {
   CAPTURE_ARGS_PI_SCRIPT,
@@ -27,6 +31,7 @@ import {
   makeBareCtx,
   readCapturedArgs,
   registryFixture,
+  requestIdOf,
   runTool,
   setupFakePi,
   setupHooks,
@@ -1018,4 +1023,237 @@ Replacement body prompt.
   expect(args.at(-1)).toBe("Task: replace task");
   const promptText = await Bun.file(path.join(cwd, "prompt.txt")).text();
   expect(promptText).toBe("Replacement body prompt.");
+});
+
+test("cross-process nested subagent delivers tool_execution_update and toolResult usageTrees with stable spawner ordinals and self-only result usage", async () => {
+  const sentMessages: SendMessageArg[] = [];
+  const { binDir, cwd } = await setupFakePi();
+  const childRunnerPath = path.join(cwd, "nested-child-runner.ts");
+  const orchestratorPath = path.resolve(
+    "src/orchestration/subagent-orchestrator.ts",
+  );
+  const processPath = path.resolve("src/child/process.ts");
+  await writeFile(
+    childRunnerPath,
+    `import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { setDefaultSleepInhibitorAcquirer } from ${JSON.stringify(processPath)};
+import { startSubagentJob, formatSubagentToolResult } from ${JSON.stringify(orchestratorPath)};
+
+process.argv[1] = "not-pi";
+setDefaultSleepInhibitorAcquirer(async () => ({ async release() {} }));
+
+const fakePi = {
+  getThinkingLevel: () => "off",
+  sendMessage: () => {},
+} as unknown as ExtensionAPI;
+
+const ctx = {
+  cwd: process.cwd(),
+  hasUI: false,
+  modelRegistry: { find: () => undefined },
+} as unknown as ExtensionContext;
+
+async function runGrandchild(toolCallId: string, task: string) {
+  const res = await startSubagentJob(
+    fakePi,
+    ctx,
+    { agent: "hang", task },
+    undefined,
+    (partial) => {
+      process.stdout.write(
+        JSON.stringify({
+          type: "tool_execution_update",
+          toolCallId,
+          toolName: "subagent",
+          args: { agent: "hang", task },
+          partialResult: partial,
+        }) + "\\n",
+      );
+    },
+  );
+  const toolResult = formatSubagentToolResult("hang", res);
+  process.stdout.write(
+    JSON.stringify({
+      type: "message_end",
+      message: {
+        role: "toolResult",
+        toolCallId,
+        toolName: "subagent",
+        content: toolResult.content,
+        details: toolResult.details,
+        isError: false,
+        timestamp: Date.now(),
+      },
+    }) + "\\n",
+  );
+}
+
+await runGrandchild("gc-1", "first grandchild");
+await runGrandchild("gc-2", "second grandchild");
+`,
+  );
+
+  await installFakePi(
+    binDir,
+    `#!/bin/sh
+if [ "$PI_SUBAGENT_DEPTH" = "1" ]; then
+  printf '%s\\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"spawning children"}],"usage":{"input":11,"output":4,"cacheRead":0,"cacheWrite":0,"totalTokens":15,"cost":{"total":0.03}}}}'
+  ${shellQuote(process.execPath)} run ${shellQuote(childRunnerPath)}
+  printf '%s\\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"all done"}],"usage":{"input":9,"output":6,"cacheRead":0,"cacheWrite":0,"totalTokens":15,"cost":{"total":0.02}}}}'
+  ${emitAgentEnd()}
+  exit 0
+fi
+printf '%s\\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"leaf done"}],"usage":{"input":7,"output":3,"cacheRead":0,"cacheWrite":0,"totalTokens":10,"cost":{"total":0.01}}}}'
+${emitAgentEnd()}
+exit 0
+`,
+  );
+
+  const tool = getSubagentTool({
+    sendMessage: (msg) => sentMessages.push(msg),
+  });
+  process.env.PI_SUBAGENT_DEPTH = "0";
+  const started = await runTool(
+    tool,
+    { agent: "hang", task: "nested parent" },
+    makeBareCtx(cwd),
+  );
+  expect((started.content[0] as TextContent).text).toContain("started");
+
+  await waitForSentMessageCount(sentMessages, 2);
+  await waitForRunJobsCleared();
+
+  const requestId = requestIdOf(sentMessages);
+  const terminalMsg = sentMessages.at(-1);
+  expect(terminalMsg?.content).toBe("all done");
+  const details = terminalMsg?.details as SubagentDetails;
+  const selfResult = details.results[0];
+  expect(selfResult?.usage.input).toBe(20);
+  expect(selfResult?.usage.output).toBe(10);
+  expect(selfResult?.usage.turns).toBe(2);
+  expect(selfResult?.usage.cost).toBeCloseTo(0.05, 10);
+
+  const tree = details.usageTree;
+  expect(tree?.id).toBe(requestId);
+  expect(tree?.ordinal).toBe(1);
+  expect(tree?.status).toBe("success");
+  expect(tree?.children).toHaveLength(2);
+  expect(tree?.children[0]?.ordinal).toBe(1);
+  expect(tree?.children[0]?.status).toBe("success");
+  expect(tree?.children[0]?.usage.input).toBe(7);
+  expect(tree?.children[1]?.ordinal).toBe(2);
+  expect(tree?.children[1]?.status).toBe("success");
+  expect(tree?.children[1]?.usage.input).toBe(7);
+  expect(tree?.children[0]?.id).not.toBe(tree?.children[1]?.id);
+
+  const rollup = queryRootRunUsage(requestId)?.rollup;
+  expect(rollup?.instances).toBe(3);
+  expect(rollup?.usage.input).toBe(34);
+  expect(rollup?.usage.output).toBe(16);
+  expect(rollup?.usage.cost).toBeCloseTo(0.07, 10);
+});
+
+test("tool_result_end and agent_end message replay deliver subagent usageTrees idempotently without expanding debug fields", async () => {
+  const sentMessages: SendMessageArg[] = [];
+  const { binDir, cwd } = await setupFakePi();
+  const grandchildTree: UsageInstanceNode = {
+    id: "gc-replay-1",
+    agent: "worker",
+    instanceName: "crisp-teal",
+    ordinal: 2,
+    startedAt: 1_500,
+    status: "success",
+    durationMs: 90,
+    usage: {
+      input: 15,
+      output: 5,
+      cacheRead: 2,
+      cacheWrite: 1,
+      cost: 0.04,
+      turns: 1,
+    },
+    children: [],
+  };
+  const toolResultMsg = {
+    role: "toolResult",
+    toolCallId: "tc-sub-replay",
+    toolName: "subagent",
+    content: [{ type: "text", text: "child output" }],
+    details: {
+      mode: "single",
+      agentScope: "both",
+      projectAgentsDir: null,
+      results: [
+        {
+          agent: "worker",
+          instanceName: "crisp-teal",
+          agentSource: "user",
+          task: "secret-task",
+          exitCode: 0,
+          finalOutput: "child output",
+          stderr: "secret-stderr",
+          usage: {
+            input: 15,
+            output: 5,
+            cacheRead: 2,
+            cacheWrite: 1,
+            cost: 0.04,
+            contextTokens: 20,
+            turns: 1,
+          },
+        },
+      ],
+      usageTree: grandchildTree,
+    },
+    isError: false,
+    timestamp: 2_000,
+  };
+  const finalAssistantMsg = makeAssistantMessage("finished replay", {
+    usage: {
+      input: 8,
+      output: 2,
+      cacheRead: 0,
+      cacheWrite: 0,
+      totalTokens: 10,
+      cost: { total: 0.01 },
+    },
+  });
+
+  await installFakePi(
+    binDir,
+    `#!/bin/sh
+printf '%s\\n' ${shellQuote(JSON.stringify({ type: "tool_result_end", message: toolResultMsg }))}
+printf '%s\\n' ${shellQuote(JSON.stringify({ type: "message_end", message: finalAssistantMsg }))}
+${emitAgentEnd([toolResultMsg, finalAssistantMsg])}
+exit 0
+`,
+  );
+
+  process.env.PI_SUBAGENT_DEBUG_ENABLED = "1";
+  process.env.PI_SUBAGENT_DEPTH = "1";
+  const tool = getSubagentTool({
+    sendMessage: (msg) => sentMessages.push(msg),
+  });
+  const result = await runTool(
+    tool,
+    { agent: "hang", task: "parent secret", debug: true },
+    makeBareCtx(cwd),
+  );
+  await waitForSentMessageCount(sentMessages, 2);
+
+  expect((result.content[0] as TextContent).text).toBe("finished replay");
+  const details = result.details as SubagentDetails;
+  const selfResult = details.results[0];
+  expect(selfResult?.usage.input).toBe(8);
+  expect(selfResult?.messages).toBeDefined();
+
+  const tree = details.usageTree;
+  expect(tree?.children).toHaveLength(1);
+  expect(tree?.children[0]?.id).toBe("gc-replay-1");
+  expect(tree?.children[0]?.ordinal).toBe(2);
+  expect(Object.keys(tree ?? {})).not.toContain("messages");
+  expect(Object.keys(tree ?? {})).not.toContain("stderr");
+  expect(Object.keys(tree ?? {})).not.toContain("task");
+  expect(Object.keys(tree?.children[0] ?? {})).not.toContain("task");
+  expect(Object.keys(tree?.children[0] ?? {})).not.toContain("stderr");
 });

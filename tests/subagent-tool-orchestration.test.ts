@@ -1,6 +1,7 @@
-import { expect, spyOn, test } from "bun:test";
+import { describe, expect, spyOn, test } from "bun:test";
 import { type FileHandle, mkdir, open, writeFile } from "node:fs/promises";
 import path from "node:path";
+import type { AgentToolUpdateCallback } from "@earendil-works/pi-agent-core";
 import type { TextContent } from "@earendil-works/pi-ai";
 import type {
   AgentToolResult,
@@ -11,8 +12,19 @@ import {
   cancelRunJob,
   listRunJobs,
 } from "../src/orchestration/run-registry.js";
+import {
+  attachChildSubtree,
+  queryInstanceUsage,
+} from "../src/orchestration/usage-ledger.js";
 import { getProgressState } from "../src/progress/progress.js";
-import type { SubagentDetails } from "../src/shared/types.js";
+import type {
+  SubagentDetails,
+  UsageInstanceNode,
+} from "../src/shared/types.js";
+import {
+  computeSubtreeRollup,
+  createEmptyAdditiveUsage,
+} from "../src/shared/usage-accounting.js";
 import type { SendMessageArg } from "./helpers.js";
 import {
   CAPTURE_ARGS_PI_SCRIPT,
@@ -887,7 +899,10 @@ test("subagent tool lifecycle failure with no latest result preserves raw error 
     makeBareCtx(cwd),
   );
   expect((result.content[0] as TextContent).text).toBe("send rejected");
-  expect((result.details as SubagentDetails).results).toHaveLength(0);
+  const details = result.details as SubagentDetails;
+  expect(details.results).toHaveLength(0);
+  expect(details.usageTree).toBeDefined();
+  expect(details.usageTree?.status).not.toBe("running");
   const resultMessages = sentMessages.filter(
     (msg) => msg.customType === "subagent-result",
   );
@@ -1016,4 +1031,194 @@ Prompt.`,
   );
   expect(sentMessages).toHaveLength(0);
   expect(listRunJobs()).toHaveLength(0);
+});
+
+describe("lifecycle accounting details and terminal reconciliation", () => {
+  test("propagates bounded usageTree in partial updates, reconciles running descendants on completion, and keeps result.usage self-only", async () => {
+    const sentMessages: SendMessageArg[] = [];
+    const partialSnapshots: UsageInstanceNode[] = [];
+    let attachedSyntheticChildren = false;
+    const { tool, cwd } = await setupTest({
+      sendMessage: (msg) => sentMessages.push(msg),
+      piScript: `#!/bin/sh
+printf '%s\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"toolCall","name":"bash","id":"tc-1","arguments":{"command":"ls"}}],"usage":{"input":10,"output":5,"cacheRead":2,"cacheWrite":1,"totalTokens":18,"cost":{"total":0.25}}}}'
+printf '%s\n' '{"type":"tool_result_end","message":{"role":"toolResult","toolCallId":"tc-1","content":[{"type":"text","text":"ok"}]}}'
+printf '%s\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"toolCall","name":"read","id":"tc-2","arguments":{"path":"README.md"}},{"type":"text","text":"done"}],"usage":{"input":4,"output":6,"cacheRead":0,"cacheWrite":0,"totalTokens":10,"cost":{"total":0.10}}}}'
+${emitAgentEnd()}
+exit 0
+`,
+    });
+    process.env.PI_SUBAGENT_DEPTH = "1";
+
+    const onUpdate: AgentToolUpdateCallback<SubagentDetails> = (partial) => {
+      const snap = partial.details.usageTree;
+      if (snap) partialSnapshots.push(snap);
+      if (!attachedSyntheticChildren && sentMessages.length > 0) {
+        attachedSyntheticChildren = true;
+        const reqId = requestIdOf(sentMessages);
+        for (let i = 1; i <= 55; i += 1) {
+          const child = attachChildSubtree(reqId, {
+            id: `synth-child-${i}`,
+            agent: "explorer",
+            instanceName: `exp-${i}`,
+            ordinal: i,
+            startedAt: Date.now() - 100,
+            status: "running",
+            usage: createEmptyAdditiveUsage(),
+            children: [],
+          });
+          if (child.ok && i > 5) {
+            attachChildSubtree(reqId, {
+              ...child.value,
+              status: "success",
+              durationMs: 50,
+              usage: {
+                input: 100,
+                output: 20,
+                cacheRead: 0,
+                cacheWrite: 0,
+                cost: 1,
+                turns: 1,
+              },
+            });
+          }
+        }
+      }
+    };
+
+    const result = await tool.execute(
+      "call-partial-reconcile",
+      { agent: "hang", task: "with children" },
+      undefined,
+      onUpdate,
+      makeBareCtx(cwd),
+    );
+    const requestId = requestIdOf(sentMessages);
+
+    expect(partialSnapshots.length).toBeGreaterThanOrEqual(2);
+    const boundedPartial = partialSnapshots.find(
+      (snap) => snap.children.length === 49,
+    );
+    expect(boundedPartial).toBeDefined();
+    expect(boundedPartial?.omitted?.count).toBe(6);
+
+    const terminalTree = (result.details as SubagentDetails).usageTree;
+    expect(terminalTree).toBeDefined();
+    if (!terminalTree) throw new Error("Expected terminal usageTree");
+    expect(terminalTree.status).toBe("success");
+    expect(terminalTree.children).toHaveLength(49);
+    expect(terminalTree.omitted?.count).toBe(6);
+
+    const terminalRollup = computeSubtreeRollup(terminalTree);
+    expect(terminalRollup.statuses.running).toBe(0);
+    expect(terminalRollup.statuses.success).toBe(51);
+    expect(terminalRollup.statuses.cancelled).toBe(5);
+
+    expect((result.details as SubagentDetails).results[0]?.usage).toMatchObject(
+      {
+        input: 14,
+        output: 11,
+        cacheRead: 2,
+        cacheWrite: 1,
+        turns: 2,
+      },
+    );
+    expect(
+      (result.details as SubagentDetails).results[0]?.usage.cost,
+    ).toBeCloseTo(0.35, 10);
+    expect(terminalRollup.usage.input).toBe(14 + 50 * 100);
+    expect(terminalRollup.usage.cost).toBeCloseTo(0.35 + 50, 10);
+    expect((result.content[0] as TextContent).text).toBe("done");
+    expect(result.details.renderedByMessage).toBe(true);
+
+    const storedRollup = queryInstanceUsage(requestId)?.rollup;
+    expect(storedRollup?.statuses.running).toBe(0);
+    expect(storedRollup?.statuses.cancelled).toBe(5);
+  });
+
+  test("transitions active cancellation and process errors to corresponding terminal statuses and durations", async () => {
+    const cancelMessages: SendMessageArg[] = [];
+    const { tool: cancelTool, cwd: cancelCwd } = await setupTest({
+      sendMessage: (msg) => cancelMessages.push(msg),
+      piScript: `#!/bin/sh
+trap 'exit 0' TERM
+sleep 10 &
+wait $!
+`,
+    });
+    process.env.PI_SUBAGENT_DEPTH = "1";
+    const controller = new AbortController();
+    const cancelPromise = runTool(
+      cancelTool,
+      { agent: "hang", task: "active-cancel" },
+      makeBareCtx(cancelCwd),
+      controller.signal,
+    );
+    await waitForSentMessage(cancelMessages);
+    controller.abort("stop now");
+    const cancelResult = await cancelPromise;
+    const cancelTree = (cancelResult.details as SubagentDetails).usageTree;
+    expect(cancelTree?.status).toBe("cancelled");
+    expect(cancelTree?.durationMs).toEqual(expect.any(Number));
+
+    const errMessages: SendMessageArg[] = [];
+    const { tool: errTool, cwd: errCwd } = await setupTest({
+      sendMessage: (msg) => errMessages.push(msg),
+      piScript: `#!/bin/sh
+printf '%s\n' 'process boom' >&2
+exit 7
+`,
+    });
+    const errResult = await runTool(
+      errTool,
+      { agent: "hang", task: "proc-error" },
+      makeBareCtx(errCwd),
+    );
+    const errTree = (errResult.details as SubagentDetails).usageTree;
+    expect(errTree?.status).toBe("error");
+    expect(errTree?.durationMs).toEqual(expect.any(Number));
+  });
+
+  test("persists one reconciled terminal usage entry for depth-0 root tool runs and none for nested runs", async () => {
+    const appended: Array<{ customType: string; data: unknown }> = [];
+    const sentMessages: SendMessageArg[] = [];
+    const { tool, cwd } = await setupTest({
+      sendMessage: (msg) => sentMessages.push(msg),
+      appendEntry: (customType, data) => {
+        appended.push({ customType, data });
+      },
+      piScript: `#!/bin/sh
+case "$*" in
+  *nested-run*) child_id="nested-child-d1" ;;
+  *) child_id="nested-child-d0" ;;
+esac
+printf '%s\n' '{"type":"tool_execution_update","toolCallId":"tc-nested","toolName":"subagent","args":{},"partialResult":{"content":[{"type":"text","text":"running"}],"details":{"mode":"single","agentScope":"both","projectAgentsDir":null,"results":[{"agent":"worker","instanceName":"nested-fox","agentSource":"user","task":"","exitCode":0,"finalOutput":"","stderr":"","usage":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"cost":0,"contextTokens":0,"turns":0}}],"usageTree":{"id":"'"$child_id"'","agent":"worker","instanceName":"nested-fox","ordinal":1,"startedAt":1000,"status":"running","usage":{"input":7,"output":3,"cacheRead":0,"cacheWrite":0,"cost":0.01,"turns":1},"children":[]}}}}'
+printf '%s\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"done"}],"usage":{"input":10,"output":5,"cacheRead":0,"cacheWrite":0,"cost":{"total":0.02}}}}'
+${emitAgentEnd()}
+exit 0
+`,
+    });
+
+    process.env.PI_SUBAGENT_DEPTH = "1";
+    await runTool(
+      tool,
+      { agent: "hang", task: "nested-run" },
+      makeBareCtx(cwd),
+    );
+    expect(appended).toHaveLength(0);
+
+    process.env.PI_SUBAGENT_DEPTH = "0";
+    await runTool(tool, { agent: "hang", task: "root-run" }, makeBareCtx(cwd));
+    await waitForSentMessageCount(sentMessages, 4);
+    await waitForRunJobsCleared();
+
+    expect(appended).toHaveLength(1);
+    expect(appended[0]?.customType).toBe("subagent-usage");
+    const entry = appended[0]?.data as { v: number; run: UsageInstanceNode };
+    expect(entry.v).toBe(1);
+    expect(entry.run.status).toBe("success");
+    expect(entry.run.children).toHaveLength(1);
+    expect(entry.run.children[0]?.id).toBe("nested-child-d0");
+    expect(entry.run.children[0]?.status).toBe("cancelled");
+  });
 });

@@ -1,8 +1,9 @@
 import { afterEach, describe, expect, spyOn, test } from "bun:test";
-import { writeFile } from "node:fs/promises";
+import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import type { TextContent } from "@earendil-works/pi-ai";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
+import * as childProcess from "../src/child/process.js";
 import * as delivery from "../src/notification/delivery.js";
 import { setDefaultDeliveryDeps } from "../src/notification/delivery.js";
 import {
@@ -13,6 +14,12 @@ import {
   emitCompletionAlert,
   formatSubagentToolResult,
 } from "../src/orchestration/subagent-orchestrator.js";
+import * as usageLedger from "../src/orchestration/usage-ledger.js";
+import {
+  queryInstanceUsage,
+  queryRootRunUsage,
+  querySessionUsage,
+} from "../src/orchestration/usage-ledger.js";
 import {
   cancelProgressState,
   createProgressState,
@@ -25,6 +32,7 @@ import type {
   SubagentDetails,
   SubagentToolResult,
 } from "../src/shared/types.js";
+import * as usageSnapshot from "../src/shared/usage-snapshot.js";
 import type { SendMessageArg } from "./helpers.js";
 import {
   CAPTURE_ARGS_PI_SCRIPT,
@@ -1014,3 +1022,609 @@ function makeProgressState(overrides: {
   }
   return getProgressState(requestId);
 }
+
+function makeLaunchCtx(
+  cwd: string,
+  overrides?: Partial<ExtensionContext>,
+): ExtensionContext {
+  return { ...makeBareCtx(cwd), ...overrides } as unknown as ExtensionContext;
+}
+
+describe("registered-job lifecycle accounting", () => {
+  test("registers root jobs at depth zero with session-spanning ordinals and started-handle snapshots", async () => {
+    const sentMessages: SendMessageArg[] = [];
+    const { tool, cwd } = await setupTest({
+      sendMessage: (msg) => sentMessages.push(msg),
+      piScript: `#!/bin/sh
+trap 'exit 0' TERM
+sleep 10 &
+wait $!
+`,
+    });
+    process.env.PI_SUBAGENT_DEPTH = "0";
+
+    const handles = [];
+    for (const task of ["first", "second", "third"]) {
+      handles.push(
+        await runTool(tool, { agent: "hang", task }, makeLaunchCtx(cwd)),
+      );
+    }
+
+    const details = handles.map((handle) => handle.details as SubagentDetails);
+    expect(details.map((d) => d.results)).toEqual([[], [], []]);
+    expect(details.map((d) => d.usageTree?.status)).toEqual([
+      "running",
+      "running",
+      "running",
+    ]);
+    expect(details.map((d) => d.usageTree?.ordinal)).toEqual([1, 2, 3]);
+    expect(sentMessages[0]?.details).toEqual({
+      agent: "hang",
+      instanceName: details[0]?.usageTree?.instanceName,
+      requestId: details[0]?.usageTree?.id,
+    });
+
+    const session = querySessionUsage();
+    expect(session.runs).toHaveLength(3);
+    expect(session.rollup.statuses.running).toBe(3);
+
+    for (const job of listRunJobs()) job.controller.abort("cleanup");
+    await waitForRunJobsCleared();
+  });
+
+  test("carries the terminal snapshot beside unchanged results for nested jobs", async () => {
+    const sentMessages: SendMessageArg[] = [];
+    const { tool, cwd } = await setupTest({
+      sendMessage: (msg) => sentMessages.push(msg),
+    });
+    process.env.PI_SUBAGENT_DEPTH = "1";
+
+    const result = await runTool(
+      tool,
+      { agent: "hang", task: "nested" },
+      makeLaunchCtx(cwd),
+    );
+    const requestId = requestIdOf(sentMessages);
+    expect(queryInstanceUsage(requestId)?.instance.status).toBe("success");
+    const details = result.details as SubagentDetails;
+    expect(details.results).toHaveLength(1);
+    expect(details.results[0]).not.toHaveProperty("usageTree");
+    expect(details.usageTree?.id).toBe(requestId);
+    expect(details.usageTree?.status).toBe("success");
+  });
+
+  test("creates no ledger node and emits no snapshot on pre-registration rejections", async () => {
+    const sentMessages: SendMessageArg[] = [];
+    const { tool, cwd } = await setupTest({
+      sendMessage: (msg) => sentMessages.push(msg),
+    });
+    const projectAgentsDir = path.join(cwd, ".pi", "agents");
+    await mkdir(projectAgentsDir, { recursive: true });
+    await writeFile(
+      path.join(projectAgentsDir, "proj-only.md"),
+      `---
+name: proj-only
+description: Project agent
+---
+Prompt.`,
+    );
+    process.env.PI_SUBAGENT_DEPTH = "0";
+    const ctx = makeLaunchCtx(cwd);
+
+    const notFoundResult = await runTool(
+      tool,
+      { agent: "missing-agent", task: "x" },
+      ctx,
+    );
+    expect((notFoundResult.details as SubagentDetails).results).toHaveLength(0);
+
+    const preAborted = new AbortController();
+    preAborted.abort();
+    const abortedResult = await runTool(
+      tool,
+      { agent: "hang", task: "x" },
+      ctx,
+      preAborted.signal,
+    );
+    expect((abortedResult.details as SubagentDetails).results).toHaveLength(0);
+
+    const declinedResult = await runTool(
+      tool,
+      { agent: "proj-only", task: "x" },
+      makeLaunchCtx(cwd, {
+        hasUI: true,
+        ui: {
+          confirm: async () => false,
+          notify: () => {},
+        } as unknown as ExtensionContext["ui"],
+      }),
+    );
+    expect((declinedResult.details as SubagentDetails).results).toHaveLength(0);
+    expect(querySessionUsage().runs).toHaveLength(0);
+    expect(queryRootRunUsage("hang")).toBeUndefined();
+    expect(sentMessages).toHaveLength(0);
+  });
+
+  test("transitions early pre-execution cancellation in prepareSubagentJob with duration and snapshot", async () => {
+    const sentMessages: SendMessageArg[] = [];
+    const controller = new AbortController();
+    const { tool, cwd } = await setupTest({
+      sendMessage: (msg) => {
+        sentMessages.push(msg);
+        controller.abort();
+      },
+    });
+    process.env.PI_SUBAGENT_DEPTH = "0";
+
+    const result = await runTool(
+      tool,
+      { agent: "hang", task: "early-cancel" },
+      makeLaunchCtx(cwd),
+      controller.signal,
+    );
+    const requestId = requestIdOf(sentMessages);
+    expect((result.content[0] as TextContent).text).toBe("Canceled");
+
+    expect((result.details as SubagentDetails).results).toHaveLength(0);
+    const tree = (result.details as SubagentDetails).usageTree;
+    expect(tree?.id).toBe(requestId);
+    expect(tree?.status).toBe("cancelled");
+    expect(tree?.durationMs).toEqual(expect.any(Number));
+
+    const stored = queryInstanceUsage(requestId)?.instance;
+    expect(stored?.status).toBe("cancelled");
+    expect(stored?.durationMs).toEqual(expect.any(Number));
+  });
+
+  test("transitions depth-0 setImmediate pre-execution cancellation with duration and no child spawn", async () => {
+    const sentMessages: SendMessageArg[] = [];
+    const { binDir, cwd } = await setupFakePi();
+    const markerFile = path.join(cwd, "spawned.txt");
+    await installFakePi(
+      binDir,
+      `#!/bin/sh
+printf 'spawned\n' > "${markerFile}"
+exit 0
+`,
+    );
+    const tool = getSubagentTool({
+      sendMessage: (msg) => sentMessages.push(msg),
+    });
+    process.env.PI_SUBAGENT_DEPTH = "0";
+    const controller = new AbortController();
+
+    const started = await runTool(
+      tool,
+      { agent: "hang", task: "cancel-before-setImmediate" },
+      makeLaunchCtx(cwd),
+      controller.signal,
+    );
+    const requestId = requestIdOf(sentMessages);
+    expect((started.details as SubagentDetails).usageTree?.status).toBe(
+      "running",
+    );
+
+    controller.abort("pre-exec abort");
+    await waitForRunJobsCleared();
+
+    expect(await Bun.file(markerFile).exists()).toBe(false);
+    const stored = queryInstanceUsage(requestId)?.instance;
+    expect(stored?.status).toBe("cancelled");
+    expect(stored?.durationMs).toEqual(expect.any(Number));
+  });
+
+  test("transitions thrown runSingleAgent failure without child result to error and cancelled snapshots", async () => {
+    const sentMessages: SendMessageArg[] = [];
+    const { tool, cwd } = await setupTest({
+      sendMessage: (msg) => sentMessages.push(msg),
+    });
+    process.env.PI_SUBAGENT_DEPTH = "1";
+
+    spyOn(childProcess, "runSingleAgent").mockRejectedValueOnce(
+      new Error("boom without child result"),
+    );
+    const errResult = await runTool(
+      tool,
+      { agent: "hang", task: "throws" },
+      makeBareCtx(cwd),
+    );
+    const errRequestId = requestIdOf(sentMessages);
+    expect((errResult.content[0] as TextContent).text).toBe(
+      "boom without child result",
+    );
+    expect((errResult.details as SubagentDetails).results).toHaveLength(0);
+    const errTree = (errResult.details as SubagentDetails).usageTree;
+    expect(errTree?.id).toBe(errRequestId);
+    expect(errTree?.status).toBe("error");
+    expect(errTree?.durationMs).toEqual(expect.any(Number));
+    expect(
+      (sentMessages.at(-1)?.details as SubagentDetails | undefined)?.usageTree
+        ?.status,
+    ).toBe("error");
+
+    const abortController = new AbortController();
+    const sentAbortMessages: SendMessageArg[] = [];
+    const abortTool = getSubagentTool({
+      sendMessage: (msg) => {
+        sentAbortMessages.push(msg);
+        if (msg.customType === "subagent-progress") {
+          // abort only after ready, right when runSingleAgent runs
+        }
+      },
+    });
+    spyOn(childProcess, "runSingleAgent").mockImplementationOnce(async () => {
+      abortController.abort("aborted throw");
+      throw new Error("aborted during run");
+    });
+    const cancelResult = await runTool(
+      abortTool,
+      { agent: "hang", task: "throws-aborted" },
+      makeBareCtx(cwd),
+      abortController.signal,
+    );
+    expect((cancelResult.content[0] as TextContent).text).toBe("Canceled");
+    const cancelTree = (cancelResult.details as SubagentDetails).usageTree;
+    expect(cancelTree?.status).toBe("cancelled");
+    expect(cancelTree?.durationMs).toEqual(expect.any(Number));
+    expect(sentAbortMessages.at(-1)?.customType).toBe("subagent-result");
+  });
+
+  test("isolates ledger failures without altering launch, self usage, delivery, or alerts", async () => {
+    const sentMessages: SendMessageArg[] = [];
+    const { tool, cwd } = await setupTest({
+      sendMessage: (msg) => sentMessages.push(msg),
+      piScript: `#!/bin/sh
+printf '%s\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"toolCall","name":"bash","id":"tc-1","arguments":{"command":"ls"}}],"usage":{"input":12,"output":8,"cacheRead":3,"cacheWrite":1,"totalTokens":24,"cost":{"total":0.05}}}}'
+printf '%s\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"done"}],"usage":{"input":5,"output":5,"cacheRead":0,"cacheWrite":0,"totalTokens":10,"cost":{"total":0.02}}}}'
+${emitAgentEnd()}
+exit 0
+`,
+    });
+    process.env.PI_SUBAGENT_DEPTH = "1";
+
+    spyOn(usageLedger, "registerRootInstance").mockImplementation(() => {
+      throw new Error("register boom");
+    });
+    spyOn(usageLedger, "updateInstanceSelfUsage").mockImplementation(() => ({
+      ok: false,
+      error: "rejected usage",
+    }));
+    spyOn(usageLedger, "transitionInstanceStatus").mockImplementation(() => {
+      throw new Error("transition boom");
+    });
+    spyOn(usageLedger, "snapshotInstanceUsage").mockImplementation(() => {
+      throw new Error("snapshot boom");
+    });
+    spyOn(usageSnapshot, "serializeUsageSnapshot").mockImplementation(() => {
+      throw new Error("serialize boom");
+    });
+
+    const result = await runTool(
+      tool,
+      { agent: "hang", task: "fault isolation" },
+      makeLaunchCtx(cwd),
+    );
+
+    expect((result.content[0] as TextContent).text).toBe("done");
+    const details = result.details as SubagentDetails;
+    expect(details.results[0]?.usage).toMatchObject({
+      input: 17,
+      output: 13,
+      cacheRead: 3,
+      cacheWrite: 1,
+      turns: 2,
+    });
+    expect(details.results[0]?.usage.cost).toBeCloseTo(0.07, 10);
+    expect(details.usageTree).toBeUndefined();
+    const requestId = requestIdOf(sentMessages);
+    expect(getProgressState(requestId)?.status).toBe("success");
+    expect(sentMessages.at(-1)?.customType).toBe("subagent-result");
+    expect(listRunJobs()).toHaveLength(0);
+  });
+
+  test("never leaks running snapshot when terminal transition fails after prior registration", async () => {
+    const sentMessages: SendMessageArg[] = [];
+    const { tool, cwd } = await setupTest({
+      sendMessage: (msg) => sentMessages.push(msg),
+    });
+    process.env.PI_SUBAGENT_DEPTH = "1";
+
+    spyOn(usageLedger, "transitionInstanceStatus").mockReturnValue({
+      ok: false,
+      error: "transition failed",
+    });
+
+    let capturedBell = false;
+    await captureStdout(true, async (writes) => {
+      const result = await runTool(
+        tool,
+        { agent: "hang", task: "failed terminal transition" },
+        makeBareCtx(cwd),
+      );
+      expect((result.content[0] as TextContent).text).toBe("done");
+      expect((result.details as SubagentDetails).usageTree).toBeUndefined();
+      capturedBell = writes.includes("\x07");
+    });
+    expect(capturedBell).toBe(true);
+    expect(sentMessages.at(-1)?.customType).toBe("subagent-result");
+  });
+
+  test("persists exactly one subagent-usage v1 entry per depth-0 terminal transition across success, error, and cancellations", async () => {
+    const appended: Array<{ customType: string; data: unknown }> = [];
+    const sentMessages: SendMessageArg[] = [];
+    const { tool, cwd } = await setupTest({
+      sendMessage: (msg) => sentMessages.push(msg),
+      appendEntry: (customType, data) => {
+        appended.push({ customType, data });
+      },
+    });
+    process.env.PI_SUBAGENT_DEPTH = "0";
+
+    // 1. Success terminal transition appends once and never while running.
+    await runTool(
+      tool,
+      { agent: "hang", task: "root-success" },
+      makeLaunchCtx(cwd),
+    );
+    await waitForSentMessageCount(sentMessages, 2);
+    await waitForRunJobsCleared();
+    expect(appended).toHaveLength(1);
+    expect(appended[0]?.customType).toBe("subagent-usage");
+    const entry1 = appended[0]?.data as {
+      v: number;
+      run: { status: string; durationMs?: number };
+    };
+    expect(entry1.v).toBe(1);
+    expect(entry1.run.status).toBe("success");
+    expect(entry1.run.durationMs).toEqual(expect.any(Number));
+
+    // 2. Early pre-execution cancellation in prepareSubagentJob appends once.
+    const earlyController = new AbortController();
+    const earlySent: SendMessageArg[] = [];
+    const earlyTool = getSubagentTool({
+      sendMessage: (msg) => {
+        earlySent.push(msg);
+        earlyController.abort();
+      },
+      appendEntry: (customType, data) => {
+        appended.push({ customType, data });
+      },
+    });
+    await runTool(
+      earlyTool,
+      { agent: "hang", task: "early-cancel-persist" },
+      makeLaunchCtx(cwd),
+      earlyController.signal,
+    );
+    expect(appended).toHaveLength(2);
+    const entry2 = appended[1]?.data as { v: number; run: { status: string } };
+    expect(entry2.v).toBe(1);
+    expect(entry2.run.status).toBe("cancelled");
+
+    // 3. Queued setImmediate pre-execution cancellation appends once.
+    const queuedController = new AbortController();
+    await runTool(
+      tool,
+      { agent: "hang", task: "queued-cancel-persist" },
+      makeLaunchCtx(cwd),
+      queuedController.signal,
+    );
+    expect(appended).toHaveLength(2);
+    queuedController.abort("stop queued");
+    await waitForRunJobsCleared();
+    expect(appended).toHaveLength(3);
+    const entry3 = appended[2]?.data as { v: number; run: { status: string } };
+    expect(entry3.v).toBe(1);
+    expect(entry3.run.status).toBe("cancelled");
+
+    // 4. Thrown runSingleAgent failure appends error entry once.
+    const beforeThrowCount = sentMessages.length;
+    const throwSpy = spyOn(
+      childProcess,
+      "runSingleAgent",
+    ).mockRejectedValueOnce(new Error("root throw"));
+    try {
+      await runTool(
+        tool,
+        { agent: "hang", task: "root-throw" },
+        makeLaunchCtx(cwd),
+      );
+      await waitForSentMessageCount(sentMessages, beforeThrowCount + 2);
+      await waitForRunJobsCleared();
+    } finally {
+      throwSpy.mockRestore();
+    }
+    expect(appended).toHaveLength(4);
+    const entry4 = appended[3]?.data as { v: number; run: { status: string } };
+    expect(entry4.v).toBe(1);
+    expect(entry4.run.status).toBe("error");
+  });
+
+  test("skips persistence at positive depth", async () => {
+    const appended: Array<{ customType: string; data: unknown }> = [];
+    const sentMessages: SendMessageArg[] = [];
+    const { tool, cwd } = await setupTest({
+      sendMessage: (msg) => sentMessages.push(msg),
+      appendEntry: (customType, data) => {
+        appended.push({ customType, data });
+      },
+      piScript: `#!/bin/sh
+trap 'exit 0' TERM
+sleep 10 &
+wait $!
+`,
+    });
+
+    // Positive depth never persists.
+    process.env.PI_SUBAGENT_DEPTH = "1";
+    const nestedController = new AbortController();
+    const nestedPromise = runTool(
+      tool,
+      { agent: "hang", task: "nested-no-persist" },
+      makeLaunchCtx(cwd),
+      nestedController.signal,
+    );
+    await waitForSentMessageCount(sentMessages, 1);
+    nestedController.abort("done");
+    await nestedPromise;
+    expect(appended).toHaveLength(0);
+  });
+
+  test("isolates appendEntry failures without altering usage, result delivery, or completion alerts", async () => {
+    const sentMessages: SendMessageArg[] = [];
+    const { tool, cwd } = await setupTest({
+      sendMessage: (msg) => sentMessages.push(msg),
+      appendEntry: () => {
+        throw new Error("appendEntry disk error");
+      },
+      piScript: `#!/bin/sh
+printf '%s\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"done"}],"usage":{"input":11,"output":7,"cacheRead":2,"cacheWrite":1,"totalTokens":21,"cost":{"total":0.03}}}}'
+${emitAgentEnd()}
+exit 0
+`,
+    });
+    process.env.PI_SUBAGENT_DEPTH = "0";
+
+    let capturedBell = false;
+    await captureStdout(true, async (writes) => {
+      await runTool(
+        tool,
+        { agent: "hang", task: "append-fails" },
+        makeLaunchCtx(cwd),
+      );
+      await waitForSentMessageCount(sentMessages, 2);
+      await waitForRunJobsCleared();
+      capturedBell = writes.includes("\x07");
+    });
+
+    expect(capturedBell).toBe(true);
+    const resultMsg = sentMessages.at(-1);
+    expect(resultMsg?.customType).toBe("subagent-result");
+    const details = resultMsg?.details as SubagentDetails;
+    expect(details.results[0]?.usage).toMatchObject({
+      input: 11,
+      output: 7,
+      cacheRead: 2,
+      cacheWrite: 1,
+      turns: 1,
+    });
+    expect(details.usageTree?.status).toBe("success");
+    expect(querySessionUsage().rollup.usage.input).toBe(11);
+  });
+});
+
+describe("ledger fault-isolation catch paths", () => {
+  const DONE_PI_SCRIPT = `#!/bin/sh
+printf '%s\\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"done"}],"usage":{"input":5,"output":3,"cacheRead":0,"cacheWrite":0,"totalTokens":8,"cost":{"total":0.01}}}}'
+${emitAgentEnd()}
+exit 0
+`;
+
+  test("isolates updateInstanceSelfUsage throws without losing terminal snapshots", async () => {
+    const sentMessages: SendMessageArg[] = [];
+    const { tool, cwd } = await setupTest({
+      sendMessage: (msg) => sentMessages.push(msg),
+      piScript: DONE_PI_SCRIPT,
+    });
+    process.env.PI_SUBAGENT_DEPTH = "1";
+
+    spyOn(usageLedger, "updateInstanceSelfUsage").mockImplementation(() => {
+      throw "non-error throw";
+    });
+
+    const result = await runTool(
+      tool,
+      { agent: "hang", task: "update throw" },
+      makeLaunchCtx(cwd),
+    );
+    expect((result.content[0] as TextContent).text).toBe("done");
+    const details = result.details as SubagentDetails;
+    expect(details.usageTree?.id).toBe(requestIdOf(sentMessages));
+    expect(details.usageTree?.status).toBe("success");
+    expect(sentMessages.at(-1)?.customType).toBe("subagent-result");
+  });
+
+  test("drops usageTree when snapshot serialization throws after a successful transition", async () => {
+    const sentMessages: SendMessageArg[] = [];
+    const { tool, cwd } = await setupTest({
+      sendMessage: (msg) => sentMessages.push(msg),
+      piScript: DONE_PI_SCRIPT,
+    });
+    process.env.PI_SUBAGENT_DEPTH = "1";
+
+    spyOn(usageSnapshot, "serializeUsageSnapshot").mockImplementation(() => {
+      throw new Error("serialize boom");
+    });
+
+    const result = await runTool(
+      tool,
+      { agent: "hang", task: "serialize throw" },
+      makeLaunchCtx(cwd),
+    );
+    expect((result.content[0] as TextContent).text).toBe("done");
+    expect((result.details as SubagentDetails).usageTree).toBeUndefined();
+    expect(sentMessages.at(-1)?.customType).toBe("subagent-result");
+  });
+
+  test("child usage tree delivery survives attachChildSubtree throws", async () => {
+    const sentMessages: SendMessageArg[] = [];
+    const { tool, cwd } = await setupTest({
+      sendMessage: (msg) => sentMessages.push(msg),
+      piScript: `#!/bin/sh
+printf '%s\\n' '{"type":"tool_execution_update","toolName":"subagent","partialResult":{"content":[{"type":"text","text":"nested"}],"details":{"results":[],"usageTree":{"id":"nested-child","agent":"worker"}}}}'
+printf '%s\\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"done"}]}}'
+${emitAgentEnd()}
+exit 0
+`,
+    });
+    process.env.PI_SUBAGENT_DEPTH = "1";
+
+    const attachSpy = spyOn(
+      usageLedger,
+      "attachChildSubtree",
+    ).mockImplementation(() => {
+      throw new Error("attach boom");
+    });
+
+    const result = await runTool(
+      tool,
+      { agent: "hang", task: "attach throw" },
+      makeLaunchCtx(cwd),
+    );
+    expect((result.content[0] as TextContent).text).toBe("done");
+    expect(attachSpy).toHaveBeenCalledWith(expect.any(String), {
+      id: "nested-child",
+      agent: "worker",
+    });
+    expect((result.details as SubagentDetails).usageTree?.status).toBe(
+      "success",
+    );
+    expect(sentMessages.at(-1)?.customType).toBe("subagent-result");
+  });
+
+  test("falls back to undefined usageTree when the terminal fallback query throws", async () => {
+    const sentMessages: SendMessageArg[] = [];
+    const { tool, cwd } = await setupTest({
+      sendMessage: (msg) => sentMessages.push(msg),
+      piScript: DONE_PI_SCRIPT,
+    });
+    process.env.PI_SUBAGENT_DEPTH = "1";
+
+    spyOn(usageLedger, "transitionInstanceStatus").mockReturnValue({
+      ok: false,
+      error: "transition failed",
+    });
+    spyOn(usageLedger, "queryInstanceUsage").mockImplementation(() => {
+      throw new Error("query boom");
+    });
+
+    const result = await runTool(
+      tool,
+      { agent: "hang", task: "query throw" },
+      makeLaunchCtx(cwd),
+    );
+    expect((result.content[0] as TextContent).text).toBe("done");
+    expect((result.details as SubagentDetails).usageTree).toBeUndefined();
+    expect(sentMessages.at(-1)?.customType).toBe("subagent-result");
+  });
+});

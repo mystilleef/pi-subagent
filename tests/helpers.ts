@@ -32,6 +32,7 @@ import {
   listRunJobs,
   resetRunRegistry,
 } from "../src/orchestration/run-registry.js";
+import { resetUsageLedger } from "../src/orchestration/usage-ledger.js";
 import { resetProgressStore } from "../src/progress/progress-state.js";
 import {
   resetResolvedAgentExtensionPathsCache,
@@ -405,6 +406,7 @@ exit 0
 
 export async function setupTest(overrides?: {
   sendMessage?: (msg: SendMessageArg) => void;
+  appendEntry?: (customType: string, data?: unknown) => void;
   piScript?: string;
 }) {
   const { binDir, cwd, agentDir } = await setupFakePi();
@@ -412,8 +414,15 @@ export async function setupTest(overrides?: {
     await installFakePi(binDir, overrides.piScript);
   }
   const tool = getSubagentTool(
-    overrides?.sendMessage !== undefined
-      ? { sendMessage: overrides.sendMessage }
+    overrides?.sendMessage !== undefined || overrides?.appendEntry !== undefined
+      ? {
+          ...(overrides?.sendMessage !== undefined
+            ? { sendMessage: overrides.sendMessage }
+            : {}),
+          ...(overrides?.appendEntry !== undefined
+            ? { appendEntry: overrides.appendEntry }
+            : {}),
+        }
       : undefined,
   );
   return { binDir, cwd, agentDir, tool };
@@ -536,17 +545,44 @@ export type RegisteredEventHandler = (
 export async function emitSessionStart(
   tool: { registeredEventHandlers: Map<string, RegisteredEventHandler[]> },
   cwd: string | undefined,
+  options?: {
+    reason?: "startup" | "reload" | "new" | "resume" | "fork";
+    ctx?: ExtensionContext;
+  },
 ): Promise<void> {
-  for (const handler of tool.registeredEventHandlers.get("session_start") ??
-    []) {
-    await handler({ type: "session_start", reason: "startup" }, {
+  const ctx =
+    options?.ctx ??
+    ({
       cwd,
     } as unknown as ExtensionCommandContext);
+  for (const handler of tool.registeredEventHandlers.get("session_start") ??
+    []) {
+    await handler(
+      { type: "session_start", reason: options?.reason ?? "startup" },
+      ctx,
+    );
+  }
+}
+
+/**
+ * Dispatches `session_shutdown` to every registered handler in registration
+ * order, as pi does before replacing or reloading a session.
+ */
+export async function emitSessionShutdown(tool: {
+  registeredEventHandlers: Map<string, RegisteredEventHandler[]>;
+}): Promise<void> {
+  for (const handler of tool.registeredEventHandlers.get("session_shutdown") ??
+    []) {
+    await handler(
+      { type: "session_shutdown", reason: "new" },
+      {} as ExtensionContext,
+    );
   }
 }
 
 export function getSubagentTool(overrides?: {
   sendMessage?: (msg: SendMessageArg) => void;
+  appendEntry?: (customType: string, data?: unknown) => void;
   thinkingLevel?: string;
 }): CapturedSubagentTool & {
   registeredCommands: Map<string, RegisteredCommandOptions>;
@@ -582,6 +618,9 @@ export function getSubagentTool(overrides?: {
       overrides?.sendMessage?.(message);
       settleWaiters(sentMessageWaiters);
     },
+    ...(overrides?.appendEntry !== undefined
+      ? { appendEntry: overrides.appendEntry }
+      : {}),
   } as unknown as ExtensionAPI;
   registerSubagentExtension(fakePi);
   if (!registeredTool) throw new Error("subagent tool was not registered");
@@ -608,6 +647,7 @@ function resetHarnessState(): void {
   resetNotifySendCache();
   resetDefaultDeliveryDeps();
   resetRunRegistry();
+  resetUsageLedger();
   resetProgressStore();
 }
 

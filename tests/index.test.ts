@@ -1,5 +1,8 @@
-import { describe, expect, test } from "bun:test";
-import type { ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
+import { describe, expect, spyOn, test } from "bun:test";
+import type {
+  ExtensionCommandContext,
+  ExtensionContext,
+} from "@earendil-works/pi-coding-agent";
 import {
   getCachedAgentCompletions,
   getCachedAgentDiscovery,
@@ -7,14 +10,25 @@ import {
 } from "../src/agent/agent-cache.js";
 import { resetAgentCache } from "../src/index.js";
 import { listRunJobs } from "../src/orchestration/run-registry.js";
+import * as usageLedger from "../src/orchestration/usage-ledger.js";
 import {
+  queryInstanceUsage,
+  queryRootRunUsage,
+  querySessionUsage,
+} from "../src/orchestration/usage-ledger.js";
+import type { UsageInstanceNode } from "../src/shared/types.js";
+import {
+  emitSessionShutdown,
   emitSessionStart,
+  makeBareCtx,
   type RegisteredEventHandler,
+  runTool,
   setupFakePi,
   setupHooks,
   setupTest,
   waitForRunJobCount,
   waitForRunJobsCleared,
+  waitForSentMessageCount,
 } from "./helpers.js";
 
 setupHooks();
@@ -209,28 +223,90 @@ describe("index.ts", () => {
   });
 
   describe("command descriptions", () => {
-    test("run command has correct description", async () => {
-      const { tool } = await setupTest();
-      const runCommand = tool.registeredCommands.get("run");
-      expect(runCommand?.description).toBe(
-        "Run a subagent directly: /run <agent> [task]",
-      );
-    });
-
-    test("cancel-subagent command has correct description", async () => {
-      const { tool } = await setupTest();
-      const cancelCommand = tool.registeredCommands.get("cancel-subagent");
-      expect(cancelCommand?.description).toBe(
+    test.each([
+      ["run", "Run a subagent directly: /run <agent> [task]"],
+      [
+        "cancel-subagent",
         "Cancel active /run subagents: /cancel-subagent [requestId|all]",
-      );
-    });
-
-    test("jobs command has correct description", async () => {
+      ],
+      ["jobs", "List all /run jobs and their statuses: /jobs"],
+      [
+        "stats",
+        "Show subagent usage statistics: /stats [requestId|instanceName]",
+      ],
+    ])("%s command has correct description", async (name, description) => {
       const { tool } = await setupTest();
-      const jobsCommand = tool.registeredCommands.get("jobs");
-      expect(jobsCommand?.description).toBe(
-        "List all /run jobs and their statuses: /jobs",
-      );
+      expect(tool.registeredCommands.get(name)?.description).toBe(description);
+    });
+  });
+
+  describe("stats command handler", () => {
+    test("notifies session and run stats through registered stats command without mutating state", async () => {
+      const { tool, cwd } = await setupTest();
+      const statsCommand = tool.registeredCommands.get("stats");
+      expect(statsCommand).toBeDefined();
+
+      const notices: string[] = [];
+      const ctx = {
+        ...makeBareCtx(cwd),
+        ui: {
+          notify: (msg: string) => notices.push(msg),
+          select: async () => undefined,
+          custom: async () => {
+            throw new Error("stats must notify plain text, not custom UI");
+          },
+        },
+        sessionManager: {
+          getEntries: () => [
+            {
+              type: "custom",
+              customType: "subagent-usage",
+              data: {
+                v: 1,
+                run: {
+                  id: "cmd-run-1",
+                  agent: "worker",
+                  instanceName: "swift-fox",
+                  ordinal: 1,
+                  startedAt: 1_000,
+                  status: "success",
+                  durationMs: 1_200,
+                  usage: {
+                    input: 40,
+                    output: 15,
+                    cacheRead: 5,
+                    cacheWrite: 0,
+                    cost: 0.012,
+                    turns: 2,
+                  },
+                  children: [],
+                },
+              },
+            },
+          ],
+          getBranch: () => [],
+        },
+      } as unknown as ExtensionCommandContext;
+
+      await emitSessionStart(tool, cwd, { reason: "resume", ctx });
+      const before = querySessionUsage();
+
+      await statsCommand?.handler?.("", ctx);
+      await statsCommand?.handler?.("swift-fox", ctx);
+      await statsCommand?.handler?.("unknown-run", ctx);
+
+      expect(notices).toEqual([
+        [
+          "Session · 1 run · 1 instance · ↑40 ↓15 R5 · $0.0120",
+          "worker 1 · ✓1 ✗0 ⊘0 ⟳0 · ↑40 ↓15 R5 · $0.0120 · 1.2s",
+        ].join("\n"),
+        [
+          "swift-fox (cmd-run-1) · 1 instance · ✓1 ✗0 ⊘0 ⟳0 · ↑40 ↓15 R5 · $0.0120 · 1.2s",
+          "✓ worker #1 swift-fox · 1.2s · $0.0120",
+        ].join("\n"),
+        'No run matches "unknown-run".',
+      ]);
+      expect(querySessionUsage()).toEqual(before);
     });
   });
 
@@ -605,6 +681,348 @@ describe("index.ts", () => {
       expect(result).toBeDefined();
       expect(result.content).toBeDefined();
       await tracker.resultMessage;
+    });
+  });
+
+  describe("session_start usage restoration and membership", () => {
+    function makeUsageRun(
+      overrides: Partial<UsageInstanceNode> = {},
+    ): UsageInstanceNode {
+      return {
+        id: "run-1",
+        agent: "hang",
+        instanceName: "able-fox",
+        ordinal: 1,
+        startedAt: 1_000,
+        status: "success",
+        durationMs: 120,
+        usage: {
+          input: 10,
+          output: 5,
+          cacheRead: 1,
+          cacheWrite: 0,
+          cost: 0.02,
+          turns: 1,
+        },
+        children: [],
+        ...overrides,
+      };
+    }
+
+    function makeSessionStartCtx(
+      cwd: string,
+      entries: readonly unknown[],
+      branchEntries: readonly unknown[] = [],
+    ): ExtensionContext {
+      return {
+        ...makeBareCtx(cwd),
+        sessionManager: {
+          getEntries: () => entries,
+          getBranch: () => branchEntries,
+        },
+      } as unknown as ExtensionContext;
+    }
+
+    test.each(["startup", "reload", "new", "resume", "fork"] as const)(
+      "restores valid v1 entries across complete getEntries() on session_start reason %s",
+      async (reason) => {
+        const appended: Array<{ customType: string; data: unknown }> = [];
+        const { tool, cwd } = await setupTest({
+          appendEntry: (customType, data) => {
+            appended.push({ customType, data });
+          },
+        });
+        const branchRun = makeUsageRun({
+          id: `branch-run-${reason}`,
+          instanceName: "shared-name",
+          ordinal: 2,
+          startedAt: 2_000,
+          children: [
+            makeUsageRun({
+              id: `nested-${reason}`,
+              agent: "worker",
+              instanceName: "nested-wren",
+              ordinal: 1,
+              startedAt: 2_050,
+              omitted: {
+                count: 1,
+                totals: {
+                  instances: 1,
+                  statuses: {
+                    running: 0,
+                    success: 1,
+                    error: 0,
+                    cancelled: 0,
+                  },
+                  usage: {
+                    input: 4,
+                    output: 2,
+                    cacheRead: 0,
+                    cacheWrite: 0,
+                    cost: 0.01,
+                    turns: 1,
+                  },
+                  durationMs: 30,
+                  byAgent: {
+                    worker: {
+                      instances: 1,
+                      statuses: {
+                        running: 0,
+                        success: 1,
+                        error: 0,
+                        cancelled: 0,
+                      },
+                      usage: {
+                        input: 4,
+                        output: 2,
+                        cacheRead: 0,
+                        cacheWrite: 0,
+                        cost: 0.01,
+                        turns: 1,
+                      },
+                      durationMs: 30,
+                    },
+                  },
+                },
+              },
+            }),
+          ],
+        });
+        const offBranchRun = makeUsageRun({
+          id: `off-branch-${reason}`,
+          instanceName: "shared-name",
+          ordinal: 4,
+          startedAt: 3_000,
+        });
+
+        const entries = [
+          { type: "message", message: { role: "user", content: [] } },
+          {
+            type: "custom",
+            customType: "subagent-usage",
+            data: { v: 1, run: branchRun },
+          },
+          {
+            type: "custom",
+            customType: "other-ext",
+            data: { unrelated: true },
+          },
+          {
+            type: "custom",
+            customType: "subagent-usage",
+            data: { v: 1, run: offBranchRun },
+          },
+        ];
+
+        await emitSessionStart(tool, cwd, {
+          reason,
+          // Keep getBranch empty to prove restoration reads complete getEntries().
+          ctx: makeSessionStartCtx(cwd, entries, []),
+        });
+
+        // Restoration never re-appends entries.
+        expect(appended).toHaveLength(0);
+
+        const sessionUsage = querySessionUsage();
+        expect(sessionUsage.runs.map((run) => run.id)).toEqual([
+          `off-branch-${reason}`,
+          `branch-run-${reason}`,
+        ]);
+        expect(sessionUsage.rollup.instances).toBe(4);
+        expect(sessionUsage.rollup.usage.input).toBe(34);
+
+        // Exact ID and latest-name root matching, plus represented nested lookup.
+        expect(queryRootRunUsage(`branch-run-${reason}`)?.run.id).toBe(
+          `branch-run-${reason}`,
+        );
+        expect(queryRootRunUsage("shared-name")?.run.id).toBe(
+          `off-branch-${reason}`,
+        );
+        const nestedQuery = queryInstanceUsage(`nested-${reason}`);
+        expect(nestedQuery?.rollup.instances).toBe(2);
+        expect(nestedQuery?.rollup.usage.input).toBe(14);
+
+        // Immutable query results.
+        if (sessionUsage.runs[0]) {
+          sessionUsage.runs[0].usage.input = 9_999;
+        }
+        expect(querySessionUsage().rollup.usage.input).toBe(34);
+      },
+    );
+
+    test("skips malformed, unsupported, and repeated entries without blocking valid entries", async () => {
+      const appended: Array<{ customType: string; data: unknown }> = [];
+      const sentMessages: import("./helpers.js").SendMessageArg[] = [];
+      const { tool, cwd } = await setupTest({
+        sendMessage: (msg) => sentMessages.push(msg),
+        appendEntry: (customType, data) => {
+          appended.push({ customType, data });
+        },
+      });
+      process.env.PI_SUBAGENT_DEPTH = "0";
+
+      const validRun = makeUsageRun({
+        id: "valid-hist",
+        agent: "hang",
+        instanceName: "valid-fox",
+        ordinal: 3,
+        startedAt: 1_000,
+      });
+      const duplicateValid = makeUsageRun({ ...validRun });
+      const runningInvalid = makeUsageRun({
+        id: "running-hist",
+        status: "running",
+        durationMs: undefined,
+      });
+      const sensitiveInvalid = {
+        ...makeUsageRun({ id: "sensitive-hist" }),
+        stderr: "leaked",
+      };
+
+      const entries = [
+        null,
+        { type: "custom", customType: "subagent-usage", data: "corrupt" },
+        {
+          type: "custom",
+          customType: "subagent-usage",
+          data: { v: 2, run: makeUsageRun({ id: "v2-hist" }) },
+        },
+        {
+          type: "custom",
+          customType: "subagent-usage",
+          data: { v: 1, run: validRun, extra: "disallowed" },
+        },
+        {
+          type: "custom",
+          customType: "subagent-usage",
+          data: { v: 1, run: runningInvalid },
+        },
+        {
+          type: "custom",
+          customType: "subagent-usage",
+          data: { v: 1, run: sensitiveInvalid },
+        },
+        {
+          type: "custom",
+          customType: "subagent-usage",
+          data: { v: 1, run: validRun },
+        },
+        {
+          type: "custom",
+          customType: "subagent-usage",
+          data: { v: 1, run: duplicateValid },
+        },
+      ];
+
+      const ctxA = makeSessionStartCtx(cwd, entries);
+      await emitSessionStart(tool, cwd, { reason: "resume", ctx: ctxA });
+      // Repeated restore on reload stays idempotent.
+      await emitSessionStart(tool, cwd, { reason: "reload", ctx: ctxA });
+
+      expect(querySessionUsage().runs).toHaveLength(1);
+      expect(querySessionUsage().rollup.instances).toBe(1);
+
+      // Next root run continues beyond restored ordinal 3 -> ordinal 4.
+      await runTool(tool, { agent: "hang", task: "after-restore" }, ctxA);
+      await waitForSentMessageCount(sentMessages, 2);
+      await waitForRunJobsCleared();
+
+      const sessA = querySessionUsage();
+      expect(sessA.runs).toHaveLength(2);
+      expect(sessA.runs[0]?.ordinal).toBe(4);
+      expect(sessA.runs[1]?.ordinal).toBe(3);
+
+      // Overlap with in-memory terminal run never duplicates totals.
+      expect(appended).toHaveLength(1);
+      const entriesWithOverlap = [
+        ...entries,
+        {
+          type: "custom",
+          customType: "subagent-usage",
+          data: appended[0]?.data,
+        },
+      ];
+      await emitSessionStart(tool, cwd, {
+        reason: "reload",
+        ctx: makeSessionStartCtx(cwd, entriesWithOverlap),
+      });
+      expect(querySessionUsage().runs).toHaveLength(2);
+    });
+
+    test("skips persistence for a root run ending after session_shutdown", async () => {
+      const appended: Array<{ customType: string; data: unknown }> = [];
+      const { tool, cwd } = await setupTest({
+        appendEntry: (customType, data) => {
+          appended.push({ customType, data });
+        },
+        piScript: `#!/bin/sh
+trap 'exit 0' TERM
+sleep 10 &
+wait $!
+`,
+      });
+      process.env.PI_SUBAGENT_DEPTH = "0";
+
+      const ctx = makeSessionStartCtx(cwd, []);
+      await emitSessionStart(tool, cwd, { reason: "startup", ctx });
+      const controller = new AbortController();
+      await runTool(
+        tool,
+        { agent: "hang", task: "in-flight" },
+        ctx,
+        controller.signal,
+      );
+      await waitForRunJobCount(1);
+
+      await emitSessionShutdown(tool);
+      controller.abort("cancel after session shutdown");
+      await waitForRunJobsCleared();
+      expect(appended).toHaveLength(0);
+    });
+
+    test("isolates getEntries and restoreSessionRuns failures without disrupting subsequent jobs", async () => {
+      const sentMessages: import("./helpers.js").SendMessageArg[] = [];
+      const { tool, cwd } = await setupTest({
+        sendMessage: (msg) => sentMessages.push(msg),
+      });
+      process.env.PI_SUBAGENT_DEPTH = "0";
+
+      await emitSessionStart(tool, cwd, {
+        reason: "resume",
+        ctx: {
+          ...makeBareCtx(cwd),
+          sessionManager: {
+            getEntries: () => {
+              throw new Error("getEntries boom");
+            },
+          },
+        } as unknown as ExtensionContext,
+      });
+
+      const restoreSpy = spyOn(
+        usageLedger,
+        "restoreSessionRuns",
+      ).mockImplementationOnce(() => {
+        throw new Error("restore boom");
+      });
+      try {
+        await emitSessionStart(tool, cwd, {
+          reason: "resume",
+          ctx: makeSessionStartCtx(cwd, []),
+        });
+      } finally {
+        restoreSpy.mockRestore();
+      }
+
+      await runTool(
+        tool,
+        { agent: "hang", task: "after-restore-failure" },
+        makeSessionStartCtx(cwd, []),
+      );
+      await waitForSentMessageCount(sentMessages, 2);
+      await waitForRunJobsCleared();
+      expect(sentMessages.at(-1)?.customType).toBe("subagent-result");
+      expect(querySessionUsage().runs).toHaveLength(1);
     });
   });
 });

@@ -1,5 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import {
+  extractUsageTreeFromDetails,
+  extractUsageTreeFromToolResultMessage,
   parseChildEventLine,
   TOOL_EXECUTION_UPDATE_EVENT,
 } from "../src/child/child-events.js";
@@ -906,5 +908,122 @@ describe("parseChildEventLine known event types", () => {
     if (result.kind === "known") {
       expect(result.event.type).toBe("agent_end");
     }
+  });
+});
+
+describe("usageTree extraction from child events", () => {
+  const sampleTree = {
+    id: "child-1",
+    agent: "worker",
+    instanceName: "keen-fox",
+    ordinal: 1,
+    startedAt: 1_000,
+    status: "running",
+    usage: {
+      input: 5,
+      output: 2,
+      cacheRead: 0,
+      cacheWrite: 0,
+      cost: 0.01,
+      turns: 1,
+    },
+    children: [],
+  };
+
+  const subagentUpdateLine = (
+    toolName: string,
+    details: Record<string, unknown>,
+    extra: Record<string, unknown> = {},
+  ) =>
+    JSON.stringify({
+      type: TOOL_EXECUTION_UPDATE_EVENT,
+      toolName,
+      ...extra,
+      partialResult: { details },
+    });
+
+  const parsedUpdate = (line: string) => {
+    const parsed = known(line);
+    if (parsed.event.type !== TOOL_EXECUTION_UPDATE_EVENT) {
+      expect.unreachable("expected tool_execution_update");
+    }
+    return parsed.event;
+  };
+
+  test("extracts details usageTree from subagent tool_execution_update while preserving toolActivity", () => {
+    const event = parsedUpdate(
+      subagentUpdateLine("subagent", {
+        results: [
+          {
+            agent: "worker",
+            instanceName: "keen-fox",
+            progress: {
+              activeToolActivity: { toolName: "bash", inputSummary: "ls" },
+            },
+          },
+        ],
+        usageTree: sampleTree,
+      }),
+    );
+    expect(event.toolActivity.toolName).toBe("subagent");
+    expect(event.toolActivity.child?.inputSummary).toBe("ls");
+    expect(event.usageTree).toEqual(sampleTree);
+  });
+
+  test("strips spoofed usageTree for non-subagent tool_execution_update", () => {
+    const event = parsedUpdate(
+      subagentUpdateLine(
+        "bash",
+        { results: [], usageTree: sampleTree },
+        { usageTree: sampleTree },
+      ),
+    );
+    expect(event.usageTree).toBeUndefined();
+  });
+
+  test("omits usageTree when subagent details carry none", () => {
+    const event = parsedUpdate(
+      subagentUpdateLine(
+        "subagent",
+        { results: [{ agent: "worker", usageTree: sampleTree }] },
+        { usageTree: sampleTree },
+      ),
+    );
+    expect(event.usageTree).toBeUndefined();
+  });
+
+  test("retains malformed usageTree candidate for downstream validation", () => {
+    const event = parsedUpdate(
+      subagentUpdateLine("subagent", { results: [], usageTree: "corrupt" }),
+    );
+    expect(event.usageTree).toBe("corrupt");
+  });
+
+  test.each([null, "bad", { results: [] }])(
+    "extractUsageTreeFromDetails returns undefined for %p",
+    (details) => {
+      expect(extractUsageTreeFromDetails(details)).toBeUndefined();
+    },
+  );
+
+  test.each([
+    ["subagent toolResult", "toolResult", "subagent", sampleTree],
+    ["non-subagent toolResult", "toolResult", "bash", undefined],
+    ["non-toolResult role", "assistant", "subagent", undefined],
+  ])(
+    "extractUsageTreeFromToolResultMessage reads %s",
+    (_label, role, toolName, expected) => {
+      expect(
+        extractUsageTreeFromToolResultMessage({
+          role,
+          toolName,
+          details: { results: [], usageTree: sampleTree },
+        }),
+      ).toEqual(expected);
+    },
+  );
+
+  test("extractUsageTreeFromToolResultMessage returns undefined for non-objects", () => {
+    expect(extractUsageTreeFromToolResultMessage(null)).toBeUndefined();
   });
 });

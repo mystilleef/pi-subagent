@@ -20,6 +20,7 @@ import type {
   SubagentDetails,
   SubagentToolResult,
   ToolActivity,
+  UsageInstanceNode,
 } from "../src/shared/types.js";
 import { makeSingleResult } from "./fixtures.js";
 
@@ -1772,3 +1773,41 @@ function makeDetails(
 
 beforeEach(resetProgressStore);
 afterEach(resetProgressStore);
+
+describe("SubagentDetails.usageTree display sanitization", () => {
+  test("passes usageTree through unchanged while results keep today's sanitization", () => {
+    const usageTree: UsageInstanceNode = {
+      id: "req-tree-1",
+      agent: "planner",
+      instanceName: "able-pine",
+      ordinal: 1,
+      startedAt: 1_000,
+      status: "success",
+      durationMs: 250,
+      usage: {
+        input: 10,
+        output: 5,
+        cacheRead: 0,
+        cacheWrite: 0,
+        cost: 0.01,
+        turns: 1,
+      },
+      children: [],
+    };
+    const result = makeSingleResult({ stderr: "secret stderr" });
+    const sanitized = sanitizeDetailsForDisplay(
+      {
+        mode: "single",
+        agentScope: "both",
+        projectAgentsDir: null,
+        results: [result],
+        usageTree,
+      },
+      false,
+    );
+    expect(sanitized.usageTree).toEqual(usageTree);
+    expect(sanitized.results).toHaveLength(1);
+    expect(sanitized.results[0]?.stderr).toBe("");
+    expect(sanitized.results[0]?.usage).toEqual(result.usage);
+  });
+});
