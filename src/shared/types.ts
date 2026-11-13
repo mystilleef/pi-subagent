@@ -60,6 +60,7 @@ export interface SubagentDetails {
   agentScope: AgentScope;
   projectAgentsDir: string | null;
   results: SingleResult[];
+  usageTree?: UsageInstanceNode | undefined;
   renderedByMessage?: true;
 }
 
@@ -72,3 +73,69 @@ export type OnUpdateCallback = (partial: {
   content: { type: "text"; text: string }[];
   details: SubagentDetails;
 }) => void;
+
+export type AccountingStatus = "running" | "success" | "error" | "cancelled";
+
+export interface AdditiveUsage {
+  input: number;
+  output: number;
+  cacheRead: number;
+  cacheWrite: number;
+  cost: number;
+  turns: number;
+}
+
+export interface StatusCounts {
+  running: number;
+  success: number;
+  error: number;
+  cancelled: number;
+}
+
+export interface AgentUsageRollup {
+  instances: number;
+  statuses: StatusCounts;
+  usage: AdditiveUsage;
+  durationMs: number;
+}
+
+export interface AccountingRollup {
+  instances: number;
+  statuses: StatusCounts;
+  usage: AdditiveUsage;
+  durationMs: number;
+  byAgent: Record<string, AgentUsageRollup>;
+}
+
+export interface OmittedUsage {
+  count: number;
+  totals: AccountingRollup;
+}
+
+export interface UsageInstanceNode {
+  id: string;
+  agent: string;
+  instanceName: string;
+  ordinal: number;
+  startedAt: number;
+  status: AccountingStatus;
+  durationMs?: number | undefined;
+  usage: AdditiveUsage;
+  children: UsageInstanceNode[];
+  omitted?: OmittedUsage | undefined;
+}
+
+export interface SessionUsageQueryResult {
+  rollup: AccountingRollup;
+  runs: UsageInstanceNode[];
+}
+
+export interface RunUsageQueryResult {
+  run: UsageInstanceNode;
+  rollup: AccountingRollup;
+}
+
+export interface InstanceUsageQueryResult {
+  instance: UsageInstanceNode;
+  rollup: AccountingRollup;
+}
