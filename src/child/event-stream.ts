@@ -10,6 +10,7 @@ import type { getSubagentRuntimeLimits } from "../shared/utils.js";
 import {
   type ChildEventParseResult,
   type ChildKnownEvent,
+  extractUsageTreeFromToolResultMessage,
   parseChildEventLine,
   TOOL_EXECUTION_UPDATE_EVENT,
 } from "./child-events.js";
@@ -59,14 +60,31 @@ export function clearGraceTimer(state: SubagentState): void {
   delete state.agentEndGraceTimer;
 }
 
+function deliverChildUsageTree(
+  tree: unknown,
+  onChildUsageTree: ((usageTree: unknown) => void) | undefined,
+): void {
+  if (tree === undefined || !onChildUsageTree) return;
+  try {
+    onChildUsageTree(tree);
+  } catch {
+    /* descendant usage delivery failures never disrupt child event handling */
+  }
+}
+
 function handleMessageEvent(
   event: ChildKnownEvent,
   state: SubagentState,
   emitUpdate: EmitUpdateFn,
+  onChildUsageTree?: (usageTree: unknown) => void,
 ): void {
   if (event.type !== "message_end" && event.type !== "tool_result_end") return;
   if (event.message) {
     addMessageToResult(state.result, event.message as Message);
+    deliverChildUsageTree(
+      extractUsageTreeFromToolResultMessage(event.message),
+      onChildUsageTree,
+    );
     const toolResultCompleted = event.type === "tool_result_end";
     emitUpdate({ toolResultCompleted });
   }
@@ -75,8 +93,10 @@ function handleMessageEvent(
 function handleToolExecutionUpdateEvent(
   event: ChildKnownEvent,
   emitUpdate: EmitUpdateFn,
+  onChildUsageTree?: (usageTree: unknown) => void,
 ): void {
   if (event.type !== TOOL_EXECUTION_UPDATE_EVENT) return;
+  deliverChildUsageTree(event.usageTree, onChildUsageTree);
   emitUpdate({ toolActivity: event.toolActivity });
 }
 
@@ -85,10 +105,17 @@ function handleAgentEndEvent(
   state: SubagentState,
   emitUpdate: EmitUpdateFn,
   requestTermination: (reason: string) => Promise<unknown>,
+  onChildUsageTree?: (usageTree: unknown) => void,
 ): void {
   if (event.type !== "agent_end") return;
   if (Array.isArray(event.messages) && event.messages.length > 0) {
     rebuildResultFromMessages(state.result, event.messages as Message[]);
+    for (const msg of event.messages) {
+      deliverChildUsageTree(
+        extractUsageTreeFromToolResultMessage(msg),
+        onChildUsageTree,
+      );
+    }
     emitUpdate();
   }
   if (state.agentEndGraceTimer || state.terminationPromise) return;
@@ -118,6 +145,7 @@ function processEventLine(
   emitUpdate: EmitUpdateFn,
   requestTermination: (reason: string) => Promise<unknown>,
   debugEventDiagnostics: boolean,
+  onChildUsageTree?: (usageTree: unknown) => void,
 ): void {
   const parseResult = parseChildEventLine(line);
   if (parseResult.kind !== "known") {
@@ -129,9 +157,15 @@ function processEventLine(
     return;
   }
   const { event } = parseResult;
-  handleMessageEvent(event, state, emitUpdate);
-  handleToolExecutionUpdateEvent(event, emitUpdate);
-  handleAgentEndEvent(event, state, emitUpdate, requestTermination);
+  handleMessageEvent(event, state, emitUpdate, onChildUsageTree);
+  handleToolExecutionUpdateEvent(event, emitUpdate, onChildUsageTree);
+  handleAgentEndEvent(
+    event,
+    state,
+    emitUpdate,
+    requestTermination,
+    onChildUsageTree,
+  );
 }
 
 export function setupChildProcess(
@@ -140,6 +174,7 @@ export function setupChildProcess(
   emitUpdate: EmitUpdateFn,
   requestTermination: (reason: string) => Promise<unknown>,
   debugEventDiagnostics: boolean,
+  onChildUsageTree?: (usageTree: unknown) => void,
 ): void {
   proc.once("error", (error) => {
     state.spawnError = error;
@@ -159,6 +194,7 @@ export function setupChildProcess(
           emitUpdate,
           requestTermination,
           debugEventDiagnostics,
+          onChildUsageTree,
         ),
       );
   }

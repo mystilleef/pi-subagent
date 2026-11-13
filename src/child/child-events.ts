@@ -1,6 +1,24 @@
 import { makeToolPreview } from "../output/normalize.js";
 import type { ToolActivity } from "../shared/types.js";
 
+function isPlainObjectRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+// Raw snapshot only; receivers validate it at ingest.
+export function extractUsageTreeFromDetails(details: unknown): unknown {
+  return isPlainObjectRecord(details) ? details["usageTree"] : undefined;
+}
+
+export function extractUsageTreeFromToolResultMessage(
+  message: unknown,
+): unknown {
+  if (!isPlainObjectRecord(message)) return undefined;
+  if (message["role"] !== "toolResult") return undefined;
+  if (message["toolName"] !== "subagent") return undefined;
+  return extractUsageTreeFromDetails(message["details"]);
+}
+
 function tryFirstResult(details: unknown): Record<string, unknown> | null {
   try {
     if (typeof details !== "object" || details === null) return null;
@@ -68,6 +86,7 @@ export type ChildKnownEvent =
       toolName: string;
       partialResult: { content?: unknown; details?: unknown };
       toolActivity: ToolActivity;
+      usageTree?: unknown;
     };
 
 export type ChildEventParseResult =
@@ -110,10 +129,23 @@ export function parseChildEventLine(line: string): ChildEventParseResult {
       ) {
         return { kind: "unknown", event };
       }
+      const partialResult = record["partialResult"] as {
+        content?: unknown;
+        details?: unknown;
+      };
       record["toolActivity"] = parseToolActivity(
         record["toolName"] as string,
-        record["partialResult"] as { content?: unknown; details?: unknown },
+        partialResult,
       );
+      const usageTree =
+        record["toolName"] === "subagent"
+          ? extractUsageTreeFromDetails(partialResult.details)
+          : undefined;
+      if (usageTree !== undefined) {
+        record["usageTree"] = usageTree;
+      } else {
+        delete record["usageTree"];
+      }
     }
     return { kind: "known", event: event as ChildKnownEvent };
   }

@@ -65,6 +65,7 @@ type RunSingleAgentOptions = {
   acquireSleepInhibitor?: SleepInhibitorAcquirer;
   getOrchestratorPid?: () => unknown;
   registry?: ModelRegistry | undefined;
+  onChildUsageTree?: ((usageTree: unknown) => void) | undefined;
 };
 
 export type RunSingleAgentResult =
@@ -463,6 +464,7 @@ export async function runSingleAgent(
       emitUpdate,
       requestTermination,
       debugEventDiagnostics,
+      options.onChildUsageTree,
     );
     const onAbort = setupAbortHandler(
       signal,
