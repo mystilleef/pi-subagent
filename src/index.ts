@@ -8,16 +8,20 @@ import {
 } from "./agent/agent-cache.js";
 import { isDirectoryAsync } from "./agent/agents.js";
 import { cancelSubagentCommandHandler } from "./orchestration/cancel-command.js";
+import { markHostSessionShutdown } from "./orchestration/job-usage-account.js";
 import { jobsCommandHandler } from "./orchestration/jobs-command.js";
 import { renderSubagentResultMessage } from "./orchestration/run.js";
 import { runCommandHandler } from "./orchestration/run-command.js";
+import { statsCommandHandler } from "./orchestration/stats-command.js";
 import {
   formatSubagentToolResult,
   SubagentParams,
   startSubagentJob,
 } from "./orchestration/subagent-orchestrator.js";
+import { restoreSessionRuns } from "./orchestration/usage-ledger.js";
 import { renderSubagentCall, renderSubagentToolResult } from "./output/ui.js";
 import { renderSubagentProgress } from "./progress/progress.js";
+import { extractPersistedUsageRun } from "./shared/usage-entry.js";
 
 export { SubagentParams };
 
@@ -29,6 +33,18 @@ function normalizeWorkspaceRoot(cwd: string | undefined): string | undefined {
   if (typeof cwd !== "string") return undefined;
   const root = cwd.trim();
   return root.length > 0 ? root : undefined;
+}
+
+function restoreSessionUsageFromContext(ctx: ExtensionContext): void {
+  try {
+    const candidateRuns = ctx.sessionManager
+      .getEntries()
+      .map(extractPersistedUsageRun)
+      .filter((run) => run !== undefined);
+    restoreSessionRuns(candidateRuns);
+  } catch {
+    /* session restoration failures never disrupt host lifecycle or jobs */
+  }
 }
 
 export default function registerSubagentExtension(pi: ExtensionAPI) {
@@ -49,6 +65,10 @@ export default function registerSubagentExtension(pi: ExtensionAPI) {
   });
   pi.on("session_start", (_event, ctx) => {
     setActiveWorkspaceRoot(ctx.cwd);
+    restoreSessionUsageFromContext(ctx);
+  });
+  pi.on("session_shutdown", () => {
+    markHostSessionShutdown(pi);
   });
   pi.registerMessageRenderer("subagent-progress", renderSubagentProgress);
   pi.registerMessageRenderer("subagent-result", renderSubagentResultMessage);
@@ -68,6 +88,11 @@ export default function registerSubagentExtension(pi: ExtensionAPI) {
   pi.registerCommand("jobs", {
     description: "List all /run jobs and their statuses: /jobs",
     handler: async (args, ctx) => jobsCommandHandler(ctx, args),
+  });
+  pi.registerCommand("stats", {
+    description:
+      "Show subagent usage statistics: /stats [requestId|instanceName]",
+    handler: async (args, ctx) => statsCommandHandler(ctx, args),
   });
   pi.registerTool({
     name: "subagent",
