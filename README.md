@@ -74,6 +74,18 @@ commits; use the query agent to summarize the project.
 /cancel-subagent
 ```
 
+**Show active-session subagent usage stats:**
+
+```text
+/stats
+```
+
+**Show descendant-inclusive stats for a specific root run:**
+
+```text
+/stats <run>
+```
+
 ---
 
 ## _SPAE_ Workflow
@@ -231,6 +243,93 @@ delegation.
 - `debug`: optional flag that requests child diagnostic details. Full
   child messages and raw internals require `PI_SUBAGENT_DEBUG_ENABLED=1`
   in the host environment.
+
+---
+
+## Usage accounting
+
+Plain-text `/stats` commands and internal accounting queries expose
+descendant-inclusive metrics for subagent runs without altering result
+cards, model-facing output, or pi's host footer.
+
+### Commands
+
+- `/stats`: notifies plain text via `ctx.ui.notify` with active-session
+  run count, instance count, tokens, total cost, and per-agent rollups
+  (instance count, status counts, tokens, cost, and summed terminal
+  instance duration). Empty sessions notify
+  `No subagent runs in this session.`.
+- `/stats <run>`: matches a root run by exact request ID or instance
+  name, selecting the latest match when multiple roots share a name.
+  Output displays a descendant-inclusive summary header—ending with the
+  root's own duration once it finishes—and an explicit instance tree
+  (status, `agent`, `#ordinal`, `instanceName`, terminal duration, and
+  self cost) plus any omitted descendant totals. Unmatched queries
+  notify `No run matches "<run>".`.
+- Status symbols: `✓` success, `✗` error, `⊘` cancelled, `⟳` running.
+  Tokens use result footers' compact counts: `↑` input, `↓` output, `R`
+  cache read, `W` cache write (cache parts only when nonzero).
+
+```text
+Session · 2 runs · 9 instances · ↑412k ↓38k R1.2M W40k · $3.1840
+build   4 · ✓3 ✗0 ⊘0 ⟳1 · ↑210k ↓20k R800k · $1.6200 · 12m 4s
+check   3 · ✓2 ✗1 ⊘0 ⟳0 · ↑90k ↓8k R300k · $0.7100 · 3m 10s
+```
+
+### Self-only results vs descendant-inclusive queries
+
+- `SingleResult.usage` and result card footers report each agent's own
+  self usage; pi's host footer receives no additions.
+- Descendant-inclusive accounting (`SubagentDetails.usageTree`,
+  session/run queries, and `/stats`) sums self usage, every attached
+  child subtree, and `omitted` rollups across additive fields (`input`,
+  `output`, `cacheRead`, `cacheWrite`, `cost`, and `turns`), excluding
+  point-in-time context window sizes.
+
+### Session membership, restoration, and forks
+
+- **Active-session membership**: pi loads a fresh extension instance for
+  each session runtime (startup, `/new`, `/resume`, `/fork`, `/reload`),
+  so `/stats` combines terminal runs restored from the active session's
+  entries with runs launched since its `session_start`.
+- **Complete-entry restoration**: every `session_start` scans the full
+  `ctx.sessionManager.getEntries()` collection—not only the active
+  branch—for valid `subagent-usage` (`v: 1`) terminal entries, skips
+  repeated identities, and advances new root ordinals beyond restored
+  maxima.
+- **Fork inheritance**: forked sessions inherit the runs their copied
+  entries hold, matching pi's footer accounting for copied usage.
+
+### Accepted visibility and accounting limits
+
+- **Bounded snapshots (`50` explicit nodes)**:
+  `SubagentDetails.usageTree` and persisted runs cap explicit nodes at
+  `50`. Excess descendants collapse into `omitted: { count, totals }`,
+  retaining exact instance, status, usage, and reported terminal
+  duration totals while losing individual omitted identities for tree
+  display or per-instance lookup.
+- **Snapshot-less children**: child subagents lacking compatible
+  snapshot propagation contribute self usage observed on parent tool
+  calls without inferred descendants.
+- **Terminal-only persistence until session shutdown**: only the
+  depth-zero root process attempts one `subagent-usage` custom entry
+  append upon terminal completion, and only before its session's
+  `session_shutdown`. Running runs never persist, and runs without a
+  persisted terminal entry (host exit, `appendEntry` failure, or still
+  in flight at a session replacement or `/reload`) have no fallback
+  recovery and drop out of `/stats`.
+- **Later-current-snapshot convergence**: parent processes replace each
+  child's subtree wholesale across native `tool_execution_update` and
+  `subagent` tool-result deliveries without sequence or version
+  metadata. Later current snapshots repair missed intermediate updates,
+  whereas an out-of-order stale snapshot arriving last can temporarily
+  regress visible accounting until another current snapshot arrives.
+- **Omitted-running timing limits**: terminal reconciliation moves
+  previously omitted `running` descendants to `cancelled` in
+  `omitted.totals` without inventing elapsed duration sums, because
+  omitted entries preserve no individual `startedAt` timestamps.
+- **Provider-reported cost**: reported costs carry provider-reported
+  usage semantics rather than independent spend auditing.
 
 ---
 
