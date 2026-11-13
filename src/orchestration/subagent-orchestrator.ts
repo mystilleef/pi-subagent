@@ -45,8 +45,13 @@ import type {
   SingleResult,
   SubagentDetails,
   SubagentToolResult,
+  UsageInstanceNode,
 } from "../shared/types.js";
 import { hasSubagentFailed } from "../shared/utils.js";
+import {
+  type JobUsageAccount,
+  openJobUsageAccount,
+} from "./job-usage-account.js";
 import {
   listRunJobs,
   type RunJob,
@@ -100,8 +105,10 @@ interface LifecycleContext {
   ctx: ExtensionContext;
   requestId: string;
   job: RunJob;
+  usageAccount: JobUsageAccount;
   debug: boolean;
   makeDetails: DetailsBuilder;
+  makeTerminalDetails: DetailsBuilder;
   mergedSignal: AbortSignal;
   agents: AgentConfig[];
   agentName: string;
@@ -110,6 +117,13 @@ interface LifecycleContext {
   parentThinking: ThinkingLevel;
   registry?: ChildModelRegistry;
   hostOnUpdate?: AgentToolUpdateCallback<SubagentDetails> | undefined;
+}
+
+function withUsageTree(
+  details: SubagentDetails,
+  usageTree: UsageInstanceNode | undefined,
+): SubagentDetails {
+  return usageTree !== undefined ? { ...details, usageTree } : details;
 }
 
 function createDetailsBuilder(
@@ -138,9 +152,14 @@ function createProgressRenderRequester(
   };
 }
 
-function cancelStartedJob(job: RunJob, reason: string): void {
+function cancelStartedJob(
+  job: RunJob,
+  reason: string,
+  usageAccount: JobUsageAccount,
+): void {
   cancelProgressState(job.requestId, reason);
   removeRunJob(job.requestId);
+  usageAccount.finalize("cancelled");
 }
 
 function sendSubagentResultMessage(
@@ -212,12 +231,21 @@ function finishLifecycleFailure(
   return createCompletedToolResult(content, displayDetails);
 }
 
+function failureStatus(lc: LifecycleContext): "cancelled" | "error" {
+  return lc.mergedSignal.aborted ? "cancelled" : "error";
+}
+
 function finishLifecycleResult(
   lc: LifecycleContext,
   result: SingleResult,
 ): SubagentToolResult {
-  const details = lc.makeDetails([result]);
-  if (hasSubagentFailed(result)) {
+  const failed = hasSubagentFailed(result);
+  const terminalStatus = failed ? failureStatus(lc) : "success";
+  const details = withUsageTree(
+    lc.makeTerminalDetails([result]),
+    lc.usageAccount.finalize(terminalStatus, result.usage, result.durationMs),
+  );
+  if (failed) {
     return finishLifecycleFailure(
       lc,
       lc.mergedSignal.aborted ? "Aborted" : createSubagentError(result).message,
@@ -250,7 +278,8 @@ function createPayloadFingerprint(payload: {
     .join(",");
   const exitCode = latestResult?.exitCode ?? 0;
   const stopReason = latestResult?.stopReason ?? "";
-  return `${contentText}|${activityText}|${toolCallIds}|${exitCode}|${stopReason}`;
+  const usageTreeKey = JSON.stringify(payload.details.usageTree ?? null);
+  return `${contentText}|${activityText}|${toolCallIds}|${exitCode}|${stopReason}|${usageTreeKey}`;
 }
 
 async function runSubagentLifecycle(
@@ -295,10 +324,20 @@ async function runSubagentLifecycle(
       lc.parentModel,
       lc.parentThinking,
       lc.debug,
-      { registry: lc.registry },
+      {
+        registry: lc.registry,
+        onChildUsageTree: lc.usageAccount.attachChildUsageTree,
+      },
     );
     if (outcome.kind === "aborted") {
-      const details = lc.makeDetails([outcome.result]);
+      const details = withUsageTree(
+        lc.makeTerminalDetails([outcome.result]),
+        lc.usageAccount.finalize(
+          "cancelled",
+          outcome.result.usage,
+          outcome.result.durationMs,
+        ),
+      );
       const cancelReason =
         outcome.result.termination?.cancelReason ?? "Aborted";
       return finishLifecycleFailure(lc, cancelReason, details);
@@ -308,7 +347,10 @@ async function runSubagentLifecycle(
     return finishLifecycleFailure(
       lc,
       error instanceof Error ? error.message : String(error),
-      lc.makeDetails([]),
+      withUsageTree(
+        lc.makeTerminalDetails([]),
+        lc.usageAccount.finalize(failureStatus(lc)),
+      ),
     );
   } finally {
     clearInterval(timerTick);
@@ -349,6 +391,7 @@ type PrepareSubagentJobResult =
       kind: "ready";
       lc: LifecycleContext;
       instanceName: string;
+      makeStartedDetails: DetailsBuilder;
       requestProgressRender: () => void;
       hostOnUpdate?: AgentToolUpdateCallback<SubagentDetails> | undefined;
     }
@@ -446,14 +489,31 @@ async function prepareSubagentJob(
     controller,
     startedAt: Date.now(),
   });
+  const usageAccount = openJobUsageAccount(pi, {
+    requestId,
+    agent: params.agent,
+    instanceName,
+    startedAt: job.startedAt,
+  });
   const mergedSignal = hostSignal
     ? AbortSignal.any([hostSignal, job.controller.signal])
     : job.controller.signal;
-  const makeStartedDetails: DetailsBuilder = (results, options) =>
+  const makeTerminalDetails: DetailsBuilder = (results, options) =>
     makeDetails(
       results.map((result) => ({ ...result, instanceName })),
       options,
     );
+  const makeSnapshotDetails: DetailsBuilder = (results, options) =>
+    withUsageTree(
+      makeTerminalDetails(results, options),
+      usageAccount.snapshot(),
+    );
+  const makeLiveDetails: DetailsBuilder = (results, options) => {
+    for (const result of results) {
+      usageAccount.recordSelfUsage(result.usage);
+    }
+    return makeSnapshotDetails(results, options);
+  };
   createProgressState(requestId, params.agent, task, instanceName);
   pi.sendMessage({
     customType: "subagent-progress",
@@ -463,9 +523,9 @@ async function prepareSubagentJob(
   });
   const requestProgressRender = createProgressRenderRequester(ctx, requestId);
   if (mergedSignal.aborted) {
-    cancelStartedJob(job, job.cancelReason ?? "Aborted");
+    cancelStartedJob(job, job.cancelReason ?? "Aborted", usageAccount);
     requestProgressRender();
-    return { kind: "cancelled", makeDetails: makeStartedDetails };
+    return { kind: "cancelled", makeDetails: makeSnapshotDetails };
   }
   return {
     kind: "ready",
@@ -474,8 +534,10 @@ async function prepareSubagentJob(
       ctx,
       requestId,
       job,
+      usageAccount,
       debug,
-      makeDetails: makeStartedDetails,
+      makeDetails: makeLiveDetails,
+      makeTerminalDetails,
       mergedSignal,
       agents,
       agentName: params.agent,
@@ -486,6 +548,7 @@ async function prepareSubagentJob(
       hostOnUpdate,
     },
     instanceName,
+    makeStartedDetails: makeSnapshotDetails,
     requestProgressRender,
     hostOnUpdate,
   };
@@ -506,14 +569,19 @@ export async function startSubagentJob(
     hostOnUpdate,
   );
   if (prepared.kind !== "ready") return prepared;
-  const { lc, instanceName, requestProgressRender } = prepared;
+  const { lc, instanceName, makeStartedDetails, requestProgressRender } =
+    prepared;
   if (getSubagentDepth() > 0) {
     const result = await runSubagentLifecycle(lc);
     return { kind: "completed", result };
   }
   setImmediate(() => {
     if (lc.mergedSignal.aborted) {
-      cancelStartedJob(lc.job, lc.job.cancelReason ?? "Aborted");
+      cancelStartedJob(
+        lc.job,
+        lc.job.cancelReason ?? "Aborted",
+        lc.usageAccount,
+      );
       requestProgressRender();
       return;
     }
@@ -523,6 +591,6 @@ export async function startSubagentJob(
     kind: "started",
     requestId: lc.requestId,
     instanceName,
-    makeDetails: lc.makeDetails,
+    makeDetails: makeStartedDetails,
   };
 }
