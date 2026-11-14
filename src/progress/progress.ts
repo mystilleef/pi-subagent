@@ -19,6 +19,7 @@
 import type { Component } from "@earendil-works/pi-tui";
 import { Box, Text } from "@earendil-works/pi-tui";
 import { queryInstanceUsage } from "../orchestration/usage-ledger.js";
+import { style } from "../output/semantic-style.js";
 import {
   CARD_BODY_INDENT,
   createDescendantTally,
@@ -27,10 +28,11 @@ import {
   type SubagentTheme,
 } from "../output/ui.js";
 import type { UsageInstanceNode } from "../shared/types.js";
+import { renderToolActivityPieces } from "./activity-display.js";
 import {
+  type ActivityDisplayPiece,
   formatHeaderStats,
   formatUsageTree,
-  renderToolActivityForDisplay,
 } from "./progress-format.js";
 import {
   getProgressState,
@@ -142,7 +144,7 @@ function renderProgressBox(
   const expandedBlocks = options.expanded
     ? [
         new Text(
-          theme.fg("muted", `task: ${state.taskPreview}`),
+          `${style(theme, "taskLabel", "task:")} ${style(theme, "taskPreview", state.taskPreview)}`,
           CARD_BODY_INDENT,
           0,
         ),
@@ -157,7 +159,7 @@ function renderProgressBox(
       blocks: [
         makeProgressBodyBlock(state, theme, width),
         ...expandedBlocks,
-        createDescendantTally(usage, theme),
+        createDescendantTally(usage, theme, { includeRunCost: false }),
       ],
       footer: state.modelDisplay,
     },
@@ -190,7 +192,7 @@ function makeTreeBlock(
   if (lines.length === 0) return undefined;
   const tree = new Box(CARD_BODY_INDENT, 0);
   for (const line of lines)
-    tree.addChild(new Text(theme.fg("muted", line), 0, 0));
+    tree.addChild(new Text(style(theme, "tally", line), 0, 0));
   return tree;
 }
 
@@ -199,17 +201,12 @@ function makeRunningProgressBody(
   theme: SubagentTheme,
   width: number,
 ): Text | undefined {
-  const activityBudget = Math.max(0, width - 8);
-  const activityPreview = renderToolActivityForDisplay(
+  const pieces = renderToolActivityPieces(
     state.activeToolActivity,
-    activityBudget,
+    Math.max(0, width - 8),
   );
-  if (!activityPreview) return undefined;
-  return new Text(
-    formatRunningToolPreview(activityPreview, theme),
-    CARD_BODY_INDENT,
-    0,
-  );
+  if (pieces.length === 0) return undefined;
+  return new Text(formatRunningActivity(pieces, theme), CARD_BODY_INDENT, 0);
 }
 
 function makeStoppedProgressBody(
@@ -217,7 +214,7 @@ function makeStoppedProgressBody(
   theme: SubagentTheme,
 ): Text | undefined {
   if (!state.errorText) return undefined;
-  return new Text(theme.fg("error", state.errorText), CARD_BODY_INDENT, 0);
+  return new Text(style(theme, "error", state.errorText), CARD_BODY_INDENT, 0);
 }
 
 function makeSuccessProgressBody(
@@ -226,17 +223,16 @@ function makeSuccessProgressBody(
 ): Text | undefined {
   const output = state.finalOutput?.trim().split("\n")[0] ?? "";
   if (!output) return undefined;
-  return new Text(theme.fg("toolOutput", output), CARD_BODY_INDENT, 0);
+  return new Text(style(theme, "output", output), CARD_BODY_INDENT, 0);
 }
 
-function formatRunningToolPreview(
-  preview: string,
+/** Renders the activity row from role-tagged pieces; roles never come from text. */
+function formatRunningActivity(
+  pieces: ActivityDisplayPiece[],
   theme: SubagentTheme,
 ): string {
-  const separatorIndex = preview.indexOf(":");
-  const arrow = theme.fg("muted", "→");
-  if (separatorIndex === -1) return `${arrow} ${theme.fg("accent", preview)}`;
-  const toolName = preview.slice(0, separatorIndex);
-  const rest = preview.slice(separatorIndex);
-  return `${arrow} ${theme.fg("accent", toolName)}${theme.fg("muted", rest)}`;
+  const styled = pieces.map((piece) =>
+    piece.role === "plain" ? piece.text : style(theme, piece.role, piece.text),
+  );
+  return `${style(theme, "mark", "→")} ${styled.join("")}`;
 }

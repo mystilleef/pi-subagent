@@ -12,9 +12,7 @@ const JWT_RE = /^eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/;
 
 export function extractSemanticToolTarget(
   args: Record<string, unknown>,
-  forceJson = false,
 ): string {
-  if (forceJson) return JSON.stringify(args);
   const semanticKeys = [
     "command",
     "path",

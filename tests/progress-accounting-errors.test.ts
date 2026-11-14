@@ -46,6 +46,9 @@ function makeTheme(): SubagentTheme {
     fg: (_color: ThemeColor, text: string) => text,
     bg: (color: string, text: string) => `[${color}]${text}[/${color}]`,
     bold: (text: string) => text,
+    italic: (text: string) => text,
+    underline: (text: string) => text,
+    strikethrough: (text: string) => text,
   };
 }
 
@@ -98,13 +101,13 @@ function renderCard(requestId: string, expanded: boolean): string[] {
   return rendered.render(120);
 }
 
-test("renders ledger tally while ledger lookups succeed", () => {
+test("renders ledger tally without run cost while ledger lookups succeed", () => {
   const requestId = "accounting-ok";
   setupRootWithChild(requestId);
   const text = renderCard(requestId, false).join("\n");
   expect(text).toContain("1 spawned");
   expect(text).toContain("explorer ⟳1");
-  expect(text).toContain("run $0.0100");
+  expect(text).not.toContain("run $");
 });
 
 test.each([false, true])(

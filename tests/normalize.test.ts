@@ -59,11 +59,6 @@ describe("normalization", () => {
     expect(extractSemanticToolTarget({ key: "" })).toBe("");
   });
 
-  test("extractSemanticToolTarget returns JSON when forceJson is true", () => {
-    const args = { command: "ls" };
-    expect(extractSemanticToolTarget(args, true)).toBe(JSON.stringify(args));
-  });
-
   test("truncateText truncates long text with ellipsis", () => {
     expect(truncateText("hello", 10)).toBe("hello");
     expect(truncateText("hello world", 5)).toBe("hell…");
@@ -367,11 +362,6 @@ describe("normalization branches", () => {
   });
 
   describe("extractSemanticToolTarget", () => {
-    test("forceJson returns JSON stringified args", () => {
-      const args = { command: "ls", path: "/tmp" };
-      expect(extractSemanticToolTarget(args, true)).toBe(JSON.stringify(args));
-    });
-
     test("semantic key agent returns value", () => {
       expect(extractSemanticToolTarget({ agent: "test-agent" })).toBe(
         "test-agent",

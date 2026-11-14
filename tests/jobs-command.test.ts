@@ -496,13 +496,15 @@ describe("jobs session accounting", () => {
     );
     expect(notices).toHaveLength(1);
     const output = notices[0] ?? "";
-    expect(output).toContain("Session · 2 runs · 3 instances · $0.0600");
-    expect(output.indexOf("Session ·")).toBeLessThan(
+    expect(output.indexOf("Session")).toBeLessThan(
       output.indexOf("ACTIVE (1)"),
     );
     const sessionLine =
-      output.split("\n").find((l) => l.includes("Session ·")) ?? "";
-    expect(sessionLine).toMatch(/Session · 2 runs · 3 instances · \$0\.0600/);
+      output.split("\n").find((l) => l.includes("Session")) ?? "";
+    expect(sessionLine).toContain(
+      "<fg:muted><b>Session</b></fg:muted><fg:muted> · 2 runs · 3 instances",
+    );
+    expect(output).toContain("$0.0600");
     expect(sessionLine).not.toContain("do task");
   });
 
@@ -545,7 +547,10 @@ describe("jobs session accounting", () => {
       "",
     );
     const output = notices[0] ?? "";
-    expect(output).toContain("Session · 2 runs · 2 instances · $0.0500");
+    expect(output).toContain("<fg:muted><b>Session</b></fg:muted>");
+    expect(output).toContain("2 runs");
+    expect(output).toContain("2 instances");
+    expect(output).toContain("$0.0500");
     expect(output).toContain("live-inst");
     expect(output).not.toContain("restored-inst");
   });
@@ -572,68 +577,78 @@ describe("jobs session accounting", () => {
     expect(notices).toEqual(["No /run jobs in this session."]);
   });
 
-  test("job cards with descendants include subtree run cost in tally", async () => {
-    const rid = "cost-root";
-    expect(
-      registerRootInstance({
-        id: rid,
-        agent: "build",
-        instanceName: "cost-inst",
-        startedAt: 1000,
-      }).ok,
-    ).toBe(true);
-    updateInstanceSelfUsage(rid, makeAdditive(0.01));
-    expect(
-      attachChildSubtree(rid, {
-        ...makeChild("cost-child", "worker", "child-inst", 1100, 0.02),
-        omitted: {
-          count: 1,
-          totals: {
-            instances: 1,
-            statuses: { running: 0, success: 1, error: 0, cancelled: 0 },
-            usage: makeAdditive(0.005),
-            durationMs: 10,
-            byAgent: {
-              helper: {
-                instances: 1,
-                statuses: { running: 0, success: 1, error: 0, cancelled: 0 },
-                usage: makeAdditive(0.005),
-                durationMs: 10,
+  test.each([
+    { status: "running", runCost: false },
+    { status: "success", runCost: true },
+  ] as const)(
+    "$status job cards with descendants show run cost only when settled ($runCost)",
+    async ({ status, runCost }) => {
+      const rid = "cost-root";
+      expect(
+        registerRootInstance({
+          id: rid,
+          agent: "build",
+          instanceName: "cost-inst",
+          startedAt: 1000,
+        }).ok,
+      ).toBe(true);
+      updateInstanceSelfUsage(rid, makeAdditive(0.01));
+      expect(
+        attachChildSubtree(rid, {
+          ...makeChild("cost-child", "worker", "child-inst", 1100, 0.02),
+          omitted: {
+            count: 1,
+            totals: {
+              instances: 1,
+              statuses: { running: 0, success: 1, error: 0, cancelled: 0 },
+              usage: makeAdditive(0.005),
+              durationMs: 10,
+              byAgent: {
+                helper: {
+                  instances: 1,
+                  statuses: { running: 0, success: 1, error: 0, cancelled: 0 },
+                  usage: makeAdditive(0.005),
+                  durationMs: 10,
+                },
               },
             },
           },
-        },
-      }).ok,
-    ).toBe(true);
-    createProgressState(rid, "build", "secret task text", "cost-inst");
-    patchProgressState(rid, { modelDisplay: "provider/model:high" });
-    registerRunJob({
-      requestId: rid,
-      agentName: "build",
-      instanceName: "cost-inst",
-      controller: new AbortController(),
-      startedAt: Date.now(),
-    });
-    const notices: string[] = [];
-    await jobsCommandHandler(
-      makeCommandContext((msg) => notices.push(msg)),
-      "",
-    );
-    const output = notices[0] ?? "";
-    expect(output).toContain("provider/model:high");
-    expect(output).toContain("run $");
-    const tallyLine =
-      output.split("\n").find((l) => l.includes("spawned")) ?? "";
-    expect(tallyLine).toContain("run $");
-    const footerLine =
-      output.split("\n").find((l) => l.includes("provider/model:high")) ?? "";
-    expect(footerLine).not.toContain("run $");
-    expect(footerLine).not.toContain("secret task");
-    const bodyIdx = output.indexOf("secret task text");
-    const tallyIdx = output.indexOf("spawned");
-    expect(bodyIdx).toBeGreaterThanOrEqual(0);
-    expect(tallyIdx).toBeGreaterThan(bodyIdx);
-  });
+        }).ok,
+      ).toBe(true);
+      createProgressState(rid, "build", "secret task text", "cost-inst");
+      patchProgressState(rid, {
+        modelDisplay: "provider/model:high",
+        status,
+        ...(status === "running" ? {} : { durationMs: 50 }),
+      });
+      registerRunJob({
+        requestId: rid,
+        agentName: "build",
+        instanceName: "cost-inst",
+        controller: new AbortController(),
+        startedAt: Date.now(),
+      });
+      const notices: string[] = [];
+      await jobsCommandHandler(
+        makeCommandContext((msg) => notices.push(msg), 200),
+        "",
+      );
+      const output = notices[0] ?? "";
+      expect(output).toContain("provider/model:high");
+      const tallyLine =
+        output.split("\n").find((l) => l.includes("spawned")) ?? "";
+      expect(tallyLine).not.toBe("");
+      expect(tallyLine.includes("run $")).toBe(runCost);
+      const footerLine =
+        output.split("\n").find((l) => l.includes("provider/model:high")) ?? "";
+      expect(footerLine).not.toContain("run $");
+      expect(footerLine).not.toContain("secret task");
+      const bodyIdx = output.indexOf("secret task text");
+      const tallyIdx = output.indexOf("spawned");
+      expect(bodyIdx).toBeGreaterThanOrEqual(0);
+      expect(tallyIdx).toBeGreaterThan(bodyIdx);
+    },
+  );
 
   test("leaf cards retain existing footer without run cost", async () => {
     const rid = "leaf-root";
@@ -663,6 +678,9 @@ describe("jobs session accounting", () => {
     const output = notices[0] ?? "";
     expect(output).toContain("provider/model:low");
     expect(output).not.toContain("run $");
-    expect(output).toContain("Session · 1 run · 1 instance · $0.0123");
+    expect(output).toContain("<fg:muted><b>Session</b></fg:muted>");
+    expect(output).toContain("1 run");
+    expect(output).toContain("1 instance");
+    expect(output).toContain("$0.0123");
   });
 });

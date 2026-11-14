@@ -21,7 +21,7 @@ import {
 } from "../src/progress/progress.js";
 import { formatDescendantTally } from "../src/progress/progress-format.js";
 import type { ProgressStatus } from "../src/progress/progress-state.js";
-import type { UsageInstanceNode } from "../src/shared/types.js";
+import type { ToolActivity, UsageInstanceNode } from "../src/shared/types.js";
 
 afterEach(() => {
   jest.useRealTimers();
@@ -58,6 +58,9 @@ function makeTheme() {
     fg: (_color: ThemeColor, text: string) => text,
     bg: (color: string, text: string) => `[${color}]${text}[/${color}]`,
     bold: (text: string) => text,
+    italic: (text: string) => text,
+    underline: (text: string) => text,
+    strikethrough: (text: string) => text,
   };
 }
 
@@ -66,6 +69,9 @@ function makeMarkerTheme() {
     fg: (color: ThemeColor, text: string) => `<${color}>${text}</${color}>`,
     bg: (color: string, text: string) => `[${color}]${text}[/${color}]`,
     bold: (text: string) => text,
+    italic: (text: string) => `<italic>${text}</italic>`,
+    underline: (text: string) => `<underline>${text}</underline>`,
+    strikethrough: (text: string) => `<strike>${text}</strike>`,
   };
 }
 
@@ -98,6 +104,40 @@ function renderText(
   return renderLines(rendered).join("\n");
 }
 
+/** Renders a running card for `activity` on fresh state, then clears it. */
+function renderActivityCard(
+  requestId: string,
+  activity?: ToolActivity,
+  {
+    theme = makeMarkerTheme(),
+    width = 120,
+  }: { theme?: SubagentTheme; width?: number } = {},
+): string[] {
+  createProgressState(requestId, "agent", "task");
+  try {
+    if (activity)
+      patchProgressState(requestId, { activeToolActivity: activity });
+    const card = renderSubagentProgress(
+      {
+        customType: "subagent-progress",
+        content: "",
+        display: true,
+        details: { requestId },
+      },
+      { expanded: false },
+      theme,
+    );
+    if (!card) throw new Error(`progress card missing for ${requestId}`);
+    return card.render(width);
+  } finally {
+    clearProgressState(requestId);
+  }
+}
+
+function findActivityRow(lines: string[]): string {
+  return lines.find((line) => line.includes("→")) ?? "";
+}
+
 test("renderSubagentProgress formats segmented agent and instance title", () => {
   createProgressState("rend-1", "my-agent", "do the thing", "able-falcon");
   const theme = {
@@ -105,6 +145,8 @@ test("renderSubagentProgress formats segmented agent and instance title", () => 
     bg: (color: string, text: string) => `[${color}]${text}[/${color}]`,
     bold: (text: string) => `<bold>${text}</bold>`,
     italic: (text: string) => `<italic>${text}</italic>`,
+    underline: (text: string) => `<underline>${text}</underline>`,
+    strikethrough: (text: string) => `<strike>${text}</strike>`,
   };
   const result = renderSubagentProgress(
     {
@@ -121,10 +163,10 @@ test("renderSubagentProgress formats segmented agent and instance title", () => 
     "<toolTitle><bold>my-agent</bold></toolTitle> <accent><italic>able-falcon</italic></accent>",
   );
   expect(text).toContain("<muted>[running]</muted>");
-  expect(text).toContain("<muted>0 tools · --% ctx ·");
+  expect(text).toContain("<dim>0 tools · --% ctx ·");
 });
 
-test("renderSubagentProgress uses ANSI italic fallback for instance title", () => {
+test("renderSubagentProgress styles instance title through italic theme method", () => {
   createProgressState("rend-2", "my-agent", "do the thing", "able-falcon");
   const theme = makeMarkerTheme();
   const result = renderSubagentProgress(
@@ -138,12 +180,9 @@ test("renderSubagentProgress uses ANSI italic fallback for instance title", () =
     theme,
   );
   const text = renderText(result);
-  expect(text).toContain(
-    "<toolTitle>my-agent</toolTitle> <accent>\x1b[3mable-falcon\x1b[23m</accent> <muted>[running]</muted>",
-  );
-  expect(text.indexOf("\x1b[23m</accent> <muted>[running]")).toBeGreaterThan(
-    -1,
-  );
+  expect(text).toContain("<toolTitle>my-agent</toolTitle>");
+  expect(text).toContain("<accent><italic>able-falcon</italic></accent>");
+  expect(text).toContain("<muted>[running]</muted>");
 });
 
 test("renderSubagentProgress keeps single title when instance is absent or empty", () => {
@@ -213,24 +252,24 @@ test("renderSubagentProgress collapsed running colors tool preview segments", ()
   const text = renderText(result);
   const toolLine = renderLines(result).find((line) => line.includes("bash"));
   expect(text).toContain(
-    "my-agent</toolTitle> <accent>\x1b[3mrend-1\x1b[23m</accent>",
+    "my-agent</toolTitle> <accent><italic>rend-1</italic></accent>",
   );
   expect(text).toContain("running");
   expect(text).toContain("3 tools");
   expect(text).toContain("8%");
-  expect(text.indexOf("\x1b[23m</accent> <muted>[running]")).toBeLessThan(
+  expect(text.indexOf("</italic></accent>")).toBeLessThan(
     text.indexOf("3 tools"),
   );
-  expect(text).toContain("ctx · 2.5s");
+  expect(text).toContain("ctx · 2s");
   expect(text).not.toContain("1.2k in");
   expect(text).not.toContain("300 out");
   expect(text).not.toContain("1.2k in · 300 out · 8% ctx");
   expect(text).not.toContain("2 turns");
   expect(text).not.toContain("18k ctx");
   expect(toolLine).toStartWith(
-    "[toolPendingBg]   <muted>→</muted> <accent>bash</accent><muted>: ls -la</muted>",
+    "[toolPendingBg]   <dim>→</dim> <text>bash</text><dim> ls -la</dim>",
   );
-  expect(text).not.toContain("bash: ls -la (");
+  expect(text).not.toContain("bash ls -la (");
   expect(
     renderLines(result).every(
       (line) =>
@@ -260,10 +299,10 @@ test("renderSubagentProgress collapsed running colors targetless tool preview", 
   const text = renderText(result);
   const toolLine = renderLines(result).find((line) => line.includes("bash"));
   expect(toolLine).toStartWith(
-    "[toolPendingBg]   <muted>→</muted> <accent>bash</accent>",
+    "[toolPendingBg]   <dim>→</dim> <text>bash</text>",
   );
   expect(toolLine).not.toContain("<dim>:");
-  expect(toolLine).not.toContain("</accent>:");
+  expect(toolLine).not.toContain("</text>:");
   expect(text).not.toContain("do the thing");
 });
 
@@ -296,7 +335,7 @@ test("renderSubagentProgress running omits unknown tool arguments", () => {
     line.includes("unknown_tool"),
   );
   expect(toolLine).toStartWith(
-    "[toolPendingBg]   <muted>→</muted> <accent>unknown_tool</accent>",
+    "[toolPendingBg]   <dim>→</dim> <text>unknown_tool</text>",
   );
   expect(toolLine).not.toContain(":");
   expect(text).not.toContain("secret");
@@ -328,7 +367,7 @@ test("renderSubagentProgress expanded running includes truncated tool preview an
   expect(result).toBeDefined();
   const text = renderText(result);
   expect(lastToolPreview).toEndWith("…");
-  expect(text).toContain("→ bash:");
+  expect(text).toContain("→ bash");
   expect(text).toContain("…");
   expect(text).toContain(taskPreview);
   expect(text.indexOf("\x1b[23m [running]")).toBeLessThan(
@@ -367,8 +406,8 @@ test("renderSubagentProgress component reads patched state on later renders", ()
   expect(text).not.toContain("3 turns");
   expect(text).not.toContain("10k ctx");
   expect(text).not.toContain("1.2k in / 300 out");
-  expect(text).toContain("→ bash: pwd");
-  expect(text).not.toContain("bash: pwd (");
+  expect(text).toContain("→ bash pwd");
+  expect(text).not.toContain("bash pwd (");
 });
 
 type FooterCase = {
@@ -398,7 +437,7 @@ test.each<FooterCase>([
         activeToolActivity: { toolName: "bash", inputSummary: "bash: ls" },
         lastToolPreview: "bash: ls",
       }),
-    expected: ["model task", "bash: ls"],
+    expected: ["model task", "bash ls"],
   },
   {
     state: "collapsed error",
@@ -489,7 +528,7 @@ test("renderSubagentProgress error state shows error text", () => {
   );
   expect(result).toBeDefined();
   const text = renderText(result);
-  expect(text).toContain("err-agent \x1b[3mrend-3\x1b[23m");
+  expect(text).toContain("err-agent rend-3");
   expect(text).toContain("error");
   expect(text).toContain("something exploded");
   expect(text).not.toContain("FAILURE: something exploded");
@@ -609,7 +648,7 @@ test("renderSubagentProgress cancelled state shows cancelled", () => {
   );
   expect(result).toBeDefined();
   const text = renderText(result);
-  expect(text).toContain("some-agent \x1b[3mrend-5\x1b[23m");
+  expect(text).toContain("some-agent rend-5");
   expect(text).toContain("cancelled");
   expect(
     renderLines(result).every(
@@ -785,7 +824,7 @@ test("cancelled progress without reason renders header-only card", () => {
   clearProgressState("inv-no-reason");
 });
 
-test("running progress without tool activity renders header-only card", () => {
+test("running progress without tool activity renders thinking row", () => {
   createProgressState("inv-no-activity", "agent", "warming up");
   const theme = makeTheme();
   const result = renderSubagentProgress(
@@ -799,10 +838,10 @@ test("running progress without tool activity renders header-only card", () => {
     theme,
   );
   const lines = renderLines(result);
-  // No active tool preview suppresses the running body entirely.
-  expect(lines).toHaveLength(3);
+  // Tool-free running intervals render thinking through the display budget.
   expect(lines[1]).toContain("[running]");
   expect(lines[1]).not.toContain("warming up");
+  expect(renderText(result)).toContain("thinking");
   clearProgressState("inv-no-activity");
 });
 
@@ -821,9 +860,9 @@ test("renderSubagentProgress keeps running elapsed live", () => {
     theme,
   );
   jest.setSystemTime(2500);
-  expect(renderText(result)).toContain("1.5s");
+  expect(renderText(result)).toContain("1s");
   jest.setSystemTime(5200);
-  expect(renderText(result)).toContain("4.2s");
+  expect(renderText(result)).toContain("4s");
 });
 
 test("running progress renders long single activity as one line at narrow width", () => {
@@ -885,7 +924,10 @@ test("running progress renders nested activity chain as one line at medium width
   expect(toolLines).toHaveLength(1);
   const visibleText = stripAnsiAndWrappers(toolLines[0] ?? "");
   expect(visibleText.length).toBeLessThanOrEqual(80);
-  expect(toolLines[0]).toContain("subagent");
+  expect(toolLines[0]).toContain("build-with-long-task-description");
+  expect(toolLines[0]).toContain("bash");
+  expect(toolLines[0]).toContain("›");
+  expect(toolLines[0]).not.toContain("subagent:");
 });
 test("running progress handles very narrow render width without wrapping", () => {
   createProgressState("rend-1", "agent", "task");
@@ -962,7 +1004,7 @@ test("collapsed running presentation preserves targetless tool formatting", () =
   expect(result).toBeDefined();
   const toolLine = renderLines(result).find((line) => line.includes("bash"));
   expect(toolLine).toStartWith(
-    "[toolPendingBg]   <muted>→</muted> <accent>bash</accent>",
+    "[toolPendingBg]   <dim>→</dim> <text>bash</text>",
   );
   expect(toolLine).not.toContain("<dim>:");
 });
@@ -986,12 +1028,12 @@ test("expanded running presentation includes task preview on separate line", () 
   expect(result).toBeDefined();
   const text = renderText(result);
   expect(text).toContain("do the important task");
-  expect(text).toContain("→ bash: ls");
+  expect(text).toContain("→ bash ls");
   const lines = renderLines(result);
   const taskLineIndex = lines.findIndex((line) =>
     line.includes("do the important task"),
   );
-  const toolLineIndex = lines.findIndex((line) => line.includes("→ bash: ls"));
+  const toolLineIndex = lines.findIndex((line) => line.includes("→ bash ls"));
   expect(taskLineIndex).toBeGreaterThan(-1);
   expect(toolLineIndex).toBeGreaterThan(-1);
   expect(taskLineIndex).not.toBe(toolLineIndex);
@@ -1229,7 +1271,7 @@ test("running progress nested activity chain stays within budget at very narrow 
     }
   }
 });
-test("running progress redacts sensitive toolName fallback at sufficient budget", () => {
+test("running progress preserves sensitive tool name without redaction", () => {
   createProgressState("rend-1", "agent", "task");
   patchProgressState("rend-1", {
     activeToolActivity: { toolName: "secret-manager" },
@@ -1250,10 +1292,11 @@ test("running progress redacts sensitive toolName fallback at sufficient budget"
   const lines = renderLinesAtWidth(result, 60);
   const toolLines = lines.filter((line) => line.includes("→"));
   expect(toolLines).toHaveLength(1);
-  expect(toolLines[0]).toContain("(running...)");
-  expect(toolLines[0]).not.toContain("secret-manager");
+  expect(toolLines[0]).toContain("secret-manager");
+  expect(toolLines[0]).not.toContain("(running...)");
+  expect(toolLines[0]).not.toContain("(hidden)");
 });
-test("running progress omits sensitive toolName fallback when budget too small for redaction", () => {
+test("running progress truncates sensitive tool name within budget", () => {
   createProgressState("rend-1", "agent", "task");
   patchProgressState("rend-1", {
     activeToolActivity: { toolName: "secret-manager" },
@@ -1273,13 +1316,21 @@ test("running progress omits sensitive toolName fallback when budget too small f
   expect(result).toBeDefined();
   const lines = renderLinesAtWidth(result, 19);
   const toolLines = lines.filter((line) => line.includes("→"));
-  expect(toolLines.length).toBe(0);
+  expect(toolLines).toHaveLength(1);
+  expect(stripAnsiAndWrappers(toolLines[0] ?? "").length).toBeLessThanOrEqual(
+    19,
+  );
+  expect(toolLines[0]).toContain("secret");
+  expect(toolLines[0]).not.toContain("(hidden)");
 });
 
 const fakeTheme: SubagentTheme = {
   fg: (_color, text) => text,
   bg: (_color, text) => text,
   bold: (text) => text,
+  italic: (text) => text,
+  underline: (text) => text,
+  strikethrough: (text) => text,
 };
 
 describe("renderSubagentProgress", () => {
@@ -1530,7 +1581,7 @@ describe("live progress accounting integration", () => {
     expect(text).toContain("2 spawned");
     expect(text).toContain("explorer");
     expect(text).toContain("worker");
-    expect(text).toContain("→ bash: ls");
+    expect(text).toContain("→ bash ls");
 
     const leaf = track("live-leaf-1");
     resetUsageLedger();
@@ -1541,10 +1592,10 @@ describe("live progress accounting integration", () => {
     });
     const leafText = renderLive(leaf, false);
     expect(leafText).not.toContain("spawned");
-    expect(leafText).toContain("→ bash: ls");
+    expect(leafText).toContain("→ bash ls");
   });
 
-  test("collapsed running tally ends with live subtree run cost and glyph-first groups", () => {
+  test("collapsed running tally omits run cost while retaining glyph-first groups", () => {
     const requestId = track("live-run-cost-1");
     setupRootWithChildren(requestId, [
       makeChild("c-a", "explorer", "able-fox", 1000),
@@ -1558,10 +1609,11 @@ describe("live progress accounting integration", () => {
     const text = renderLive(requestId, false);
     expect(text).toContain("2 spawned");
     const tallyLine = text.split("\n").find((l) => l.includes("spawned")) ?? "";
-    expect(tallyLine).toContain("run $0.0200");
+    expect(tallyLine).not.toContain("run $");
     expect(tallyLine).toContain("\u27F31");
     expect(text).toContain("test-model");
-    expect(text).not.toMatch(/test-model.*run \$/);
+    expect(text).toContain("→ bash ls");
+    expect(text).not.toContain("run $");
   });
 
   test("expanded running adds bounded tree alongside activity and shows all siblings", () => {
@@ -1588,6 +1640,8 @@ describe("live progress accounting integration", () => {
     expect(activityOnly.join("\n")).not.toContain("able-fox");
     expect(text).toContain("explorer");
     expect(text).toContain("worker");
+    expect(text).toContain("spawned");
+    expect(text).not.toContain("run $");
   });
 
   test("rerenders reflect current ledger changes with running counts and omitted totals", () => {
@@ -1706,10 +1760,13 @@ describe("live progress accounting integration", () => {
     const collapsed = renderLive(requestId, false);
     expect(collapsed).toContain("all done");
     expect(collapsed).toContain("spawned");
+    expect(collapsed).not.toContain("run $");
     const expanded = renderLive(requestId, true);
     expect(expanded).toContain("do the important task");
     expect(expanded).toContain("able-fox");
     expect(expanded).toContain("all done");
+    expect(expanded).toContain("spawned");
+    expect(expanded).not.toContain("run $");
     const narrow = renderLive(requestId, false, 20);
     expect(narrow).not.toContain("spawned");
     expect(narrow).toContain("all done");
@@ -1729,7 +1786,7 @@ describe("live progress accounting integration", () => {
       lastToolPreview: "bash: ls",
     });
     const collapsed = renderLive(requestId, false);
-    expect(collapsed).toContain("→ bash: ls");
+    expect(collapsed).toContain("→ bash ls");
     expect(collapsed).not.toContain("spawned");
     const expanded = renderLive(requestId, true);
     expect(expanded).toContain("do the important task");
@@ -1827,7 +1884,7 @@ describe("live progress accounting integration", () => {
   );
 });
 
-test("progress cards use muted information tokens with decorative-only dim", () => {
+test("progress cards use semantic role hierarchy", () => {
   const requestId = "theme-roles-progress";
   resetUsageLedger();
   const res = registerRootInstance({
@@ -1877,16 +1934,273 @@ test("progress cards use muted information tokens with decorative-only dim", () 
   );
   const text = renderText(rendered);
   expect(text).toContain("<muted>[running]</muted>");
-  expect(text).toContain("<muted>task: do task</muted>");
-  expect(text).toContain("<muted>\u2192</muted>");
-  expect(text).toContain("<muted>: ls -la</muted>");
-  expect(text).toContain("<muted>provider/model:high</muted>");
+  expect(text).toContain("<muted>task:</muted>");
+  expect(text).toContain("<muted><italic>do task</italic></muted>");
+  expect(text).toContain("<dim>→</dim>");
+  expect(text).toContain("<text>bash</text>");
+  expect(text).toContain("<dim> ls -la</dim>");
+  expect(text).toContain("<dim>provider/model:high</dim>");
+  expect(text).toContain("<dim>1 tool");
   expect(text).toContain("spawned");
   expect(text).toContain("<muted>");
-  expect(text).not.toContain("<dim>[running]</dim>");
-  expect(text).not.toContain("<dim>task:");
-  expect(text).not.toContain("<dim>: ls");
-  expect(text).not.toContain("<dim>");
+  expect(text).toContain("<dim>");
+  expect(text).not.toContain("<muted>task: do task</muted>");
+  expect(text).not.toContain("<muted>→</muted>");
+  expect(text).not.toContain("<muted>provider/model:high</muted>");
   clearProgressState(requestId);
   resetUsageLedger();
+});
+
+describe("T-002 innermost activity and tool-free thinking", () => {
+  test("shows root tool without identity using space grammar", () => {
+    const text = renderActivityCard("t002-root", {
+      toolName: "bash",
+      inputSummary: "bash: ls",
+    }).join("\n");
+    expect(text).toContain("<dim>→</dim> <text>bash</text><dim> ls</dim>");
+    expect(text).not.toContain("›");
+  });
+
+  test("shows direct child identity without ellipsis", () => {
+    const text = renderActivityCard("t002-direct", {
+      toolName: "subagent",
+      inputSummary: "subagent: build",
+      instanceName: "swift-harbor",
+      child: { toolName: "bash", inputSummary: "bash: make" },
+    }).join("\n");
+    expect(text).toContain("build");
+    expect(text).toContain("swift-harbor");
+    expect(text).toContain("<text>bash</text>");
+    expect(text).not.toContain("<dim>…</dim>");
+  });
+
+  test("shows only innermost with ellipsis below direct child", () => {
+    const text = renderActivityCard("t002-nested", {
+      toolName: "subagent",
+      inputSummary: "subagent: outer",
+      instanceName: "outer-inst",
+      child: {
+        toolName: "subagent",
+        inputSummary: "subagent: inner",
+        instanceName: "inner-inst",
+        child: { toolName: "bash", inputSummary: "bash: test" },
+      },
+    }).join("\n");
+    expect(text).toContain("<dim>…</dim>");
+    expect(text).toContain("inner");
+    expect(text).toContain("inner-inst");
+    expect(text).not.toContain("outer-inst");
+  });
+
+  test("renders unnamed delegation as tool subagent without identity", () => {
+    const text = renderActivityCard("t002-unnamed", {
+      toolName: "subagent",
+      inputSummary: "subagent",
+    }).join("\n");
+    expect(text).toContain("<text>subagent</text>");
+    expect(text).not.toContain("thinking");
+  });
+
+  test("splits flattened tool text only at first colon space", () => {
+    const text = renderActivityCard("t002-flat", {
+      toolName: "tool",
+      inputSummary: "bash: ls: verbose",
+    }).join("\n");
+    expect(text).toContain("<text>bash</text><dim> ls: verbose</dim>");
+  });
+
+  test("replaces only sensitive target and preserves agent and tool names", () => {
+    const text = renderActivityCard("t002-sensitive", {
+      toolName: "subagent",
+      inputSummary: "subagent: secret-agent",
+      instanceName: "token-instance",
+      child: { toolName: "token", inputSummary: "token: secret-value" },
+    }).join("\n");
+    expect(text).toContain("secret-agent");
+    expect(text).toContain("token-instance");
+    expect(text).toContain("<text>token</text>");
+    expect(text).toContain("<italic>(hidden)</italic>");
+    expect(text).not.toContain("secret-value");
+  });
+
+  test("renders stored placeholder as hidden through budget", () => {
+    const text = renderActivityCard("t002-placeholder", {
+      toolName: "bash",
+      inputSummary: "(running...)",
+    }).join("\n");
+    expect(text).toContain("<italic>(hidden)</italic>");
+    expect(text).not.toContain("(running...)");
+  });
+
+  test("renders root tool-free interval as thinking", () => {
+    const text = renderActivityCard("t002-thinking-root").join("\n");
+    expect(text).toContain("<italic>thinking</italic>");
+    expect(text).toContain("<dim>→</dim>");
+  });
+
+  test("renders delegate without tool as identity thinking with roles", () => {
+    const text = renderActivityCard("t002-thinking-delegate", {
+      toolName: "subagent",
+      inputSummary: "subagent: build",
+      instanceName: "swift-harbor",
+      ordinal: 2,
+    }).join("\n");
+    expect(text).toContain("<toolTitle>build</toolTitle>");
+    expect(text).toContain("<dim>#2</dim>");
+    expect(text).toContain("<accent><italic>swift-harbor</italic></accent>");
+    expect(text).toContain("<italic>thinking</italic>");
+    expect(text).toContain("<dim>›</dim>");
+  });
+
+  test("keeps sanitized bare tool name target-free without hidden", () => {
+    const text = renderActivityCard("t002-bare", {
+      toolName: "bash",
+      inputSummary: "bash",
+    }).join("\n");
+    expect(text).toContain("<text>bash</text>");
+    expect(text).not.toContain("(hidden)");
+  });
+
+  test("keeps root tool and target roles when the target contains a separator", () => {
+    const line = findActivityRow(
+      renderActivityCard("t002-separator", {
+        toolName: "bash",
+        inputSummary: "bash: echo a › b",
+      }),
+    );
+    expect(line).toContain("<text>bash</text><dim> echo a › b</dim>");
+    expect(line).not.toContain("<toolTitle>");
+    expect(line).not.toContain("<accent>");
+  });
+
+  test("keeps a tool named thinking in the tool role", () => {
+    const line = findActivityRow(
+      renderActivityCard("t002-thinking-tool", {
+        toolName: "thinking",
+        inputSummary: "thinking",
+      }),
+    );
+    expect(line).toContain("<text>thinking</text>");
+    expect(line).not.toContain("<italic>");
+  });
+
+  test("keeps a literal hidden target in the target role", () => {
+    const line = findActivityRow(
+      renderActivityCard("t002-literal-hidden", {
+        toolName: "bash",
+        inputSummary: "bash: (hidden)",
+      }),
+    );
+    expect(line).toContain("<text>bash</text><dim> (hidden)</dim>");
+    expect(line).not.toContain("<italic>");
+  });
+
+  test("emphasizes activity tool name with fg and bold", () => {
+    const theme = {
+      fg: (color: string, text: string) => `<${color}>${text}</${color}>`,
+      bg: (color: string, text: string) => `[${color}]${text}[/${color}]`,
+      bold: (text: string) => `<bold>${text}</bold>`,
+      italic: (text: string) => `<italic>${text}</italic>`,
+      underline: (text: string) => `<underline>${text}</underline>`,
+      strikethrough: (text: string) => `<strike>${text}</strike>`,
+    };
+    const line = findActivityRow(
+      renderActivityCard(
+        "t001-emphasis",
+        { toolName: "bash", inputSummary: "bash: ls" },
+        { theme },
+      ),
+    );
+    expect(line).toContain("<text><bold>bash</bold></text><dim> ls</dim>");
+    expect(line).not.toContain("<toolTitle>");
+    expect(line).not.toContain("<accent>");
+    const bareLine = findActivityRow(
+      renderActivityCard(
+        "t001-emphasis-bare",
+        { toolName: "bash", inputSummary: "bash" },
+        { theme },
+      ),
+    );
+    expect(bareLine).toContain("<text><bold>bash</bold></text>");
+    expect(bareLine).not.toContain("<dim> ");
+  });
+});
+
+describe("T-003 Protect, shorten, and bound activity targets", () => {
+  test("shortens cwd-relative path in card within width", () => {
+    const originalCwd = process.cwd;
+    const originalHome = process.env["HOME"];
+    (process as unknown as { cwd: () => string }).cwd = () => "/repo";
+    process.env["HOME"] = "/home/user";
+    try {
+      const toolLine = findActivityRow(
+        renderActivityCard(
+          "t003-card-path",
+          { toolName: "bash", inputSummary: "bash: /repo/src/file.ts" },
+          { theme: makeTheme(), width: 80 },
+        ),
+      );
+      expect(toolLine).toContain("src/file.ts");
+      expect(toolLine).not.toContain("/repo/src/file.ts");
+      expect(stripAnsiAndWrappers(toolLine).length).toBeLessThanOrEqual(80);
+    } finally {
+      (process as unknown as { cwd: () => string }).cwd = originalCwd;
+      if (originalHome === undefined) delete process.env["HOME"];
+      else process.env["HOME"] = originalHome;
+    }
+  });
+
+  test("bounds hidden and long activity within narrow card width", () => {
+    for (const width of [20, 30, 60]) {
+      const lines = renderActivityCard(
+        "t003-card-bounds",
+        {
+          toolName: "bash",
+          inputSummary: "bash: secret-value-with-long-suffix-that-exceeds",
+        },
+        { theme: makeTheme(), width },
+      );
+      for (const line of lines) {
+        expect(stripAnsiAndWrappers(line).length).toBeLessThanOrEqual(width);
+      }
+      expect(findActivityRow(lines)).not.toContain("secret");
+    }
+  });
+
+  test("renders tool-free activity as truncated thinking row at narrow width", () => {
+    const toolLine = stripAnsiAndWrappers(
+      findActivityRow(
+        renderActivityCard("t003-card-thinking", undefined, {
+          theme: makeTheme(),
+          width: 12,
+        }),
+      ),
+    );
+    expect(toolLine).toContain("thi…");
+    expect(toolLine.length).toBeLessThanOrEqual(12);
+  });
+
+  test("renders hidden activity as truncated row at narrow width", () => {
+    const toolLine = stripAnsiAndWrappers(
+      findActivityRow(
+        renderActivityCard(
+          "t003-card-hidden",
+          { toolName: "tool", inputSummary: "(running...)" },
+          { theme: makeTheme(), width: 12 },
+        ),
+      ),
+    );
+    expect(toolLine).toContain("(hi…");
+    expect(toolLine.length).toBeLessThanOrEqual(12);
+    expect(toolLine).not.toContain("(running...)");
+  });
+
+  test("preserves card padding and indentation", () => {
+    const toolLine =
+      renderActivityCard("t003-card-indent", {
+        toolName: "bash",
+        inputSummary: "bash: ls",
+      }).find((line) => line.includes("bash")) ?? "";
+    expect(toolLine.startsWith("[toolPendingBg]   <dim>→</dim>")).toBe(true);
+  });
 });

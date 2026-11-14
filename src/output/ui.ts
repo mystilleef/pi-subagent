@@ -1,14 +1,5 @@
-import type {
-  ExtensionCommandContext,
-  ThemeColor,
-} from "@earendil-works/pi-coding-agent";
-import {
-  Box,
-  type Component,
-  Markdown,
-  type MarkdownTheme,
-  Text,
-} from "@earendil-works/pi-tui";
+import type { ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
+import { Box, type Component, Markdown, Text } from "@earendil-works/pi-tui";
 import type { AgentScope } from "../agent/agents.js";
 import {
   type DescendantTallyOptions,
@@ -16,20 +7,11 @@ import {
   formatCost,
   formatDescendantTally,
   formatDisplayIdentity,
-  formatHeaderStats,
   hasDescendants,
   SEGMENT_SEPARATOR,
 } from "../progress/progress-format.js";
-import {
-  type ProgressStatus,
-  STATUS_BG,
-  STATUS_COLOR,
-  STATUS_ICON,
-  type SubagentProgressState,
-  type ThemeBg,
-} from "../progress/progress-state.js";
+import type { ProgressStatus } from "../progress/progress-state.js";
 import type {
-  SessionUsageQueryResult,
   SubagentDetails,
   UsageInstanceNode,
   UsageStats,
@@ -37,32 +19,15 @@ import type {
 import { firstValidOrdinal } from "../shared/usage-validation.js";
 import { hasSubagentFailed } from "../shared/utils.js";
 import {
-  extractSemanticToolTarget,
-  normalizeSummaryValue,
-} from "./normalize.js";
+  makeMarkdownTheme,
+  type SubagentTheme,
+  style,
+  styleBackground,
+  styleStatusGlyph,
+  styleTally,
+} from "./semantic-style.js";
 
-/**
- * Abstraction for theme-aware text formatting.
- */
-export type SubagentTheme = {
-  fg: (color: ThemeColor, text: string) => string;
-  bg: (color: ThemeBg, text: string) => string;
-  bold: (text: string) => string;
-  italic?: (text: string) => string;
-};
-
-const ANSI_ITALIC_ON = "\x1b[3m";
-const ANSI_ITALIC_OFF = "\x1b[23m";
-const ANSI_STRIKETHROUGH_ON = "\x1b[9m";
-const ANSI_STRIKETHROUGH_OFF = "\x1b[29m";
-const ANSI_UNDERLINE_ON = "\x1b[4m";
-const ANSI_UNDERLINE_OFF = "\x1b[24m";
-
-function italicText(text: string, theme: SubagentTheme): string {
-  return theme.italic
-    ? theme.italic(text)
-    : `${ANSI_ITALIC_ON}${text}${ANSI_ITALIC_OFF}`;
-}
+export type { SubagentTheme };
 
 /** Themed card title; segment order follows {@link formatDisplayIdentity}. */
 export function formatSubagentTitle(
@@ -72,10 +37,10 @@ export function formatSubagentTitle(
   ordinal?: number,
 ): string {
   return formatDisplayIdentity(
-    theme.fg("toolTitle", theme.bold(agent)),
-    instanceName && theme.fg("accent", italicText(instanceName, theme)),
+    style(theme, "agent", agent),
+    instanceName && style(theme, "instance", instanceName),
     ordinal,
-    (text) => theme.fg("accent", text),
+    (text) => style(theme, "ordinal", text),
   );
 }
 
@@ -104,41 +69,6 @@ function formatTurns(turns: number): string {
   return `${turns} turn${turns > 1 ? "s" : ""}`;
 }
 
-function formatIoTokens(input: number, output: number): string {
-  const tokens: string[] = [];
-  if (input) tokens.push(`↑${formatTokens(input)}`);
-  if (output) tokens.push(`↓${formatTokens(output)}`);
-  return tokens.join(" ");
-}
-
-function formatCacheStats(cacheRead: number, cacheWrite: number): string {
-  const cache: string[] = [];
-  if (cacheRead) cache.push(`R${formatTokens(cacheRead)}`);
-  if (cacheWrite) cache.push(`W${formatTokens(cacheWrite)}`);
-  return `cache:${cache.join("/")}`;
-}
-
-/**
- * Formats cumulative usage statistics for compact UI display.
- */
-export function formatUsageStats(
-  usage: UsageStats,
-  model?: string,
-  compact?: boolean,
-): string {
-  const parts: string[] = [];
-  if (usage.turns) parts.push(formatTurns(usage.turns));
-  if (usage.input || usage.output)
-    parts.push(formatIoTokens(usage.input, usage.output));
-  if (!compact && (usage.cacheRead || usage.cacheWrite))
-    parts.push(formatCacheStats(usage.cacheRead, usage.cacheWrite));
-  if (!compact && usage.contextTokens && usage.contextTokens > 0)
-    parts.push(`ctx:${formatTokens(usage.contextTokens)}`);
-  if (usage.cost) parts.push(formatCost(usage.cost));
-  if (model) parts.push(model);
-  return parts.join(SEGMENT_SEPARATOR);
-}
-
 /**
  * Formats the footer for subagent result cards: model, turns, and self-only cost.
  * Omits context tokens, since header `% ctx` is the sole context figure, and
@@ -152,56 +82,27 @@ export function formatResultFooter(usage: UsageStats, model?: string): string {
   return parts.join(SEGMENT_SEPARATOR);
 }
 
-export function formatToolCall(
-  toolName: string,
-  args: Record<string, unknown>,
-  themeFg: (color: ThemeColor, text: string) => string,
-  forceJson = false,
-): string {
-  const target = normalizeSummaryValue(
-    extractSemanticToolTarget(args, forceJson),
-  );
-  if (!target) return themeFg("accent", toolName);
-  return themeFg("accent", toolName) + themeFg("dim", ` ${target}`);
-}
-
 export { extractFinalOutputFromMessages as getFinalOutput } from "../shared/utils.js";
-
-function makeMarkdownTheme(theme: SubagentTheme): MarkdownTheme {
-  const fg = (c: ThemeColor) => (text: string) => theme.fg(c, text);
-  return {
-    heading: fg("mdHeading"),
-    link: fg("mdLink"),
-    linkUrl: fg("mdLinkUrl"),
-    code: fg("mdCode"),
-    codeBlock: fg("mdCodeBlock"),
-    codeBlockBorder: fg("mdCodeBlockBorder"),
-    quote: fg("mdQuote"),
-    quoteBorder: fg("mdQuoteBorder"),
-    hr: fg("mdHr"),
-    listBullet: fg("mdListBullet"),
-    bold: (text) => theme.bold(text),
-    italic: (text) => `${ANSI_ITALIC_ON}${text}${ANSI_ITALIC_OFF}`,
-    strikethrough: (text) =>
-      `${ANSI_STRIKETHROUGH_ON}${text}${ANSI_STRIKETHROUGH_OFF}`,
-    underline: (text) => `${ANSI_UNDERLINE_ON}${text}${ANSI_UNDERLINE_OFF}`,
-  };
-}
 
 export function renderSubagentCall(
   args: { agent?: string; task?: string; agentScope?: AgentScope },
   theme: SubagentTheme,
 ): Text {
   const scope: AgentScope = args.agentScope ?? "both";
-  const agentName = args.agent || "...";
-  // Parser-owned preview suppresses task text: show agent + scope only
-  const target = args.agent ? `[${scope}]` : JSON.stringify(args);
+  const identity = args.agent
+    ? style(theme, "callIdentity", args.agent)
+    : style(theme, "callPlaceholder", "...");
   let text =
-    theme.fg("toolTitle", theme.bold("subagent ")) +
-    theme.fg("accent", agentName) +
-    theme.fg("muted", ` [${scope}]`);
-  text += `\n  ${theme.fg("dim", target)}`;
-  return new Text(text, 0, 0, (line) => theme.bg("toolPendingBg", line));
+    style(theme, "callIdentity", "subagent ") +
+    identity +
+    style(theme, "callScope", ` [${scope}]`);
+  // A named call already shows its scope; only an unnamed one needs raw
+  // arguments. Parser-owned previews never include task text.
+  if (!args.agent)
+    text += `\n  ${style(theme, "callArgs", JSON.stringify(args))}`;
+  return new Text(text, 0, 0, (line) =>
+    styleBackground(theme, "running", line),
+  );
 }
 
 export function renderSubagentToolResult(
@@ -298,7 +199,7 @@ class DescendantTally implements Component {
       this.options,
     );
     if (!tally) return [];
-    return new Text(this.theme.fg("muted", tally), CARD_BODY_INDENT, 0).render(
+    return new Text(styleTally(this.theme, tally), CARD_BODY_INDENT, 0).render(
       width,
     );
   }
@@ -321,13 +222,13 @@ function formatStatusHeader(
   title: string,
   theme: SubagentTheme,
 ): string {
-  const icon = theme.fg(STATUS_COLOR[status], STATUS_ICON[status]);
-  return `${icon} ${title} ${theme.fg("muted", `[${status}]`)}`;
+  const icon = styleStatusGlyph(theme, status);
+  return `${icon} ${title} ${style(theme, "statusLabel", `[${status}]`)}`;
 }
 
 /** Padded card container with the status background. */
 function makeStatusBox(status: ProgressStatus, theme: SubagentTheme): Box {
-  return new Box(1, 1, (line) => theme.bg(STATUS_BG[status], line));
+  return new Box(1, 1, (line) => styleBackground(theme, status, line));
 }
 
 /** Content of one card; layout and spacing belong to {@link renderCard}. */
@@ -348,14 +249,14 @@ export function renderCard(anatomy: CardAnatomy, theme: SubagentTheme): Box {
   const box = makeStatusBox(anatomy.status, theme);
   const header = formatStatusHeader(anatomy.status, anatomy.title, theme);
   box.addChild(
-    new Text(`${header} ${theme.fg("muted", anatomy.metadata)}`, 0, 0),
+    new Text(`${header} ${style(theme, "metadata", anatomy.metadata)}`, 0, 0),
   );
   for (const block of anatomy.blocks) {
     if (block) box.addChild(withLayoutGap(block));
   }
   if (anatomy.footer)
     box.addChild(
-      withLayoutGap(new Text(theme.fg("muted", anatomy.footer), 0, 0)),
+      withLayoutGap(new Text(style(theme, "footer", anatomy.footer), 0, 0)),
     );
   return box;
 }
@@ -380,7 +281,7 @@ export function withLayoutGap(inner: Component): Component {
 
 type StatusCardVariant = "full" | "abridged";
 
-type StatusCardOptions = {
+export type StatusCardOptions = {
   status: ProgressStatus;
   title: string;
   variant: StatusCardVariant;
@@ -390,7 +291,7 @@ type StatusCardOptions = {
   tally?: Component;
 };
 
-function renderStatusCard(
+export function renderStatusCard(
   options: StatusCardOptions,
   theme: SubagentTheme,
 ): Box {
@@ -415,54 +316,15 @@ function makeStatusCardBody(
   if (bodyText && options.variant === "full") {
     body.addChild(
       new Markdown(bodyText, 0, 0, makeMarkdownTheme(theme), {
-        color: (text) => theme.fg("toolOutput", text),
+        color: (text) => style(theme, "output", text),
       }),
     );
   } else if (bodyText) {
-    body.addChild(new Text(theme.fg("toolOutput", bodyText), 0, 0));
+    body.addChild(new Text(style(theme, "output", bodyText), 0, 0));
   } else {
-    body.addChild(new Text(theme.fg("muted", "(no output)"), 0, 0));
+    body.addChild(new Text(style(theme, "boardText", "(no output)"), 0, 0));
   }
   return body;
-}
-
-const BODY_PREVIEW_MAX = 120;
-
-function selectRunsBoardBody(state: SubagentProgressState): string {
-  return (
-    [state.finalOutput, state.errorText, state.taskPreview].find(
-      (c): c is string => typeof c === "string" && c.trim().length > 0,
-    ) ?? ""
-  );
-}
-
-function renderJobCard(
-  state: SubagentProgressState,
-  theme: SubagentTheme,
-  usageInstance?: UsageInstanceNode,
-): Box {
-  const title = formatSubagentTitle(
-    state.agent,
-    state.instanceName,
-    theme,
-    state.ordinal,
-  );
-  const bodyText = selectRunsBoardBody(state);
-  const preview =
-    bodyText.length > BODY_PREVIEW_MAX
-      ? `${bodyText.slice(0, BODY_PREVIEW_MAX - 1)}…`
-      : bodyText;
-  const options: StatusCardOptions = {
-    status: state.status,
-    title,
-    variant: "abridged",
-    metadata: formatHeaderStats(state),
-    body: preview,
-  };
-  const tally = createDescendantTally(usageInstance, theme);
-  if (tally) options.tally = tally;
-  if (state.modelDisplay) options.footer = state.modelDisplay;
-  return renderStatusCard(options, theme);
 }
 
 export function makeSectionHeader(
@@ -474,77 +336,18 @@ export function makeSectionHeader(
   const heading = `${label} (${count})`;
   const ruler = "─".repeat(Math.max(0, width - heading.length - 1));
   return new Text(
-    `${theme.fg("muted", heading)} ${theme.fg("dim", ruler)}`,
+    `${style(theme, "heading", heading)} ${style(theme, "ruler", ruler)}`,
     0,
     0,
   );
 }
 
-/** Ledger data the `/jobs` board renders beside progress state. */
-export interface RunsBoardUsage {
-  session: SessionUsageQueryResult;
-  /** Ledger subtree per job `requestId`; jobs without one show no run cost. */
-  instances: ReadonlyMap<string, UsageInstanceNode>;
-}
-
-function sortByStartTimeDesc(
-  a: SubagentProgressState,
-  b: SubagentProgressState,
-): number {
-  return b.startTime - a.startTime;
-}
-
-/** Ordered section definitions: label → status filter for the runs board. */
-const BOARD_SECTIONS: [string, ProgressStatus][] = [
-  ["ACTIVE", "running"],
-  ["FAILED", "error"],
-  ["CANCELLED", "cancelled"],
-  ["SUCCEEDED", "success"],
-];
-
-// Jobs render in status-specific sections, each sorted by `startTime` descending.
-// Status icons preserve the existing /jobs contract for running and cancelled jobs.
-export function renderRunsBoard(
-  states: SubagentProgressState[],
+/** Board header: bold `Session` label, then totals in board tone. */
+export function formatSessionHeader(
   theme: SubagentTheme,
-  width = 80,
-  usage?: RunsBoardUsage,
-): Component {
-  if (states.length === 0) {
-    return new Text(theme.fg("muted", "No /run jobs in this session."), 0, 0);
-  }
-  const grouped = new Map<ProgressStatus, SubagentProgressState[]>();
-  for (const s of states) {
-    const bucket = grouped.get(s.status);
-    if (bucket) bucket.push(s);
-    else grouped.set(s.status, [s]);
-  }
-  for (const bucket of grouped.values()) bucket.sort(sortByStartTimeDesc);
-  const box = new Box(0, 0);
-  if (usage) {
-    const { runs, rollup } = usage.session;
-    const header = joinSegments(
-      "Session",
-      plural(runs.length, "run"),
-      plural(rollup.instances, "instance"),
-      formatCost(rollup.usage.cost),
-    );
-    box.addChild(new Text(theme.fg("muted", header), 0, 0));
-  }
-  const addSection = (
-    label: string,
-    sectionStates: SubagentProgressState[],
-  ) => {
-    if (sectionStates.length === 0) return;
-    box.addChild(makeSectionHeader(label, sectionStates.length, width, theme));
-    for (const state of sectionStates)
-      box.addChild(
-        renderJobCard(state, theme, usage?.instances.get(state.requestId)),
-      );
-  };
-  for (const [label, status] of BOARD_SECTIONS)
-    addSection(label, grouped.get(status) ?? []);
-  return box;
+  ...totals: string[]
+): string {
+  return `${style(theme, "heading", "Session")}${style(theme, "boardText", `${SEGMENT_SEPARATOR}${joinSegments(...totals)}`)}`;
 }
 
 /**

@@ -131,7 +131,9 @@ export type FakeTheme = {
   fg: (color: ThemeColor | string, text: string) => string;
   bg: (color: string, text: string) => string;
   bold: (text: string) => string;
-  italic?: (text: string) => string;
+  italic: (text: string) => string;
+  underline: (text: string) => string;
+  strikethrough: (text: string) => string;
 };
 
 export async function makeTempDir(prefix: string): Promise<string> {
@@ -695,6 +697,9 @@ export function createDefaultFakeTheme(): FakeTheme {
     fg: (color, text) => `[${color}]${text}[/${color}]`,
     bg: (color, text) => `[${color}]${text}[/${color}]`,
     bold: (text) => `*${text}*`,
+    italic: (text) => `_${text}_`,
+    underline: (text) => `__${text}__`,
+    strikethrough: (text) => `~${text}~`,
   };
 }
 
@@ -704,6 +709,8 @@ function createCommandFakeTheme(): FakeTheme {
     bg: (color, text) => `<bg:${color}>${text}</bg:${color}>`,
     bold: (text) => `<b>${text}</b>`,
     italic: (text) => `<i>${text}</i>`,
+    underline: (text) => `<u>${text}</u>`,
+    strikethrough: (text) => `<s>${text}</s>`,
   };
 }
 

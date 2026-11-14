@@ -1003,7 +1003,7 @@ test("terminal durations stay isolated by request", () => {
     { expanded: false },
     theme,
   );
-  expect(renderText(runningResult)).toContain("9.5s");
+  expect(renderText(runningResult)).toContain("9s");
   expect(getProgressState("iso-running")?.durationMs).toBeUndefined();
 });
 
@@ -2260,6 +2260,9 @@ function makeTheme() {
     fg: (_color: ThemeColor, text: string) => text,
     bg: (color: string, text: string) => `[${color}]${text}[/${color}]`,
     bold: (text: string) => text,
+    italic: (text: string) => text,
+    underline: (text: string) => text,
+    strikethrough: (text: string) => text,
   };
 }
 

@@ -14,8 +14,10 @@ import type {
   UsageInstanceNode,
 } from "../shared/types.js";
 import { computeSubtreeRollup } from "../shared/usage-accounting.js";
+import { style } from "./semantic-style.js";
 import {
   createDescendantTally,
+  formatSessionHeader,
   formatSubagentTitle,
   formatTokens,
   joinSegments,
@@ -78,14 +80,14 @@ export function renderStatsBoard(
   width = 80,
 ): Component {
   const box = new Box(0, 0);
-  const sessionHeader = joinSegments(
-    "Session",
+  const sessionHeader = formatSessionHeader(
+    theme,
     plural(runs.length, "run"),
     plural(rollup.instances, "instance"),
     formatUsageTokens(rollup.usage),
     formatCost(rollup.usage.cost),
   );
-  box.addChild(new Text(theme.fg("muted", sessionHeader), 0, 0));
+  box.addChild(new Text(sessionHeader, 0, 0));
   const agents = Object.entries(rollup.byAgent).sort(([a], [b]) =>
     a.localeCompare(b),
   );
@@ -98,7 +100,7 @@ export function renderStatsBoard(
       formatCost(stats.usage.cost),
       formatElapsed(stats.durationMs),
     );
-    box.addChild(new Text(theme.fg("muted", row), 0, 0));
+    box.addChild(new Text(style(theme, "boardText", row), 0, 0));
   }
   box.addChild(makeSectionHeader("RUNS", runs.length, width, theme));
   for (const run of runs) box.addChild(renderStatsRunCard(run, theme));
@@ -127,9 +129,9 @@ export function renderStatsRunBoard(
     run.durationMs !== undefined ? formatElapsed(run.durationMs) : undefined,
   );
   const box = new Box(0, 0);
-  box.addChild(new Text(theme.fg("muted", header), 0, 0));
+  box.addChild(new Text(style(theme, "boardText", header), 0, 0));
   const tree = formatUsageTree(run, { includeRoot: true, now, showCost: true });
   for (const line of tree)
-    box.addChild(new Text(theme.fg("muted", line), 0, 0));
+    box.addChild(new Text(style(theme, "tally", line), 0, 0));
   return box;
 }

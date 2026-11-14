@@ -262,6 +262,8 @@ describe("index.ts", () => {
               bg: (_color: unknown, text: string): string => text,
               bold: (text: string): string => text,
               italic: (text: string): string => text,
+              underline: (text: string): string => text,
+              strikethrough: (text: string): string => text,
             };
             const component = await factory(
               undefined as never,
@@ -628,6 +630,8 @@ describe("index.ts", () => {
           bg: (_c: string, t: string) => t,
           bold: (t: string) => t,
           italic: (t: string) => t,
+          underline: (t: string) => t,
+          strikethrough: (t: string) => t,
         } as unknown as import("@earendil-works/pi-coding-agent").Theme,
         undefined as never,
       );
@@ -684,6 +688,8 @@ describe("index.ts", () => {
           bg: (_c: string, t: string) => t,
           bold: (t: string) => t,
           italic: (t: string) => t,
+          underline: (t: string) => t,
+          strikethrough: (t: string) => t,
         } as unknown as import("@earendil-works/pi-coding-agent").Theme,
         undefined as never,
       );

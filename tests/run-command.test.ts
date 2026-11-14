@@ -20,10 +20,10 @@ import {
 } from "../src/progress/progress.js";
 import {
   CAPTURE_ARGS_PI_SCRIPT,
+  createDefaultFakeTheme,
   emitAgentEnd,
   emitMessageEnd,
   emitSessionStart,
-  type FakeTheme,
   makeAssistantMessage,
   makeMessageRenderOptions,
   type RegisteredMessageRenderer,
@@ -1372,11 +1372,7 @@ test("/run final result message renderer shows header and keeps success backgrou
   await waitForSentMessageCount(sentMessages, 2);
   const renderer = tool.registeredMessageRenderers.get("subagent-result");
   if (!renderer) throw new Error("subagent-result renderer missing");
-  const fakeTheme: FakeTheme = {
-    fg: (color, text) => `[${color}]${text}[/${color}]`,
-    bg: (color, text) => `[${color}]${text}[/${color}]`,
-    bold: (text) => `*${text}*`,
-  };
+  const fakeTheme = createDefaultFakeTheme();
   const rendered = renderer(
     sentMessages.at(-1) as Parameters<RegisteredMessageRenderer>[0],
     makeMessageRenderOptions(),
@@ -1578,11 +1574,7 @@ exit 0
   await waitForSentMessageCount(sentMessages, 2);
   const renderer = tool.registeredMessageRenderers.get("subagent-result");
   if (!renderer) throw new Error("subagent-result renderer missing");
-  const fakeTheme: FakeTheme = {
-    fg: (color, text) => `[${color}]${text}[/${color}]`,
-    bg: (color, text) => `[${color}]${text}[/${color}]`,
-    bold: (text) => `*${text}*`,
-  };
+  const fakeTheme = createDefaultFakeTheme();
   const rendered = renderer(
     sentMessages.at(-1) as Parameters<RegisteredMessageRenderer>[0],
     makeMessageRenderOptions(),

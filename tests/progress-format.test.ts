@@ -1,12 +1,18 @@
-import { describe, expect, jest, test } from "bun:test";
+import { describe, expect, jest, mock, test } from "bun:test";
+import * as realOs from "node:os";
+import { visibleWidth } from "@earendil-works/pi-tui";
+import {
+  type PathAnchors,
+  renderToolActivityPieces,
+} from "../src/progress/activity-display.js";
 import { formatElapsed, formatHeaderStats } from "../src/progress/progress.js";
 import {
   formatContextPercent,
   formatDescendantTally,
   formatDisplayIdentity,
+  formatLiveElapsed,
   formatUsageTree,
   renderToolActivity,
-  renderToolActivityForDisplay,
   SENSITIVE_PATTERN,
 } from "../src/progress/progress-format.js";
 import type {
@@ -19,6 +25,17 @@ import {
   createEmptyAdditiveUsage,
 } from "../src/shared/usage-accounting.js";
 import { serializeUsageSnapshot } from "../src/shared/usage-snapshot.js";
+
+/** Plain text of the display-only activity line. */
+function renderActivityText(
+  activity: ToolActivity | undefined,
+  maxChars: number,
+  anchors?: PathAnchors,
+): string {
+  return renderToolActivityPieces(activity, maxChars, anchors)
+    .map((piece) => piece.text)
+    .join("");
+}
 
 describe("formatContextPercent", () => {
   test("returns --% when contextWindowTokens is undefined", () => {
@@ -143,6 +160,56 @@ test.each([
   expect(formatElapsed(row.elapsedMs)).toBe(row.expected);
 });
 
+test.each([
+  { name: "floors zero", elapsedMs: 0, expected: "0s" },
+  { name: "floors fractional", elapsedMs: 2500, expected: "2s" },
+  { name: "floors just-below-minute", elapsedMs: 59_999, expected: "59s" },
+  { name: "keeps minute boundary", elapsedMs: 60_000, expected: "1m 0s" },
+  { name: "keeps minutes and seconds", elapsedMs: 90_000, expected: "1m 30s" },
+  { name: "clamps negative to zero", elapsedMs: -500, expected: "0s" },
+  { name: "clamps NaN to zero", elapsedMs: Number.NaN, expected: "0s" },
+  {
+    name: "clamps positive infinity to zero",
+    elapsedMs: Number.POSITIVE_INFINITY,
+    expected: "0s",
+  },
+])("formatLiveElapsed $name", (row) => {
+  expect(formatLiveElapsed(row.elapsedMs)).toBe(row.expected);
+});
+
+test("format header stats separates live and settled precision", () => {
+  const settled = {
+    requestId: "req-live",
+    agent: "agent-a",
+    instanceName: "able-falcon",
+    taskPreview: "task a",
+    status: "running" as const,
+    startTime: 0,
+    toolCount: 0,
+  };
+  jest.setSystemTime(2500);
+  try {
+    expect(formatHeaderStats(settled)).toBe("0 tools · --% ctx · 2s");
+  } finally {
+    jest.useRealTimers();
+  }
+  expect(formatHeaderStats({ ...settled, durationMs: 2500 })).toBe(
+    "0 tools · --% ctx · 2.5s",
+  );
+  jest.setSystemTime(59_999);
+  try {
+    expect(formatHeaderStats(settled)).toBe("0 tools · --% ctx · 59s");
+  } finally {
+    jest.useRealTimers();
+  }
+  jest.setSystemTime(90_000);
+  try {
+    expect(formatHeaderStats(settled)).toBe("0 tools · --% ctx · 1m 30s");
+  } finally {
+    jest.useRealTimers();
+  }
+});
+
 test("format header stats renders tool count context percent and elapsed", () => {
   const stats = formatHeaderStats({
     requestId: "req-1",
@@ -196,31 +263,31 @@ test("format header stats handles zero usage and context fallbacks", () => {
       startTime: 1000,
       toolCount: 0,
     };
-    expect(formatHeaderStats(base)).toBe("0 tools · --% ctx · 3.0s");
+    expect(formatHeaderStats(base)).toBe("0 tools · --% ctx · 3s");
     expect(
       formatHeaderStats({
         ...base,
         contextTokens: -1,
         contextWindowTokens: 100,
       }),
-    ).toBe("0 tools · 0% ctx · 3.0s");
+    ).toBe("0 tools · 0% ctx · 3s");
     expect(
       formatHeaderStats({
         ...base,
         contextTokens: Number.NaN,
         contextWindowTokens: 100,
       }),
-    ).toBe("0 tools · 0% ctx · 3.0s");
+    ).toBe("0 tools · 0% ctx · 3s");
     expect(
       formatHeaderStats({ ...base, contextTokens: 50, contextWindowTokens: 0 }),
-    ).toBe("0 tools · --% ctx · 3.0s");
+    ).toBe("0 tools · --% ctx · 3s");
     expect(
       formatHeaderStats({
         ...base,
         contextTokens: 50,
         contextWindowTokens: Number.POSITIVE_INFINITY,
       }),
-    ).toBe("0 tools · --% ctx · 3.0s");
+    ).toBe("0 tools · --% ctx · 3s");
   } finally {
     jest.useRealTimers();
   }
@@ -322,37 +389,39 @@ test("renderToolActivity skips nodes without inputSummary", () => {
   ).toBe("parent-summary - grandchild-summary");
 });
 
-test("renderToolActivityForDisplay returns undefined for undefined activity", () => {
-  expect(renderToolActivityForDisplay(undefined, 80)).toBeUndefined();
+test("renderToolActivityPieces renders thinking without an active tool", () => {
+  expect(renderToolActivityPieces(undefined, 80)).toEqual([
+    { role: "inferred", text: "thinking" },
+  ]);
 });
 
-test("renderToolActivityForDisplay returns toolName when no inputSummary", () => {
-  expect(renderToolActivityForDisplay({ toolName: "bash" }, 80)).toBe("bash");
+test("renderActivityText returns toolName when no inputSummary", () => {
+  expect(renderActivityText({ toolName: "bash" }, 80)).toBe("bash");
 });
 
 test.each([
   {
-    name: "renderToolActivityForDisplay renders depth-1 with budget",
+    name: "renderActivityText renders depth-1 with budget",
     inputSummary: "ls -la",
     budget: 80,
-    expected: "ls -la",
+    expected: "bash ls -la",
   },
   {
-    name: "renderToolActivityForDisplay returns empty string for zero budget",
+    name: "renderActivityText returns empty string for zero budget",
     inputSummary: "bash: ls",
     budget: 0,
     expected: "",
   },
 ])("$name", (row) => {
   expect(
-    renderToolActivityForDisplay(
+    renderActivityText(
       { toolName: "bash", inputSummary: row.inputSummary },
       row.budget,
     ),
   ).toBe(row.expected);
 });
 
-test("renderToolActivityForDisplay truncates joined result once not segments independently", () => {
+test("renderActivityText truncates innermost once with shared budget", () => {
   const activity: ToolActivity = {
     toolName: "subagent",
     inputSummary:
@@ -363,15 +432,16 @@ test("renderToolActivityForDisplay truncates joined result once not segments ind
         "second-segment-that-is-also-sixty-characters-long-padding-here",
     },
   };
-  const result = renderToolActivityForDisplay(activity, 80);
+  const result = renderActivityText(activity, 40);
   expect(result).toBeDefined();
-  expect(result?.length).toBeLessThanOrEqual(80);
-  expect(result).toContain("first-segment");
+  expect(result?.length).toBeLessThanOrEqual(40);
+  expect(result).toContain("bash");
   expect(result).toContain("second-segment");
+  expect(result).not.toContain("first-segment");
   expect(result).toMatch(/…$/);
 });
 
-test("renderToolActivityForDisplay preserves full text when within budget", () => {
+test("renderActivityText preserves innermost when within budget", () => {
   const activity: ToolActivity = {
     toolName: "subagent",
     inputSummary: "short-one",
@@ -380,12 +450,10 @@ test("renderToolActivityForDisplay preserves full text when within budget", () =
       inputSummary: "short-two",
     },
   };
-  expect(renderToolActivityForDisplay(activity, 80)).toBe(
-    "short-one - short-two",
-  );
+  expect(renderActivityText(activity, 80)).toBe("bash short-two");
 });
 
-test("renderToolActivityForDisplay redacts sensitive keywords in joined text", () => {
+test("renderActivityText replaces only sensitive target with hidden", () => {
   const activity: ToolActivity = {
     toolName: "subagent",
     inputSummary: "reading config",
@@ -394,10 +462,10 @@ test("renderToolActivityForDisplay redacts sensitive keywords in joined text", (
       inputSummary: "secret-token.yaml",
     },
   };
-  expect(renderToolActivityForDisplay(activity, 80)).toBe("(running...)");
+  expect(renderActivityText(activity, 80)).toBe("bash (hidden)");
 });
 
-test("renderToolActivityForDisplay annotates instanceName before joining", () => {
+test("renderActivityText shows innermost tool when parent unnamed", () => {
   const activity: ToolActivity = {
     toolName: "subagent",
     inputSummary: "parent-task",
@@ -407,12 +475,10 @@ test("renderToolActivityForDisplay annotates instanceName before joining", () =>
       inputSummary: "child-task",
     },
   };
-  expect(renderToolActivityForDisplay(activity, 80)).toBe(
-    "parent-task alpha - child-task",
-  );
+  expect(renderActivityText(activity, 80)).toBe("bash child-task");
 });
 
-test("renderToolActivityForDisplay applies tight budget correctly", () => {
+test("renderActivityText applies tight budget correctly", () => {
   const activity: ToolActivity = {
     toolName: "subagent",
     inputSummary: "this-is-a-very-long-first-segment",
@@ -421,62 +487,59 @@ test("renderToolActivityForDisplay applies tight budget correctly", () => {
       inputSummary: "this-is-a-very-long-second-segment",
     },
   };
-  const result = renderToolActivityForDisplay(activity, 30);
+  const result = renderActivityText(activity, 30);
   expect(result).toBeDefined();
   expect(result?.length).toBeLessThanOrEqual(30);
   expect(result).toMatch(/…$/);
 });
 
-test("renderToolActivityForDisplay respects narrow width budget", () => {
+test("renderActivityText respects narrow width budget", () => {
   const activity: ToolActivity = {
     toolName: "bash",
     inputSummary:
       "bash: this-is-a-very-long-command-that-exceeds-narrow-budget",
   };
-  const result = renderToolActivityForDisplay(activity, 20);
+  const result = renderActivityText(activity, 20);
   expect(result).toBeDefined();
   expect(result?.length).toBeLessThanOrEqual(20);
   expect(result).toMatch(/…$/);
 });
 
-test("renderToolActivityForDisplay returns empty string for negative budget", () => {
+test("renderActivityText returns empty string for negative budget", () => {
   expect(
-    renderToolActivityForDisplay(
-      { toolName: "bash", inputSummary: "bash: ls" },
-      -5,
-    ),
+    renderActivityText({ toolName: "bash", inputSummary: "bash: ls" }, -5),
   ).toBe("");
 });
 
-test("renderToolActivityForDisplay returns empty string for zero budget with sensitive text", () => {
+test("renderActivityText returns empty string for zero budget with sensitive text", () => {
   const activity: ToolActivity = {
     toolName: "subagent",
     inputSummary: "reading secret-token.yaml",
   };
-  expect(renderToolActivityForDisplay(activity, 0)).toBe("");
+  expect(renderActivityText(activity, 0)).toBe("");
 });
 
-test("renderToolActivityForDisplay redacts sensitive text only when budget fits (running...)", () => {
+test("renderActivityText protects sensitive target through budget", () => {
   const activity: ToolActivity = {
     toolName: "subagent",
     inputSummary: "reading config",
     child: { toolName: "bash", inputSummary: "cat secret-token.yaml" },
   };
-  expect(renderToolActivityForDisplay(activity, 12)).toBe("(running...)");
-  expect(renderToolActivityForDisplay(activity, 11)).toBe("");
+  expect(renderActivityText(activity, 80)).toBe("bash (hidden)");
+  expect(renderActivityText(activity, 0)).toBe("");
 });
 
-test("renderToolActivityForDisplay handles very narrow budget gracefully", () => {
+test("renderActivityText handles very narrow budget gracefully", () => {
   const activity: ToolActivity = {
     toolName: "bash",
     inputSummary: "bash: command",
   };
-  const result = renderToolActivityForDisplay(activity, 5);
+  const result = renderActivityText(activity, 5);
   expect(result).toBeDefined();
   expect(result?.length).toBeLessThanOrEqual(5);
 });
 
-test("renderToolActivityForDisplay truncates nested activity at narrow width", () => {
+test("renderActivityText truncates nested activity at narrow width", () => {
   const activity: ToolActivity = {
     toolName: "subagent",
     inputSummary: "subagent: build-task-with-long-description",
@@ -485,14 +548,16 @@ test("renderToolActivityForDisplay truncates nested activity at narrow width", (
       inputSummary: "bash: make-build-with-verbose-output",
     },
   };
-  const result = renderToolActivityForDisplay(activity, 40);
+  const result = renderActivityText(activity, 40);
   expect(result).toBeDefined();
   expect(result?.length).toBeLessThanOrEqual(40);
-  expect(result).toContain("subagent");
-  expect(result).toMatch(/…$/);
+  expect(result).toContain("build-task-with-long-description");
+  expect(result).toContain("bash");
+  expect(result).not.toContain("subagent:");
+  expect(result).not.toContain("make-build-with-verbose-output");
 });
 
-test("sensitive activity redaction applies to joined display text", () => {
+test("sensitive target protection preserves tool and shows hidden", () => {
   const activity: ToolActivity = {
     toolName: "subagent",
     inputSummary: "reading config",
@@ -501,8 +566,8 @@ test("sensitive activity redaction applies to joined display text", () => {
       inputSummary: "bash: cat secret-token.yaml",
     },
   };
-  const result = renderToolActivityForDisplay(activity, 80);
-  expect(result).toBe("(running...)");
+  const result = renderActivityText(activity, 80);
+  expect(result).toBe("bash (hidden)");
 });
 
 test("renderToolActivity retains existing 120 character truncation for stored previews", () => {
@@ -589,18 +654,18 @@ describe("ordinal-aware nested activity segments", () => {
     ).toBe("subagent: build");
   });
 
-  test("display rendering honors ordinal threshold and budget", () => {
+  test("display renders delegate without tool as thinking with identity", () => {
     const activity: ToolActivity = {
       toolName: "subagent",
       inputSummary: "subagent: build",
       instanceName: "brave-otter",
       ordinal: 2,
     };
-    expect(renderToolActivityForDisplay(activity, 80)).toBe(
-      "subagent: build #2 brave-otter",
+    expect(renderActivityText(activity, 80)).toBe(
+      "build #2 brave-otter › thinking",
     );
     expect(
-      renderToolActivityForDisplay(
+      renderActivityText(
         {
           toolName: "subagent",
           inputSummary: "subagent: build",
@@ -609,7 +674,7 @@ describe("ordinal-aware nested activity segments", () => {
         },
         80,
       ),
-    ).toBe("subagent: build brave-otter");
+    ).toBe("build brave-otter › thinking");
   });
 });
 
@@ -1203,8 +1268,11 @@ describe("formatUsageTree views", () => {
     });
     const lines = formatUsageTree(root, { now: 3500 });
     expect(
-      lines.some((line) => line.includes("live") && line.includes("2.5s")),
+      lines.some((line) => line.includes("live") && line.includes("· 2s")),
     ).toBe(true);
+    expect(
+      lines.some((line) => line.includes("live") && line.includes("2.5s")),
+    ).toBe(false);
     expect(
       lines.some((line) => line.includes("done") && line.includes("2.5s")),
     ).toBe(true);
@@ -1244,7 +1312,7 @@ describe("formatUsageTree views", () => {
     });
     const nanNow = formatUsageTree(root, { now: Number.NaN });
     expect(
-      nanNow.some((line) => line.includes("live") && line.includes("0.0s")),
+      nanNow.some((line) => line.includes("live") && line.includes("· 0s")),
     ).toBe(true);
     const badStart = node({
       agent: "fix",
@@ -1262,7 +1330,7 @@ describe("formatUsageTree views", () => {
     });
     const badLines = formatUsageTree(badRoot, { now: 5000 });
     expect(
-      badLines.some((line) => line.includes("bad") && line.includes("0.0s")),
+      badLines.some((line) => line.includes("bad") && line.includes("· 0s")),
     ).toBe(true);
   });
   test("orders same-time siblings by agent, instance name, then id", () => {
@@ -1671,5 +1739,793 @@ describe("formatDisplayIdentity", () => {
     expect(
       formatDisplayIdentity("worker", "able-fox", 2, (text) => `<${text}>`),
     ).toBe("worker <#2> able-fox");
+  });
+});
+
+describe("T-002 innermost activity and tool-free thinking", () => {
+  test("shows root tool without identity using space", () => {
+    expect(
+      renderActivityText(
+        { toolName: "bash", inputSummary: "bash: ls -la" },
+        80,
+      ),
+    ).toBe("bash ls -la");
+  });
+
+  test("shows direct child identity without nesting hint", () => {
+    expect(
+      renderActivityText(
+        {
+          toolName: "subagent",
+          inputSummary: "subagent: build",
+          instanceName: "swift-harbor",
+          child: { toolName: "bash", inputSummary: "bash: make" },
+        },
+        80,
+      ),
+    ).toBe("build swift-harbor › bash make");
+  });
+
+  test("shows only innermost with ellipsis below direct child", () => {
+    const result = renderActivityText(
+      {
+        toolName: "subagent",
+        inputSummary: "subagent: plan",
+        instanceName: "outer-inst",
+        child: {
+          toolName: "subagent",
+          inputSummary: "subagent: build",
+          instanceName: "inner-inst",
+          child: { toolName: "bash", inputSummary: "bash: make test" },
+        },
+      },
+      80,
+    );
+    expect(result).toBe("… › build inner-inst › bash make test");
+    expect(result).not.toContain("outer-inst");
+    expect(result).not.toContain("plan");
+  });
+
+  test("omits absent instance and ordinal without instance", () => {
+    expect(
+      renderActivityText(
+        {
+          toolName: "subagent",
+          inputSummary: "subagent: build",
+          child: { toolName: "bash", inputSummary: "bash: ls" },
+        },
+        80,
+      ),
+    ).toBe("build › bash ls");
+    expect(
+      renderActivityText(
+        {
+          toolName: "subagent",
+          inputSummary: "subagent: build",
+          ordinal: 3,
+          child: { toolName: "bash", inputSummary: "bash: ls" },
+        },
+        80,
+      ),
+    ).toBe("build › bash ls");
+  });
+
+  test("shows ordinal only with instance and safe integer at least two", () => {
+    expect(
+      renderActivityText(
+        {
+          toolName: "subagent",
+          inputSummary: "subagent: build",
+          instanceName: "able-fox",
+          ordinal: 2,
+          child: { toolName: "bash", inputSummary: "bash: ls" },
+        },
+        80,
+      ),
+    ).toBe("build #2 able-fox › bash ls");
+    expect(
+      renderActivityText(
+        {
+          toolName: "subagent",
+          inputSummary: "subagent: build",
+          instanceName: "able-fox",
+          ordinal: 1,
+          child: { toolName: "bash", inputSummary: "bash: ls" },
+        },
+        80,
+      ),
+    ).toBe("build able-fox › bash ls");
+  });
+
+  test("renders unnamed delegation hop as tool subagent", () => {
+    expect(
+      renderActivityText(
+        { toolName: "subagent", inputSummary: "subagent" },
+        80,
+      ),
+    ).toBe("subagent");
+    const withChild = renderActivityText(
+      {
+        toolName: "subagent",
+        inputSummary: "subagent",
+        child: { toolName: "bash", inputSummary: "bash: ls" },
+      },
+      80,
+    );
+    expect(withChild).toBe("bash ls");
+  });
+
+  test("splits flattened tool text only at first colon space", () => {
+    expect(
+      renderActivityText(
+        { toolName: "tool", inputSummary: "bash: ls: verbose" },
+        80,
+      ),
+    ).toBe("bash ls: verbose");
+    expect(
+      renderActivityText({ toolName: "tool", inputSummary: "bash ls" }, 80),
+    ).toBe("bash ls");
+  });
+
+  test("never infers identity from flattened subagent text", () => {
+    expect(
+      renderActivityText(
+        { toolName: "tool", inputSummary: "subagent: build" },
+        80,
+      ),
+    ).toBe("subagent build");
+  });
+
+  test("replaces only sensitive target and preserves agent and tool names", () => {
+    expect(
+      renderActivityText(
+        {
+          toolName: "subagent",
+          inputSummary: "subagent: secret-agent",
+          instanceName: "token-instance",
+          child: { toolName: "token", inputSummary: "token: secret-value" },
+        },
+        80,
+      ),
+    ).toBe("secret-agent token-instance › token (hidden)");
+  });
+
+  test("clips stored placeholder as hidden within narrow budgets", () => {
+    expect(
+      renderActivityText(
+        { toolName: "bash", inputSummary: "(running...)" },
+        80,
+      ),
+    ).toBe("(hidden)");
+    expect(
+      renderActivityText({ toolName: "bash", inputSummary: "(running...)" }, 7),
+    ).toBe("(hidde…");
+    expect(
+      renderActivityText({ toolName: "bash", inputSummary: "(running...)" }, 4),
+    ).toBe("(hi…");
+  });
+
+  test("clips hidden placeholder without leaking sensitive text", () => {
+    const result = renderActivityText(
+      { toolName: "tool", inputSummary: "my-secret-thing" },
+      4,
+    );
+    expect(result).toBe("(hi…");
+    expect(result).not.toContain("secret");
+  });
+
+  test("renders flattened sensitive text without delimiter as hidden", () => {
+    expect(
+      renderActivityText(
+        { toolName: "tool", inputSummary: "my-secret-thing" },
+        80,
+      ),
+    ).toBe("(hidden)");
+  });
+
+  test("keeps sanitized bare tool name target-free", () => {
+    expect(
+      renderActivityText({ toolName: "bash", inputSummary: "bash" }, 80),
+    ).toBe("bash");
+  });
+
+  test.each([
+    {
+      name: "drops an empty flattened remainder after a delimiter",
+      toolName: "grep",
+      inputSummary: "other: ",
+    },
+    {
+      name: "keeps the tool name when the summary is whitespace-only",
+      toolName: "grep",
+      inputSummary: "   ",
+    },
+  ])("$name", ({ toolName, inputSummary }) => {
+    expect(renderActivityText({ toolName, inputSummary }, 80)).toBe(toolName);
+  });
+
+  test("extracts a non-prefix colon remainder as the target", () => {
+    expect(
+      renderActivityText(
+        { toolName: "read", inputSummary: "target: /etc/hosts" },
+        80,
+      ),
+    ).toBe("read /etc/hosts");
+  });
+
+  test("treats a colon-free summary differing from the tool as the target", () => {
+    expect(
+      renderActivityText({ toolName: "read", inputSummary: "/etc/hosts" }, 80),
+    ).toBe("read /etc/hosts");
+  });
+
+  test("keeps a flattened summary starting with a delimiter as the tool", () => {
+    expect(
+      renderActivityText({ toolName: "tool", inputSummary: ": leftover" }, 80),
+    ).toBe(": leftover");
+  });
+
+  test("falls back to the tool name when a flattened summary normalizes to nothing", () => {
+    expect(
+      renderActivityText({ toolName: "tool", inputSummary: "   " }, 80),
+    ).toBe("tool");
+  });
+
+  test("renders a subagent summary with an empty agent as a plain tool", () => {
+    expect(
+      renderActivityText(
+        { toolName: "subagent", inputSummary: "subagent: " },
+        80,
+      ),
+    ).toBe("subagent");
+  });
+
+  test("renders delegate without tool as thinking", () => {
+    expect(
+      renderActivityText(
+        {
+          toolName: "subagent",
+          inputSummary: "subagent: build",
+          instanceName: "swift-harbor",
+        },
+        80,
+      ),
+    ).toBe("build swift-harbor › thinking");
+  });
+
+  test("renders nested delegate without tool with ellipsis thinking", () => {
+    expect(
+      renderActivityText(
+        {
+          toolName: "subagent",
+          inputSummary: "subagent: outer",
+          instanceName: "outer-inst",
+          child: {
+            toolName: "subagent",
+            inputSummary: "subagent: inner",
+            instanceName: "inner-inst",
+          },
+        },
+        80,
+      ),
+    ).toBe("… › inner inner-inst › thinking");
+  });
+
+  test("keeps root tool and target roles when the target contains a separator", () => {
+    expect(
+      renderToolActivityPieces(
+        { toolName: "bash", inputSummary: "bash: echo a › b" },
+        80,
+      ),
+    ).toEqual([
+      { role: "tool", text: "bash" },
+      { role: "target", text: " echo a › b" },
+    ]);
+  });
+
+  test("keeps a tool named thinking in the tool role", () => {
+    expect(
+      renderToolActivityPieces(
+        { toolName: "thinking", inputSummary: "thinking" },
+        80,
+      ),
+    ).toEqual([{ role: "tool", text: "thinking" }]);
+  });
+
+  test("keeps a literal hidden target in the target role", () => {
+    expect(
+      renderToolActivityPieces(
+        { toolName: "bash", inputSummary: "bash: (hidden)" },
+        80,
+      ),
+    ).toEqual([
+      { role: "tool", text: "bash" },
+      { role: "target", text: " (hidden)" },
+    ]);
+  });
+
+  test("reserves the inferred role for protected targets and tool-free work", () => {
+    expect(
+      renderToolActivityPieces(
+        { toolName: "bash", inputSummary: "bash: secret-value" },
+        80,
+      ),
+    ).toEqual([
+      { role: "tool", text: "bash" },
+      { role: "plain", text: " " },
+      { role: "inferred", text: "(hidden)" },
+    ]);
+    expect(
+      renderToolActivityPieces(
+        {
+          toolName: "subagent",
+          inputSummary: "subagent: build",
+          instanceName: "swift-harbor",
+          ordinal: 2,
+        },
+        80,
+      ),
+    ).toEqual([
+      { role: "agent", text: "build" },
+      { role: "plain", text: " " },
+      { role: "ordinal", text: "#2" },
+      { role: "plain", text: " " },
+      { role: "instance", text: "swift-harbor" },
+      { role: "plain", text: " " },
+      { role: "mark", text: "›" },
+      { role: "plain", text: " " },
+      { role: "inferred", text: "thinking" },
+    ]);
+  });
+
+  test("keeps the target role when the budget clips a target", () => {
+    const pieces = renderToolActivityPieces(
+      { toolName: "bash", inputSummary: "bash: echo alpha beta gamma" },
+      12,
+    );
+    expect(pieces?.map((piece) => piece.text).join("")).toBe("bash echo a…");
+    expect(pieces?.at(-1)).toEqual({ role: "target", text: " echo a…" });
+  });
+
+  test("display parsing never mutates structured activity", () => {
+    const activity: ToolActivity = {
+      toolName: "subagent",
+      inputSummary: "subagent: build",
+      instanceName: "swift-harbor",
+      ordinal: 2,
+      child: { toolName: "bash", inputSummary: "bash: secret-value" },
+    };
+    const snapshot = JSON.parse(JSON.stringify(activity));
+    renderActivityText(activity, 10);
+    expect(activity).toEqual(snapshot);
+  });
+
+  test("storage retains colon hops joined by separator and whole-line redaction", () => {
+    expect(
+      renderToolActivity({
+        toolName: "subagent",
+        inputSummary: "subagent: build",
+        instanceName: "swift-harbor",
+        child: { toolName: "bash", inputSummary: "bash: make" },
+      }),
+    ).toBe("subagent: build swift-harbor - bash: make");
+    expect(
+      renderToolActivity({
+        toolName: "bash",
+        inputSummary: "bash: secret-token",
+      }),
+    ).toBe("(running...)");
+  });
+});
+
+describe("T-003 Protect, shorten, and bound activity targets", () => {
+  function pathAnchors(cwd: string, home: string): PathAnchors {
+    return { cwd: () => cwd, home: () => home };
+  }
+
+  test("shortens single-token absolute path relative to cwd", () => {
+    const anchors = pathAnchors("/repo", "/home/user");
+    expect(
+      renderActivityText(
+        { toolName: "bash", inputSummary: "bash: /repo/src/file.ts" },
+        80,
+        anchors,
+      ),
+    ).toBe("bash src/file.ts");
+  });
+
+  test("maps cwd itself to dot and home itself to tilde", () => {
+    const anchors = pathAnchors("/repo", "/home/user");
+    expect(
+      renderActivityText(
+        { toolName: "bash", inputSummary: "bash: /repo" },
+        80,
+        anchors,
+      ),
+    ).toBe("bash .");
+    expect(
+      renderActivityText(
+        { toolName: "bash", inputSummary: "bash: /home/user" },
+        80,
+        anchors,
+      ),
+    ).toBe("bash ~");
+  });
+
+  test("prefers cwd over home when both match", () => {
+    const anchors = pathAnchors("/home/user/repo", "/home/user");
+    expect(
+      renderActivityText(
+        {
+          toolName: "bash",
+          inputSummary: "bash: /home/user/repo/file.ts",
+        },
+        80,
+        anchors,
+      ),
+    ).toBe("bash file.ts");
+  });
+
+  test("shortens to tilde when under home but outside cwd", () => {
+    const anchors = pathAnchors("/tmp/work", "/home/user");
+    expect(
+      renderActivityText(
+        {
+          toolName: "bash",
+          inputSummary: "bash: /home/user/docs/file.txt",
+        },
+        80,
+        anchors,
+      ),
+    ).toBe("bash ~/docs/file.txt");
+  });
+
+  test("leaves absolute unchanged outside cwd and home", () => {
+    const anchors = pathAnchors("/repo", "/home/user");
+    expect(
+      renderActivityText(
+        { toolName: "bash", inputSummary: "bash: /etc/hosts" },
+        80,
+        anchors,
+      ),
+    ).toBe("bash /etc/hosts");
+  });
+
+  test("respects directory boundaries for cwd prefix", () => {
+    const anchors = pathAnchors("/foo/bar", "/home/user");
+    expect(
+      renderActivityText(
+        { toolName: "bash", inputSummary: "bash: /foo/barbaz/file" },
+        80,
+        anchors,
+      ),
+    ).toBe("bash /foo/barbaz/file");
+  });
+
+  test.each([
+    {
+      name: "keeps absolute target resolving outside cwd and home",
+      cwd: "/repo/work",
+      home: "/home/user",
+      target: "/repo/work/../outside.txt",
+    },
+    {
+      name: "keeps absolute target resolving outside home",
+      cwd: "/tmp/work",
+      home: "/home/user",
+      target: "/home/user/../etc/hosts",
+    },
+  ])("$name", ({ cwd, home, target }) => {
+    const anchors = pathAnchors(cwd, home);
+    expect(
+      renderActivityText(
+        { toolName: "read", inputSummary: `read: ${target}` },
+        80,
+        anchors,
+      ),
+    ).toBe(`read ${target}`);
+  });
+
+  test("shortens absolute target resolving inside cwd", () => {
+    const anchors = pathAnchors("/repo/work", "/home/user");
+    expect(
+      renderActivityText(
+        {
+          toolName: "bash",
+          inputSummary: "bash: /repo/work/sub/../file.txt",
+        },
+        80,
+        anchors,
+      ),
+    ).toBe("bash file.txt");
+  });
+
+  test("preserves multi-token targets and embedded paths", () => {
+    const anchors = pathAnchors("/repo", "/home/user");
+    expect(
+      renderActivityText(
+        {
+          toolName: "bash",
+          inputSummary: "bash: echo /repo/src/file.ts",
+        },
+        80,
+        anchors,
+      ),
+    ).toBe("bash echo /repo/src/file.ts");
+    expect(
+      renderActivityText(
+        {
+          toolName: "bash",
+          inputSummary: "bash: cat /repo/file.ts --flag",
+        },
+        80,
+        anchors,
+      ),
+    ).toBe("bash cat /repo/file.ts --flag");
+  });
+
+  test("preserves protection through shortening and keeps bare tool target-free", () => {
+    const anchors = pathAnchors("/repo", "/home/user");
+    expect(
+      renderActivityText(
+        {
+          toolName: "bash",
+          inputSummary: "bash: /repo/secret-token.yaml",
+        },
+        80,
+        anchors,
+      ),
+    ).toBe("bash (hidden)");
+    expect(
+      renderActivityText(
+        { toolName: "bash", inputSummary: "bash" },
+        80,
+        anchors,
+      ),
+    ).toBe("bash");
+  });
+
+  test("applies complete width bounds to hidden text", () => {
+    expect(
+      renderActivityText(
+        { toolName: "bash", inputSummary: "bash: secret-value" },
+        13,
+      ),
+    ).toBe("bash (hidden)");
+    expect(
+      renderActivityText(
+        { toolName: "bash", inputSummary: "bash: secret-value" },
+        7,
+      ),
+    ).toBe("bash");
+  });
+
+  test("shortens path tail behind ellipsis including filename", () => {
+    const anchors = pathAnchors("/repo", "/home/user");
+    const activity: ToolActivity = {
+      toolName: "bash",
+      inputSummary: "bash: /very/long/path/to/filename.txt",
+    };
+    const result = renderActivityText(activity, 20, anchors);
+    expect(result.length).toBeLessThanOrEqual(20);
+    expect(result).toContain("filename.txt");
+    expect(result).toContain("…");
+    expect(result.startsWith("bash ")).toBe(true);
+  });
+
+  test("retains head for non-path targets", () => {
+    const activity: ToolActivity = {
+      toolName: "bash",
+      inputSummary: "bash: this-is-a-very-long-command-argument",
+    };
+    const result = renderActivityText(activity, 20);
+    expect(result.length).toBeLessThanOrEqual(20);
+    expect(result).toContain("this-is");
+    expect(result).toMatch(/…$/);
+  });
+
+  test("drops target before identity when budget is tight", () => {
+    const activity: ToolActivity = {
+      toolName: "subagent",
+      inputSummary: "subagent: build-task-with-long-description",
+      child: {
+        toolName: "bash",
+        inputSummary: "bash: make-build-with-verbose-output",
+      },
+    };
+    const result = renderActivityText(activity, 40);
+    expect(result).toBe("build-task-with-long-description › bash");
+  });
+
+  test("retains path tail behind ellipsis when filename cannot fit", () => {
+    const anchors = pathAnchors("/repo", "/home/user");
+    const activity: ToolActivity = {
+      toolName: "bash",
+      inputSummary: "bash: /a/very-long-filename-that-exceeds-budget.txt",
+    };
+    expect(renderActivityText(activity, 12, anchors)).toBe("bash …et.txt");
+    expect(renderActivityText(activity, 5, anchors)).toBe("bash");
+  });
+
+  test("retains complete filename at the exact fit boundary", () => {
+    const anchors = pathAnchors("/repo", "/home/user");
+    const activity: ToolActivity = {
+      toolName: "bash",
+      inputSummary: "bash: /very/long/path/to/filename.txt",
+    };
+    expect(renderActivityText(activity, 18, anchors)).toBe(
+      "bash …filename.txt",
+    );
+  });
+
+  test("truncates whole line only after dropping target", () => {
+    const activity: ToolActivity = {
+      toolName: "bash-long-tool-name-that-keeps-going",
+      inputSummary: "bash-long-tool-name-that-keeps-going: target",
+    };
+    const result = renderActivityText(activity, 15);
+    expect(result.length).toBeLessThanOrEqual(15);
+    expect(result).toMatch(/…$/);
+    expect(result).toContain("bash-long");
+  });
+
+  test("never exceeds budget for wide and combining text", () => {
+    const wide = "あ".repeat(20);
+    const wideResult = renderActivityText(
+      { toolName: "bash", inputSummary: `bash: ${wide}` },
+      20,
+    );
+    expect(visibleWidth(wideResult)).toBeLessThanOrEqual(20);
+    const combining = "a\u0301".repeat(20);
+    const combiningResult = renderActivityText(
+      { toolName: "bash", inputSummary: `bash: ${combining}` },
+      20,
+    );
+    expect(visibleWidth(combiningResult)).toBeLessThanOrEqual(20);
+  });
+
+  test("handles zero and narrow budgets without overflow", () => {
+    expect(
+      renderActivityText({ toolName: "bash", inputSummary: "bash: ls" }, 0),
+    ).toBe("");
+    const narrow = renderActivityText(
+      { toolName: "bash", inputSummary: "bash: ls" },
+      5,
+    );
+    expect(narrow.length).toBeLessThanOrEqual(5);
+  });
+
+  test("never leaks sensitive targets through shortening or overflow", () => {
+    const anchors = pathAnchors("/repo", "/home/user");
+    const activity: ToolActivity = {
+      toolName: "bash",
+      inputSummary: "bash: /repo/secret-file-path-with-long-name.txt",
+    };
+    for (const budget of [80, 20, 12, 8]) {
+      const result = renderActivityText(activity, budget, anchors);
+      expect(result).not.toContain("secret");
+    }
+    expect(renderActivityText(activity, 80, anchors)).toBe("bash (hidden)");
+  });
+
+  test("leaves activity input and stored previews unchanged", () => {
+    const anchors = pathAnchors("/repo", "/home/user");
+    const activity: ToolActivity = {
+      toolName: "bash",
+      inputSummary: "bash: /repo/src/file.ts",
+    };
+    const snapshot = JSON.parse(JSON.stringify(activity));
+    renderActivityText(activity, 10, anchors);
+    expect(activity).toEqual(snapshot);
+    expect(
+      renderToolActivity({
+        toolName: "bash",
+        inputSummary: "bash: /repo/src/file.ts",
+      }),
+    ).toBe("bash: /repo/src/file.ts");
+  });
+
+  test("shortens absolute targets when cwd is the filesystem root", () => {
+    const anchors = pathAnchors("/", "/home/user");
+    expect(
+      renderActivityText(
+        { toolName: "bash", inputSummary: "bash: /etc/hosts" },
+        80,
+        anchors,
+      ),
+    ).toBe("bash etc/hosts");
+    expect(
+      renderActivityText(
+        { toolName: "bash", inputSummary: "bash: /usr/bin/env" },
+        80,
+        anchors,
+      ),
+    ).toBe("bash usr/bin/env");
+  });
+
+  test("shortens under home when home is the filesystem root", () => {
+    const anchors = pathAnchors("/tmp/work", "/");
+    expect(
+      renderActivityText(
+        { toolName: "bash", inputSummary: "bash: /etc/hosts" },
+        80,
+        anchors,
+      ),
+    ).toBe("bash ~/etc/hosts");
+  });
+
+  test("keeps the target unchanged when cwd and homedir resolution fail", () => {
+    const originalCwd = process.cwd;
+    const originalHomeEnv = process.env["HOME"];
+    const originalHomedir = realOs.homedir;
+    (process as unknown as { cwd: () => string }).cwd = () => {
+      throw new Error("no cwd");
+    };
+    delete process.env["HOME"];
+    mock.module("node:os", () => ({
+      ...realOs,
+      homedir: () => {
+        throw new Error("no home");
+      },
+    }));
+    try {
+      expect(
+        renderActivityText(
+          { toolName: "read", inputSummary: "read: /etc/hosts" },
+          80,
+        ),
+      ).toBe("read /etc/hosts");
+    } finally {
+      (process as unknown as { cwd: () => string }).cwd = originalCwd;
+      if (originalHomeEnv === undefined) delete process.env["HOME"];
+      else process.env["HOME"] = originalHomeEnv;
+      mock.module("node:os", () => ({
+        ...realOs,
+        homedir: originalHomedir,
+      }));
+    }
+  });
+
+  test("shortens under the homedir fallback when HOME is empty", () => {
+    const originalCwd = process.cwd;
+    const originalHomeEnv = process.env["HOME"];
+    const originalHomedir = realOs.homedir;
+    (process as unknown as { cwd: () => string }).cwd = () => "/tmp/work";
+    process.env["HOME"] = "";
+    mock.module("node:os", () => ({
+      ...realOs,
+      homedir: () => "/home/fallback-user",
+    }));
+    try {
+      expect(
+        renderActivityText(
+          {
+            toolName: "bash",
+            inputSummary: "bash: /home/fallback-user/docs/a.txt",
+          },
+          80,
+        ),
+      ).toBe("bash ~/docs/a.txt");
+    } finally {
+      (process as unknown as { cwd: () => string }).cwd = originalCwd;
+      if (originalHomeEnv === undefined) delete process.env["HOME"];
+      else process.env["HOME"] = originalHomeEnv;
+      mock.module("node:os", () => ({
+        ...realOs,
+        homedir: originalHomedir,
+      }));
+    }
+  });
+
+  test("clips a trailing-slash path target at its tail", () => {
+    expect(
+      renderActivityText({ toolName: "bash", inputSummary: "bash: a/b/" }, 8),
+    ).toBe("bash …b/");
+  });
+
+  test("drops a target with no room beyond its ellipsis", () => {
+    expect(
+      renderActivityText({ toolName: "bash", inputSummary: "bash: a/b/c" }, 6),
+    ).toBe("bash");
   });
 });

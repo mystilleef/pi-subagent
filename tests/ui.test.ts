@@ -10,15 +10,13 @@ import {
   setCapabilities,
 } from "@earendil-works/pi-tui/dist/terminal-image.js";
 import * as usageLedger from "../src/orchestration/usage-ledger.js";
+import { renderRunsBoard } from "../src/output/runs-board.js";
 import {
   createDescendantTally,
   formatResultFooter,
   formatSubagentTitle,
   formatTokens,
-  formatToolCall,
-  formatUsageStats,
   getFinalOutput,
-  renderRunsBoard,
   renderSubagentCall,
   renderSubagentResult,
   withLayoutGap,
@@ -694,27 +692,89 @@ test("renderCall formats tool execution correctly", () => {
     {} as never,
   );
   expect((rendered as unknown as { text: string }).text).toContain(
-    "[toolTitle]*subagent *[/toolTitle][accent]test-agent[/accent][muted] [both][/muted]",
+    "[toolTitle]*subagent *[/toolTitle][toolTitle]*test-agent*[/toolTitle][muted] [both][/muted]",
   );
   // Parser-owned preview suppresses task text: only shows [scope] when agent present
   expect((rendered as unknown as { text: string }).text).not.toContain(
     "long task description that should exceed 60 characters",
   );
-  expect((rendered as unknown as { text: string }).text).toContain(
+  // Supplied agent: single line, no duplicate detail line.
+  expect((rendered as unknown as { text: string }).text).not.toContain(
     "[dim][both][/dim]",
   );
+  expect((rendered as unknown as { text: string }).text).not.toContain("\n");
   const renderedShort = tool.renderCall?.(
     { agent: "...", task: "short" },
     fakeTheme as never,
     {} as never,
   );
   expect((renderedShort as unknown as { text: string }).text).toContain(
-    "[accent]...[/accent]",
+    "[toolTitle]*...*[/toolTitle]",
   );
-  // Task text suppressed: shows [scope] not task
-  expect((renderedShort as unknown as { text: string }).text).toContain(
+  // Task text suppressed: single line, no detail line.
+  expect((renderedShort as unknown as { text: string }).text).not.toContain(
+    "short",
+  );
+  expect((renderedShort as unknown as { text: string }).text).not.toContain(
     "[dim][both][/dim]",
   );
+  expect((renderedShort as unknown as { text: string }).text).not.toContain(
+    "\n",
+  );
+});
+
+test("renderSubagentCall simplifies supplied-agent headers to a single line", () => {
+  const fakeTheme = createDefaultFakeTheme();
+  const getText = (component: unknown) => (component as { text: string }).text;
+  const getLines = (component: unknown, width = 120) =>
+    (component as { render: (w: number) => string[] }).render(width);
+  const assertPendingBackground = (component: unknown) => {
+    expect(
+      getLines(component).every(
+        (line) =>
+          line.startsWith("[toolPendingBg]") &&
+          line.endsWith("[/toolPendingBg]"),
+      ),
+    ).toBe(true);
+  };
+  // Default scope.
+  const def = renderSubagentCall(
+    { agent: "helper", task: "do work" },
+    fakeTheme,
+  );
+  expect(getText(def)).toBe(
+    "[toolTitle]*subagent *[/toolTitle][toolTitle]*helper*[/toolTitle][muted] [both][/muted]",
+  );
+  expect(getText(def)).not.toContain("do work");
+  expect(getText(def)).not.toContain("\n");
+  assertPendingBackground(def);
+  // Explicit scopes stay single-line with muted scope.
+  for (const scope of ["both", "user", "project"] as const) {
+    const supplied = renderSubagentCall(
+      { agent: "helper", task: "ignored", agentScope: scope },
+      fakeTheme,
+    );
+    expect(getText(supplied)).toBe(
+      `[toolTitle]*subagent *[/toolTitle][toolTitle]*helper*[/toolTitle][muted] [${scope}][/muted]`,
+    );
+    expect(getText(supplied)).not.toContain("ignored");
+    expect(getText(supplied)).not.toContain("\n");
+    assertPendingBackground(supplied);
+  }
+  // Unnamed preserves fallback plus raw-argument detail line.
+  const unnamed = renderSubagentCall({}, fakeTheme);
+  expect(getText(unnamed)).toContain(
+    "[accent]...[/accent][muted] [both][/muted]\n  [dim]{}[/dim]",
+  );
+  assertPendingBackground(unnamed);
+  // Host renderer integration matches direct rendering.
+  const tool = getSubagentTool();
+  const viaHost = tool.renderCall?.(
+    { agent: "helper", task: "do work" },
+    fakeTheme as never,
+    {} as never,
+  );
+  expect(getText(viaHost)).toBe(getText(def));
 });
 
 test("renderSubagentResult formats units, fallback output, and failed tool results", () => {
@@ -751,59 +811,6 @@ test("renderSubagentResult formats units, fallback output, and failed tool resul
       undefined,
     ),
   ).toBe("");
-  expect(
-    formatUsageStats(
-      {
-        turns: 2,
-        input: 1500,
-        output: 15_000,
-        cacheRead: 999,
-        cacheWrite: 1_500_000,
-        cost: 0.12345,
-        contextTokens: 42,
-      },
-      "provider/model:high",
-    ),
-  ).toBe(
-    "2 turns · ↑1.5k ↓15k · cache:R999/W1.5M · ctx:42 · $0.1235 · provider/model:high",
-  );
-  // Subagent now extracts agent via semantic key lookup
-  expect(formatToolCall("subagent", { agent: "child" }, fakeTheme.fg)).toBe(
-    "[accent]subagent[/accent][dim] child[/dim]",
-  );
-  expect(
-    formatToolCall(
-      "unknown",
-      { token: "secret", password: "hidden", nested: { value: "leak" } },
-      fakeTheme.fg,
-    ),
-  ).toBe("[accent]unknown[/accent]");
-  expect(
-    formatToolCall("unknown", { token: "secret" }, fakeTheme.fg, true),
-  ).toBe('[accent]unknown[/accent][dim] {"token":"secret"}[/dim]');
-  expect(
-    formatToolCall("unknown", { project: "my-project" }, fakeTheme.fg),
-  ).toBe("[accent]unknown[/accent][dim] my-project[/dim]");
-  expect(
-    formatToolCall("unknown", { token: "x", password: "y" }, fakeTheme.fg),
-  ).toBe("[accent]unknown[/accent]");
-  expect(formatToolCall("bash", { command: "bun test" }, fakeTheme.fg)).toBe(
-    "[accent]bash[/accent][dim] bun test[/dim]",
-  );
-  expect(
-    formatToolCall("bash", { command: "printf 'a'\n\t  echo b" }, fakeTheme.fg),
-  ).toBe("[accent]bash[/accent][dim] printf 'a' echo b[/dim]");
-  expect(formatToolCall("bash", { command: "\n\t  " }, fakeTheme.fg)).toBe(
-    "[accent]bash[/accent]",
-  );
-  // subagent ignores task, uses agent only
-  expect(
-    formatToolCall(
-      "subagent",
-      { agent: "child", task: "line one\n\t  line two" },
-      fakeTheme.fg,
-    ),
-  ).toBe("[accent]subagent[/accent][dim] child[/dim]");
   const call = renderSubagentCall({}, fakeTheme) as unknown as {
     text: string;
     render: (width: number) => string[];
@@ -947,9 +954,9 @@ test("subagent result markdown invokes theme callbacks", () => {
   const renderedText = renderToString(rendered);
   resetCapabilitiesCache();
   expect(renderedText).toContain(
-    "[toolTitle]*builder*[/toolTitle] [accent]\x1b[3mable-falcon\x1b[23m[/accent]",
+    "[toolTitle]*builder*[/toolTitle] [accent]_able-falcon_[/accent]",
   );
-  expect(renderedText.indexOf("\x1b[23m[/accent]")).toBeLessThan(
+  expect(renderedText.indexOf("_[/accent]")).toBeLessThan(
     renderedText.indexOf("[mdHeading]"),
   );
   expect(renderedText).toContain("[mdHeading]");
@@ -966,9 +973,9 @@ test("subagent result markdown invokes theme callbacks", () => {
   expect(renderedText).toContain("[mdQuote]");
   expect(renderedText).toContain("[mdHr]");
   expect(renderedText).toContain("[mdListBullet]- [/mdListBullet]");
-  expect(renderedText).toContain("\x1b[3mitalic\x1b[23m");
-  expect(renderedText).toContain("\x1b[9mgone\x1b[29m");
-  expect(renderedText).toContain("\x1b[4m");
+  expect(renderedText).toContain("_italic_");
+  expect(renderedText).toContain("~gone~");
+  expect(renderedText).toContain("__");
 });
 
 test("subagent-result message renderer uses summarized content and preserves result chrome", () => {
@@ -1015,7 +1022,7 @@ test("subagent-result message renderer uses summarized content and preserves res
   expect(text).toContain("[toolOutput]summarized semantic outcome");
   expect(text).toContain("[/toolOutput]");
   expect(text).not.toContain("raw child output must stay hidden from run card");
-  expect(text).toContain("[muted]1 turn · $0.0100[/muted]");
+  expect(text).toContain("[dim]1 turn · $0.0100[/dim]");
   expect(
     lines.every(
       (line) =>
@@ -1077,7 +1084,7 @@ test("normal subagent tool rendering continues to use raw final output", () => {
   ) as unknown as { render: (width: number) => string[] };
   const text = renderToString(rendered);
   expect(text).toContain(
-    "[toolTitle]*tool*[/toolTitle] [accent]\x1b[3mclear-marten\x1b[23m[/accent]",
+    "[toolTitle]*tool*[/toolTitle] [accent]_clear-marten_[/accent]",
   );
   expect(text).not.toContain("[toolTitle]*tool clear-marten*[/toolTitle]");
   expect(text).toContain(
@@ -1694,12 +1701,12 @@ describe("unconfirmed thinking UI footer propagation", () => {
     {
       name: "renderSubagentResult footer includes requested unconfirmed level",
       model: "unknown ･ unknown ･ high",
-      expectedText: "[muted]unknown ･ unknown ･ high · 1 turn[/muted]",
+      expectedText: "[dim]unknown ･ unknown ･ high · 1 turn[/dim]",
     },
     {
       name: "renderSubagentResult footer shows confirmed requested level",
       model: "custom ･ reasoner ･ medium",
-      expectedText: "[muted]custom ･ reasoner ･ medium · 1 turn[/muted]",
+      expectedText: "[dim]custom ･ reasoner ･ medium · 1 turn[/dim]",
     },
   ])("$name", (row) => {
     const text = renderResultModel({
@@ -1710,7 +1717,7 @@ describe("unconfirmed thinking UI footer propagation", () => {
 
   test("renderSubagentResult footer omits model when absent", () => {
     const text = renderResultModel({});
-    expect(text).toContain("[muted]1 turn[/muted]");
+    expect(text).toContain("[dim]1 turn[/dim]");
     expect(text).not.toContain("unknown");
   });
 });
@@ -1909,9 +1916,9 @@ test("renderRunsBoard starts nonempty board with session summary", () => {
   );
   const lines = text.split("\n");
   expect(lines[0]).toStartWith(
-    "[muted]Session · 0 runs · 0 instances · $0.0000[/muted]",
+    "[muted]*Session*[/muted][muted] · 0 runs · 0 instances · $0.0000[/muted]",
   );
-  expect(text.indexOf("Session ·")).toBeLessThan(text.indexOf("ACTIVE (1)"));
+  expect(text.indexOf("Session")).toBeLessThan(text.indexOf("ACTIVE (1)"));
 });
 
 test("job card omits run cost for root-only ledger entries", () => {
@@ -1995,16 +2002,16 @@ test("renderRunsBoard renders status sections in fixed order", () => {
   const lines = text.split("\n");
   expect(lines).toBeArray();
   expect(text).toContain(
-    "[muted]ACTIVE (1)[/muted] [dim]─────────────────────[/dim]",
+    "[muted]*ACTIVE (1)*[/muted] [dim]─────────────────────[/dim]",
   );
   expect(text).toContain(
-    "[muted]FAILED (1)[/muted] [dim]─────────────────────[/dim]",
+    "[muted]*FAILED (1)*[/muted] [dim]─────────────────────[/dim]",
   );
   expect(text).toContain(
-    "[muted]CANCELLED (1)[/muted] [dim]──────────────────[/dim]",
+    "[muted]*CANCELLED (1)*[/muted] [dim]──────────────────[/dim]",
   );
   expect(text).toContain(
-    "[muted]SUCCEEDED (1)[/muted] [dim]──────────────────[/dim]",
+    "[muted]*SUCCEEDED (1)*[/muted] [dim]──────────────────[/dim]",
   );
   expect(text).not.toContain("ACTIVE (0)");
   expect(text).not.toContain("COMPLETED");
@@ -2044,16 +2051,16 @@ test("renderRunsBoard renders status sections in fixed order", () => {
     ),
   ).toBe(true);
   expect(headerLines[0]).toContain(
-    "[accent]⟳[/accent] [toolTitle]*reviewer*[/toolTitle] [muted][running][/muted] [muted]2 tools · 16% ctx ·",
+    "[accent]⟳[/accent] [toolTitle]*reviewer*[/toolTitle] [muted][running][/muted] [dim]2 tools · 16% ctx ·",
   );
   expect(headerLines[1]).toContain(
-    "[error]✗[/error] [toolTitle]*test-runner*[/toolTitle] [muted][error][/muted] [muted]3 tools · 24% ctx · 2m 30s[/muted]",
+    "[error]✗[/error] [toolTitle]*test-runner*[/toolTitle] [muted][error][/muted] [dim]3 tools · 24% ctx · 2m 30s[/dim]",
   );
   expect(headerLines[2]).toContain(
-    "[error]⊘[/error] [toolTitle]*scanner*[/toolTitle] [muted][cancelled][/muted] [muted]1 tool · --% ctx · 5.0s[/muted]",
+    "[error]⊘[/error] [toolTitle]*scanner*[/toolTitle] [muted][cancelled][/muted] [dim]1 tool · --% ctx · 5.0s[/dim]",
   );
   expect(headerLines[3]).toContain(
-    "[success]✓[/success] [toolTitle]*builder*[/toolTitle] [accent]\x1b[3mable-falcon\x1b[23m[/accent] [muted][success][/muted] [muted]5 tools · 40% ctx · 4m 40s[/muted]",
+    "[success]✓[/success] [toolTitle]*builder*[/toolTitle] [accent]_able-falcon_[/accent] [muted][success][/muted] [dim]5 tools · 40% ctx · 4m 40s[/dim]",
   );
   expect(text).toContain(
     "[toolSuccessBg]   [toolOutput]Built all the things successfully[/toolOutput]",
@@ -2197,7 +2204,7 @@ test("abridged status cards without footer keep existing line output", () => {
   expect(text).toContain("[muted](no output)[/muted]");
 });
 
-test("abridged progress job card with modelDisplay renders muted model footer", () => {
+test("abridged progress job card with modelDisplay renders dim model footer", () => {
   const now = Date.now();
   const state: SubagentProgressState = {
     requestId: "r1",
@@ -2213,7 +2220,7 @@ test("abridged progress job card with modelDisplay renders muted model footer", 
   const fakeTheme = createDefaultFakeTheme();
   const rendered = renderRunsBoard([state], fakeTheme as never);
   const text = renderToString(rendered);
-  expect(text).toContain("[muted]provider/model:high[/muted]");
+  expect(text).toContain("[dim]provider/model:high[/dim]");
 });
 
 test("abridged progress job card with modelDisplay excludes usage/cost/turn/context footer segments", () => {
@@ -2234,7 +2241,7 @@ test("abridged progress job card with modelDisplay excludes usage/cost/turn/cont
   const text = renderToString(rendered);
   const footerLine = text
     .split("\n")
-    .find((l) => l.includes("[muted]") && l.includes("provider/model:high"));
+    .find((l) => l.includes("[dim]") && l.includes("provider/model:high"));
   expect(footerLine).toBeDefined();
   expect(footerLine).not.toContain("turn");
   expect(footerLine).not.toContain("ctx:");
@@ -2257,7 +2264,7 @@ test("abridged progress job card with modelDisplay and zero tool count preserves
   const fakeTheme = createDefaultFakeTheme();
   const rendered = renderRunsBoard([state], fakeTheme as never);
   const text = renderToString(rendered);
-  expect(text).toContain("[muted]provider/model:fast[/muted]");
+  expect(text).toContain("[dim]provider/model:fast[/dim]");
   expect(text).toContain("[muted](no output)[/muted]");
 });
 
@@ -2279,10 +2286,10 @@ test("abridged progress job card with modelDisplay and long body preview truncat
   const text = renderToString(rendered);
   expect(text).toContain(`${longBody.slice(0, 119)}…`);
   expect(text).not.toContain(longBody);
-  expect(text).toContain("[muted]provider/model:verbose[/muted]");
+  expect(text).toContain("[dim]provider/model:verbose[/dim]");
 });
 
-test("abridged progress job card without modelDisplay renders no muted model footer", () => {
+test("abridged progress job card without modelDisplay renders no dim model footer", () => {
   const now = Date.now();
   const state: SubagentProgressState = {
     requestId: "r1",
@@ -2298,7 +2305,7 @@ test("abridged progress job card without modelDisplay renders no muted model foo
   const fakeTheme = createDefaultFakeTheme();
   const rendered = renderRunsBoard([state], fakeTheme as never);
   const text = renderToString(rendered);
-  const dimParts = text.match(/\[muted\]([^[]+)\[\/muted\]/g) ?? [];
+  const dimParts = text.match(/\[dim\]([^[]+)\[\/dim\]/g) ?? [];
   const modelFooter = dimParts.filter((p) => p.includes("model"));
   expect(modelFooter).toHaveLength(0);
 });
@@ -2318,12 +2325,12 @@ test("abridged progress job card with undefined modelDisplay excludes footer", (
   const rendered = renderRunsBoard([state], fakeTheme as never);
   const text = renderToString(rendered);
   expect(text).toContain("[muted](no output)[/muted]");
-  const dimParts = text.match(/\[muted\]([^[]+)\[\/muted\]/g) ?? [];
+  const dimParts = text.match(/\[dim\]([^[]+)\[\/dim\]/g) ?? [];
   const modelFooter = dimParts.filter((p) => p.includes("model"));
   expect(modelFooter).toHaveLength(0);
 });
 
-test("progress model footer regression: exact footer line is muted model only", () => {
+test("progress model footer regression: exact footer line is dim model only", () => {
   const now = Date.now();
   const state: SubagentProgressState = {
     requestId: "r1",
@@ -2341,12 +2348,12 @@ test("progress model footer regression: exact footer line is muted model only", 
   const text = renderToString(rendered);
   const lines = text.split("\n");
   const footerLines = lines.filter(
-    (l) => l.includes("[muted]") && l.includes("provider/model:high"),
+    (l) => l.includes("[dim]") && l.includes("provider/model:high"),
   );
   expect(footerLines).toHaveLength(1);
   const fl0 = footerLines[0] as string;
   expect(fl0.trim()).toMatch(
-    /^\[toolPendingBg\] \[muted\]provider\/model:high\[\/muted\]\s+\[\/toolPendingBg\]$/,
+    /^\[toolPendingBg\] \[dim\]provider\/model:high\[\/dim\]\s+\[\/toolPendingBg\]$/,
   );
 });
 
@@ -2370,11 +2377,11 @@ test("progress model footer regression: footer line rejects all completed-card s
   const text = renderToString(rendered);
   const lines = text.split("\n");
   const footerLine = lines.find(
-    (l) => l.includes("[muted]") && l.includes("provider/model:high"),
+    (l) => l.includes("[dim]") && l.includes("provider/model:high"),
   );
   expect(footerLine).toBeDefined();
   const fl = footerLine as string;
-  expect(fl).toContain("[muted]provider/model:high[/muted]");
+  expect(fl).toContain("[dim]provider/model:high[/dim]");
   expect(fl).not.toContain("turn");
   expect(fl).not.toContain("ctx:");
   expect(fl).not.toContain("$");
@@ -2457,8 +2464,8 @@ test("progress model footer regression: footer exclusive to modelDisplay-bearing
   const rendered = renderRunsBoard(states, fakeTheme as never);
   const text = renderToString(rendered);
   const dimModelFooters = (
-    text.match(/\[muted\](provider\/model[^[]+)\[\/muted\]/g) ?? []
-  ).map((m) => m.replace("[muted]", "").replace("[/muted]", ""));
+    text.match(/\[dim\](provider\/model[^[]+)\[\/dim\]/g) ?? []
+  ).map((m) => m.replace("[dim]", "").replace("[/dim]", ""));
   expect(dimModelFooters).toHaveLength(2);
   expect(dimModelFooters).toContain("provider/model:high");
   expect(dimModelFooters).toContain("provider/model:fast");
@@ -2496,7 +2503,7 @@ test("full status card footer still renders after abridged footer support", () =
     fakeTheme,
   );
   const text = renderToString(rendered);
-  expect(text).toContain("[muted]provider/model · 1 turn · $0.0100[/muted]");
+  expect(text).toContain("[dim]provider/model · 1 turn · $0.0100[/dim]");
 });
 
 test("empty footer text does not render a blank footer line on status card", () => {
@@ -2939,7 +2946,7 @@ test("completed result card footer renders model, turns, cost in fixed order", (
     fakeTheme,
   );
   const renderedText = renderToString(rendered);
-  const footerIdx = renderedText.indexOf("[muted]claude-sonnet-4-20250514");
+  const footerIdx = renderedText.indexOf("[dim]claude-sonnet-4-20250514");
   expect(footerIdx).toBeGreaterThan(0);
   const afterFooter = renderedText.slice(footerIdx);
   const modelIdx = afterFooter.indexOf("claude-sonnet-4-20250514");
@@ -3024,7 +3031,7 @@ test("completed result card footer suppresses model segment when model is undefi
     fakeTheme,
   );
   const renderedText = renderToString(rendered);
-  expect(renderedText).toContain("[muted]1 turn · $0.0100[/muted]");
+  expect(renderedText).toContain("[dim]1 turn · $0.0100[/dim]");
   expect(renderedText).not.toContain("[muted]undefined[/muted]");
 });
 
@@ -3060,9 +3067,9 @@ test("completed result card footer suppresses context segment when contextTokens
     fakeTheme,
   );
   const renderedText = renderToString(rendered);
-  expect(renderedText).toContain("[muted]test-model · 1 turn[/muted]");
-  expect(renderedText).not.toMatch(/\[muted\]test-model · 1 turn · ctx/);
-  expect(renderedText).not.toMatch(/\[muted\]test-model · 1 turn · \$/);
+  expect(renderedText).toContain("[dim]test-model · 1 turn[/dim]");
+  expect(renderedText).not.toMatch(/\[dim\]test-model · 1 turn · ctx/);
+  expect(renderedText).not.toMatch(/\[dim\]test-model · 1 turn · \$/);
 });
 
 test("completed result card footer suppresses cost segment when cost is zero", () => {
@@ -3097,7 +3104,7 @@ test("completed result card footer suppresses cost segment when cost is zero", (
     fakeTheme,
   );
   const renderedText = renderToString(rendered);
-  expect(renderedText).toContain("[muted]test-model · 1 turn[/muted]");
+  expect(renderedText).toContain("[dim]test-model · 1 turn[/dim]");
   expect(renderedText).not.toContain("ctx:");
   expect(renderedText).not.toContain("$");
 });
@@ -3115,11 +3122,7 @@ test.each<{
       errorText: "build collapsed",
       modelDisplay: "provider/model:err",
     },
-    expected: [
-      "[muted]provider/model:err[/muted]",
-      "FAILED",
-      "build collapsed",
-    ],
+    expected: ["[dim]provider/model:err[/dim]", "FAILED", "build collapsed"],
   },
   {
     status: "cancelled",
@@ -3128,7 +3131,7 @@ test.each<{
       toolCount: 1,
       modelDisplay: "provider/model:cancel",
     },
-    expected: ["[muted]provider/model:cancel[/muted]", "CANCELLED"],
+    expected: ["[dim]provider/model:cancel[/dim]", "CANCELLED"],
   },
   {
     status: "success",
@@ -3138,11 +3141,7 @@ test.each<{
       finalOutput: "all tests pass",
       modelDisplay: "provider/model:ok",
     },
-    expected: [
-      "[muted]provider/model:ok[/muted]",
-      "SUCCEEDED",
-      "all tests pass",
-    ],
+    expected: ["[dim]provider/model:ok[/dim]", "SUCCEEDED", "all tests pass"],
   },
 ])(
   "abridged job card renders modelDisplay footer for $status state",
@@ -3184,7 +3183,7 @@ test("abridged job card with modelDisplay uses errorText as body when finalOutpu
   const rendered = renderRunsBoard([state], fakeTheme as never);
   const text = renderToString(rendered);
   expect(text).toContain("[toolOutput]specific error message[/toolOutput]");
-  expect(text).toContain("[muted]provider/model[/muted]");
+  expect(text).toContain("[dim]provider/model[/dim]");
 });
 
 test("abridged job card with modelDisplay falls back body from taskPreview when no finalOutput or errorText", () => {
@@ -3250,7 +3249,7 @@ test("completed result card footer is empty when model and usage all missing", (
     /^\[tool(?:Pending|Error|Success)Bg\]/.test(line),
   );
   expect(cardLines).toHaveLength(5);
-  expect(renderedText).not.toMatch(/\[dim\].*·.*\[\/dim\]/);
+  expect(renderedText).toContain("[dim]0 tools");
 });
 
 test("renderSubagentResult shows finalOutput only from assistant text and performs no hidden outcome synthesis", () => {
@@ -4071,6 +4070,9 @@ describe("persisted result accounting", () => {
       fg: (_c: string, t: string) => t,
       bg: (_c: string, t: string) => t,
       bold: (t: string) => t,
+      italic: (t: string) => t,
+      underline: (t: string) => t,
+      strikethrough: (t: string) => t,
     };
     const payload = {
       content: [{ type: "text" as const, text: "ignored" }],
@@ -4101,6 +4103,9 @@ describe("persisted result accounting", () => {
       fg: (_c: string, t: string) => t,
       bg: (_c: string, t: string) => t,
       bold: (t: string) => t,
+      italic: (t: string) => t,
+      underline: (t: string) => t,
+      strikethrough: (t: string) => t,
     };
     const payload = {
       content: [{ type: "text" as const, text: "ignored" }],
@@ -4134,6 +4139,9 @@ describe("persisted result accounting", () => {
       fg: (_c: string, t: string) => t,
       bg: (_c: string, t: string) => t,
       bold: (t: string) => t,
+      italic: (t: string) => t,
+      underline: (t: string) => t,
+      strikethrough: (t: string) => t,
     };
     const payload = {
       content: [{ type: "text" as const, text: "ignored" }],
@@ -4212,7 +4220,7 @@ describe("persisted result accounting", () => {
   });
 });
 
-test("display surfaces use muted information tokens with dim only for rulers", () => {
+test("display surfaces use semantic role hierarchy", () => {
   const theme = createDefaultFakeTheme();
   const tree: UsageInstanceNode = {
     id: "root-theme",
@@ -4303,10 +4311,11 @@ test("display surfaces use muted information tokens with dim only for rulers", (
   const tallyLine =
     resultText.split("\n").find((l) => l.includes("spawned")) ?? "";
   expect(tallyLine).toContain("[muted]");
-  expect(tallyLine).not.toContain("[dim]");
-  expect(resultText).toContain("[muted]test-model");
+  expect(tallyLine).toContain("[dim] · [/dim]");
+  expect(tallyLine).toContain("[muted]2 spawned[/muted]");
+  expect(resultText).toContain("[dim]test-model");
   expect(resultText).not.toContain("[dim][success]");
-  expect(resultText).not.toContain("[dim]test-model");
+  expect(resultText).not.toContain("[muted]test-model");
   const state: SubagentProgressState = {
     requestId: "theme-board",
     agent: "builder",
@@ -4317,8 +4326,8 @@ test("display surfaces use muted information tokens with dim only for rulers", (
     modelDisplay: "provider/model:high",
   };
   const boardText = renderToString(renderRunsBoard([state], theme, 32));
-  expect(boardText).toContain("[muted]ACTIVE (1)[/muted] [dim]");
-  expect(boardText).toContain("[muted]provider/model:high[/muted]");
-  expect(boardText).not.toContain("[dim]provider/model");
+  expect(boardText).toContain("[muted]*ACTIVE (1)*[/muted] [dim]");
+  expect(boardText).toContain("[dim]provider/model:high[/dim]");
+  expect(boardText).not.toContain("[muted]provider/model");
   expect(boardText).not.toContain("[dim][running]");
 });

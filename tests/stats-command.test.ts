@@ -91,6 +91,8 @@ const identityTheme = {
   bg: (_color: unknown, text: string): string => text,
   bold: (text: string): string => text,
   italic: (text: string): string => text,
+  underline: (text: string): string => text,
+  strikethrough: (text: string): string => text,
 };
 
 function renderBoardLines(
@@ -565,15 +567,15 @@ describe("statsCommandHandler", () => {
       expect(newOutput).toContain("✓2 ✗0 ⊘0 ⟳2");
       expect(newOutput).toContain("↑200 ↓85 R10");
       expect(newOutput).toContain("$0.0200");
-      expect(newLines[0]).not.toContain("8.0s");
+      expect(newLines[0]).not.toContain("8s");
       expect(newOutput).toContain("⟳ planner #2 shared-falcon");
-      expect(newOutput).toContain("8.0s");
+      expect(newOutput).toContain("· 8s ·");
       expect(newOutput).toContain("$0.0100");
       expect(newOutput).toContain("✓ worker #2 child-otter");
       expect(newOutput).toContain("1.2s");
       expect(newOutput).toContain("$0.0050");
       expect(newOutput).toContain("⟳ searcher leaf-wren");
-      expect(newOutput).toContain("7.8s");
+      expect(newOutput).toContain("· 7s ·");
       expect(newOutput).toContain("$0.0020");
       expect(newOutput).toContain("+1 earlier");
       expect(newOutput).not.toContain("…");
@@ -792,7 +794,7 @@ describe("statsCommandHandler", () => {
       identityTheme as never,
       Number.NaN,
     ).render(80);
-    expect(nanNow.join("\n")).toContain("0.0s");
+    expect(nanNow.join("\n")).toContain("· 0s ·");
     const badStart = makeNode({
       id: "clock-root",
       agent: "planner",
@@ -807,7 +809,7 @@ describe("statsCommandHandler", () => {
       identityTheme as never,
       4_000,
     ).render(80);
-    expect(badStartLines.join("\n")).toContain("0.0s");
+    expect(badStartLines.join("\n")).toContain("· 0s ·");
   });
 
   test("run board omits duration segment for terminal nodes without durationMs", () => {
@@ -923,6 +925,8 @@ test("stats surfaces use muted information tokens with dim only for rulers", () 
     bg: (color: unknown, text: string) => `[${color}]${text}[/${color}]`,
     bold: (text: string) => text,
     italic: (text: string) => text,
+    underline: (text: string) => text,
+    strikethrough: (text: string) => text,
   };
   const { runs, rollup } = querySessionUsage();
   const board = renderStatsBoard(runs, rollup, markerTheme as never, 80)

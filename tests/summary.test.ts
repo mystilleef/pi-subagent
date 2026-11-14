@@ -136,16 +136,13 @@ test("feedback UI summarizer falls back for generic status-only output", () => {
   );
 });
 
-test("extractSemanticToolTarget hides unknown args unless forced", () => {
+test("extractSemanticToolTarget hides secret and non-string args", () => {
   const secretArgs = {
     token: "secret-token",
     password: "secret-password",
     nested: { value: "hidden" },
   };
   expect(extractSemanticToolTarget(secretArgs)).toBe("");
-  expect(extractSemanticToolTarget(secretArgs, true)).toBe(
-    JSON.stringify(secretArgs),
-  );
 });
 
 test.each([
@@ -322,17 +319,6 @@ test("extractSemanticToolTarget returns empty when args have only non-string val
       flag: true,
     }),
   ).toBe("");
-});
-
-test("extractSemanticToolTarget forced JSON bypasses fallback safety", () => {
-  const safeArgs = { project: "my-project" };
-  expect(extractSemanticToolTarget(safeArgs, true)).toBe(
-    JSON.stringify(safeArgs),
-  );
-  const secretArgs = { token: "x", password: "y" };
-  expect(extractSemanticToolTarget(secretArgs, true)).toBe(
-    JSON.stringify(secretArgs),
-  );
 });
 
 test("summarizeFeedbackUiFinalOutput prefers explicit outcome parameter first", () => {

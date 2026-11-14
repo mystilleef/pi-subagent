@@ -6,11 +6,7 @@
  */
 
 import { visibleWidth } from "@earendil-works/pi-tui";
-import {
-  normalizeAndTruncate,
-  normalizeSummaryValue,
-  truncateText,
-} from "../output/normalize.js";
+import { normalizeAndTruncate } from "../output/normalize.js";
 import type {
   AgentUsageRollup,
   StatusCounts,
@@ -32,14 +28,7 @@ import {
 
 export const SENSITIVE_PATTERN = /secret|token|password/i;
 
-const REDACTED_PLACEHOLDER = "(running...)";
-const REDACTED_PLACEHOLDER_LENGTH = REDACTED_PLACEHOLDER.length;
-
-function redactOrTruncate(text: string, maxChars: number): string {
-  if (SENSITIVE_PATTERN.test(text))
-    return maxChars >= REDACTED_PLACEHOLDER_LENGTH ? REDACTED_PLACEHOLDER : "";
-  return truncateText(text, maxChars);
-}
+export const REDACTED_PLACEHOLDER = "(running...)";
 
 /** Ordinals render from #2; one-off instances keep their plain title. */
 function isDisplayOrdinal(ordinal: number | undefined): ordinal is number {
@@ -47,9 +36,45 @@ function isDisplayOrdinal(ordinal: number | undefined): ordinal is number {
 }
 
 /**
- * Identity label shared by every surface: `<base> <name>`, with `#<n>`
- * inserted only for valid ordinals `n >= 2`. Unnamed instances fall back
- * to base. `styleOrdinal` lets themed titles color the ordinal segment.
+ * Role-tagged piece of the display-only activity line. Every role except
+ * `plain` names a semantic style, so literal `\u2026`, `\u203a`, or `(hidden)` text
+ * inside a tool or target never takes another piece's role.
+ */
+export interface ActivityDisplayPiece {
+  role:
+    | "plain"
+    | "mark"
+    | "agent"
+    | "ordinal"
+    | "instance"
+    | "tool"
+    | "target"
+    | "inferred";
+  text: string;
+}
+
+export const SPACE: ActivityDisplayPiece = { role: "plain", text: " " };
+
+/**
+ * Identity shared by every surface: `<base> <name>`, with `#<n>` inserted
+ * only for valid ordinals `n >= 2`. Unnamed instances fall back to base.
+ */
+export function identityPieces(
+  base: string,
+  instanceName: string | undefined,
+  ordinal: number | undefined,
+): ActivityDisplayPiece[] {
+  const pieces: ActivityDisplayPiece[] = [{ role: "agent", text: base }];
+  if (!instanceName) return pieces;
+  if (isDisplayOrdinal(ordinal))
+    pieces.push(SPACE, { role: "ordinal", text: `#${ordinal}` });
+  pieces.push(SPACE, { role: "instance", text: instanceName });
+  return pieces;
+}
+
+/**
+ * Identity label for titles, trees, and stored activity text.
+ * `styleOrdinal` lets themed titles color the ordinal segment.
  */
 export function formatDisplayIdentity(
   base: string,
@@ -57,39 +82,37 @@ export function formatDisplayIdentity(
   ordinal?: number,
   styleOrdinal: (text: string) => string = (text) => text,
 ): string {
-  if (!instanceName) return base;
-  if (!isDisplayOrdinal(ordinal)) return `${base} ${instanceName}`;
-  return `${base} ${styleOrdinal(`#${ordinal}`)} ${instanceName}`;
-}
-
-function walkActivityTree(activity: ToolActivity): string[] {
-  const parts: string[] = [];
-  let current: ToolActivity | undefined = activity;
-  while (current) {
-    if (current.inputSummary) {
-      parts.push(
-        formatDisplayIdentity(
-          current.inputSummary,
-          current.instanceName,
-          current.ordinal,
-        ),
-      );
-    }
-    current = current.child;
-  }
-  return parts;
+  return identityPieces(base, instanceName, ordinal)
+    .map((piece) =>
+      piece.role === "ordinal" ? styleOrdinal(piece.text) : piece.text,
+    )
+    .join("");
 }
 
 /**
  * Format a millisecond duration for compact display.
  * Renders sub-minute durations as decimal seconds (`45.2s`),
  * longer durations as minutes and whole seconds (`2m 15s`).
+ *
+ * Settled precision: terminal durations, result headers, `/stats`
+ * aggregates, and notifications keep tenths below one minute.
  */
 export function formatElapsed(ms: number): string {
   if (ms < 60000) return `${(ms / 1000).toFixed(1)}s`;
   const mins = Math.floor(ms / 60000);
   const secs = Math.floor((ms % 60000) / 1000);
   return `${mins}m ${secs}s`;
+}
+
+/**
+ * Format a running duration: whole seconds below one minute, since tenths
+ * flicker on every render; `formatElapsed` above. Non-finite and
+ * non-positive inputs (clock skew) render `0s`.
+ */
+export function formatLiveElapsed(ms: number): string {
+  if (!Number.isFinite(ms) || ms <= 0) return "0s";
+  if (ms < 60000) return `${Math.floor(ms / 1000)}s`;
+  return formatElapsed(ms);
 }
 
 /** Context window fields shared by progress states and usage stats. */
@@ -112,31 +135,37 @@ export function formatContextPercent(state: ContextUsage): string {
  * Format the one-line activity statistics every status card header shows:
  * tool count, context window usage, and elapsed time.
  *
+ * Settled by default (`formatElapsed` tenths); pass `{ live: true }` for
+ * running headers (`formatLiveElapsed` floored whole seconds).
+ *
  * @returns Single line, e.g. `"3 tools · 45% ctx · 12.3s"`
  */
 export function formatActivityStats(
   toolCount: number,
   context: ContextUsage,
   elapsedMs: number,
+  options?: { live?: boolean | undefined },
 ): string {
   const toolLabel = toolCount === 1 ? "tool" : "tools";
   return [
     `${toolCount} ${toolLabel}`,
     `${formatContextPercent(context)} ctx`,
-    formatElapsed(elapsedMs),
+    options?.live ? formatLiveElapsed(elapsedMs) : formatElapsed(elapsedMs),
   ].join(SEGMENT_SEPARATOR);
 }
 
 /**
  * Format the activity statistics for a subagent progress state. When the
  * subagent is still running (`durationMs` unset), elapsed is computed live
- * from `startTime`.
+ * from `startTime` with floored whole-second precision; settled states keep
+ * tenths.
  */
 export function formatHeaderStats(state: SubagentProgressState): string {
   return formatActivityStats(
     state.toolCount,
     state,
     state.durationMs ?? Date.now() - state.startTime,
+    { live: state.durationMs === undefined },
   );
 }
 
@@ -148,28 +177,23 @@ export function renderToolActivity(
   activity: ToolActivity | undefined,
 ): string | undefined {
   if (!activity) return undefined;
-  const parts = walkActivityTree(activity);
+  const parts: string[] = [];
+  for (let node: ToolActivity | undefined = activity; node; node = node.child) {
+    if (node.inputSummary)
+      parts.push(
+        normalizeAndTruncate(
+          formatDisplayIdentity(
+            node.inputSummary,
+            node.instanceName,
+            node.ordinal,
+          ),
+        ),
+      );
+  }
   if (parts.length === 0) return activity.toolName;
-  const result = parts.map((p) => normalizeAndTruncate(p)).join(" - ");
+  const result = parts.join(" - ");
   if (SENSITIVE_PATTERN.test(result)) return REDACTED_PLACEHOLDER;
   return result;
-}
-
-/**
- * Renders a ToolActivity tree for display with a caller-provided truncation
- * budget. Segments are normalized without individual truncation so the
- * joined result shares one post-join display budget.
- */
-export function renderToolActivityForDisplay(
-  activity: ToolActivity | undefined,
-  maxChars: number,
-): string | undefined {
-  if (!activity) return undefined;
-  if (maxChars <= 0) return "";
-  const parts = walkActivityTree(activity);
-  if (parts.length === 0) return redactOrTruncate(activity.toolName, maxChars);
-  const joined = parts.map((p) => normalizeSummaryValue(p)).join(" - ");
-  return redactOrTruncate(joined, maxChars);
 }
 
 /** Separator between inline display segments on cards, footers, and boards. */
@@ -312,7 +336,7 @@ function formatTreeNodeDuration(
       isUsableTimestamp(node.startedAt) && Number.isFinite(now)
         ? Math.max(0, now - node.startedAt)
         : 0;
-    return formatElapsed(elapsed);
+    return formatLiveElapsed(elapsed);
   }
   return node.durationMs !== undefined && isUsableTimestamp(node.durationMs)
     ? formatElapsed(node.durationMs)

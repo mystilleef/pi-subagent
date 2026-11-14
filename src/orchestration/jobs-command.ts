@@ -1,5 +1,6 @@
 import type { ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
-import { notifyBoard, renderRunsBoard } from "../output/ui.js";
+import { renderRunsBoard } from "../output/runs-board.js";
+import { notifyBoard } from "../output/ui.js";
 import {
   getAllProgressStates,
   type SubagentProgressState,
