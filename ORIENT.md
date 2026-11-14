@@ -63,18 +63,18 @@
 
 ## Cross-boundary contracts
 
-| Carrier                     | Role                                                                                                                               |
-| --------------------------- | ---------------------------------------------------------------------------------------------------------------------------------- |
-| `AgentConfig`               | Validated agent policy for child setup.                                                                                            |
-| `RunJob` + progress         | Request identity and cancel ownership.                                                                                             |
-| `RuntimeResult`             | Accumulates message, usage, and output.                                                                                            |
-| `SingleResult`              | Result envelope across pipeline (`usage` stays self-only).                                                                         |
-| `SingleResult.usage`        | Self-only usage metrics for result cards and model-facing output.                                                                  |
-| `SubagentDetails`           | Transports sanitized tool updates, messages, and `usageTree` across native channels.                                               |
+| Carrier                     | Role                                                                                                                                 |
+| --------------------------- | ------------------------------------------------------------------------------------------------------------------------------------ |
+| `AgentConfig`               | Validated agent policy for child setup.                                                                                              |
+| `RunJob` + progress         | Request identity and cancel ownership.                                                                                               |
+| `RuntimeResult`             | Accumulates message, usage, and output.                                                                                              |
+| `SingleResult`              | Result envelope across pipeline (`usage` stays self-only).                                                                           |
+| `SingleResult.usage`        | Self-only usage metrics for result cards and model-facing output.                                                                    |
+| `SubagentDetails`           | Transports sanitized tool updates, messages, and `usageTree` across native channels.                                                 |
 | `SubagentDetails.usageTree` | Bounded (`50`-node) accounting-only `UsageInstanceNode` tree with `omitted` totals; every details payload of an instance carries it. |
-| `StreamingProgress`         | Tree with `ToolActivity` for updates.                                                                                              |
-| `CardAnatomy`               | Unified card layout (`status`, `title`, `metadata`, optional `blocks`, optional `footer`) shared across all card surfaces.         |
-| `RunsBoardUsage`            | Joins session rollup and per-job `UsageInstanceNode` subtrees with `/jobs` progress state.                                         |
+| `StreamingProgress`         | Tree with `ToolActivity` for updates.                                                                                                |
+| `CardAnatomy`               | Unified card layout (`status`, `title`, `metadata`, optional `blocks`, optional `footer`) shared across all card surfaces.           |
+| `RunsBoardUsage`            | Joins session rollup and per-job `UsageInstanceNode` subtrees with `/jobs` progress state.                                           |
 
 ## Ownership boundaries
 
