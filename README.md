@@ -293,25 +293,46 @@ separate blocks:
 ```text
 ⟳ orchestrate merry-pelican [running] 11 tools · 1% ctx · 6m 41s
 
-  → subagent: check #3 jolly-panther - read: …/STATE.json
+  → check #3 jolly-panther › read …/STATE.json
 
-  5 spawned · check 3 (✓2 ⟳1) · build ✓1 · fix ✓1 · run $0.4213
+  5 spawned · check 3 (✓2 ⟳1) · build ✓1 · fix ✓1
 
 opencode-go · minimax-m3 · high
+```
+
+Result cards add the subtree total to the tally:
+
+```text
+✓ orchestrate merry-pelican [success] 11 tools · 1% ctx · 6m 41s
+
+  Done: all 5 tasks passed.
+
+  5 spawned · check 3 (✓2 ✗1) · build ✓1 · fix ✓1 · run $0.4900
+
+opencode-go · minimax-m3 · high · 14 turns · $0.0800
 ```
 
 - **Header**: status, label, `[<status>]`, tools, context, elapsed.
 - **Body**: activity while running, error text on failure, first output
   line on success. Result cards show full output; `/jobs` cards show
   final output, error, or task.
+- **Activity**: the running tool, led by the innermost delegated agent;
+  `… ›` marks deeper nesting, and `thinking` replaces the tool between
+  calls:
+  - `→ read …/STATE.json`: the card's own agent.
+  - `→ check jolly-panther › read …/STATE.json`: a direct child.
+  - `→ … › check #3 jolly-panther › thinking`: a deeper descendant.
+  - Paths show relative to the working directory or under `~`;
+    sensitive targets show `(hidden)`.
 - **Expanded progress**: adds `task: <preview>` and the descendant tree
   above the tally.
 - **Tally**: cards with descendants only. Counts every descendant
   depth; running agents first, then failed or cancelled; overflow
   collapses into `+<K> more`.
-- **Run cost**: `run $<total>` ends the tally and covers the whole
-  subtree, self included. `/stats` omits it; its header already shows
-  subtree cost.
+- **Run cost**: `run $<total>` ends the tally on result cards and
+  settled `/jobs` cards, covering the whole subtree, self included.
+  Progress cards and running jobs omit it; `/stats` omits it, since its
+  header already shows subtree cost.
 - **Footer**: model on progress and `/jobs` cards; model, turns, and
   self-only cost on result cards.
 - **Labels**: `<agent> <name>`; titles gain `#<n>` once an agent
