@@ -19,6 +19,7 @@ export interface ToolActivity {
   toolName: string;
   inputSummary?: string | undefined;
   instanceName?: string | undefined;
+  ordinal?: number | undefined;
   child?: ToolActivity | undefined;
 }
 
@@ -38,6 +39,7 @@ export interface StreamingProgress {
 export interface SingleResult {
   agent: string;
   instanceName?: string | undefined;
+  ordinal?: number | undefined;
   agentSource: "user" | "project" | "unknown";
   task: string;
   exitCode: number;

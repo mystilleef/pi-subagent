@@ -5,6 +5,13 @@ import {
   resetRunRegistry,
 } from "../src/orchestration/run-registry.js";
 import {
+  attachChildSubtree,
+  registerRootInstance,
+  resetUsageLedger,
+  restoreSessionRuns,
+  updateInstanceSelfUsage,
+} from "../src/orchestration/usage-ledger.js";
+import {
   cancelProgressState,
   createProgressState,
   failProgressState,
@@ -19,6 +26,7 @@ setupFixtureHooks();
 beforeEach(() => {
   resetRunRegistry();
   resetProgressStore();
+  resetUsageLedger();
 });
 
 test.each([
@@ -400,6 +408,7 @@ describe("jobs board rendering", () => {
   test("jobsCommandHandler handles empty board", async () => {
     resetRunRegistry();
     resetProgressStore();
+    resetUsageLedger();
 
     const notices: string[] = [];
     const ctx = makeCommandContext((msg) => notices.push(msg));
@@ -407,5 +416,245 @@ describe("jobs board rendering", () => {
     await jobsCommandHandler(ctx, "");
 
     expect(notices).toEqual(["No /run jobs in this session."]);
+  });
+});
+
+describe("jobs session accounting", () => {
+  function makeAdditive(cost: number) {
+    return {
+      input: 0,
+      output: 0,
+      cacheRead: 0,
+      cacheWrite: 0,
+      cost,
+      turns: 1,
+    };
+  }
+
+  function makeChild(
+    id: string,
+    agent: string,
+    instanceName: string,
+    startedAt: number,
+    cost: number,
+  ) {
+    return {
+      id,
+      agent,
+      instanceName,
+      ordinal: 1,
+      startedAt,
+      status: "success" as const,
+      usage: makeAdditive(cost),
+      children: [],
+    };
+  }
+
+  test("nonempty board precedes sections with ledger session totals", async () => {
+    const r1 = "sess-r1";
+    const r2 = "sess-r2";
+    expect(
+      registerRootInstance({
+        id: r1,
+        agent: "build",
+        instanceName: "inst-1",
+        startedAt: 1000,
+      }).ok,
+    ).toBe(true);
+    expect(
+      registerRootInstance({
+        id: r2,
+        agent: "review",
+        instanceName: "inst-2",
+        startedAt: 2000,
+      }).ok,
+    ).toBe(true);
+    updateInstanceSelfUsage(r1, makeAdditive(0.02));
+    updateInstanceSelfUsage(r2, makeAdditive(0.01));
+    expect(
+      attachChildSubtree(
+        r1,
+        makeChild("sess-c1", "worker", "child-1", 1100, 0.03),
+      ).ok,
+    ).toBe(true);
+
+    createProgressState(r1, "build", "do task one", "inst-1");
+    createProgressState(r2, "review", "do task two", "inst-2");
+    registerRunJob({
+      requestId: r1,
+      agentName: "build",
+      instanceName: "inst-1",
+      controller: new AbortController(),
+      startedAt: Date.now(),
+    });
+    finalizeProgressState(r2, "done");
+
+    const notices: string[] = [];
+    await jobsCommandHandler(
+      makeCommandContext((msg) => notices.push(msg)),
+      "",
+    );
+    expect(notices).toHaveLength(1);
+    const output = notices[0] ?? "";
+    expect(output).toContain("Session · 2 runs · 3 instances · $0.0600");
+    expect(output.indexOf("Session ·")).toBeLessThan(
+      output.indexOf("ACTIVE (1)"),
+    );
+    const sessionLine =
+      output.split("\n").find((l) => l.includes("Session ·")) ?? "";
+    expect(sessionLine).toMatch(/Session · 2 runs · 3 instances · \$0\.0600/);
+    expect(sessionLine).not.toContain("do task");
+  });
+
+  test("restored runs count in session without gaining job cards", async () => {
+    restoreSessionRuns([
+      {
+        id: "restored-1",
+        agent: "planner",
+        instanceName: "restored-inst",
+        ordinal: 1,
+        startedAt: 500,
+        status: "success",
+        durationMs: 100,
+        usage: makeAdditive(0.04),
+        children: [],
+      },
+    ]);
+    const live = "live-only";
+    expect(
+      registerRootInstance({
+        id: live,
+        agent: "build",
+        instanceName: "live-inst",
+        startedAt: 1000,
+      }).ok,
+    ).toBe(true);
+    updateInstanceSelfUsage(live, makeAdditive(0.01));
+    createProgressState(live, "build", "live task", "live-inst");
+    registerRunJob({
+      requestId: live,
+      agentName: "build",
+      instanceName: "live-inst",
+      controller: new AbortController(),
+      startedAt: Date.now(),
+    });
+
+    const notices: string[] = [];
+    await jobsCommandHandler(
+      makeCommandContext((msg) => notices.push(msg)),
+      "",
+    );
+    const output = notices[0] ?? "";
+    expect(output).toContain("Session · 2 runs · 2 instances · $0.0500");
+    expect(output).toContain("live-inst");
+    expect(output).not.toContain("restored-inst");
+  });
+
+  test("empty board keeps no-jobs notice when ledger holds restored runs", async () => {
+    restoreSessionRuns([
+      {
+        id: "restored-only",
+        agent: "planner",
+        instanceName: "ghost-inst",
+        ordinal: 1,
+        startedAt: 500,
+        status: "success",
+        durationMs: 50,
+        usage: makeAdditive(0.02),
+        children: [],
+      },
+    ]);
+    const notices: string[] = [];
+    await jobsCommandHandler(
+      makeCommandContext((msg) => notices.push(msg)),
+      "",
+    );
+    expect(notices).toEqual(["No /run jobs in this session."]);
+  });
+
+  test("cards with descendants add run cost including omitted exactly once", async () => {
+    const rid = "cost-root";
+    expect(
+      registerRootInstance({
+        id: rid,
+        agent: "build",
+        instanceName: "cost-inst",
+        startedAt: 1000,
+      }).ok,
+    ).toBe(true);
+    updateInstanceSelfUsage(rid, makeAdditive(0.01));
+    expect(
+      attachChildSubtree(rid, {
+        ...makeChild("cost-child", "worker", "child-inst", 1100, 0.02),
+        omitted: {
+          count: 1,
+          totals: {
+            instances: 1,
+            statuses: { running: 0, success: 1, error: 0, cancelled: 0 },
+            usage: makeAdditive(0.005),
+            durationMs: 10,
+            byAgent: {
+              helper: {
+                instances: 1,
+                statuses: { running: 0, success: 1, error: 0, cancelled: 0 },
+                usage: makeAdditive(0.005),
+                durationMs: 10,
+              },
+            },
+          },
+        },
+      }).ok,
+    ).toBe(true);
+    createProgressState(rid, "build", "secret task text", "cost-inst");
+    patchProgressState(rid, { modelDisplay: "provider/model:high" });
+    registerRunJob({
+      requestId: rid,
+      agentName: "build",
+      instanceName: "cost-inst",
+      controller: new AbortController(),
+      startedAt: Date.now(),
+    });
+    const notices: string[] = [];
+    await jobsCommandHandler(
+      makeCommandContext((msg) => notices.push(msg)),
+      "",
+    );
+    const output = notices[0] ?? "";
+    expect(output).toContain("run $0.0350");
+    expect(output).toContain("provider/model:high · run $0.0350");
+    const runLine =
+      output.split("\n").find((l) => l.includes("run $0.0350")) ?? "";
+    expect(runLine).not.toContain("secret task");
+  });
+
+  test("leaf cards retain existing footer without run cost", async () => {
+    const rid = "leaf-root";
+    expect(
+      registerRootInstance({
+        id: rid,
+        agent: "solo",
+        instanceName: "solo-inst",
+        startedAt: 1000,
+      }).ok,
+    ).toBe(true);
+    updateInstanceSelfUsage(rid, makeAdditive(0.0123));
+    createProgressState(rid, "solo", "leaf task", "solo-inst");
+    patchProgressState(rid, { modelDisplay: "provider/model:low" });
+    registerRunJob({
+      requestId: rid,
+      agentName: "solo",
+      instanceName: "solo-inst",
+      controller: new AbortController(),
+      startedAt: Date.now(),
+    });
+    const notices: string[] = [];
+    await jobsCommandHandler(
+      makeCommandContext((msg) => notices.push(msg)),
+      "",
+    );
+    const output = notices[0] ?? "";
+    expect(output).toContain("provider/model:low");
+    expect(output).not.toContain("run $");
+    expect(output).toContain("Session · 1 run · 1 instance · $0.0123");
   });
 });

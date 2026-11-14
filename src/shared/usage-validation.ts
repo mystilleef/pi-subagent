@@ -101,8 +101,18 @@ function isNonnegativeInteger(value: unknown): value is number {
   return typeof value === "number" && Number.isInteger(value) && value >= 0;
 }
 
-function isSafePositiveInteger(value: unknown): value is number {
+export function isSafePositiveInteger(value: unknown): value is number {
   return typeof value === "number" && Number.isSafeInteger(value) && value >= 1;
+}
+
+/**
+ * Returns the first valid 1-based ordinal; callers list result fields before
+ * snapshot roots, so legacy or malformed fields fall through.
+ */
+export function firstValidOrdinal(
+  ...candidates: unknown[]
+): number | undefined {
+  return candidates.find(isSafePositiveInteger);
 }
 
 function approxEqual(a: number, b: number): boolean {

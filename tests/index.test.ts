@@ -247,13 +247,32 @@ describe("index.ts", () => {
       expect(statsCommand).toBeDefined();
 
       const notices: string[] = [];
+      const boardWidth = 300;
       const ctx = {
         ...makeBareCtx(cwd),
         ui: {
           notify: (msg: string) => notices.push(msg),
           select: async () => undefined,
-          custom: async () => {
-            throw new Error("stats must notify plain text, not custom UI");
+          custom: async (
+            factory: Parameters<ExtensionCommandContext["ui"]["custom"]>[0],
+          ) => {
+            let result = "";
+            const theme = {
+              fg: (_color: unknown, text: string): string => text,
+              bg: (_color: unknown, text: string): string => text,
+              bold: (text: string): string => text,
+              italic: (text: string): string => text,
+            };
+            const component = await factory(
+              undefined as never,
+              theme as never,
+              undefined as never,
+              (value) => {
+                result = value as string;
+              },
+            );
+            component.render(boardWidth);
+            return result;
           },
         },
         sessionManager: {
@@ -295,17 +314,31 @@ describe("index.ts", () => {
       await statsCommand?.handler?.("swift-fox", ctx);
       await statsCommand?.handler?.("unknown-run", ctx);
 
-      expect(notices).toEqual([
-        [
-          "Session · 1 run · 1 instance · ↑40 ↓15 R5 · $0.0120",
-          "worker 1 · ✓1 ✗0 ⊘0 ⟳0 · ↑40 ↓15 R5 · $0.0120 · 1.2s",
-        ].join("\n"),
+      expect(notices).toHaveLength(3);
+      const sessionBoard = notices[0] ?? "";
+      expect(sessionBoard).toContain("Session");
+      expect(sessionBoard).toContain("1 run");
+      expect(sessionBoard).toContain("1 instance");
+      expect(sessionBoard).toContain("↑40");
+      expect(sessionBoard).toContain("↓15");
+      expect(sessionBoard).toContain("R5");
+      expect(sessionBoard).toContain("$0.0120");
+      expect(sessionBoard).toContain("worker");
+      expect(sessionBoard).toContain("✓1");
+      expect(sessionBoard).toContain("1.2s");
+      expect(sessionBoard).toContain("swift-fox");
+      expect(sessionBoard).toContain("RUNS (1)");
+      // R-011: notifications render at board width minus two columns.
+      const notifyWidth = boardWidth - 2;
+      expect(notices[1]).toBe(
         [
           "swift-fox (cmd-run-1) · 1 instance · ✓1 ✗0 ⊘0 ⟳0 · ↑40 ↓15 R5 · $0.0120 · 1.2s",
           "✓ worker #1 swift-fox · 1.2s · $0.0120",
-        ].join("\n"),
-        'No run matches "unknown-run".',
-      ]);
+        ]
+          .map((line) => line.padEnd(notifyWidth))
+          .join("\n"),
+      );
+      expect(notices[2]).toBe('No run matches "unknown-run".');
       expect(querySessionUsage()).toEqual(before);
     });
   });

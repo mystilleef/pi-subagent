@@ -14,6 +14,7 @@ import {
   getFeedbackSummaryText,
   patchProgressFromDetails,
   sanitizeDetailsForDisplay,
+  sanitizeResultDetails,
 } from "../src/progress/result-details.js";
 import type {
   SingleResult,
@@ -1809,5 +1810,152 @@ describe("SubagentDetails.usageTree display sanitization", () => {
     expect(sanitized.results).toHaveLength(1);
     expect(sanitized.results[0]?.stderr).toBe("");
     expect(sanitized.results[0]?.usage).toEqual(result.usage);
+  });
+});
+
+describe("sanitizeResultDetails message boundaries", () => {
+  test("sets messages to undefined when debug keeps messages but the result carries none", () => {
+    const sanitized = sanitizeResultDetails(
+      makeSingleResult(),
+      true,
+      undefined,
+    );
+    expect(Object.hasOwn(sanitized, "messages")).toBe(true);
+    expect(sanitized.messages).toBeUndefined();
+  });
+});
+
+describe("ordinal projection through details", () => {
+  test("sanitize preserves SingleResult ordinal and ToolActivity ordinal", async () => {
+    const { sanitizeResultDetails } = await import(
+      "../src/progress/result-details.ts"
+    );
+    const sanitized = sanitizeResultDetails(
+      makeSingleResult({
+        agent: "build",
+        instanceName: "brave-otter",
+        ordinal: 2,
+        progress: {
+          toolCalls: [],
+          activeToolActivity: {
+            toolName: "subagent",
+            inputSummary: "x",
+            instanceName: "inner",
+            ordinal: 3,
+          },
+        },
+      }),
+      false,
+      undefined,
+    );
+    expect(sanitized.ordinal).toBe(2);
+    expect(sanitized.progress?.activeToolActivity?.ordinal).toBe(3);
+  });
+  test("patch propagates result ordinal to progress state when missing", () => {
+    resetProgressStore();
+    createProgressState("req-ord-1", "build", "task", "brave-otter");
+    const details: SubagentDetails = {
+      mode: "single",
+      agentScope: "both",
+      projectAgentsDir: null,
+      results: [
+        makeSingleResult({
+          agent: "build",
+          instanceName: "brave-otter",
+          ordinal: 5,
+        }),
+      ],
+    };
+    patchProgressFromDetails("req-ord-1", details, new Set());
+    expect(getProgressState("req-ord-1")?.ordinal).toBe(5);
+    resetProgressStore();
+  });
+  test("patch falls back to usageTree ordinal for persisted details", () => {
+    resetProgressStore();
+    createProgressState("req-ord-2", "build", "task", "brave-otter");
+    const details: SubagentDetails = {
+      mode: "single",
+      agentScope: "both",
+      projectAgentsDir: null,
+      results: [
+        makeSingleResult({ agent: "build", instanceName: "brave-otter" }),
+      ],
+      usageTree: {
+        id: "r1",
+        agent: "build",
+        instanceName: "brave-otter",
+        ordinal: 6,
+        startedAt: 1,
+        status: "running",
+        usage: {
+          input: 0,
+          output: 0,
+          cacheRead: 0,
+          cacheWrite: 0,
+          cost: 0,
+          turns: 0,
+        },
+        children: [],
+      } as UsageInstanceNode,
+    };
+    patchProgressFromDetails("req-ord-2", details, new Set());
+    expect(getProgressState("req-ord-2")?.ordinal).toBe(6);
+    resetProgressStore();
+  });
+  test("patch omits ordinal when result and tree ordinals are invalid", () => {
+    resetProgressStore();
+    createProgressState("req-ord-3", "build", "task", "brave-otter");
+    const details: SubagentDetails = {
+      mode: "single",
+      agentScope: "both",
+      projectAgentsDir: null,
+      results: [
+        makeSingleResult({
+          agent: "build",
+          instanceName: "brave-otter",
+          ordinal: 0,
+        }),
+      ],
+      usageTree: {
+        id: "r1",
+        agent: "build",
+        instanceName: "brave-otter",
+        ordinal: -1,
+        startedAt: 1,
+        status: "running",
+        usage: {
+          input: 0,
+          output: 0,
+          cacheRead: 0,
+          cacheWrite: 0,
+          cost: 0,
+          turns: 0,
+        },
+        children: [],
+      } as UsageInstanceNode,
+    };
+    patchProgressFromDetails("req-ord-3", details, new Set());
+    expect(getProgressState("req-ord-3")?.ordinal).toBeUndefined();
+    resetProgressStore();
+  });
+  test("patch preserves pre-existing ordinal when details carry a different one", () => {
+    resetProgressStore();
+    createProgressState("req-ord-4", "build", "task", "brave-otter");
+    patchProgressState("req-ord-4", { ordinal: 7 });
+    const details: SubagentDetails = {
+      mode: "single",
+      agentScope: "both",
+      projectAgentsDir: null,
+      results: [
+        makeSingleResult({
+          agent: "build",
+          instanceName: "brave-otter",
+          ordinal: 5,
+        }),
+      ],
+    };
+    patchProgressFromDetails("req-ord-4", details, new Set());
+    expect(getProgressState("req-ord-4")?.ordinal).toBe(7);
+    resetProgressStore();
   });
 });

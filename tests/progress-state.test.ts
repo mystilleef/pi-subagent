@@ -2268,3 +2268,36 @@ function makeDetails(
     ],
   };
 }
+
+describe("ordinal preservation in progress projections", () => {
+  test("extractProgressFromDetails preserves ToolActivity ordinal", () => {
+    const details: SubagentDetails = {
+      mode: "single",
+      agentScope: "both",
+      projectAgentsDir: null,
+      results: [
+        makeSingleResult({
+          progress: {
+            toolCalls: [{ id: "t1", preview: "p" }],
+            activeToolActivity: {
+              toolName: "subagent",
+              inputSummary: "x",
+              instanceName: "brave-otter",
+              ordinal: 2,
+            },
+          },
+        }),
+      ],
+    };
+    const extracted = extractProgressFromDetails(details, new Set());
+    expect(extracted.activeToolActivity?.ordinal).toBe(2);
+  });
+  test("createProgressState stores ordinal for title threshold", () => {
+    resetProgressStore();
+    createProgressState("req-title-ord", "build", "task", "brave-otter", 2);
+    expect(getProgressState("req-title-ord")?.ordinal).toBe(2);
+    createProgressState("req-title-ord-1", "build", "task", "brave-otter", 1);
+    expect(getProgressState("req-title-ord-1")?.ordinal).toBe(1);
+    resetProgressStore();
+  });
+});

@@ -1,14 +1,23 @@
-import { beforeEach, expect, mock, test } from "bun:test";
+import { afterAll, beforeEach, expect, mock, test } from "bun:test";
 import type { ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 
 /**
  * Widths the handler passes to renderRunsBoard, in call order. The mock must
  * be registered before jobs-command is imported, so all production modules are
- * loaded dynamically in the beforeEach hook after registration.
+ * loaded dynamically in the beforeEach hook after registration. The real ui
+ * exports are captured at load time and restored in afterAll as a plain
+ * object, keeping the shared-process replacement scoped to this file.
  */
+const realUi = await import("../src/output/ui.ts");
+const realBoardExports = {
+  ...realUi,
+  renderRunsBoard: realUi.renderRunsBoard,
+};
+
 const boardWidths: number[] = [];
 
 mock.module("../src/output/ui.ts", () => ({
+  ...realUi,
   renderRunsBoard: (_states: unknown, _theme: unknown, width: number) => {
     boardWidths.push(width);
     return {
@@ -16,6 +25,10 @@ mock.module("../src/output/ui.ts", () => ({
     };
   },
 }));
+
+afterAll(() => {
+  mock.module("../src/output/ui.ts", () => realBoardExports);
+});
 
 type JobsCommandModule = typeof import("../src/orchestration/jobs-command.js");
 type RunRegistryModule = typeof import("../src/orchestration/run-registry.js");

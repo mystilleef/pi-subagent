@@ -1093,6 +1093,27 @@ wait $!
     expect(details.usageTree?.status).toBe("success");
   });
 
+  test("fills terminal results with session ordinals when child results omit them", async () => {
+    const sentMessages: SendMessageArg[] = [];
+    const { tool, cwd } = await setupTest({
+      sendMessage: (msg) => sentMessages.push(msg),
+    });
+    process.env.PI_SUBAGENT_DEPTH = "0";
+    for (const task of ["first-root", "second-root"]) {
+      const before = sentMessages.length;
+      await runTool(tool, { agent: "hang", task }, makeLaunchCtx(cwd));
+      await waitForSentMessageCount(sentMessages, before + 2);
+      await waitForRunJobsCleared();
+    }
+    const terminalDetails = sentMessages
+      .filter((msg) => msg.customType === "subagent-result")
+      .map((msg) => msg.details as SubagentDetails);
+    expect(terminalDetails).toHaveLength(2);
+    expect(
+      terminalDetails.map((details) => details.results[0]?.ordinal),
+    ).toEqual([1, 2]);
+  });
+
   test("creates no ledger node and emits no snapshot on pre-registration rejections", async () => {
     const sentMessages: SendMessageArg[] = [];
     const { tool, cwd } = await setupTest({

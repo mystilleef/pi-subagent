@@ -17,17 +17,22 @@
  */
 
 import type { Component } from "@earendil-works/pi-tui";
-import { Box, Text } from "@earendil-works/pi-tui";
-import { formatSubagentTitle, type SubagentTheme } from "../output/ui.js";
+import { type Box, Text } from "@earendil-works/pi-tui";
+import { queryInstanceUsage } from "../orchestration/usage-ledger.js";
+import {
+  createDescendantTally,
+  formatStatusHeader,
+  formatSubagentTitle,
+  makeStatusBox,
+  type SubagentTheme,
+} from "../output/ui.js";
 import {
   formatHeaderStats,
+  formatUsageTree,
   renderToolActivityForDisplay,
 } from "./progress-format.js";
 import {
   getProgressState,
-  STATUS_BG,
-  STATUS_COLOR,
-  STATUS_ICON,
   type SubagentProgressState,
 } from "./progress-state.js";
 
@@ -114,12 +119,18 @@ function renderProgressBox(
   width: number,
 ): Box {
   const status = state.status;
-  const title = formatSubagentTitle(state.agent, state.instanceName, theme);
-  const header = `${theme.fg(STATUS_COLOR[status], STATUS_ICON[status])} ${title} ${theme.fg("dim", `[${status}]`)} ${theme.fg("muted", formatHeaderStats(state))}`;
-  const box = new Box(1, 1, (line) => theme.bg(STATUS_BG[status], line));
+  const title = formatSubagentTitle(
+    state.agent,
+    state.instanceName,
+    theme,
+    state.ordinal,
+  );
+  const header = `${formatStatusHeader(status, title, theme)} ${theme.fg("muted", formatHeaderStats(state))}`;
+  const box = makeStatusBox(status, theme);
   box.addChild(new Text(header, 0, 0));
   const body = makeProgressBody(state, options, theme, width);
   for (const line of body) box.addChild(line);
+  for (const line of makeUsageLines(state, options, theme)) box.addChild(line);
   if (state.modelDisplay)
     box.addChild(new Text(theme.fg("dim", state.modelDisplay), 0, 0));
   return box;
@@ -139,6 +150,24 @@ function makeProgressBody(
   if (state.status === "success")
     return makeSuccessProgressBody(state, options, theme);
   return [];
+}
+
+/** Descendant tree when expanded, tally when collapsed; none for leaves. */
+function makeUsageLines(
+  state: SubagentProgressState,
+  options: { expanded: boolean },
+  theme: SubagentTheme,
+): Component[] {
+  const usage = queryInstanceUsage(state.requestId)?.instance;
+  if (!usage) return [];
+  const margin = bodyMargin(!!state.modelDisplay, options.expanded);
+  if (options.expanded) {
+    return formatUsageTree(usage).map(
+      (line) => new Text(theme.fg("dim", line), 2, margin),
+    );
+  }
+  const tally = createDescendantTally(usage, theme, 2, margin);
+  return tally ? [tally] : [];
 }
 
 function bodyMargin(hasFooter: boolean, expanded: boolean): number {

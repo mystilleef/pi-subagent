@@ -1,5 +1,11 @@
 import { afterEach, describe, expect, jest, test } from "bun:test";
 import type { ThemeColor } from "@earendil-works/pi-coding-agent";
+import {
+  attachChildSubtree,
+  queryInstanceUsage,
+  registerRootInstance,
+  resetUsageLedger,
+} from "../src/orchestration/usage-ledger.js";
 import type { SubagentTheme } from "../src/output/ui.js";
 import {
   cancelProgressState,
@@ -11,6 +17,8 @@ import {
   patchProgressState,
   renderSubagentProgress,
 } from "../src/progress/progress.js";
+import { formatDescendantTally } from "../src/progress/progress-format.js";
+import type { UsageInstanceNode } from "../src/shared/types.js";
 
 afterEach(() => {
   jest.useRealTimers();
@@ -1254,4 +1262,414 @@ describe("renderSubagentProgress", () => {
     expect(result).toBeDefined();
     clearProgressState(requestId);
   });
+});
+
+describe("ordinal-aware progress titles", () => {
+  test("collapsed progress shows #ordinal only for >=2", () => {
+    createProgressState("ord-prog-2", "build", "do work", "brave-otter", 2);
+    const rendered2 = renderSubagentProgress(
+      {
+        customType: "subagent-progress",
+        content: "",
+        display: true,
+        details: { requestId: "ord-prog-2" },
+      },
+      { expanded: false },
+      makeTheme(),
+    );
+    const text2 = rendered2?.render(80).join("\n") ?? "";
+    expect(text2).toContain("#2");
+    expect(text2).toContain("brave-otter");
+    clearProgressState("ord-prog-2");
+    createProgressState("ord-prog-1", "build", "do work", "brave-otter", 1);
+    const rendered1 = renderSubagentProgress(
+      {
+        customType: "subagent-progress",
+        content: "",
+        display: true,
+        details: { requestId: "ord-prog-1" },
+      },
+      { expanded: false },
+      makeTheme(),
+    );
+    const text1 = rendered1?.render(80).join("\n") ?? "";
+    expect(text1).not.toContain("#1");
+    expect(text1).toContain("brave-otter");
+    clearProgressState("ord-prog-1");
+  });
+});
+
+describe("live progress accounting integration", () => {
+  const liveIds: string[] = [];
+
+  function track(id: string): string {
+    liveIds.push(id);
+    return id;
+  }
+
+  afterEach(() => {
+    for (const id of liveIds.splice(0)) clearProgressState(id);
+    resetUsageLedger();
+  });
+
+  function makeChild(
+    id: string,
+    agent: string,
+    instanceName: string,
+    startedAt: number,
+    status: UsageInstanceNode["status"] = "running",
+    ordinal = 1,
+  ): UsageInstanceNode {
+    return {
+      id,
+      agent,
+      instanceName,
+      ordinal,
+      startedAt,
+      status,
+      usage: {
+        input: 10,
+        output: 5,
+        cacheRead: 0,
+        cacheWrite: 0,
+        cost: 0.01,
+        turns: 1,
+      },
+      children: [],
+    };
+  }
+
+  function setupRootWithChildren(
+    requestId: string,
+    children: UsageInstanceNode[],
+    ordinal?: number,
+  ): void {
+    resetUsageLedger();
+    const res = registerRootInstance({
+      id: requestId,
+      agent: "build",
+      instanceName: "root-run",
+      startedAt: 500,
+    });
+    expect(res.ok).toBe(true);
+    for (const child of children) {
+      const attach = attachChildSubtree(requestId, child);
+      expect(attach.ok).toBe(true);
+    }
+    createProgressState(
+      track(requestId),
+      "build",
+      "do the important task",
+      "root-run",
+      ordinal,
+    );
+  }
+
+  function renderLive(
+    requestId: string,
+    expanded: boolean,
+    width = 120,
+  ): string {
+    const rendered = renderSubagentProgress(
+      {
+        customType: "subagent-progress",
+        content: "",
+        display: true,
+        details: { requestId },
+      },
+      { expanded },
+      makeTheme(),
+    );
+    expect(rendered).toBeDefined();
+    return (rendered?.render(width) ?? []).join("\n");
+  }
+
+  test("collapsed running adds descendant tally and leaf keeps existing rendering", () => {
+    const withKids = track("live-collapsed-1");
+    setupRootWithChildren(withKids, [
+      makeChild("c-a", "explorer", "able-fox", 1000),
+      makeChild("c-b", "worker", "bold-owl", 1100),
+    ]);
+    patchProgressState(withKids, {
+      activeToolActivity: { toolName: "bash", inputSummary: "bash: ls" },
+      lastToolPreview: "bash: ls",
+    });
+    const text = renderLive(withKids, false);
+    expect(text).toContain("2 spawned");
+    expect(text).toContain("explorer");
+    expect(text).toContain("worker");
+    expect(text).toContain("→ bash: ls");
+
+    const leaf = track("live-leaf-1");
+    resetUsageLedger();
+    createProgressState(leaf, "build", "do the important task", "root-run");
+    patchProgressState(leaf, {
+      activeToolActivity: { toolName: "bash", inputSummary: "bash: ls" },
+      lastToolPreview: "bash: ls",
+    });
+    const leafText = renderLive(leaf, false);
+    expect(leafText).not.toContain("spawned");
+    expect(leafText).toContain("→ bash: ls");
+  });
+
+  test("expanded running adds bounded tree alongside activity and shows all siblings", () => {
+    const requestId = track("live-expanded-1");
+    setupRootWithChildren(requestId, [
+      makeChild("sib-a", "explorer", "able-fox", 1000),
+      makeChild("sib-b", "worker", "bold-owl", 1100),
+    ]);
+    patchProgressState(requestId, {
+      activeToolActivity: {
+        toolName: "subagent",
+        inputSummary: "subagent: build",
+        instanceName: "bold-owl",
+        child: { toolName: "bash", inputSummary: "bash: build" },
+      },
+      lastToolPreview: "subagent: build - bash: build",
+    });
+    const text = renderLive(requestId, true);
+    expect(text).toContain("do the important task");
+    expect(text).toContain("able-fox");
+    expect(text).toContain("bold-owl");
+    expect(text).toContain("⟳");
+    const activityOnly = text.split("\n").filter((line) => line.includes("→"));
+    expect(activityOnly.join("\n")).not.toContain("able-fox");
+    expect(text).toContain("explorer");
+    expect(text).toContain("worker");
+  });
+
+  test("rerenders reflect current ledger changes with running counts and omitted totals", () => {
+    const requestId = track("live-fresh-1");
+    setupRootWithChildren(requestId, [
+      makeChild("fresh-a", "explorer", "able-fox", 1000),
+    ]);
+    const first = renderSubagentProgress(
+      {
+        customType: "subagent-progress",
+        content: "",
+        display: true,
+        details: { requestId },
+      },
+      { expanded: false },
+      makeTheme(),
+    );
+    expect(first).toBeDefined();
+    expect((first?.render(120) ?? []).join("\n")).toContain("1 spawned");
+    const attach = attachChildSubtree(
+      requestId,
+      makeChild("fresh-b", "worker", "bold-owl", 1100),
+    );
+    expect(attach.ok).toBe(true);
+    expect((first?.render(120) ?? []).join("\n")).toContain("2 spawned");
+    const omittedChild = {
+      ...makeChild("fresh-c", "reader", "calm-jay", 1200),
+      children: [],
+      omitted: {
+        count: 2,
+        totals: {
+          instances: 2,
+          statuses: { running: 2, success: 0, error: 0, cancelled: 0 },
+          usage: {
+            input: 4,
+            output: 2,
+            cacheRead: 0,
+            cacheWrite: 0,
+            cost: 0.004,
+            turns: 2,
+          },
+          durationMs: 0,
+          byAgent: {
+            helper: {
+              instances: 2,
+              statuses: { running: 2, success: 0, error: 0, cancelled: 0 },
+              usage: {
+                input: 4,
+                output: 2,
+                cacheRead: 0,
+                cacheWrite: 0,
+                cost: 0.004,
+                turns: 2,
+              },
+              durationMs: 0,
+            },
+          },
+        },
+      },
+    } as UsageInstanceNode;
+    expect(attachChildSubtree(requestId, omittedChild).ok).toBe(true);
+    const withOmitted = (first?.render(120) ?? []).join("\n");
+    expect(withOmitted).toContain("helper");
+    expect(queryInstanceUsage(requestId)?.rollup.instances).toBe(6);
+  });
+
+  test("title omits ordinal 1 while tree nodes show it and tally uses full query", () => {
+    const requestId = track("live-ordinal-1");
+    setupRootWithChildren(
+      requestId,
+      [makeChild("ord-child", "explorer", "able-fox", 1000, "running", 1)],
+      1,
+    );
+    const collapsed = renderLive(requestId, false);
+    expect(collapsed).not.toContain("#1");
+    expect(collapsed).toContain("spawned");
+    const expanded = renderLive(requestId, true);
+    expect(expanded).toContain("#1");
+    expect(expanded).toContain("able-fox");
+    const full = queryInstanceUsage(requestId)?.instance;
+    expect(full).toBeDefined();
+    if (full) {
+      expect(formatDescendantTally(full, 114)).toBeDefined();
+      expect(collapsed).toContain(
+        (formatDescendantTally(full, 114) ?? "").split(" · ")[0] ?? "spawned",
+      );
+    }
+  });
+
+  test("oversized live query bounds tree to 50 nodes while tally keeps full count", () => {
+    const requestId = track("live-oversized-1");
+    const children: UsageInstanceNode[] = [];
+    for (let i = 0; i < 60; i += 1) {
+      children.push(
+        makeChild(`over-${i}`, `agent-${i % 5}`, `instance-${i}`, 1000 + i),
+      );
+    }
+    setupRootWithChildren(requestId, children);
+    const collapsed = renderLive(requestId, false, 200);
+    expect(collapsed).toContain("60 spawned");
+    const expanded = renderLive(requestId, true, 200);
+    expect(expanded).toContain("earlier");
+    const treeLines = expanded
+      .split("\n")
+      .filter((line) => line.includes("agent-"));
+    expect(treeLines.length).toBeLessThan(60);
+    expect(queryInstanceUsage(requestId)?.rollup.instances).toBe(61);
+  });
+
+  test("terminal cards keep styling with tally and tree and narrow width suppresses tally", () => {
+    const requestId = track("live-terminal-1");
+    setupRootWithChildren(requestId, [
+      makeChild("term-a", "explorer", "able-fox", 1000),
+    ]);
+    finalizeProgressState(requestId, "all done");
+    const collapsed = renderLive(requestId, false);
+    expect(collapsed).toContain("all done");
+    expect(collapsed).toContain("spawned");
+    const expanded = renderLive(requestId, true);
+    expect(expanded).toContain("do the important task");
+    expect(expanded).toContain("able-fox");
+    expect(expanded).toContain("all done");
+    const narrow = renderLive(requestId, false, 20);
+    expect(narrow).not.toContain("spawned");
+    expect(narrow).toContain("all done");
+  });
+
+  test("missing ledger entry falls back to existing rendering without throw", () => {
+    const requestId = track("live-missing-1");
+    resetUsageLedger();
+    createProgressState(
+      requestId,
+      "build",
+      "do the important task",
+      "root-run",
+    );
+    patchProgressState(requestId, {
+      activeToolActivity: { toolName: "bash", inputSummary: "bash: ls" },
+      lastToolPreview: "bash: ls",
+    });
+    const collapsed = renderLive(requestId, false);
+    expect(collapsed).toContain("→ bash: ls");
+    expect(collapsed).not.toContain("spawned");
+    const expanded = renderLive(requestId, true);
+    expect(expanded).toContain("do the important task");
+    expect(expanded).not.toContain("spawned");
+  });
+
+  test("collapsed success without output renders tally without output line", () => {
+    const requestId = track("live-no-output-collapsed");
+    setupRootWithChildren(requestId, [
+      makeChild("noc-a", "explorer", "able-fox", 1000),
+    ]);
+    finalizeProgressState(requestId, "done");
+    patchProgressState(requestId, { finalOutput: "" });
+    const text = renderLive(requestId, false);
+    const contentLines = text
+      .split("\n")
+      .filter(
+        (line) => !/^\[toolSuccessBg\]\s*\[\/toolSuccessBg\]$/.test(line),
+      );
+    expect(contentLines).toHaveLength(2);
+    expect(contentLines[1]).toContain("1 spawned");
+    expect(text).not.toContain("done");
+    expect(text).not.toContain("─── Output ───");
+  });
+
+  test("expanded success without output shows placeholder with tree lines", () => {
+    const requestId = track("live-no-output-expanded");
+    setupRootWithChildren(requestId, [
+      makeChild("noe-a", "explorer", "able-fox", 1000),
+    ]);
+    finalizeProgressState(requestId, "done");
+    patchProgressState(requestId, { finalOutput: "" });
+    const text = renderLive(requestId, true);
+    expect(text).toContain("(no output)");
+    expect(text).toContain("able-fox");
+    expect(text).not.toContain("done");
+    expect(text).not.toContain("─── Output ───");
+  });
+
+  test.each([
+    {
+      state: "error",
+      settle: (requestId: string) =>
+        failProgressState(requestId, "child exploded"),
+      stoppedText: "child exploded",
+    },
+    {
+      state: "cancelled",
+      settle: (requestId: string) =>
+        cancelProgressState(requestId, "user cancelled"),
+      stoppedText: "user cancelled",
+    },
+  ])(
+    "collapsed $state keeps stopped text with descendant tally",
+    ({ settle, stoppedText }) => {
+      const requestId = track(`live-collapsed-stopped-${stoppedText}`);
+      setupRootWithChildren(requestId, [
+        makeChild("stop-a", "explorer", "able-fox", 1000),
+      ]);
+      settle(requestId);
+      const text = renderLive(requestId, false);
+      expect(text).toContain(stoppedText);
+      expect(text).toContain("1 spawned");
+      expect(text).toContain("explorer");
+    },
+  );
+
+  test.each([
+    {
+      state: "error",
+      settle: (requestId: string) =>
+        failProgressState(requestId, "child exploded"),
+      stoppedText: "child exploded",
+    },
+    {
+      state: "cancelled",
+      settle: (requestId: string) =>
+        cancelProgressState(requestId, "user cancelled"),
+      stoppedText: "user cancelled",
+    },
+  ])(
+    "expanded $state adds bounded tree lines after stopped text",
+    ({ settle, stoppedText }) => {
+      const requestId = track(`live-expanded-stopped-${stoppedText}`);
+      setupRootWithChildren(requestId, [
+        makeChild("stop-b", "explorer", "able-fox", 1000),
+      ]);
+      settle(requestId);
+      const text = renderLive(requestId, true);
+      expect(text).toContain(stoppedText);
+      expect(text).toContain("do the important task");
+      expect(text).toContain("\u27f3 explorer #1 able-fox");
+    },
+  );
 });

@@ -4,12 +4,15 @@ import type {
   AgentToolResult,
   ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
+import { visibleWidth } from "@earendil-works/pi-tui";
 import {
   resetCapabilitiesCache,
   setCapabilities,
 } from "@earendil-works/pi-tui/dist/terminal-image.js";
+import * as usageLedger from "../src/orchestration/usage-ledger.js";
 import {
   formatResultFooter,
+  formatSubagentTitle,
   formatTokens,
   formatToolCall,
   formatUsageStats,
@@ -20,7 +23,14 @@ import {
 } from "../src/output/ui.js";
 import type { SubagentProgressState } from "../src/progress/progress.js";
 import { getProgressState } from "../src/progress/progress.js";
-import type { SubagentDetails } from "../src/shared/types.js";
+import {
+  createProgressState,
+  getAllProgressStates,
+} from "../src/progress/progress-state.js";
+import type {
+  SubagentDetails,
+  UsageInstanceNode,
+} from "../src/shared/types.js";
 import {
   createDefaultFakeTheme,
   emitAgentEnd,
@@ -1782,6 +1792,52 @@ test("renderRunsBoard renders empty board", () => {
   expect(text).toContain("[muted]");
 });
 
+test("renderRunsBoard starts nonempty board with session summary", () => {
+  usageLedger.resetUsageLedger();
+  createProgressState("session-zero", "agent", "task", "inst");
+  const usage = {
+    session: usageLedger.querySessionUsage(),
+    instances: new Map(),
+  };
+  const text = renderToString(
+    renderRunsBoard(
+      getAllProgressStates(),
+      createDefaultFakeTheme() as never,
+      80,
+      usage,
+    ),
+  );
+  const lines = text.split("\n");
+  expect(lines[0]).toStartWith(
+    "[dim]Session · 0 runs · 0 instances · $0.0000[/dim]",
+  );
+  expect(text.indexOf("Session ·")).toBeLessThan(text.indexOf("ACTIVE (1)"));
+});
+
+test("job card omits run cost for root-only ledger entries", () => {
+  usageLedger.resetUsageLedger();
+  createProgressState("cost-single", "build", "task", "inst");
+  const registered = usageLedger.registerRootInstance({
+    id: "cost-single",
+    agent: "build",
+    instanceName: "inst",
+    startedAt: 500,
+  });
+  expect(registered.ok).toBe(true);
+  const held = usageLedger.queryInstanceUsage("cost-single");
+  if (!held) throw new Error("expected ledger instance");
+  const usage = {
+    session: usageLedger.querySessionUsage(),
+    instances: new Map([["cost-single", held.instance]]),
+  };
+  const theme = createDefaultFakeTheme();
+  const board = renderToString(
+    renderRunsBoard(getAllProgressStates(), theme as never, 80, usage),
+  );
+  expect(board).not.toContain("run $");
+  expect(board).toContain("inst");
+});
+
 test("renderRunsBoard renders status sections in fixed order", () => {
   const now = Date.now();
   const states: SubagentProgressState[] = [
@@ -3308,4 +3364,715 @@ test("partial result card still prefers finalOutput over live content", () => {
   expect(text).toContain("[toolOutput]existing final output[/toolOutput]");
   expect(text).not.toContain("live content text");
   expect(text).not.toContain("running activity");
+});
+
+describe("ordinal-aware titles", () => {
+  function makeTreeWithOrdinal(ordinal: number): UsageInstanceNode {
+    return {
+      id: "r-tree",
+      agent: "build",
+      instanceName: "brave-otter",
+      ordinal,
+      startedAt: 1,
+      status: "success",
+      usage: {
+        input: 0,
+        output: 0,
+        cacheRead: 0,
+        cacheWrite: 0,
+        cost: 0,
+        turns: 0,
+      },
+      children: [],
+    };
+  }
+  test("inserts #ordinal for ordinal >=2 preserving existing segments", () => {
+    const theme = createDefaultFakeTheme();
+    expect(formatSubagentTitle("build", "brave-otter", theme, 3)).toContain(
+      "#3",
+    );
+    expect(formatSubagentTitle("build", "brave-otter", theme, 3)).toContain(
+      "brave-otter",
+    );
+    expect(formatSubagentTitle("build", "brave-otter", theme, 3)).toContain(
+      "build",
+    );
+  });
+  test("preserves legacy formatting for ordinal 1 or missing", () => {
+    const theme = createDefaultFakeTheme();
+    const legacy = formatSubagentTitle("build", "brave-otter", theme);
+    expect(formatSubagentTitle("build", "brave-otter", theme, 1)).toBe(legacy);
+    expect(formatSubagentTitle("build", "brave-otter", theme, undefined)).toBe(
+      legacy,
+    );
+    expect(formatSubagentTitle("build", "brave-otter", theme, 1.5)).toBe(
+      legacy,
+    );
+  });
+  test("result card shows #ordinal only for repeated instances", () => {
+    const theme = createDefaultFakeTheme();
+    const repeated = renderToString(
+      renderSubagentResult(
+        {
+          content: [{ type: "text", text: "ignored" }],
+          details: {
+            mode: "single",
+            agentScope: "both",
+            projectAgentsDir: null,
+            results: [
+              makeSingleResult({
+                agent: "build",
+                instanceName: "brave-otter",
+                ordinal: 2,
+                finalOutput: "done",
+              }),
+            ],
+          },
+        },
+        theme,
+      ),
+    );
+    expect(repeated).toContain("#2");
+    const first = renderToString(
+      renderSubagentResult(
+        {
+          content: [{ type: "text", text: "ignored" }],
+          details: {
+            mode: "single",
+            agentScope: "both",
+            projectAgentsDir: null,
+            results: [
+              makeSingleResult({
+                agent: "build",
+                instanceName: "brave-otter",
+                ordinal: 1,
+                finalOutput: "done",
+              }),
+            ],
+          },
+        },
+        theme,
+      ),
+    );
+    expect(first).not.toContain("#1");
+    expect(first).toContain("brave-otter");
+  });
+  test("result card falls back to usageTree ordinal for persisted details", () => {
+    const theme = createDefaultFakeTheme();
+    const rendered = renderToString(
+      renderSubagentResult(
+        {
+          content: [{ type: "text", text: "ignored" }],
+          details: {
+            mode: "single",
+            agentScope: "both",
+            projectAgentsDir: null,
+            results: [
+              makeSingleResult({
+                agent: "build",
+                instanceName: "brave-otter",
+                finalOutput: "done",
+              }),
+            ],
+            usageTree: {
+              id: "r1",
+              agent: "build",
+              instanceName: "brave-otter",
+              ordinal: 4,
+              startedAt: 1,
+              status: "success",
+              usage: {
+                input: 0,
+                output: 0,
+                cacheRead: 0,
+                cacheWrite: 0,
+                cost: 0,
+                turns: 0,
+              },
+              children: [],
+            },
+          },
+        },
+        theme,
+      ),
+    );
+    expect(rendered).toContain("#4");
+  });
+  test("result card ignores non-integer result ordinal and uses tree ordinal", () => {
+    const theme = createDefaultFakeTheme();
+    const tree = makeTreeWithOrdinal(3);
+    const rendered = renderToString(
+      renderSubagentResult(
+        {
+          content: [{ type: "text", text: "ignored" }],
+          details: {
+            mode: "single",
+            agentScope: "both",
+            projectAgentsDir: null,
+            results: [
+              makeSingleResult({
+                agent: "build",
+                instanceName: "brave-otter",
+                ordinal: 1.5,
+                finalOutput: "done",
+              }),
+            ],
+            usageTree: tree,
+          },
+        },
+        theme,
+      ),
+    );
+    expect(rendered).toContain("#3");
+  });
+  test("result card prefers result ordinal over tree ordinal", () => {
+    const theme = createDefaultFakeTheme();
+    const rendered = renderToString(
+      renderSubagentResult(
+        {
+          content: [{ type: "text", text: "ignored" }],
+          details: {
+            mode: "single",
+            agentScope: "both",
+            projectAgentsDir: null,
+            results: [
+              makeSingleResult({
+                agent: "build",
+                instanceName: "brave-otter",
+                ordinal: 4,
+                finalOutput: "done",
+              }),
+            ],
+            usageTree: makeTreeWithOrdinal(3),
+          },
+        },
+        theme,
+      ),
+    );
+    expect(rendered).toContain("#4");
+    expect(rendered).not.toContain("#3");
+  });
+});
+
+describe("persisted result accounting", () => {
+  function persistedTree(): UsageInstanceNode {
+    return {
+      id: "root-1",
+      agent: "build",
+      instanceName: "brave-otter",
+      ordinal: 2,
+      startedAt: 1000,
+      status: "success",
+      durationMs: 1200,
+      usage: {
+        input: 100,
+        output: 50,
+        cacheRead: 0,
+        cacheWrite: 0,
+        cost: 0.01,
+        turns: 1,
+      },
+      children: [
+        {
+          id: "child-1",
+          agent: "fix",
+          instanceName: "quick-fox",
+          ordinal: 1,
+          startedAt: 1100,
+          status: "success",
+          durationMs: 300,
+          usage: {
+            input: 10,
+            output: 5,
+            cacheRead: 0,
+            cacheWrite: 0,
+            cost: 0.02,
+            turns: 1,
+          },
+          children: [],
+        },
+        {
+          id: "child-2",
+          agent: "fix",
+          instanceName: "slow-bear",
+          ordinal: 1,
+          startedAt: 1200,
+          status: "error",
+          durationMs: 400,
+          usage: {
+            input: 20,
+            output: 10,
+            cacheRead: 0,
+            cacheWrite: 0,
+            cost: 0.03,
+            turns: 2,
+          },
+          children: [],
+        },
+      ],
+      omitted: {
+        count: 1,
+        totals: {
+          instances: 1,
+          statuses: { running: 0, success: 1, error: 0, cancelled: 0 },
+          usage: {
+            input: 5,
+            output: 5,
+            cacheRead: 0,
+            cacheWrite: 0,
+            cost: 0.04,
+            turns: 1,
+          },
+          durationMs: 100,
+          byAgent: {
+            plan: {
+              instances: 1,
+              statuses: { running: 0, success: 1, error: 0, cancelled: 0 },
+              usage: {
+                input: 5,
+                output: 5,
+                cacheRead: 0,
+                cacheWrite: 0,
+                cost: 0.04,
+                turns: 1,
+              },
+              durationMs: 100,
+            },
+          },
+        },
+      },
+    };
+  }
+
+  function persistedDetails(
+    overrides: Partial<ReturnType<typeof makeSingleResult>> = {},
+  ): SubagentDetails {
+    return {
+      mode: "single",
+      agentScope: "both",
+      projectAgentsDir: null,
+      results: [
+        makeSingleResult({
+          agent: "build",
+          instanceName: "brave-otter",
+          ordinal: 2,
+          finalOutput: "persisted body",
+          model: "test-model",
+          usage: {
+            input: 0,
+            output: 0,
+            cacheRead: 0,
+            cacheWrite: 0,
+            cost: 0.005,
+            contextTokens: 12400,
+            turns: 3,
+          },
+          ...overrides,
+        }),
+      ],
+      usageTree: persistedTree(),
+    };
+  }
+
+  test("places descendant tally immediately after header with descendant-inclusive run cost", () => {
+    const theme = createDefaultFakeTheme();
+    const text = renderToString(
+      renderSubagentResult(
+        {
+          content: [{ type: "text", text: "ignored" }],
+          details: persistedDetails(),
+        },
+        theme,
+      ),
+    );
+    expect(text).toContain("3 spawned");
+    expect(text).toContain("run $0.1000");
+    const lines = text.split("\n");
+    const headerIdx = lines.findIndex((line) => line.includes("brave-otter"));
+    const tallyIdx = lines.findIndex((line) => line.includes("3 spawned"));
+    const bodyIdx = lines.findIndex((line) => line.includes("persisted body"));
+    const footerIdx = lines.findIndex((line) => line.includes("run $0.1000"));
+    expect(headerIdx).toBeGreaterThanOrEqual(0);
+    expect(tallyIdx).toBe(headerIdx + 1);
+    expect(bodyIdx).toBeGreaterThan(tallyIdx);
+    expect(footerIdx).toBeGreaterThan(bodyIdx);
+  });
+
+  test("keeps self footer distinct from subtree run cost while preserving body and metadata", () => {
+    const theme = createDefaultFakeTheme();
+    const text = renderToString(
+      renderSubagentResult(
+        {
+          content: [{ type: "text", text: "ignored" }],
+          details: persistedDetails(),
+        },
+        theme,
+      ),
+    );
+    expect(text).toContain("test-model");
+    expect(text).toContain("3 turns");
+    expect(text).toContain("$0.0050");
+    expect(text).toContain("run $0.1000");
+    expect(text).toContain("persisted body");
+    expect(text).toContain("tools");
+    expect(text).toContain("ctx");
+  });
+
+  test("renders run cost footer alone when result usage footer is empty", () => {
+    const theme = createDefaultFakeTheme();
+    const details = persistedDetails({
+      model: undefined,
+      usage: {
+        input: 0,
+        output: 0,
+        cacheRead: 0,
+        cacheWrite: 0,
+        cost: 0,
+        contextTokens: 0,
+        turns: 0,
+      },
+    });
+    const text = renderToString(
+      renderSubagentResult(
+        {
+          content: [{ type: "text", text: "ignored" }],
+          details,
+        },
+        theme,
+      ),
+    );
+    const footerLine = text
+      .split("\n")
+      .find((line) => line.includes("run $")) as string;
+    expect(footerLine).toContain("[dim]run $0.1000[/dim]");
+    expect(footerLine).not.toContain(" · ");
+    expect(text).toContain("3 spawned");
+  });
+
+  test("renders identical output after ledger reset for persisted details", () => {
+    const theme = createDefaultFakeTheme();
+    const payload = {
+      content: [{ type: "text" as const, text: "ignored" }],
+      details: persistedDetails(),
+    };
+    const before = renderToString(renderSubagentResult(payload, theme));
+    usageLedger.resetUsageLedger();
+    const after = renderToString(renderSubagentResult(payload, theme));
+    expect(after).toBe(before);
+    expect(after).toContain("3 spawned");
+    expect(after).toContain("run $0.1000");
+    expect(after).toContain("#2");
+  });
+
+  test("renders failed results with tally and run cost from available snapshot", () => {
+    const theme = createDefaultFakeTheme();
+    const text = renderToString(
+      renderSubagentResult(
+        {
+          content: [{ type: "text", text: "ignored" }],
+          details: persistedDetails({
+            exitCode: 1,
+            stopReason: "error",
+            errorMessage: "boom",
+          }),
+        },
+        theme,
+      ),
+    );
+    expect(text).toContain("[error]");
+    expect(text).toContain("3 spawned");
+    expect(text).toContain("run $0.1000");
+  });
+
+  test("renders partial results with tally and run cost from available snapshot", () => {
+    const theme = createDefaultFakeTheme();
+    const text = renderToString(
+      renderSubagentResult(
+        {
+          content: [{ type: "text" as const, text: "live partial" }],
+          details: persistedDetails({ finalOutput: "" }),
+        },
+        theme,
+        { isPartial: true },
+      ),
+    );
+    expect(text).toContain("3 spawned");
+    expect(text).toContain("run $0.1000");
+    expect(text).toContain("live partial");
+  });
+
+  test("preserves legacy rendering without usageTree and for leaf snapshots", () => {
+    const theme = createDefaultFakeTheme();
+    const legacy = renderToString(
+      renderSubagentResult(
+        {
+          content: [{ type: "text", text: "ignored" }],
+          details: {
+            mode: "single",
+            agentScope: "both",
+            projectAgentsDir: null,
+            results: [
+              makeSingleResult({
+                agent: "build",
+                instanceName: "brave-otter",
+                finalOutput: "done",
+                usage: {
+                  input: 0,
+                  output: 0,
+                  cacheRead: 0,
+                  cacheWrite: 0,
+                  cost: 0.005,
+                  contextTokens: 0,
+                  turns: 1,
+                },
+              }),
+            ],
+          },
+        },
+        theme,
+      ),
+    );
+    expect(legacy).not.toContain("spawned");
+    expect(legacy).not.toContain("run $");
+    const leaf = renderToString(
+      renderSubagentResult(
+        {
+          content: [{ type: "text", text: "ignored" }],
+          details: {
+            mode: "single",
+            agentScope: "both",
+            projectAgentsDir: null,
+            results: [
+              makeSingleResult({
+                agent: "build",
+                instanceName: "brave-otter",
+                finalOutput: "done",
+              }),
+            ],
+            usageTree: {
+              id: "leaf-1",
+              agent: "build",
+              instanceName: "brave-otter",
+              ordinal: 1,
+              startedAt: 1,
+              status: "success",
+              usage: {
+                input: 0,
+                output: 0,
+                cacheRead: 0,
+                cacheWrite: 0,
+                cost: 0.005,
+                turns: 1,
+              },
+              children: [],
+            },
+          },
+        },
+        theme,
+      ),
+    );
+    expect(leaf).not.toContain("spawned");
+    expect(leaf).not.toContain("run $");
+  });
+
+  test("retains ordinal threshold with persisted usageTree tally", () => {
+    const theme = createDefaultFakeTheme();
+    const repeated = renderToString(
+      renderSubagentResult(
+        {
+          content: [{ type: "text", text: "ignored" }],
+          details: persistedDetails(),
+        },
+        theme,
+      ),
+    );
+    expect(repeated).toContain("#2");
+    expect(repeated).toContain("3 spawned");
+    const firstDetails = persistedDetails({ ordinal: 1 });
+    if (firstDetails.usageTree) firstDetails.usageTree.ordinal = 1;
+    const first = renderToString(
+      renderSubagentResult(
+        { content: [{ type: "text", text: "ignored" }], details: firstDetails },
+        theme,
+      ),
+    );
+    expect(first).not.toContain("#1");
+    expect(first).toContain("3 spawned");
+  });
+
+  test("suppresses duplicate results and excludes task text from accounting lines", () => {
+    const theme = createDefaultFakeTheme();
+    const tool = getSubagentTool();
+    const suppressed = renderToString(
+      tool.renderResult?.(
+        {
+          content: [{ type: "text" as const, text: "done" }],
+          details: {
+            ...persistedDetails(),
+            renderedByMessage: true as const,
+          },
+        } as never,
+        { expanded: false, isPartial: false },
+        theme as never,
+        {} as never,
+      ),
+    );
+    expect(suppressed).toBe("");
+    const text = renderToString(
+      renderSubagentResult(
+        {
+          content: [{ type: "text", text: "ignored" }],
+          details: persistedDetails({ task: "secret-task-prompt-xyz" }),
+        },
+        theme,
+      ),
+    );
+    const tallyLine = text
+      .split("\n")
+      .find((line) => line.includes("3 spawned"));
+    expect(tallyLine).toBeDefined();
+    expect(tallyLine).not.toContain("secret-task-prompt-xyz");
+    expect(text).toContain("[success]");
+  });
+
+  test("retains full tally on a single line within wide card width", () => {
+    const identity = {
+      fg: (_c: string, t: string) => t,
+      bg: (_c: string, t: string) => t,
+      bold: (t: string) => t,
+    };
+    const payload = {
+      content: [{ type: "text" as const, text: "ignored" }],
+      details: persistedDetails(),
+    };
+    const width = 100;
+    const rendered = renderToString(
+      renderSubagentResult(payload, identity as never),
+      width,
+    );
+    const lines = rendered.split("\n");
+    const tallyLines = lines.filter((line) => line.includes("spawned"));
+    expect(tallyLines).toHaveLength(1);
+    const tally = tallyLines[0]?.trim() ?? "";
+    expect(tally).toContain("3 spawned");
+    expect(tally).toContain("fix");
+    expect(tally).toContain("plan");
+    expect(visibleWidth(tally)).toBeLessThanOrEqual(width - 2);
+    const headerIdx = lines.findIndex((line) => line.includes("brave-otter"));
+    const tallyIdx = lines.findIndex((line) => line.includes("3 spawned"));
+    expect(tallyIdx).toBe(headerIdx + 1);
+  });
+
+  test("truncates trailing groups with accurate omission count on narrow cards", () => {
+    const identity = {
+      fg: (_c: string, t: string) => t,
+      bg: (_c: string, t: string) => t,
+      bold: (t: string) => t,
+    };
+    const payload = {
+      content: [{ type: "text" as const, text: "ignored" }],
+      details: persistedDetails(),
+    };
+    const width = 32;
+    const rendered = renderToString(
+      renderSubagentResult(payload, identity as never),
+      width,
+    );
+    const lines = rendered.split("\n");
+    const tallyLines = lines.filter((line) => line.includes("spawned"));
+    expect(tallyLines).toHaveLength(1);
+    const tally = tallyLines[0]?.trim() ?? "";
+    expect(tally).toBe("3 spawned · +2 more");
+    expect(visibleWidth(tally)).toBeLessThanOrEqual(width - 2);
+    expect(rendered).toContain("run $0.1000");
+    const headerIdx = lines.findIndex((line) => line.includes("brave-otter"));
+    const tallyIdx = lines.findIndex((line) => line.includes("3 spawned"));
+    const bodyIdx = lines.findIndex((line) => line.includes("persisted body"));
+    expect(headerIdx).toBeGreaterThanOrEqual(0);
+    expect(tallyIdx).toBeGreaterThan(headerIdx);
+    expect(bodyIdx).toBeGreaterThan(tallyIdx);
+  });
+
+  test("suppresses tally below minimum width while preserving run cost", () => {
+    const identity = {
+      fg: (_c: string, t: string) => t,
+      bg: (_c: string, t: string) => t,
+      bold: (t: string) => t,
+    };
+    const payload = {
+      content: [{ type: "text" as const, text: "ignored" }],
+      details: persistedDetails(),
+    };
+    const rendered = renderToString(
+      renderSubagentResult(payload, identity as never),
+      15,
+    );
+    expect(rendered).not.toContain("spawned");
+    expect(rendered).toContain("$0.1000");
+    expect(rendered.replace(/\s+/g, " ")).toContain("run $0.1000");
+    expect(rendered.replace(/\s+/g, " ")).toContain("persisted body");
+  });
+  test("renders run cost and tally for omitted-only descendant accounting", () => {
+    const theme = createDefaultFakeTheme();
+    const omittedOnlyTree: UsageInstanceNode = {
+      id: "root-omitted",
+      agent: "build",
+      instanceName: "brave-otter",
+      ordinal: 2,
+      startedAt: 1000,
+      status: "success",
+      durationMs: 1200,
+      usage: {
+        input: 100,
+        output: 50,
+        cacheRead: 0,
+        cacheWrite: 0,
+        cost: 0.01,
+        turns: 1,
+      },
+      children: [],
+      omitted: {
+        count: 2,
+        totals: {
+          instances: 2,
+          statuses: { running: 0, success: 2, error: 0, cancelled: 0 },
+          usage: {
+            input: 5,
+            output: 5,
+            cacheRead: 0,
+            cacheWrite: 0,
+            cost: 0.09,
+            turns: 1,
+          },
+          durationMs: 100,
+          byAgent: {
+            plan: {
+              instances: 2,
+              statuses: { running: 0, success: 2, error: 0, cancelled: 0 },
+              usage: {
+                input: 5,
+                output: 5,
+                cacheRead: 0,
+                cacheWrite: 0,
+                cost: 0.09,
+                turns: 1,
+              },
+              durationMs: 100,
+            },
+          },
+        },
+      },
+    };
+    const rendered = renderToString(
+      renderSubagentResult(
+        {
+          content: [{ type: "text" as const, text: "ignored" }],
+          details: { ...persistedDetails(), usageTree: omittedOnlyTree },
+        },
+        theme,
+      ),
+    );
+    expect(rendered).toContain("2 spawned");
+    expect(rendered.replace(/\s+/g, " ")).toContain("run $0.1000");
+  });
 });

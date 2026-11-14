@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, jest, test } from "bun:test";
 import {
   listRunJobs,
   resetRunRegistry,
@@ -6,6 +6,7 @@ import {
 import { statsCommandHandler } from "../src/orchestration/stats-command.js";
 import {
   attachChildSubtree,
+  queryRootRunUsage,
   querySessionUsage,
   registerRootInstance,
   resetUsageLedger,
@@ -13,13 +14,20 @@ import {
   transitionInstanceStatus,
   updateInstanceSelfUsage,
 } from "../src/orchestration/usage-ledger.js";
+import {
+  renderStatsBoard,
+  renderStatsRunBoard,
+} from "../src/output/stats-board.js";
 import { resetProgressStore } from "../src/progress/progress-state.js";
 import type {
   AccountingRollup,
   AdditiveUsage,
   UsageInstanceNode,
 } from "../src/shared/types.js";
-import { createEmptyAdditiveUsage } from "../src/shared/usage-accounting.js";
+import {
+  computeSubtreeRollup,
+  createEmptyAdditiveUsage,
+} from "../src/shared/usage-accounting.js";
 import { makeCommandContext, setupFixtureHooks } from "./fixtures.js";
 
 setupFixtureHooks();
@@ -62,13 +70,37 @@ function makeOmitted(agent: string, totals: Omit<AccountingRollup, "byAgent">) {
   };
 }
 
-async function runStats(...argsList: string[]): Promise<string[]> {
+async function runStatsAtWidth(
+  width: number,
+  ...argsList: string[]
+): Promise<string[]> {
   const notices: string[] = [];
-  const ctx = makeCommandContext((msg) => notices.push(msg));
+  const ctx = makeCommandContext((msg) => notices.push(msg), width);
   for (const args of argsList) {
     await statsCommandHandler(ctx, args);
   }
   return notices;
+}
+
+async function runStats(...argsList: string[]): Promise<string[]> {
+  return runStatsAtWidth(300, ...argsList);
+}
+
+const identityTheme = {
+  fg: (_color: unknown, text: string): string => text,
+  bg: (_color: unknown, text: string): string => text,
+  bold: (text: string): string => text,
+  italic: (text: string): string => text,
+};
+
+function renderBoardLines(
+  width: number,
+  runs = querySessionUsage().runs,
+  rollup = querySessionUsage().rollup,
+): string[] {
+  return renderStatsBoard(runs, rollup, identityTheme as never, width).render(
+    width,
+  );
 }
 
 describe("statsCommandHandler", () => {
@@ -105,7 +137,7 @@ describe("statsCommandHandler", () => {
     ]);
   });
 
-  test("reports session totals across live, restored, and omitted descendants without mutating state", async () => {
+  test("reports styled session totals across live, restored, and omitted descendants without mutating state", async () => {
     restoreSessionRuns([
       makeNode({
         id: "restored-root",
@@ -167,18 +199,42 @@ describe("statsCommandHandler", () => {
     });
     const before = querySessionUsage();
 
-    expect(await runStats("")).toEqual([
-      [
-        "Session · 2 runs · 5 instances · ↑350 ↓155 R55 W15 · $0.0470",
-        "planner 2 · ✓1 ✗0 ⊘0 ⟳1 · ↑300 ↓130 R45 W15 · $0.0400 · 2.0s",
-        "worker  3 · ✓1 ✗1 ⊘1 ⟳0 · ↑50 ↓25 R10 · $0.0070 · 1.2s",
-      ].join("\n"),
-    ]);
+    const notices = await runStats("");
+    expect(notices).toHaveLength(1);
+    const output = notices[0] ?? "";
+    expect(output).toContain("Session");
+    expect(output).toContain("2 runs");
+    expect(output).toContain("5 instances");
+    expect(output).toContain("↑350");
+    expect(output).toContain("↓155");
+    expect(output).toContain("R55");
+    expect(output).toContain("W15");
+    expect(output).toContain("$0.0470");
+    expect(output).toContain("planner");
+    expect(output).toContain("✓1");
+    expect(output).toContain("⟳1");
+    expect(output).toContain("↑300");
+    expect(output).toContain("$0.0400");
+    expect(output).toContain("2.0s");
+    expect(output).toContain("worker");
+    expect(output).toContain("✗1");
+    expect(output).toContain("⊘1");
+    expect(output).toContain("$0.0070");
+    expect(output).toContain("1.2s");
+    expect(output).toContain("RUNS (2)");
+    expect(output).toContain("live-falcon");
+    expect(output).toContain("forked-hawk");
+    expect(output).toContain("spawned");
+    expect(output.indexOf("live-falcon")).toBeLessThan(
+      output.indexOf("forked-hawk"),
+    );
     expect(querySessionUsage()).toEqual(before);
     expect(listRunJobs()).toEqual([]);
+    const again = await runStats("");
+    expect(again).toEqual(notices);
   });
 
-  test("formats token counts compactly and singular counts without plurals", async () => {
+  test("formats styled token counts compactly and singular counts without plurals", async () => {
     registerRootInstance({
       id: "big-root",
       agent: "build",
@@ -197,15 +253,21 @@ describe("statsCommandHandler", () => {
       }),
     });
 
-    expect(await runStats("")).toEqual([
-      [
-        "Session · 1 run · 1 instance · ↑412k ↓38k R1.2M W40k · $3.1840",
-        "build 1 · ✓1 ✗0 ⊘0 ⟳0 · ↑412k ↓38k R1.2M W40k · $3.1840 · 12m 4s",
-      ].join("\n"),
-    ]);
+    const output = (await runStats(""))[0] ?? "";
+    expect(output).toContain("Session");
+    expect(output).toContain("1 run");
+    expect(output).toContain("1 instance");
+    expect(output).toContain("↑412k");
+    expect(output).toContain("↓38k");
+    expect(output).toContain("R1.2M");
+    expect(output).toContain("W40k");
+    expect(output).toContain("$3.1840");
+    expect(output).toContain("12m 4s");
+    expect(output).toContain("swift-otter");
+    expect(output).not.toContain("spawned");
   });
 
-  test("reports agents whose names shadow prototype members", async () => {
+  test("reports styled agents whose names shadow prototype members", async () => {
     registerRootInstance({
       id: "proto-root",
       agent: "__proto__",
@@ -217,84 +279,289 @@ describe("statsCommandHandler", () => {
       usage: makeUsage({ input: 12, output: 8, cost: 0.005, turns: 1 }),
     });
 
-    expect(await runStats("")).toEqual([
-      [
-        "Session · 1 run · 1 instance · ↑12 ↓8 · $0.0050",
-        "__proto__ 1 · ✓1 ✗0 ⊘0 ⟳0 · ↑12 ↓8 · $0.0050 · 1.0s",
-      ].join("\n"),
-    ]);
+    const output = (await runStats(""))[0] ?? "";
+    expect(output).toContain("__proto__");
+    expect(output).toContain("↑12");
+    expect(output).toContain("↓8");
+    expect(output).toContain("$0.0050");
+    expect(output).toContain("1.0s");
+    expect(output).not.toMatch(/R\d/);
+    expect(output).toContain("proto-owl");
   });
 
-  test("matches runs by request id or latest instance name and renders the instance tree", async () => {
+  test("orders runs recent-first with ordinal threshold and leaf fallback", async () => {
     registerRootInstance({
-      id: "run-old",
+      id: "old-root",
       agent: "planner",
-      instanceName: "shared-falcon",
+      instanceName: "old-falcon",
       startedAt: 1_000,
     });
-    transitionInstanceStatus("run-old", "error", {
-      durationMs: 500,
-      usage: makeUsage({ input: 10, output: 5, cost: 0.001, turns: 1 }),
-    });
     registerRootInstance({
-      id: "run-new",
+      id: "new-root",
       agent: "planner",
-      instanceName: "shared-falcon",
+      instanceName: "new-falcon",
       startedAt: 2_000,
     });
+    attachChildSubtree(
+      "new-root",
+      makeNode({
+        id: "new-child",
+        agent: "worker",
+        instanceName: "child-jay",
+        startedAt: 2_100,
+        status: "success",
+        durationMs: 200,
+        usage: makeUsage({ input: 5, output: 5, cost: 0.001, turns: 1 }),
+      }),
+    );
+
+    const output = (await runStats(""))[0] ?? "";
+    expect(output.indexOf("new-falcon")).toBeLessThan(
+      output.indexOf("old-falcon"),
+    );
+    expect(output).toContain("#2");
+    expect(output).not.toContain("#1");
+    expect(output.match(/spawned/g)?.length).toBe(1);
+    expect(output).toContain("[running]");
+    expect(output).toContain("$");
+  });
+
+  test("consumes width-safe run tallies with truncation and suppression", async () => {
+    registerRootInstance({
+      id: "tally-root",
+      agent: "planner",
+      instanceName: "tally-falcon",
+      startedAt: 1_000,
+    });
+    const agents = ["alpha", "beta", "gamma", "delta", "epsilon"];
+    let at = 1_100;
+    for (const agent of agents) {
+      attachChildSubtree(
+        "tally-root",
+        makeNode({
+          id: `child-${agent}`,
+          agent,
+          instanceName: `inst-${agent}`,
+          startedAt: at,
+          status: "success",
+          durationMs: 100,
+          usage: makeUsage({ input: 10, output: 5, cost: 0.001, turns: 1 }),
+        }),
+      );
+      at += 100;
+    }
+
+    const wide = (await runStatsAtWidth(300, ""))[0] ?? "";
+    for (const agent of agents) expect(wide).toContain(agent);
+    expect(wide).not.toContain("+");
+    expect(wide).toContain("5 spawned");
+
+    const narrow = (await runStatsAtWidth(60, ""))[0] ?? "";
+    expect(narrow).toContain("spawned");
+    expect(narrow).toContain("+");
+    expect(narrow).toContain("more");
+    const narrowBoard = renderBoardLines(58).join("\n");
+    const narrowTally = narrowBoard
+      .split("\n")
+      .filter((line) => line.includes("spawned"))
+      .join(" ");
+    expect(narrowTally).toContain("epsilon");
+    expect(narrowTally).not.toContain("alpha");
+    expect(narrowTally).toMatch(/\+\d+ more/);
+
+    const tiny = (await runStatsAtWidth(10, ""))[0] ?? "";
+    expect(tiny).not.toContain("spawned");
+    expect(tiny.length).toBeGreaterThan(0);
+    const tinyBoard = renderBoardLines(20).join("\n");
+    expect(tinyBoard).not.toContain("spawned");
+    expect(tinyBoard).toContain("tally-falcon");
+  });
+
+  test("omits zero cache parts while preserving nonzero cache tokens", async () => {
+    registerRootInstance({
+      id: "cache-root",
+      agent: "worker",
+      instanceName: "cache-owl",
+      startedAt: 1_000,
+    });
     updateInstanceSelfUsage(
-      "run-new",
+      "cache-root",
+      makeUsage({ input: 10, output: 5, cost: 0.001, turns: 1 }),
+    );
+    const noCache = (await runStats(""))[0] ?? "";
+    expect(noCache).toContain("↑10");
+    expect(noCache).toContain("↓5");
+    expect(noCache).not.toMatch(/R\d/);
+    expect(noCache).not.toMatch(/W\d/);
+
+    resetUsageLedger();
+    registerRootInstance({
+      id: "cache-root-2",
+      agent: "worker",
+      instanceName: "cache-owl-2",
+      startedAt: 1_000,
+    });
+    updateInstanceSelfUsage(
+      "cache-root-2",
       makeUsage({
-        input: 100,
-        output: 40,
-        cacheRead: 10,
-        cost: 0.01,
+        input: 10,
+        output: 5,
+        cacheRead: 7,
+        cacheWrite: 3,
+        cost: 0.002,
         turns: 1,
       }),
     );
+    const withCache = (await runStats(""))[0] ?? "";
+    expect(withCache).toContain("R7");
+    expect(withCache).toContain("W3");
+  });
+
+  test("renders notify board two columns narrower with clamped geometry", async () => {
+    registerRootInstance({
+      id: "width-root",
+      agent: "planner",
+      instanceName: "width-falcon",
+      startedAt: 1_000,
+    });
+    const output = (await runStatsAtWidth(122, ""))[0] ?? "";
+    expect(output.match(/─+/)?.[0]?.length).toBe(111);
+
+    for (const width of [0, 1, 2, 4]) {
+      const notices = await runStatsAtWidth(width, "");
+      expect(notices).toHaveLength(1);
+      expect(notices[0]?.length).toBeGreaterThan(0);
+    }
+  });
+
+  test("avoids background-bar wrapping under fixed width", async () => {
+    registerRootInstance({
+      id: "wrap-root",
+      agent: "planner",
+      instanceName: "wrap-falcon",
+      startedAt: 1_000,
+    });
     attachChildSubtree(
-      "run-new",
+      "wrap-root",
       makeNode({
-        id: "child-1",
-        agent: "worker",
-        instanceName: "child-otter",
-        ordinal: 2,
-        startedAt: 2_100,
-        durationMs: 1_200,
-        usage: makeUsage({ input: 50, output: 20, cost: 0.005, turns: 1 }),
-        children: [
-          makeNode({
-            id: "grandchild-1",
-            agent: "searcher",
-            instanceName: "leaf-wren",
-            startedAt: 2_200,
-            status: "running",
-            durationMs: undefined,
-            usage: makeUsage({ input: 20, output: 10, cost: 0.002, turns: 1 }),
-          }),
-        ],
-        omitted: makeOmitted("searcher", {
-          instances: 1,
-          statuses: { running: 0, success: 1, error: 0, cancelled: 0 },
-          usage: makeUsage({ input: 30, output: 15, cost: 0.003, turns: 1 }),
-          durationMs: 600,
-        }),
+        id: "wrap-child",
+        instanceName: "wrap-jay",
+        startedAt: 1_100,
+        status: "success",
+        durationMs: 100,
+        usage: makeUsage({ input: 10, output: 5, cost: 0.001, turns: 1 }),
       }),
     );
+    for (const width of [40, 80, 120]) {
+      for (const line of renderBoardLines(width)) {
+        expect(line.length).toBeLessThanOrEqual(width);
+      }
+    }
+  });
 
-    expect(await runStats("run-old", "shared-falcon")).toEqual([
-      [
-        "shared-falcon (run-old) · 1 instance · ✓0 ✗1 ⊘0 ⟳0 · ↑10 ↓5 · $0.0010 · 0.5s",
-        "✗ planner #1 shared-falcon · 0.5s · $0.0010",
-      ].join("\n"),
-      [
-        "shared-falcon (run-new) · 4 instances · ✓2 ✗0 ⊘0 ⟳2 · ↑200 ↓85 R10 · $0.0200",
-        "⟳ planner #2 shared-falcon · $0.0100",
-        "  ✓ worker #2 child-otter · 1.2s · $0.0050",
-        "    ⟳ searcher #1 leaf-wren · $0.0020",
-        "    … 1 omitted · ↑30 ↓15 · $0.0030",
-      ].join("\n"),
-    ]);
+  test("matches runs by request id or latest instance name and renders the styled instance tree", async () => {
+    jest.setSystemTime(10_000);
+    try {
+      registerRootInstance({
+        id: "run-old",
+        agent: "planner",
+        instanceName: "shared-falcon",
+        startedAt: 1_000,
+      });
+      transitionInstanceStatus("run-old", "error", {
+        durationMs: 500,
+        usage: makeUsage({ input: 10, output: 5, cost: 0.001, turns: 1 }),
+      });
+      registerRootInstance({
+        id: "run-new",
+        agent: "planner",
+        instanceName: "shared-falcon",
+        startedAt: 2_000,
+      });
+      updateInstanceSelfUsage(
+        "run-new",
+        makeUsage({
+          input: 100,
+          output: 40,
+          cacheRead: 10,
+          cost: 0.01,
+          turns: 1,
+        }),
+      );
+      attachChildSubtree(
+        "run-new",
+        makeNode({
+          id: "child-1",
+          agent: "worker",
+          instanceName: "child-otter",
+          ordinal: 2,
+          startedAt: 2_100,
+          durationMs: 1_200,
+          usage: makeUsage({ input: 50, output: 20, cost: 0.005, turns: 1 }),
+          children: [
+            makeNode({
+              id: "grandchild-1",
+              agent: "searcher",
+              instanceName: "leaf-wren",
+              startedAt: 2_200,
+              status: "running",
+              durationMs: undefined,
+              usage: makeUsage({
+                input: 20,
+                output: 10,
+                cost: 0.002,
+                turns: 1,
+              }),
+            }),
+          ],
+          omitted: makeOmitted("searcher", {
+            instances: 1,
+            statuses: { running: 0, success: 1, error: 0, cancelled: 0 },
+            usage: makeUsage({ input: 30, output: 15, cost: 0.003, turns: 1 }),
+            durationMs: 600,
+          }),
+        }),
+      );
+      const [oldOutput, newOutput] = await runStats("run-old", "shared-falcon");
+      expect(oldOutput).toContain("shared-falcon (run-old)");
+      expect(oldOutput).toContain("1 instance");
+      expect(oldOutput).toContain("✓0 ✗1 ⊘0 ⟳0");
+      expect(oldOutput).toContain("↑10 ↓5");
+      expect(oldOutput).toContain("$0.0010");
+      expect(oldOutput).toContain("0.5s");
+      expect(oldOutput).toContain("✗ planner #1 shared-falcon");
+      const newLines = (newOutput ?? "").split("\n");
+      expect(newOutput).toContain("shared-falcon (run-new)");
+      expect(newOutput).toContain("4 instances");
+      expect(newOutput).toContain("✓2 ✗0 ⊘0 ⟳2");
+      expect(newOutput).toContain("↑200 ↓85 R10");
+      expect(newOutput).toContain("$0.0200");
+      expect(newLines[0]).not.toContain("8.0s");
+      expect(newOutput).toContain("⟳ planner #2 shared-falcon");
+      expect(newOutput).toContain("8.0s");
+      expect(newOutput).toContain("$0.0100");
+      expect(newOutput).toContain("✓ worker #2 child-otter");
+      expect(newOutput).toContain("1.2s");
+      expect(newOutput).toContain("$0.0050");
+      expect(newOutput).toContain("⟳ searcher #1 leaf-wren");
+      expect(newOutput).toContain("7.8s");
+      expect(newOutput).toContain("$0.0020");
+      expect(newOutput).toContain("+1 earlier");
+      expect(newOutput).not.toContain("…");
+      expect(newOutput?.indexOf("child-otter")).toBeLessThan(
+        newOutput?.indexOf("leaf-wren") ?? 0,
+      );
+      expect(newOutput?.indexOf("+1 earlier")).toBeGreaterThan(
+        newOutput?.indexOf("leaf-wren") ?? 0,
+      );
+      expect(newLines[0]).not.toContain("#1");
+      expect(newOutput).toContain("#1 leaf-wren");
+      expect(newOutput).toContain("#2");
+      expect(newOutput).toContain("<fg:dim>");
+      expect(newOutput).not.toContain("transcript");
+    } finally {
+      jest.useRealTimers();
+    }
   });
 
   test("shows the root's own duration in the run header rather than summed instance time", async () => {
@@ -320,14 +587,276 @@ describe("statsCommandHandler", () => {
       );
     }
     transitionInstanceStatus("root-par", "success", { endedAt: 5_000 });
+    const [output] = await runStats("par-run");
+    expect(output).toContain("par-run (root-par)");
+    expect(output).toContain("3 instances");
+    expect(output).toContain("✓3 ✗0 ⊘0 ⟳0");
+    expect(output).toContain("$0.0000");
+    expect(output).toContain("4.0s");
+    expect(output).not.toContain("6.0s");
+    expect(output).not.toContain("10.0s");
+    expect(output).toContain("✓ planner #1 par-run · 4.0s · $0.0000");
+    expect(output).toContain("✓ worker #1 child-a · 3.0s · $0.0000");
+    expect(output).toContain("✓ worker #2 child-b · 3.0s · $0.0000");
+    expect(output?.indexOf("child-a")).toBeLessThan(
+      output?.indexOf("child-b") ?? 0,
+    );
+    expect(output).not.toContain("+");
+    expect(output).toContain("<fg:dim>");
+  });
 
-    expect(await runStats("par-run")).toEqual([
-      [
-        "par-run (root-par) · 3 instances · ✓3 ✗0 ⊘0 ⟳0 · ↑0 ↓0 · $0.0000 · 4.0s",
-        "✓ planner #1 par-run · 4.0s · $0.0000",
-        "  ✓ worker #1 child-a · 3.0s · $0.0000",
-        "  ✓ worker #2 child-b · 3.0s · $0.0000",
-      ].join("\n"),
-    ]);
+  test("bounds oversized run queries to 50 explicit nodes with exact totals", async () => {
+    registerRootInstance({
+      id: "bulk-root",
+      agent: "planner",
+      instanceName: "bulk-run",
+      startedAt: 1_000,
+    });
+    updateInstanceSelfUsage(
+      "bulk-root",
+      makeUsage({ input: 100, output: 50, cost: 0.01, turns: 1 }),
+    );
+    for (let i = 0; i < 60; i += 1) {
+      attachChildSubtree(
+        "bulk-root",
+        makeNode({
+          id: `bulk-${i}`,
+          agent: "worker",
+          instanceName: `bulk-inst-${i}`,
+          ordinal: 1,
+          startedAt: 1_100 + i,
+          status: "success",
+          durationMs: 100,
+          usage: makeUsage({ input: 10, output: 5, cost: 0.001, turns: 1 }),
+        }),
+      );
+    }
+    transitionInstanceStatus("bulk-root", "success", { durationMs: 2_000 });
+    const [output] = await runStats("bulk-run");
+    expect(output).toContain("bulk-run (bulk-root)");
+    expect(output).toContain("61 instances");
+    expect(output).toContain("$0.0700");
+    expect(output).toContain("2.0s");
+    const treeLines = (output ?? "")
+      .split("\n")
+      .filter(
+        (line) => line.includes("worker #") || line.includes("planner #"),
+      );
+    expect(treeLines.length).toBe(50);
+    expect(output).toMatch(/\+\d+ earlier/);
+    expect(output).not.toContain("bulk-inst-0");
+    expect(output).toContain("bulk-inst-59");
+  });
+
+  test("renders run-board notification two columns narrower with clamped geometry", async () => {
+    registerRootInstance({
+      id: "geom-root",
+      agent: "planner",
+      instanceName: "geom-run",
+      startedAt: 1_000,
+    });
+    attachChildSubtree(
+      "geom-root",
+      makeNode({
+        id: "geom-child",
+        instanceName: "geom-jay",
+        startedAt: 1_100,
+        status: "success",
+        durationMs: 100,
+        usage: makeUsage({ input: 10, output: 5, cost: 0.001, turns: 1 }),
+      }),
+    );
+    const output = (await runStatsAtWidth(122, "geom-run"))[0] ?? "";
+    for (const line of output.split("\n")) {
+      expect(line.length).toBeLessThanOrEqual(120);
+    }
+    expect(output).toContain("geom-run (geom-root)");
+    expect(output).toContain("$0.0010");
+    for (const width of [0, 1, 2, 4]) {
+      const notices = await runStatsAtWidth(width, "geom-run");
+      expect(notices).toHaveLength(1);
+      expect(notices[0]?.length).toBeGreaterThan(0);
+    }
+    const match = queryRootRunUsage("geom-run");
+    if (match) {
+      for (const width of [40, 80, 120]) {
+        const lines = renderStatsRunBoard(
+          match.run,
+          match.rollup,
+          identityTheme as never,
+        ).render(width);
+        for (const line of lines) {
+          expect(line.length).toBeLessThanOrEqual(width);
+        }
+      }
+    }
+  });
+
+  test("orders siblings ascending with indentation and earlier markers", async () => {
+    registerRootInstance({
+      id: "order-root",
+      agent: "planner",
+      instanceName: "order-run",
+      startedAt: 1_000,
+    });
+    attachChildSubtree(
+      "order-root",
+      makeNode({
+        id: "later",
+        agent: "worker",
+        instanceName: "later-jay",
+        startedAt: 3_000,
+        durationMs: 100,
+      }),
+    );
+    attachChildSubtree(
+      "order-root",
+      makeNode({
+        id: "earlier",
+        agent: "worker",
+        instanceName: "earlier-jay",
+        startedAt: 2_000,
+        durationMs: 200,
+        children: [
+          makeNode({
+            id: "nested",
+            instanceName: "nested-wren",
+            startedAt: 2_100,
+            durationMs: 50,
+          }),
+        ],
+        omitted: makeOmitted("worker", {
+          instances: 1,
+          statuses: { running: 0, success: 1, error: 0, cancelled: 0 },
+          usage: makeUsage({ cost: 0.001 }),
+          durationMs: 10,
+        }),
+      }),
+    );
+    transitionInstanceStatus("order-root", "success", { durationMs: 5_000 });
+    const [output] = await runStats("order-run");
+    expect(output?.indexOf("earlier-jay")).toBeLessThan(
+      output?.indexOf("later-jay") ?? 0,
+    );
+    expect(output).toContain("  ✓ worker #");
+    expect(output).toContain("    ✓ worker #");
+    expect(output).toContain("+1 earlier");
+    expect(output).not.toContain("transcript");
+    expect(output?.split("\n")[0]).not.toContain("#1");
+  });
+
+  test("run board falls back to zero elapsed for unusable clock inputs", () => {
+    const run = makeNode({
+      id: "clock-root",
+      agent: "planner",
+      instanceName: "clock-run",
+      status: "running",
+      durationMs: undefined,
+      startedAt: 2_000,
+    });
+    const nanNow = renderStatsRunBoard(
+      run,
+      computeSubtreeRollup(run),
+      identityTheme as never,
+      Number.NaN,
+    ).render(80);
+    expect(nanNow.join("\n")).toContain("0.0s");
+    const badStart = makeNode({
+      id: "clock-root",
+      agent: "planner",
+      instanceName: "clock-run",
+      status: "running",
+      durationMs: undefined,
+      startedAt: Number.NaN,
+    });
+    const badStartLines = renderStatsRunBoard(
+      badStart,
+      computeSubtreeRollup(badStart),
+      identityTheme as never,
+      4_000,
+    ).render(80);
+    expect(badStartLines.join("\n")).toContain("0.0s");
+  });
+
+  test("run board omits duration segment for terminal nodes without durationMs", () => {
+    const run = makeNode({
+      id: "nodur-root",
+      agent: "planner",
+      instanceName: "nodur-run",
+      status: "success",
+      durationMs: undefined,
+      children: [
+        makeNode({
+          id: "nodur-child",
+          agent: "worker",
+          instanceName: "nodur-leaf",
+          durationMs: undefined,
+        }),
+      ],
+    });
+    const lines = renderStatsRunBoard(
+      run,
+      computeSubtreeRollup(run),
+      identityTheme as never,
+      2_000,
+    ).render(80);
+    expect(lines[0]?.trimEnd()).toBe(
+      "nodur-run (nodur-root) · 2 instances · ✓2 ✗0 ⊘0 ⟳0 · ↑0 ↓0 · $0.0000",
+    );
+    const leaf = lines.find((line) => line.includes("nodur-leaf")) as string;
+    expect(leaf?.trimEnd()).toBe("  ✓ worker #1 nodur-leaf · $0.0000");
+  });
+
+  test("run board orders same-time siblings by agent, instance name, then id", () => {
+    const run = makeNode({
+      id: "tie-root",
+      agent: "planner",
+      instanceName: "tie-run",
+      status: "success",
+      durationMs: 5_000,
+      children: [
+        makeNode({
+          id: "tie-z",
+          agent: "beta",
+          instanceName: "same-wren",
+          durationMs: undefined,
+        }),
+        makeNode({
+          id: "tie-a",
+          agent: "alpha",
+          instanceName: "one-wren",
+          durationMs: undefined,
+        }),
+        makeNode({
+          id: "tie-b2",
+          agent: "beta",
+          instanceName: "other-wren",
+          status: "error",
+          durationMs: undefined,
+        }),
+        makeNode({
+          id: "tie-b1",
+          agent: "beta",
+          instanceName: "other-wren",
+          status: "success",
+          durationMs: undefined,
+        }),
+      ],
+    });
+    const joined = renderStatsRunBoard(
+      run,
+      computeSubtreeRollup(run),
+      identityTheme as never,
+      6_000,
+    )
+      .render(80)
+      .join("\n");
+    expect(joined.indexOf("alpha")).toBeLessThan(joined.indexOf("beta"));
+    expect(joined.indexOf("✓ beta #1 other-wren")).toBeLessThan(
+      joined.indexOf("✗ beta #1 other-wren"),
+    );
+    expect(joined.indexOf("other-wren")).toBeLessThan(
+      joined.indexOf("same-wren"),
+    );
   });
 });

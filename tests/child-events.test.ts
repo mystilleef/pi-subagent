@@ -1027,3 +1027,102 @@ describe("usageTree extraction from child events", () => {
     expect(extractUsageTreeFromToolResultMessage(null)).toBeUndefined();
   });
 });
+
+describe("ToolActivity ordinal extraction", () => {
+  const ordinalUpdateLine = (details: Record<string, unknown>) =>
+    JSON.stringify({
+      type: TOOL_EXECUTION_UPDATE_EVENT,
+      toolName: "subagent",
+      partialResult: { details },
+    });
+  test("extracts ordinal from nested record", () => {
+    const parsed = known(
+      ordinalUpdateLine({
+        results: [{ agent: "build", instanceName: "brave-otter", ordinal: 3 }],
+      }),
+    );
+    if (parsed.event.type !== TOOL_EXECUTION_UPDATE_EVENT)
+      throw new Error("bad");
+    expect(parsed.event.toolActivity.ordinal).toBe(3);
+    expect(parsed.event.toolActivity.instanceName).toBe("brave-otter");
+  });
+  test("falls back to usageTree root ordinal when nested record lacks ordinal", () => {
+    const parsed = known(
+      ordinalUpdateLine({
+        results: [{ agent: "build", instanceName: "brave-otter" }],
+        usageTree: {
+          id: "x",
+          agent: "build",
+          instanceName: "brave-otter",
+          ordinal: 2,
+          startedAt: 1,
+          status: "running",
+          usage: {
+            input: 0,
+            output: 0,
+            cacheRead: 0,
+            cacheWrite: 0,
+            cost: 0,
+            turns: 0,
+          },
+          children: [],
+        },
+      }),
+    );
+    if (parsed.event.type !== TOOL_EXECUTION_UPDATE_EVENT)
+      throw new Error("bad");
+    expect(parsed.event.toolActivity.ordinal).toBe(2);
+  });
+  test("omits ordinal for invalid values preserving instance annotation", () => {
+    for (const bad of [0, -1, 1.5, "2", null, Number.MAX_SAFE_INTEGER + 1]) {
+      const parsed = known(
+        ordinalUpdateLine({
+          results: [
+            { agent: "build", instanceName: "brave-otter", ordinal: bad },
+          ],
+        }),
+      );
+      if (parsed.event.type !== TOOL_EXECUTION_UPDATE_EVENT)
+        throw new Error("bad");
+      expect(parsed.event.toolActivity.ordinal).toBeUndefined();
+      expect(parsed.event.toolActivity.instanceName).toBe("brave-otter");
+    }
+  });
+  test("applies usageTree root ordinal to fallback activity when results are empty", () => {
+    for (const [treeOrdinal, expected] of [
+      [2, 2],
+      [0, undefined],
+      ["3", undefined],
+    ] as const) {
+      const parsed = known(
+        ordinalUpdateLine({
+          results: [],
+          usageTree: { ordinal: treeOrdinal },
+        }),
+      );
+      if (parsed.event.type !== TOOL_EXECUTION_UPDATE_EVENT)
+        throw new Error("bad");
+      expect(parsed.event.toolActivity).toEqual({
+        toolName: "subagent",
+        inputSummary: "subagent",
+        ...(expected !== undefined ? { ordinal: expected } : {}),
+      });
+    }
+  });
+  test("accepts the safe-integer maximum as a valid ordinal", () => {
+    const parsed = known(
+      ordinalUpdateLine({
+        results: [
+          {
+            agent: "build",
+            instanceName: "brave-otter",
+            ordinal: Number.MAX_SAFE_INTEGER,
+          },
+        ],
+      }),
+    );
+    if (parsed.event.type !== TOOL_EXECUTION_UPDATE_EVENT)
+      throw new Error("bad");
+    expect(parsed.event.toolActivity.ordinal).toBe(Number.MAX_SAFE_INTEGER);
+  });
+});

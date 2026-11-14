@@ -5,13 +5,29 @@
  * management or store access — only transforms data into display strings.
  */
 
+import { visibleWidth } from "@earendil-works/pi-tui";
 import {
   normalizeAndTruncate,
   normalizeSummaryValue,
   truncateText,
 } from "../output/normalize.js";
-import type { ToolActivity } from "../shared/types.js";
-import type { SubagentProgressState } from "./progress-state.js";
+import type {
+  AgentUsageRollup,
+  StatusCounts,
+  ToolActivity,
+  UsageInstanceNode,
+} from "../shared/types.js";
+import {
+  combineRollups,
+  computeSubtreeRollup,
+} from "../shared/usage-accounting.js";
+import { serializeUsageSnapshot } from "../shared/usage-snapshot.js";
+import { isSafePositiveInteger } from "../shared/usage-validation.js";
+import {
+  STATUS_COUNT_ORDER,
+  STATUS_ICON,
+  type SubagentProgressState,
+} from "./progress-state.js";
 
 export const SENSITIVE_PATTERN = /secret|token|password/i;
 
@@ -24,13 +40,23 @@ function redactOrTruncate(text: string, maxChars: number): string {
   return truncateText(text, maxChars);
 }
 
+/** Ordinals render from #2; one-off instances keep their plain title. */
+export function isDisplayOrdinal(
+  ordinal: number | undefined,
+): ordinal is number {
+  return isSafePositiveInteger(ordinal) && ordinal >= 2;
+}
+
 function walkActivityTree(activity: ToolActivity): string[] {
   const parts: string[] = [];
   let current: ToolActivity | undefined = activity;
   while (current) {
     if (current.inputSummary) {
+      const ordinalPrefix = isDisplayOrdinal(current.ordinal)
+        ? `#${current.ordinal} `
+        : "";
       const annotated = current.instanceName
-        ? `${current.inputSummary} [${current.instanceName}]`
+        ? `${current.inputSummary} [${ordinalPrefix}${current.instanceName}]`
         : current.inputSummary;
       parts.push(annotated);
     }
@@ -51,10 +77,13 @@ export function formatElapsed(ms: number): string {
   return `${mins}m ${secs}s`;
 }
 
-export function formatContextPercent(state: {
+/** Context window fields shared by progress states and usage stats. */
+interface ContextUsage {
   contextTokens?: number | undefined;
   contextWindowTokens?: number | undefined;
-}): string {
+}
+
+export function formatContextPercent(state: ContextUsage): string {
   const windowTokens = state.contextWindowTokens;
   if (!windowTokens || windowTokens <= 0 || !Number.isFinite(windowTokens))
     return "--%";
@@ -65,17 +94,35 @@ export function formatContextPercent(state: {
 }
 
 /**
- * Format the one-line statistics header for a subagent progress display.
- * Includes tool count, context window usage, and elapsed time.
- * When the subagent is still running (`durationMs` unset), elapsed is
- * computed live from `startTime`.
+ * Format the one-line activity statistics every status card header shows:
+ * tool count, context window usage, and elapsed time.
  *
  * @returns Single line, e.g. `"3 tools · 45% ctx · 12.3s"`
  */
+export function formatActivityStats(
+  toolCount: number,
+  context: ContextUsage,
+  elapsedMs: number,
+): string {
+  const toolLabel = toolCount === 1 ? "tool" : "tools";
+  return [
+    `${toolCount} ${toolLabel}`,
+    `${formatContextPercent(context)} ctx`,
+    formatElapsed(elapsedMs),
+  ].join(SEGMENT_SEPARATOR);
+}
+
+/**
+ * Format the activity statistics for a subagent progress state. When the
+ * subagent is still running (`durationMs` unset), elapsed is computed live
+ * from `startTime`.
+ */
 export function formatHeaderStats(state: SubagentProgressState): string {
-  const elapsedMs = state.durationMs ?? Date.now() - state.startTime;
-  const toolLabel = state.toolCount === 1 ? "tool" : "tools";
-  return `${state.toolCount} ${toolLabel} · ${formatContextPercent(state)} ctx · ${formatElapsed(elapsedMs)}`;
+  return formatActivityStats(
+    state.toolCount,
+    state,
+    state.durationMs ?? Date.now() - state.startTime,
+  );
 }
 
 /**
@@ -108,4 +155,178 @@ export function renderToolActivityForDisplay(
   if (parts.length === 0) return redactOrTruncate(activity.toolName, maxChars);
   const joined = parts.map((p) => normalizeSummaryValue(p)).join(" - ");
   return redactOrTruncate(joined, maxChars);
+}
+
+/** Separator between inline display segments on cards, footers, and boards. */
+export const SEGMENT_SEPARATOR = " \u00b7 ";
+
+function isUsableTimestamp(value: number): boolean {
+  return Number.isFinite(value) && value >= 0;
+}
+
+/** Formats a cost with the four decimals every card and board uses. */
+export function formatCost(cost: number): string {
+  return `$${cost.toFixed(4)}`;
+}
+
+/** True when the node holds retained or omitted descendants. */
+export function hasDescendants(node: UsageInstanceNode): boolean {
+  return node.children.length > 0 || (node.omitted?.count ?? 0) > 0;
+}
+
+function computeDescendantRollup(root: UsageInstanceNode) {
+  const parts = root.children.map(computeSubtreeRollup);
+  if (root.omitted) parts.push(root.omitted.totals);
+  return combineRollups(parts);
+}
+
+function collectLatestStartedAt(root: UsageInstanceNode): Map<string, number> {
+  const latest = new Map<string, number>();
+  const visit = (node: UsageInstanceNode): void => {
+    for (const child of node.children) {
+      if (isUsableTimestamp(child.startedAt)) {
+        const prior = latest.get(child.agent);
+        if (prior === undefined || child.startedAt > prior) {
+          latest.set(child.agent, child.startedAt);
+        }
+      }
+      visit(child);
+    }
+  };
+  visit(root);
+  return latest;
+}
+
+function groupTier(statuses: StatusCounts): 0 | 1 | 2 {
+  if (statuses.running > 0) return 0;
+  if (statuses.error > 0 || statuses.cancelled > 0) return 1;
+  return 2;
+}
+
+function formatAgentGroup(agent: string, entry: AgentUsageRollup): string {
+  const present = STATUS_COUNT_ORDER.filter(
+    (status) => entry.statuses[status] > 0,
+  );
+  const [only] = present;
+  if (present.length === 1 && only !== undefined) {
+    return `${agent} ${entry.instances}${STATUS_ICON[only]}`;
+  }
+  const inner = present
+    .map((status) => `${entry.statuses[status]}${STATUS_ICON[status]}`)
+    .join(" ");
+  return `${agent} ${entry.instances} (${inner})`;
+}
+
+/**
+ * Format the descendant tally for a usage subtree.
+ *
+ * Aggregates every descendant depth, excludes self, includes omitted
+ * totals exactly once, and orders groups by tier then recency. Recency
+ * uses every retained descendant in the accounting source, never only
+ * tree-visible nodes. Returns undefined for leaves or when the width
+ * cannot fit the prefix plus required omission marker.
+ */
+export function formatDescendantTally(
+  root: UsageInstanceNode,
+  contentWidth: number,
+): string | undefined {
+  if (!Number.isFinite(contentWidth) || contentWidth <= 0) return undefined;
+  if (!hasDescendants(root)) return undefined;
+  const rollup = computeDescendantRollup(root);
+  const prefix = `${rollup.instances} spawned`;
+  const latestByAgent = collectLatestStartedAt(root);
+  const ordered = Object.entries(rollup.byAgent)
+    .map(([agent, entry]) => ({
+      agent,
+      entry,
+      tier: groupTier(entry.statuses),
+      // Usable timestamps are nonnegative, so undated agents sort last.
+      latest: latestByAgent.get(agent) ?? -1,
+    }))
+    .sort(
+      (a, b) =>
+        a.tier - b.tier ||
+        b.latest - a.latest ||
+        a.agent.localeCompare(b.agent),
+    )
+    .map(({ agent, entry }) => formatAgentGroup(agent, entry));
+  for (let hidden = 0; hidden <= ordered.length; hidden += 1) {
+    const segments = [prefix, ...ordered.slice(0, ordered.length - hidden)];
+    if (hidden > 0) segments.push(`+${hidden} more`);
+    const candidate = segments.join(SEGMENT_SEPARATOR);
+    if (visibleWidth(candidate) <= contentWidth) return candidate;
+  }
+  return undefined;
+}
+
+export interface FormatUsageTreeOptions {
+  includeRoot?: boolean | undefined;
+  now?: number | undefined;
+  /** Appends each node's self cost, as `/stats <run>` shows. */
+  showCost?: boolean | undefined;
+}
+
+function formatTreeNodeDuration(
+  node: UsageInstanceNode,
+  now: number,
+): string | undefined {
+  if (node.status === "running") {
+    const elapsed =
+      isUsableTimestamp(node.startedAt) && Number.isFinite(now)
+        ? Math.max(0, now - node.startedAt)
+        : 0;
+    return formatElapsed(elapsed);
+  }
+  return node.durationMs !== undefined && isUsableTimestamp(node.durationMs)
+    ? formatElapsed(node.durationMs)
+    : undefined;
+}
+
+function sortTreeChildren(children: UsageInstanceNode[]): UsageInstanceNode[] {
+  return [...children].sort(
+    (a, b) =>
+      a.startedAt - b.startedAt ||
+      a.agent.localeCompare(b.agent) ||
+      a.instanceName.localeCompare(b.instanceName) ||
+      a.id.localeCompare(b.id),
+  );
+}
+
+/**
+ * Format bounded usage-tree lines.
+ *
+ * Bounds the tree to the 50-node snapshot contract (root included), so
+ * omitted rollups keep totals exact. Descendants-only hides the root line
+ * but still counts it toward the bound. Siblings sort by ascending
+ * `startedAt`; omitted descendants render as `+<count> earlier` at child
+ * indent.
+ */
+export function formatUsageTree(
+  root: UsageInstanceNode,
+  options?: FormatUsageTreeOptions,
+): string[] {
+  const now = options?.now ?? Date.now();
+  const lines: string[] = [];
+  const renderChildren = (node: UsageInstanceNode, depth: number): void => {
+    for (const child of sortTreeChildren(node.children)) {
+      renderNode(child, depth);
+    }
+    if (node.omitted && node.omitted.count > 0) {
+      lines.push(`${"  ".repeat(depth)}+${node.omitted.count} earlier`);
+    }
+  };
+  const renderNode = (node: UsageInstanceNode, depth: number): void => {
+    const parts = [
+      `${"  ".repeat(depth)}${STATUS_ICON[node.status]} ${node.agent} #${node.ordinal} ${node.instanceName}`,
+    ];
+    const duration = formatTreeNodeDuration(node, now);
+    if (duration) parts.push(duration);
+    if (options?.showCost) parts.push(formatCost(node.usage.cost));
+    lines.push(parts.join(SEGMENT_SEPARATOR));
+    renderChildren(node, depth + 1);
+  };
+  const bounded = serializeUsageSnapshot(root);
+  if (options?.includeRoot) renderNode(bounded, 0);
+  else renderChildren(bounded, 0);
+  return lines;
 }

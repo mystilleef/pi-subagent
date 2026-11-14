@@ -1,10 +1,12 @@
 import type { ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
-import { renderRunsBoard } from "../output/ui.js";
+import { notifyBoard, renderRunsBoard } from "../output/ui.js";
 import {
   getAllProgressStates,
   type SubagentProgressState,
 } from "../progress/progress-state.js";
+import type { UsageInstanceNode } from "../shared/types.js";
 import { listRunJobs } from "./run-registry.js";
+import { queryInstanceUsage, querySessionUsage } from "./usage-ledger.js";
 
 export async function jobsCommandHandler(
   ctx: ExtensionCommandContext,
@@ -22,19 +24,13 @@ export async function jobsCommandHandler(
     ctx.ui.notify("No /run jobs in this session.");
     return;
   }
-  const output = await ctx.ui.custom<string>(
-    (_tui, theme, _keybindings, done) => ({
-      invalidate() {},
-      render(width) {
-        const tuiLines = renderRunsBoard(all, theme, width).render(width);
-        const notifyWidth = Math.max(1, width - 2);
-        const notifyLines = renderRunsBoard(all, theme, notifyWidth).render(
-          notifyWidth,
-        );
-        done(notifyLines.join("\n"));
-        return tuiLines;
-      },
-    }),
+  const instances = new Map<string, UsageInstanceNode>();
+  for (const { requestId } of all) {
+    const held = queryInstanceUsage(requestId);
+    if (held) instances.set(requestId, held.instance);
+  }
+  const usage = { session: querySessionUsage(), instances };
+  await notifyBoard(ctx, (theme, width) =>
+    renderRunsBoard(all, theme, width, usage),
   );
-  ctx.ui.notify(output);
 }

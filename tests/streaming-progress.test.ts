@@ -485,6 +485,37 @@ test("makeEmitUpdate merges toolActivity preserving child when incoming has none
   expect(result.progress?.activeToolActivity?.child).toBeUndefined();
 });
 
+test("makeEmitUpdate preserves existing child through toolResultCompleted restore when incoming omits child", () => {
+  const result = makeRuntimeResult({
+    agent: "test",
+    agentSource: "user",
+    task: "task",
+  });
+  result.messages = [];
+  const emitUpdate = makeEmitUpdate(result, undefined, makeSubagentDetails);
+
+  emitUpdate({
+    toolActivity: {
+      toolName: "subagent",
+      inputSummary: "subagent: builder",
+      child: { toolName: "bash", inputSummary: "bash: ls" },
+    },
+  });
+  expect(result.progress?.activeToolActivity?.child).toBeDefined();
+
+  // Restore path merges against the stored activity, so the stored child
+  // survives an incoming update that omits it.
+  emitUpdate({
+    toolResultCompleted: true,
+    toolActivity: { toolName: "subagent", inputSummary: "subagent: builder" },
+  });
+
+  expect(result.progress?.activeToolActivity?.child).toEqual({
+    toolName: "bash",
+    inputSummary: "bash: ls",
+  });
+});
+
 test("makeEmitUpdate merges toolActivity with incoming child", () => {
   const result = makeRuntimeResult({
     agent: "test",
@@ -515,6 +546,79 @@ test("makeEmitUpdate merges toolActivity with incoming child", () => {
   expect(result.progress?.activeToolActivity?.child).toEqual({
     toolName: "read",
     inputSummary: "read: file.ts",
+  });
+});
+
+test("makeEmitUpdate replaces child when child tool names differ", () => {
+  const result = makeRuntimeResult({
+    agent: "test",
+    agentSource: "user",
+    task: "task",
+  });
+  const emitUpdate = makeEmitUpdate(result, undefined, makeSubagentDetails);
+
+  emitUpdate({
+    toolActivity: {
+      toolName: "subagent",
+      inputSummary: "subagent: builder",
+      child: { toolName: "read", inputSummary: "read: file.ts" },
+    },
+  });
+
+  // toolResultCompleted restores the stored activity before the merge, so
+  // the incoming child with a different tool name replaces the nested one.
+  emitUpdate({
+    toolResultCompleted: true,
+    toolActivity: {
+      toolName: "subagent",
+      inputSummary: "subagent: builder",
+      child: { toolName: "bash", inputSummary: "bash: ls" },
+    },
+  });
+
+  expect(result.progress?.activeToolActivity?.child).toEqual({
+    toolName: "bash",
+    inputSummary: "bash: ls",
+  });
+});
+
+test("makeEmitUpdate deep-merges child activity when child tool names match", () => {
+  const result = makeRuntimeResult({
+    agent: "test",
+    agentSource: "user",
+    task: "task",
+  });
+  const emitUpdate = makeEmitUpdate(result, undefined, makeSubagentDetails);
+
+  emitUpdate({
+    toolActivity: {
+      toolName: "subagent",
+      inputSummary: "subagent: builder",
+      child: {
+        toolName: "bash",
+        inputSummary: "bash: ls",
+        instanceName: "kept-instance",
+        ordinal: 3,
+      },
+    },
+  });
+
+  // Matching child tool names merge recursively: richer incoming summary
+  // wins while existing instanceName and ordinal survive.
+  emitUpdate({
+    toolResultCompleted: true,
+    toolActivity: {
+      toolName: "subagent",
+      inputSummary: "subagent: builder",
+      child: { toolName: "bash", inputSummary: "bash: ls -la" },
+    },
+  });
+
+  expect(result.progress?.activeToolActivity?.child).toEqual({
+    toolName: "bash",
+    inputSummary: "bash: ls -la",
+    instanceName: "kept-instance",
+    ordinal: 3,
   });
 });
 
@@ -1090,4 +1194,79 @@ test("makeEmitUpdate merge preserves instanceName and child from incoming activi
   expect(result.progress?.activityText).toBe(
     "coder [sharp-finch] - bash: cargo build",
   );
+});
+
+import { describe } from "bun:test";
+
+describe("ToolActivity ordinal merge preservation", () => {
+  test("preserves incoming ordinal when tool names match", () => {
+    const result = makeRuntimeResult({
+      agent: "test",
+      agentSource: "user",
+      task: "task",
+    });
+    result.messages = [];
+    const emitUpdate = makeEmitUpdate(result, undefined, makeSubagentDetails);
+    emitUpdate({
+      toolActivity: {
+        toolName: "subagent",
+        inputSummary: "subagent: build",
+        instanceName: "brave-otter",
+        ordinal: 2,
+      },
+    });
+    expect(result.progress?.activeToolActivity?.ordinal).toBe(2);
+    expect(result.progress?.activeToolActivity?.instanceName).toBe(
+      "brave-otter",
+    );
+  });
+
+  test("recursively preserves child ordinal through merges", () => {
+    const result = makeRuntimeResult({
+      agent: "test",
+      agentSource: "user",
+      task: "task",
+    });
+    result.messages = [];
+    const emitUpdate = makeEmitUpdate(result, undefined, makeSubagentDetails);
+    emitUpdate({
+      toolActivity: {
+        toolName: "subagent",
+        inputSummary: "outer",
+        instanceName: "outer-inst",
+        ordinal: 2,
+        child: { toolName: "bash", inputSummary: "ls" },
+      },
+    });
+    expect(result.progress?.activeToolActivity?.ordinal).toBe(2);
+    expect(result.progress?.activeToolActivity?.child?.inputSummary).toBe("ls");
+  });
+
+  test("preserves existing ordinal when incoming activity omits one", () => {
+    const result = makeRuntimeResult({
+      agent: "test",
+      agentSource: "user",
+      task: "task",
+    });
+    result.messages = [];
+    const emitUpdate = makeEmitUpdate(result, undefined, makeSubagentDetails);
+    emitUpdate({
+      toolActivity: {
+        toolName: "subagent",
+        inputSummary: "outer",
+        ordinal: 2,
+      },
+    });
+    emitUpdate({
+      toolResultCompleted: true,
+      toolActivity: {
+        toolName: "subagent",
+        inputSummary: "outer refined",
+      },
+    });
+    expect(result.progress?.activeToolActivity?.ordinal).toBe(2);
+    expect(result.progress?.activeToolActivity?.inputSummary).toBe(
+      "outer refined",
+    );
+  });
 });

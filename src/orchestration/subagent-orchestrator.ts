@@ -495,12 +495,17 @@ async function prepareSubagentJob(
     instanceName,
     startedAt: job.startedAt,
   });
+  const initialOrdinal = usageAccount.snapshot()?.ordinal;
   const mergedSignal = hostSignal
     ? AbortSignal.any([hostSignal, job.controller.signal])
     : job.controller.signal;
   const makeTerminalDetails: DetailsBuilder = (results, options) =>
     makeDetails(
-      results.map((result) => ({ ...result, instanceName })),
+      results.map((result) => ({
+        ...result,
+        instanceName: result.instanceName ?? instanceName,
+        ordinal: result.ordinal ?? initialOrdinal,
+      })),
       options,
     );
   const makeSnapshotDetails: DetailsBuilder = (results, options) =>
@@ -514,7 +519,13 @@ async function prepareSubagentJob(
     }
     return makeSnapshotDetails(results, options);
   };
-  createProgressState(requestId, params.agent, task, instanceName);
+  createProgressState(
+    requestId,
+    params.agent,
+    task,
+    instanceName,
+    initialOrdinal,
+  );
   pi.sendMessage({
     customType: "subagent-progress",
     content: "",

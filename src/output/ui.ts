@@ -1,4 +1,7 @@
-import type { ThemeColor } from "@earendil-works/pi-coding-agent";
+import type {
+  ExtensionCommandContext,
+  ThemeColor,
+} from "@earendil-works/pi-coding-agent";
 import {
   Box,
   type Component,
@@ -8,8 +11,13 @@ import {
 } from "@earendil-works/pi-tui";
 import type { AgentScope } from "../agent/agents.js";
 import {
-  formatContextPercent,
-  formatElapsed,
+  formatActivityStats,
+  formatCost,
+  formatDescendantTally,
+  formatHeaderStats,
+  hasDescendants,
+  isDisplayOrdinal,
+  SEGMENT_SEPARATOR,
 } from "../progress/progress-format.js";
 import {
   type ProgressStatus,
@@ -19,7 +27,14 @@ import {
   type SubagentProgressState,
   type ThemeBg,
 } from "../progress/progress-state.js";
-import type { SubagentDetails, UsageStats } from "../shared/types.js";
+import type {
+  SessionUsageQueryResult,
+  SubagentDetails,
+  UsageInstanceNode,
+  UsageStats,
+} from "../shared/types.js";
+import { computeSubtreeRollup } from "../shared/usage-accounting.js";
+import { firstValidOrdinal } from "../shared/usage-validation.js";
 import { hasSubagentFailed } from "../shared/utils.js";
 import {
   extractSemanticToolTarget,
@@ -51,15 +66,28 @@ function italicText(text: string, theme: SubagentTheme): string {
 
 /**
  * Formats the shared subagent title from agent and optional instance name.
+ * Inserts #<ordinal> between agent and instance name only for ordinal >= 2.
  */
 export function formatSubagentTitle(
   agent: string,
   instanceName: string | undefined,
   theme: SubagentTheme,
+  ordinal?: number,
 ): string {
   const agentSegment = theme.fg("toolTitle", theme.bold(agent));
   if (!instanceName) return agentSegment;
-  return `${agentSegment} ${theme.fg("accent", italicText(instanceName, theme))}`;
+  const instanceSegment = theme.fg("accent", italicText(instanceName, theme));
+  if (!isDisplayOrdinal(ordinal)) return `${agentSegment} ${instanceSegment}`;
+  const ordinalSegment = theme.fg("accent", `#${ordinal}`);
+  return `${agentSegment} ${ordinalSegment} ${instanceSegment}`;
+}
+
+export function plural(count: number, noun: string): string {
+  return `${count} ${noun}${count === 1 ? "" : "s"}`;
+}
+
+export function joinSegments(...segments: (string | undefined)[]): string {
+  return segments.filter(Boolean).join(SEGMENT_SEPARATOR);
 }
 
 /**
@@ -102,7 +130,7 @@ function formatUsageCore(usage: UsageStats): string[] {
   if (usage.turns) parts.push(formatTurns(usage.turns));
   if (usage.contextTokens && usage.contextTokens > 0)
     parts.push(`ctx:${formatTokens(usage.contextTokens)}`);
-  if (usage.cost) parts.push(`$${usage.cost.toFixed(4)}`);
+  if (usage.cost) parts.push(formatCost(usage.cost));
   return parts;
 }
 
@@ -122,9 +150,9 @@ export function formatUsageStats(
     parts.push(formatCacheStats(usage.cacheRead, usage.cacheWrite));
   if (!compact && usage.contextTokens && usage.contextTokens > 0)
     parts.push(`ctx:${formatTokens(usage.contextTokens)}`);
-  if (usage.cost) parts.push(`$${usage.cost.toFixed(4)}`);
+  if (usage.cost) parts.push(formatCost(usage.cost));
   if (model) parts.push(model);
-  return parts.join(" · ");
+  return parts.join(SEGMENT_SEPARATOR);
 }
 
 /**
@@ -134,7 +162,7 @@ export function formatResultFooter(usage: UsageStats, model?: string): string {
   const parts: string[] = [];
   if (model) parts.push(model);
   parts.push(...formatUsageCore(usage));
-  return parts.join(" · ");
+  return parts.join(SEGMENT_SEPARATOR);
 }
 
 export function formatToolCall(
@@ -224,7 +252,12 @@ export function renderSubagentResult(
       ? "error"
       : "success";
   const finalOutput = r.finalOutput ?? "";
-  const title = formatSubagentTitle(r.agent, r.instanceName, theme);
+  const title = formatSubagentTitle(
+    r.agent,
+    r.instanceName,
+    theme,
+    firstValidOrdinal(r.ordinal, details?.usageTree?.ordinal),
+  );
   let effectiveBody = bodyOverride ?? finalOutput;
   if (display?.isPartial && !finalOutput?.trim() && !bodyOverride) {
     effectiveBody =
@@ -234,17 +267,12 @@ export function renderSubagentResult(
       "(running...)";
   }
   const bodyText = effectiveBody.trim();
-  const toolCount = r.progress?.toolCalls?.length ?? 0;
-  const ctxPercent = formatContextPercent({
-    contextTokens: r.usage.contextTokens,
-    contextWindowTokens: r.usage.contextWindowTokens,
-  });
-  const metadata = formatProgressMetadata(
-    toolCount,
-    ctxPercent,
-    formatElapsed(r.durationMs ?? 0),
+  const metadata = formatActivityStats(
+    r.progress?.toolCalls?.length ?? 0,
+    r.usage,
+    r.durationMs ?? 0,
   );
-  const usageStr = formatResultFooter(r.usage, r.model);
+  const tally = createDescendantTally(details?.usageTree, theme);
   return renderStatusCard(
     {
       status: resultStatus,
@@ -252,10 +280,80 @@ export function renderSubagentResult(
       variant: "full",
       metadata,
       body: bodyText,
-      footer: usageStr,
+      footer: joinSegments(
+        formatResultFooter(r.usage, r.model),
+        formatRunCost(details?.usageTree),
+      ),
+      ...(tally !== undefined ? { tally } : {}),
     },
     theme,
   );
+}
+
+/** Subtree cost segment; absent for leaves, whose footer already shows it. */
+function formatRunCost(
+  tree: UsageInstanceNode | undefined,
+): string | undefined {
+  if (!tree || !hasDescendants(tree)) return undefined;
+  return `run ${formatCost(computeSubtreeRollup(tree).usage.cost)}`;
+}
+
+// Fits the tally at render time: only then does the host supply the width.
+class DescendantTally implements Component {
+  private readonly tree: UsageInstanceNode;
+  private readonly theme: SubagentTheme;
+  private readonly paddingX: number;
+  private readonly paddingY: number;
+  constructor(
+    tree: UsageInstanceNode,
+    theme: SubagentTheme,
+    paddingX: number,
+    paddingY: number,
+  ) {
+    this.tree = tree;
+    this.theme = theme;
+    this.paddingX = paddingX;
+    this.paddingY = paddingY;
+  }
+  render(width: number): string[] {
+    const tally = formatDescendantTally(this.tree, width - 2 * this.paddingX);
+    if (!tally) return [];
+    return new Text(
+      this.theme.fg("dim", tally),
+      this.paddingX,
+      this.paddingY,
+    ).render(width);
+  }
+  invalidate(): void {}
+}
+
+/** Width-fitted descendant tally line; undefined for leaves. */
+export function createDescendantTally(
+  tree: UsageInstanceNode | undefined,
+  theme: SubagentTheme,
+  paddingX = 0,
+  paddingY = 0,
+): Component | undefined {
+  if (!tree || !hasDescendants(tree)) return undefined;
+  return new DescendantTally(tree, theme, paddingX, paddingY);
+}
+
+/** Status icon, title, and bracketed status shared by every card header. */
+export function formatStatusHeader(
+  status: ProgressStatus,
+  title: string,
+  theme: SubagentTheme,
+): string {
+  const icon = theme.fg(STATUS_COLOR[status], STATUS_ICON[status]);
+  return `${icon} ${title} ${theme.fg("dim", `[${status}]`)}`;
+}
+
+/** Padded card container with the status background. */
+export function makeStatusBox(
+  status: ProgressStatus,
+  theme: SubagentTheme,
+): Box {
+  return new Box(1, 1, (line) => theme.bg(STATUS_BG[status], line));
 }
 
 type StatusCardVariant = "full" | "abridged";
@@ -264,27 +362,22 @@ type StatusCardOptions = {
   status: ProgressStatus;
   title: string;
   variant: StatusCardVariant;
-  metadata?: string;
+  metadata: string;
   body?: string;
   footer?: string;
+  tally?: Component;
 };
 
 function renderStatusCard(
   options: StatusCardOptions,
   theme: SubagentTheme,
 ): Box {
-  const box = new Box(1, 1, (line) =>
-    theme.bg(STATUS_BG[options.status], line),
+  const box = makeStatusBox(options.status, theme);
+  const header = formatStatusHeader(options.status, options.title, theme);
+  box.addChild(
+    new Text(`${header} ${theme.fg("muted", options.metadata)}`, 0, 0),
   );
-  const icon = theme.fg(
-    STATUS_COLOR[options.status],
-    STATUS_ICON[options.status],
-  );
-  const status = theme.fg("dim", `[${options.status}]`);
-  const metadata = options.metadata
-    ? ` ${theme.fg("muted", options.metadata)}`
-    : "";
-  box.addChild(new Text(`${icon} ${options.title} ${status}${metadata}`, 0, 0));
+  if (options.tally) box.addChild(options.tally);
   box.addChild(makeStatusCardBody(options, theme));
   if (options.footer)
     box.addChild(new Text(theme.fg("dim", options.footer), 0, 0));
@@ -321,25 +414,17 @@ function selectRunsBoardBody(state: SubagentProgressState): string {
   );
 }
 
-function formatProgressMetadata(
-  toolCount: number,
-  ctxPercent: string,
-  elapsed: string,
-): string {
-  const toolLabel = toolCount === 1 ? "tool" : "tools";
-  return `${toolCount} ${toolLabel} · ${ctxPercent} ctx · ${elapsed}`;
-}
-
 function renderJobCard(
   state: SubagentProgressState,
   theme: SubagentTheme,
+  usageNode: UsageInstanceNode | undefined,
 ): Box {
-  const title = formatSubagentTitle(state.agent, state.instanceName, theme);
-  const elapsed = formatElapsed(
-    state.durationMs ?? Date.now() - state.startTime,
+  const title = formatSubagentTitle(
+    state.agent,
+    state.instanceName,
+    theme,
+    state.ordinal,
   );
-  const ctxPercent = formatContextPercent(state);
-  const metadata = formatProgressMetadata(state.toolCount, ctxPercent, elapsed);
   const bodyText = selectRunsBoardBody(state);
   const preview =
     bodyText.length > BODY_PREVIEW_MAX
@@ -349,11 +434,30 @@ function renderJobCard(
     status: state.status,
     title,
     variant: "abridged",
-    metadata,
+    metadata: formatHeaderStats(state),
     body: preview,
   };
-  if (state.modelDisplay) options.footer = state.modelDisplay;
+  const footer = joinSegments(state.modelDisplay, formatRunCost(usageNode));
+  if (footer) options.footer = footer;
   return renderStatusCard(options, theme);
+}
+
+export function makeSectionHeader(
+  label: string,
+  count: number,
+  width: number,
+  theme: SubagentTheme,
+): Text {
+  const heading = `${label} (${count})`;
+  const ruler = "─".repeat(Math.max(0, width - heading.length - 1));
+  return new Text(theme.fg("dim", `${heading} ${ruler}`), 0, 0);
+}
+
+/** Ledger data the `/jobs` board renders beside progress state. */
+export interface RunsBoardUsage {
+  session: SessionUsageQueryResult;
+  /** Ledger subtree per job `requestId`; jobs without one show no run cost. */
+  instances: ReadonlyMap<string, UsageInstanceNode>;
 }
 
 function sortByStartTimeDesc(
@@ -377,6 +481,7 @@ export function renderRunsBoard(
   states: SubagentProgressState[],
   theme: SubagentTheme,
   width = 80,
+  usage?: RunsBoardUsage,
 ): Component {
   if (states.length === 0) {
     return new Text(theme.fg("muted", "No /run jobs in this session."), 0, 0);
@@ -389,18 +494,50 @@ export function renderRunsBoard(
   }
   for (const bucket of grouped.values()) bucket.sort(sortByStartTimeDesc);
   const box = new Box(0, 0);
+  if (usage) {
+    const { runs, rollup } = usage.session;
+    const header = joinSegments(
+      "Session",
+      plural(runs.length, "run"),
+      plural(rollup.instances, "instance"),
+      formatCost(rollup.usage.cost),
+    );
+    box.addChild(new Text(theme.fg("dim", header), 0, 0));
+  }
   const addSection = (
     label: string,
     sectionStates: SubagentProgressState[],
   ) => {
     if (sectionStates.length === 0) return;
-    const sectionHeader = `${label} (${sectionStates.length})`;
-    const ruler = "─".repeat(Math.max(0, width - sectionHeader.length - 1));
-    box.addChild(new Text(theme.fg("dim", `${sectionHeader} ${ruler}`), 0, 0));
+    box.addChild(makeSectionHeader(label, sectionStates.length, width, theme));
     for (const state of sectionStates)
-      box.addChild(renderJobCard(state, theme));
+      box.addChild(
+        renderJobCard(state, theme, usage?.instances.get(state.requestId)),
+      );
   };
   for (const [label, status] of BOARD_SECTIONS)
     addSection(label, grouped.get(status) ?? []);
   return box;
+}
+
+/**
+ * Shows a board, then notifies its text rendered two columns narrower so
+ * notification padding never wraps background bars.
+ */
+export async function notifyBoard(
+  ctx: ExtensionCommandContext,
+  build: (theme: SubagentTheme, width: number) => Component,
+): Promise<void> {
+  const output = await ctx.ui.custom<string>(
+    (_tui, theme, _keybindings, done) => ({
+      invalidate() {},
+      render(width) {
+        const tuiLines = build(theme, width).render(width);
+        const notifyWidth = Math.max(1, width - 2);
+        done(build(theme, notifyWidth).render(notifyWidth).join("\n"));
+        return tuiLines;
+      },
+    }),
+  );
+  ctx.ui.notify(output);
 }

@@ -32,6 +32,14 @@ export const STATUS_ICON: Record<ProgressStatus, string> = {
   running: "⟳",
 };
 
+/** Order status counts render in, from settled outcomes to live work. */
+export const STATUS_COUNT_ORDER = [
+  "success",
+  "error",
+  "cancelled",
+  "running",
+] as const satisfies readonly ProgressStatus[];
+
 export const STATUS_BG: Record<ProgressStatus, ThemeBg> = {
   success: "toolSuccessBg",
   error: "toolErrorBg",
@@ -43,6 +51,7 @@ export interface SubagentProgressState {
   requestId: string;
   agent: string;
   instanceName?: string | undefined;
+  ordinal?: number | undefined;
   taskPreview: string;
   status: ProgressStatus;
   startTime: number;
@@ -67,11 +76,13 @@ export function createProgressState(
   agent: string,
   task: string,
   instanceName?: string,
+  ordinal?: number,
 ): void {
   store.set(requestId, {
     requestId,
     agent,
     instanceName,
+    ordinal,
     taskPreview: makeTaskPreview(task),
     status: "running",
     startTime: Date.now(),

@@ -62,7 +62,10 @@ function mergeToolActivity(
       ...existing,
       inputSummary: preferIncoming ? incomingSummary : existing.inputSummary,
       instanceName: incoming.instanceName ?? existing.instanceName,
-      child: incoming.child ?? existing.child,
+      ordinal: incoming.ordinal ?? existing.ordinal,
+      child: incoming.child
+        ? mergeToolActivity(existing.child, incoming.child)
+        : existing.child,
     };
   }
   return incoming;

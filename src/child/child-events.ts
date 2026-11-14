@@ -1,5 +1,6 @@
 import { makeToolPreview } from "../output/normalize.js";
 import type { ToolActivity } from "../shared/types.js";
+import { firstValidOrdinal } from "../shared/usage-validation.js";
 
 function isPlainObjectRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -33,18 +34,32 @@ function tryFirstResult(details: unknown): Record<string, unknown> | null {
   }
 }
 
+function extractNestedOrdinal(
+  nestedRecord: Record<string, unknown> | null,
+  details: unknown,
+): number | undefined {
+  const tree = extractUsageTreeFromDetails(details);
+  return firstValidOrdinal(
+    nestedRecord?.["ordinal"],
+    isPlainObjectRecord(tree) ? tree["ordinal"] : undefined,
+  );
+}
+
 function parseToolActivity(
   toolName: string,
   partialResult: { content?: unknown; details?: unknown },
 ): ToolActivity {
   const nestedRecord = tryFirstResult(partialResult.details);
-  if (!nestedRecord) return { toolName, inputSummary: toolName };
+  const activity: ToolActivity = { toolName, inputSummary: toolName };
+  const ordinal = extractNestedOrdinal(nestedRecord, partialResult.details);
+  if (ordinal !== undefined) activity.ordinal = ordinal;
+  if (!nestedRecord) return activity;
   const isSubagent = toolName === "subagent";
-  const activity: ToolActivity = { toolName };
   const agent =
     typeof nestedRecord["agent"] === "string" && nestedRecord["agent"];
-  activity.inputSummary =
-    isSubagent && agent ? makeToolPreview(toolName, nestedRecord) : toolName;
+  if (isSubagent && agent) {
+    activity.inputSummary = makeToolPreview(toolName, nestedRecord);
+  }
   if (
     typeof nestedRecord["instanceName"] === "string" &&
     nestedRecord["instanceName"]

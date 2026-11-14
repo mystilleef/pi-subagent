@@ -12,6 +12,7 @@ import {
   TOOL_RESULT_FAILED_MESSAGE,
   type ToolActivity,
 } from "../shared/types.js";
+import { firstValidOrdinal } from "../shared/usage-validation.js";
 import {
   extractProgressFromDetails,
   getProgressState,
@@ -236,6 +237,13 @@ export function patchProgressFromDetails(
   }
   if (latestResult?.model?.trim()) {
     patch["modelDisplay"] = latestResult.model;
+  }
+  if (current.ordinal === undefined) {
+    const ordinal = firstValidOrdinal(
+      latestResult?.ordinal,
+      details.usageTree?.ordinal,
+    );
+    if (ordinal !== undefined) patch["ordinal"] = ordinal;
   }
   patchProgressState(requestId, patch);
 }
