@@ -1192,7 +1192,7 @@ test("makeEmitUpdate merge preserves instanceName and child from incoming activi
     },
   });
   expect(result.progress?.activityText).toBe(
-    "coder [sharp-finch] - bash: cargo build",
+    "coder sharp-finch - bash: cargo build",
   );
 });
 

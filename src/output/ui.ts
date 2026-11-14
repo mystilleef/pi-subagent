@@ -11,12 +11,13 @@ import {
 } from "@earendil-works/pi-tui";
 import type { AgentScope } from "../agent/agents.js";
 import {
+  type DescendantTallyOptions,
   formatActivityStats,
   formatCost,
   formatDescendantTally,
+  formatDisplayIdentity,
   formatHeaderStats,
   hasDescendants,
-  isDisplayOrdinal,
   SEGMENT_SEPARATOR,
 } from "../progress/progress-format.js";
 import {
@@ -33,7 +34,6 @@ import type {
   UsageInstanceNode,
   UsageStats,
 } from "../shared/types.js";
-import { computeSubtreeRollup } from "../shared/usage-accounting.js";
 import { firstValidOrdinal } from "../shared/usage-validation.js";
 import { hasSubagentFailed } from "../shared/utils.js";
 import {
@@ -64,22 +64,19 @@ function italicText(text: string, theme: SubagentTheme): string {
     : `${ANSI_ITALIC_ON}${text}${ANSI_ITALIC_OFF}`;
 }
 
-/**
- * Formats the shared subagent title from agent and optional instance name.
- * Inserts #<ordinal> between agent and instance name only for ordinal >= 2.
- */
+/** Themed card title; segment order follows {@link formatDisplayIdentity}. */
 export function formatSubagentTitle(
   agent: string,
   instanceName: string | undefined,
   theme: SubagentTheme,
   ordinal?: number,
 ): string {
-  const agentSegment = theme.fg("toolTitle", theme.bold(agent));
-  if (!instanceName) return agentSegment;
-  const instanceSegment = theme.fg("accent", italicText(instanceName, theme));
-  if (!isDisplayOrdinal(ordinal)) return `${agentSegment} ${instanceSegment}`;
-  const ordinalSegment = theme.fg("accent", `#${ordinal}`);
-  return `${agentSegment} ${ordinalSegment} ${instanceSegment}`;
+  return formatDisplayIdentity(
+    theme.fg("toolTitle", theme.bold(agent)),
+    instanceName && theme.fg("accent", italicText(instanceName, theme)),
+    ordinal,
+    (text) => theme.fg("accent", text),
+  );
 }
 
 export function plural(count: number, noun: string): string {
@@ -122,19 +119,6 @@ function formatCacheStats(cacheRead: number, cacheWrite: number): string {
 }
 
 /**
- * Builds common usage stat parts: turns, context tokens, and cost.
- * Shared between formatUsageStats and formatResultFooter.
- */
-function formatUsageCore(usage: UsageStats): string[] {
-  const parts: string[] = [];
-  if (usage.turns) parts.push(formatTurns(usage.turns));
-  if (usage.contextTokens && usage.contextTokens > 0)
-    parts.push(`ctx:${formatTokens(usage.contextTokens)}`);
-  if (usage.cost) parts.push(formatCost(usage.cost));
-  return parts;
-}
-
-/**
  * Formats cumulative usage statistics for compact UI display.
  */
 export function formatUsageStats(
@@ -156,12 +140,15 @@ export function formatUsageStats(
 }
 
 /**
- * Formats the footer for subagent result cards, including model, context, turns, and cost.
+ * Formats the footer for subagent result cards: model, turns, and self-only cost.
+ * Omits context tokens, since header `% ctx` is the sole context figure, and
+ * run segments, which belong to the tally.
  */
 export function formatResultFooter(usage: UsageStats, model?: string): string {
   const parts: string[] = [];
   if (model) parts.push(model);
-  parts.push(...formatUsageCore(usage));
+  if (usage.turns) parts.push(formatTurns(usage.turns));
+  if (usage.cost) parts.push(formatCost(usage.cost));
   return parts.join(SEGMENT_SEPARATOR);
 }
 
@@ -280,80 +267,115 @@ export function renderSubagentResult(
       variant: "full",
       metadata,
       body: bodyText,
-      footer: joinSegments(
-        formatResultFooter(r.usage, r.model),
-        formatRunCost(details?.usageTree),
-      ),
+      footer: formatResultFooter(r.usage, r.model),
       ...(tally !== undefined ? { tally } : {}),
     },
     theme,
   );
 }
 
-/** Subtree cost segment; absent for leaves, whose footer already shows it. */
-function formatRunCost(
-  tree: UsageInstanceNode | undefined,
-): string | undefined {
-  if (!tree || !hasDescendants(tree)) return undefined;
-  return `run ${formatCost(computeSubtreeRollup(tree).usage.cost)}`;
-}
+/** Column of every card block between header and footer. */
+export const CARD_BODY_INDENT = 2;
 
 // Fits the tally at render time: only then does the host supply the width.
 class DescendantTally implements Component {
   private readonly tree: UsageInstanceNode;
   private readonly theme: SubagentTheme;
-  private readonly paddingX: number;
-  private readonly paddingY: number;
+  private readonly options: DescendantTallyOptions | undefined;
   constructor(
     tree: UsageInstanceNode,
     theme: SubagentTheme,
-    paddingX: number,
-    paddingY: number,
+    options: DescendantTallyOptions | undefined,
   ) {
     this.tree = tree;
     this.theme = theme;
-    this.paddingX = paddingX;
-    this.paddingY = paddingY;
+    this.options = options;
   }
   render(width: number): string[] {
-    const tally = formatDescendantTally(this.tree, width - 2 * this.paddingX);
+    const tally = formatDescendantTally(
+      this.tree,
+      width - 2 * CARD_BODY_INDENT,
+      this.options,
+    );
     if (!tally) return [];
-    return new Text(
-      this.theme.fg("dim", tally),
-      this.paddingX,
-      this.paddingY,
-    ).render(width);
+    return new Text(this.theme.fg("muted", tally), CARD_BODY_INDENT, 0).render(
+      width,
+    );
   }
   invalidate(): void {}
 }
 
-/** Width-fitted descendant tally line; undefined for leaves. */
+/** Width-fitted descendant tally line at column 2; undefined for leaves. */
 export function createDescendantTally(
   tree: UsageInstanceNode | undefined,
   theme: SubagentTheme,
-  paddingX = 0,
-  paddingY = 0,
+  options?: DescendantTallyOptions,
 ): Component | undefined {
   if (!tree || !hasDescendants(tree)) return undefined;
-  return new DescendantTally(tree, theme, paddingX, paddingY);
+  return new DescendantTally(tree, theme, options);
 }
 
 /** Status icon, title, and bracketed status shared by every card header. */
-export function formatStatusHeader(
+function formatStatusHeader(
   status: ProgressStatus,
   title: string,
   theme: SubagentTheme,
 ): string {
   const icon = theme.fg(STATUS_COLOR[status], STATUS_ICON[status]);
-  return `${icon} ${title} ${theme.fg("dim", `[${status}]`)}`;
+  return `${icon} ${title} ${theme.fg("muted", `[${status}]`)}`;
 }
 
 /** Padded card container with the status background. */
-export function makeStatusBox(
-  status: ProgressStatus,
-  theme: SubagentTheme,
-): Box {
+function makeStatusBox(status: ProgressStatus, theme: SubagentTheme): Box {
   return new Box(1, 1, (line) => theme.bg(STATUS_BG[status], line));
+}
+
+/** Content of one card; layout and spacing belong to {@link renderCard}. */
+export type CardAnatomy = {
+  status: ProgressStatus;
+  title: string;
+  metadata: string;
+  /** Ordered blocks between header and footer; absent entries are skipped. */
+  blocks: readonly (Component | undefined)[];
+  footer?: string | undefined;
+};
+
+/**
+ * Assembles every status card: header, present blocks, then footer, with
+ * one blank row between consecutive rendered blocks.
+ */
+export function renderCard(anatomy: CardAnatomy, theme: SubagentTheme): Box {
+  const box = makeStatusBox(anatomy.status, theme);
+  const header = formatStatusHeader(anatomy.status, anatomy.title, theme);
+  box.addChild(
+    new Text(`${header} ${theme.fg("muted", anatomy.metadata)}`, 0, 0),
+  );
+  for (const block of anatomy.blocks) {
+    if (block) box.addChild(withLayoutGap(block));
+  }
+  if (anatomy.footer)
+    box.addChild(
+      withLayoutGap(new Text(theme.fg("muted", anatomy.footer), 0, 0)),
+    );
+  return box;
+}
+
+/**
+ * Wraps a present block with its preceding layout blank row.
+ * Returns no lines when the inner block renders nothing, so a
+ * suppressed tally leaves no orphan spacer.
+ */
+export function withLayoutGap(inner: Component): Component {
+  return {
+    render(width: number): string[] {
+      const lines = inner.render(width);
+      if (lines.length === 0) return [];
+      return ["", ...lines];
+    },
+    invalidate(): void {
+      inner.invalidate();
+    },
+  };
 }
 
 type StatusCardVariant = "full" | "abridged";
@@ -372,23 +394,23 @@ function renderStatusCard(
   options: StatusCardOptions,
   theme: SubagentTheme,
 ): Box {
-  const box = makeStatusBox(options.status, theme);
-  const header = formatStatusHeader(options.status, options.title, theme);
-  box.addChild(
-    new Text(`${header} ${theme.fg("muted", options.metadata)}`, 0, 0),
+  return renderCard(
+    {
+      status: options.status,
+      title: options.title,
+      metadata: options.metadata,
+      blocks: [makeStatusCardBody(options, theme), options.tally],
+      footer: options.footer,
+    },
+    theme,
   );
-  if (options.tally) box.addChild(options.tally);
-  box.addChild(makeStatusCardBody(options, theme));
-  if (options.footer)
-    box.addChild(new Text(theme.fg("dim", options.footer), 0, 0));
-  return box;
 }
 
 function makeStatusCardBody(
   options: StatusCardOptions,
   theme: SubagentTheme,
 ): Box {
-  const body = new Box(2, options.variant === "full" || options.footer ? 1 : 0);
+  const body = new Box(CARD_BODY_INDENT, 0);
   const bodyText = options.body ?? "";
   if (bodyText && options.variant === "full") {
     body.addChild(
@@ -417,7 +439,7 @@ function selectRunsBoardBody(state: SubagentProgressState): string {
 function renderJobCard(
   state: SubagentProgressState,
   theme: SubagentTheme,
-  usageNode: UsageInstanceNode | undefined,
+  usageInstance?: UsageInstanceNode,
 ): Box {
   const title = formatSubagentTitle(
     state.agent,
@@ -437,8 +459,9 @@ function renderJobCard(
     metadata: formatHeaderStats(state),
     body: preview,
   };
-  const footer = joinSegments(state.modelDisplay, formatRunCost(usageNode));
-  if (footer) options.footer = footer;
+  const tally = createDescendantTally(usageInstance, theme);
+  if (tally) options.tally = tally;
+  if (state.modelDisplay) options.footer = state.modelDisplay;
   return renderStatusCard(options, theme);
 }
 
@@ -450,7 +473,11 @@ export function makeSectionHeader(
 ): Text {
   const heading = `${label} (${count})`;
   const ruler = "─".repeat(Math.max(0, width - heading.length - 1));
-  return new Text(theme.fg("dim", `${heading} ${ruler}`), 0, 0);
+  return new Text(
+    `${theme.fg("muted", heading)} ${theme.fg("dim", ruler)}`,
+    0,
+    0,
+  );
 }
 
 /** Ledger data the `/jobs` board renders beside progress state. */
@@ -502,7 +529,7 @@ export function renderRunsBoard(
       plural(rollup.instances, "instance"),
       formatCost(rollup.usage.cost),
     );
-    box.addChild(new Text(theme.fg("dim", header), 0, 0));
+    box.addChild(new Text(theme.fg("muted", header), 0, 0));
   }
   const addSection = (
     label: string,

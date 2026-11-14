@@ -103,7 +103,8 @@ test("renders ledger tally while ledger lookups succeed", () => {
   setupRootWithChild(requestId);
   const text = renderCard(requestId, false).join("\n");
   expect(text).toContain("1 spawned");
-  expect(text).toContain("explorer 1⟳");
+  expect(text).toContain("explorer ⟳1");
+  expect(text).toContain("run $0.0100");
 });
 
 test.each([false, true])(

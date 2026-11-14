@@ -332,8 +332,8 @@ describe("index.ts", () => {
       const notifyWidth = boardWidth - 2;
       expect(notices[1]).toBe(
         [
-          "swift-fox (cmd-run-1) · 1 instance · ✓1 ✗0 ⊘0 ⟳0 · ↑40 ↓15 R5 · $0.0120 · 1.2s",
-          "✓ worker #1 swift-fox · 1.2s · $0.0120",
+          "worker swift-fox (cmd-run-1) · 1 instance · ✓1 ✗0 ⊘0 ⟳0 · ↑40 ↓15 R5 · $0.0120 · 1.2s",
+          "✓ worker swift-fox · 1.2s · $0.0120",
         ]
           .map((line) => line.padEnd(notifyWidth))
           .join("\n"),

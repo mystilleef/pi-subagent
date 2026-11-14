@@ -377,6 +377,35 @@ describe("statsCommandHandler", () => {
     expect(tinyBoard).toContain("tally-falcon");
   });
 
+  test("stats run tally omits run suffix while header retains subtree cost", async () => {
+    registerRootInstance({
+      id: "stats-run-root",
+      agent: "planner",
+      instanceName: "cost-falcon",
+      startedAt: 1_000,
+    });
+    updateInstanceSelfUsage("stats-run-root", makeUsage({ cost: 0.01 }));
+    attachChildSubtree(
+      "stats-run-root",
+      makeNode({
+        id: "stats-child",
+        agent: "worker",
+        instanceName: "child-jay",
+        startedAt: 1_100,
+        status: "success",
+        usage: makeUsage({ cost: 0.02 }),
+      }),
+    );
+    const output = (await runStats(""))[0] ?? "";
+    expect(output).toContain("1 spawned");
+    expect(output).toContain("$0.0300");
+    const tallyLine =
+      output.split("\n").find((l) => l.includes("spawned")) ?? "";
+    expect(tallyLine).not.toContain("run $");
+    expect(tallyLine).toContain("\u27131");
+    expect(output.match(/run \$/g)?.length ?? 0).toBe(0);
+  });
+
   test("omits zero cache parts while preserving nonzero cache tokens", async () => {
     registerRootInstance({
       id: "cache-root",
@@ -529,7 +558,7 @@ describe("statsCommandHandler", () => {
       expect(oldOutput).toContain("↑10 ↓5");
       expect(oldOutput).toContain("$0.0010");
       expect(oldOutput).toContain("0.5s");
-      expect(oldOutput).toContain("✗ planner #1 shared-falcon");
+      expect(oldOutput).toContain("✗ planner shared-falcon");
       const newLines = (newOutput ?? "").split("\n");
       expect(newOutput).toContain("shared-falcon (run-new)");
       expect(newOutput).toContain("4 instances");
@@ -543,7 +572,7 @@ describe("statsCommandHandler", () => {
       expect(newOutput).toContain("✓ worker #2 child-otter");
       expect(newOutput).toContain("1.2s");
       expect(newOutput).toContain("$0.0050");
-      expect(newOutput).toContain("⟳ searcher #1 leaf-wren");
+      expect(newOutput).toContain("⟳ searcher leaf-wren");
       expect(newOutput).toContain("7.8s");
       expect(newOutput).toContain("$0.0020");
       expect(newOutput).toContain("+1 earlier");
@@ -555,9 +584,11 @@ describe("statsCommandHandler", () => {
         newOutput?.indexOf("leaf-wren") ?? 0,
       );
       expect(newLines[0]).not.toContain("#1");
-      expect(newOutput).toContain("#1 leaf-wren");
+      expect(newOutput).toContain("searcher leaf-wren");
+      expect(newOutput).not.toContain("#1 leaf-wren");
       expect(newOutput).toContain("#2");
-      expect(newOutput).toContain("<fg:dim>");
+      expect(newOutput).toContain("<fg:muted>");
+      expect(newOutput).not.toContain("<fg:dim>");
       expect(newOutput).not.toContain("transcript");
     } finally {
       jest.useRealTimers();
@@ -595,14 +626,15 @@ describe("statsCommandHandler", () => {
     expect(output).toContain("4.0s");
     expect(output).not.toContain("6.0s");
     expect(output).not.toContain("10.0s");
-    expect(output).toContain("✓ planner #1 par-run · 4.0s · $0.0000");
-    expect(output).toContain("✓ worker #1 child-a · 3.0s · $0.0000");
+    expect(output).toContain("✓ planner par-run · 4.0s · $0.0000");
+    expect(output).toContain("✓ worker child-a · 3.0s · $0.0000");
     expect(output).toContain("✓ worker #2 child-b · 3.0s · $0.0000");
     expect(output?.indexOf("child-a")).toBeLessThan(
       output?.indexOf("child-b") ?? 0,
     );
     expect(output).not.toContain("+");
-    expect(output).toContain("<fg:dim>");
+    expect(output).toContain("<fg:muted>");
+    expect(output).not.toContain("<fg:dim>");
   });
 
   test("bounds oversized run queries to 50 explicit nodes with exact totals", async () => {
@@ -640,7 +672,7 @@ describe("statsCommandHandler", () => {
     const treeLines = (output ?? "")
       .split("\n")
       .filter(
-        (line) => line.includes("worker #") || line.includes("planner #"),
+        (line) => line.includes("worker ") || line.includes("✓ planner "),
       );
     expect(treeLines.length).toBe(50);
     expect(output).toMatch(/\+\d+ earlier/);
@@ -738,8 +770,8 @@ describe("statsCommandHandler", () => {
     expect(output?.indexOf("earlier-jay")).toBeLessThan(
       output?.indexOf("later-jay") ?? 0,
     );
-    expect(output).toContain("  ✓ worker #");
-    expect(output).toContain("    ✓ worker #");
+    expect(output).toContain("  ✓ worker ");
+    expect(output).toContain("    ✓ worker nested-wren");
     expect(output).toContain("+1 earlier");
     expect(output).not.toContain("transcript");
     expect(output?.split("\n")[0]).not.toContain("#1");
@@ -801,10 +833,10 @@ describe("statsCommandHandler", () => {
       2_000,
     ).render(80);
     expect(lines[0]?.trimEnd()).toBe(
-      "nodur-run (nodur-root) · 2 instances · ✓2 ✗0 ⊘0 ⟳0 · ↑0 ↓0 · $0.0000",
+      "planner nodur-run (nodur-root) · 2 instances · ✓2 ✗0 ⊘0 ⟳0 · ↑0 ↓0 · $0.0000",
     );
     const leaf = lines.find((line) => line.includes("nodur-leaf")) as string;
-    expect(leaf?.trimEnd()).toBe("  ✓ worker #1 nodur-leaf · $0.0000");
+    expect(leaf?.trimEnd()).toBe("  ✓ worker nodur-leaf · $0.0000");
   });
 
   test("run board orders same-time siblings by agent, instance name, then id", () => {
@@ -852,11 +884,76 @@ describe("statsCommandHandler", () => {
       .render(80)
       .join("\n");
     expect(joined.indexOf("alpha")).toBeLessThan(joined.indexOf("beta"));
-    expect(joined.indexOf("✓ beta #1 other-wren")).toBeLessThan(
-      joined.indexOf("✗ beta #1 other-wren"),
+    expect(joined.indexOf("✓ beta other-wren")).toBeLessThan(
+      joined.indexOf("✗ beta other-wren"),
     );
     expect(joined.indexOf("other-wren")).toBeLessThan(
       joined.indexOf("same-wren"),
     );
   });
+});
+
+test("stats surfaces use muted information tokens with dim only for rulers", () => {
+  resetUsageLedger();
+  resetRunRegistry();
+  resetProgressStore();
+  registerRootInstance({
+    id: "theme-stats",
+    agent: "planner",
+    instanceName: "theme-run",
+    startedAt: 1000,
+  });
+  attachChildSubtree(
+    "theme-stats",
+    makeNode({
+      id: "theme-child",
+      instanceName: "theme-child",
+      ordinal: 2,
+      startedAt: 1100,
+      status: "success",
+      durationMs: 100,
+    }),
+  );
+  updateInstanceSelfUsage(
+    "theme-stats",
+    makeUsage({ input: 100, output: 50, cost: 0.01, turns: 1 }),
+  );
+  const markerTheme = {
+    fg: (color: unknown, text: string) => `[${color}]${text}[/${color}]`,
+    bg: (color: unknown, text: string) => `[${color}]${text}[/${color}]`,
+    bold: (text: string) => text,
+    italic: (text: string) => text,
+  };
+  const { runs, rollup } = querySessionUsage();
+  const board = renderStatsBoard(runs, rollup, markerTheme as never, 80)
+    .render(80)
+    .join("\n");
+  expect(board).toContain("[muted]Session");
+  expect(board).toContain("[muted]RUNS");
+  expect(board).toContain("[dim]");
+  expect(board).not.toContain("[dim]Session");
+  const match = queryRootRunUsage("theme-run");
+  if (match) {
+    const runBoard = renderStatsRunBoard(
+      match.run,
+      match.rollup,
+      markerTheme as never,
+    )
+      .render(80)
+      .join("\n");
+    expect(runBoard).toContain("[muted]planner theme-run");
+    expect(runBoard).not.toContain("[dim]planner");
+    expect(runBoard).not.toContain("[dim]");
+    // Header and every usage-tree row carry the muted information role;
+    // `dim` stays reserved for decorative rulers.
+    expect(runBoard).toMatch(
+      /\[muted\][\u2713\u2717\u2298\u27f3] planner theme-run/,
+    );
+    expect(runBoard).toMatch(
+      /\[muted\] {2}[\u2713\u2717\u2298\u27f3] worker #2 theme-child/,
+    );
+  }
+  resetUsageLedger();
+  resetRunRegistry();
+  resetProgressStore();
 });

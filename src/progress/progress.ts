@@ -17,15 +17,16 @@
  */
 
 import type { Component } from "@earendil-works/pi-tui";
-import { type Box, Text } from "@earendil-works/pi-tui";
+import { Box, Text } from "@earendil-works/pi-tui";
 import { queryInstanceUsage } from "../orchestration/usage-ledger.js";
 import {
+  CARD_BODY_INDENT,
   createDescendantTally,
-  formatStatusHeader,
   formatSubagentTitle,
-  makeStatusBox,
+  renderCard,
   type SubagentTheme,
 } from "../output/ui.js";
+import type { UsageInstanceNode } from "../shared/types.js";
 import {
   formatHeaderStats,
   formatUsageTree,
@@ -33,6 +34,7 @@ import {
 } from "./progress-format.js";
 import {
   getProgressState,
+  hasProgressResultPosted,
   type SubagentProgressState,
 } from "./progress-state.js";
 
@@ -50,7 +52,9 @@ export {
   failProgressState,
   finalizeProgressState,
   getProgressState,
+  hasProgressResultPosted,
   makeTaskPreview,
+  markProgressResultPosted,
   patchProgressState,
   resetProgressStore,
   type SubagentProgressState,
@@ -60,18 +64,27 @@ export {
  * Create a live-updating TUI progress component from a pi message.
  *
  * Called by the pi message renderer for messages with a `requestId` in
- * their `details`. Returns `undefined` when no progress state exists for
- * the request (e.g. before streaming starts or after cleanup).
+ * their `details`. Always returns a component when `requestId` is present,
+ * even when no progress state exists: the component renders zero lines
+ * until state appears, and returns to zero lines once the terminal result
+ * message has posted or state is gone. Returns `undefined` only for
+ * messages without `requestId`, deferring to host default rendering
+ * (e.g. project-agent collision notices).
  *
  * The returned `DynamicSubagentProgressText` component re-reads the
  * progress store on every render tick, so tool counts, context usage,
- * and output update in real time as the child process streams.
+ * and output appear instantly as the child process streams, and so
+ * already-created cards disappear promptly after result posting.
+ *
+ * Suppression never deletes stored state; `/jobs` and retained progress
+ * state remain available. Terminal status alone never hides the card.
  *
  * @param message  - A pi message object. Must carry `details.requestId`.
  * @param options  - `expanded` controls whether the collapsed or full
  *                    progress view is rendered.
  * @param theme    - Subagent color theme for styling the output.
- * @returns A dynamic TUI component, or `undefined` if no active state.
+ * @returns A dynamic TUI component when `requestId` is present, else
+ *   `undefined` for host default rendering.
  */
 export function renderSubagentProgress(
   message: {
@@ -85,7 +98,7 @@ export function renderSubagentProgress(
 ): Component | undefined {
   const details = message.details as { requestId?: string } | undefined;
   const requestId = details?.requestId;
-  if (!requestId || !getProgressState(requestId)) return undefined;
+  if (!requestId) return undefined;
   return new DynamicSubagentProgressText(requestId, options, theme);
 }
 
@@ -104,6 +117,7 @@ class DynamicSubagentProgressText implements Component {
   }
   invalidate(): void {}
   render(width: number): string[] {
+    if (hasProgressResultPosted(this.requestId)) return [];
     const state = getProgressState(this.requestId);
     if (!state) return [];
     return renderProgressBox(state, this.options, this.theme, width).render(
@@ -118,121 +132,101 @@ function renderProgressBox(
   theme: SubagentTheme,
   width: number,
 ): Box {
-  const status = state.status;
   const title = formatSubagentTitle(
     state.agent,
     state.instanceName,
     theme,
     state.ordinal,
   );
-  const header = `${formatStatusHeader(status, title, theme)} ${theme.fg("muted", formatHeaderStats(state))}`;
-  const box = makeStatusBox(status, theme);
-  box.addChild(new Text(header, 0, 0));
-  const body = makeProgressBody(state, options, theme, width);
-  for (const line of body) box.addChild(line);
-  for (const line of makeUsageLines(state, options, theme)) box.addChild(line);
-  if (state.modelDisplay)
-    box.addChild(new Text(theme.fg("dim", state.modelDisplay), 0, 0));
-  return box;
+  const usage = queryInstanceUsage(state.requestId)?.instance;
+  const expandedBlocks = options.expanded
+    ? [
+        new Text(
+          theme.fg("muted", `task: ${state.taskPreview}`),
+          CARD_BODY_INDENT,
+          0,
+        ),
+        makeTreeBlock(usage, theme),
+      ]
+    : [];
+  return renderCard(
+    {
+      status: state.status,
+      title,
+      metadata: formatHeaderStats(state),
+      blocks: [
+        makeProgressBodyBlock(state, theme, width),
+        ...expandedBlocks,
+        createDescendantTally(usage, theme),
+      ],
+      footer: state.modelDisplay,
+    },
+    theme,
+  );
 }
 
-function makeProgressBody(
+/** Primary body shared by collapsed and expanded views; undefined when empty. */
+function makeProgressBodyBlock(
   state: SubagentProgressState,
-  options: { expanded: boolean },
   theme: SubagentTheme,
   width: number,
-): Text[] {
+): Text | undefined {
   if (state.status === "running")
-    return makeRunningProgressBody(state, options, theme, width);
+    return makeRunningProgressBody(state, theme, width);
   if (state.status === "error" || state.status === "cancelled") {
-    return makeStoppedProgressBody(state, options, theme);
+    return makeStoppedProgressBody(state, theme);
   }
-  if (state.status === "success")
-    return makeSuccessProgressBody(state, options, theme);
-  return [];
+  if (state.status === "success") return makeSuccessProgressBody(state, theme);
+  return undefined;
 }
 
-/** Descendant tree when expanded, tally when collapsed; none for leaves. */
-function makeUsageLines(
-  state: SubagentProgressState,
-  options: { expanded: boolean },
+/** Descendant tree for expanded cards; undefined when absent. Rows stay contiguous. */
+function makeTreeBlock(
+  usage: UsageInstanceNode | undefined,
   theme: SubagentTheme,
-): Component[] {
-  const usage = queryInstanceUsage(state.requestId)?.instance;
-  if (!usage) return [];
-  const margin = bodyMargin(!!state.modelDisplay, options.expanded);
-  if (options.expanded) {
-    return formatUsageTree(usage).map(
-      (line) => new Text(theme.fg("dim", line), 2, margin),
-    );
-  }
-  const tally = createDescendantTally(usage, theme, 2, margin);
-  return tally ? [tally] : [];
-}
-
-function bodyMargin(hasFooter: boolean, expanded: boolean): number {
-  return expanded || !hasFooter ? 0 : 1;
+): Box | undefined {
+  if (!usage) return undefined;
+  const lines = formatUsageTree(usage);
+  if (lines.length === 0) return undefined;
+  const tree = new Box(CARD_BODY_INDENT, 0);
+  for (const line of lines)
+    tree.addChild(new Text(theme.fg("muted", line), 0, 0));
+  return tree;
 }
 
 function makeRunningProgressBody(
   state: SubagentProgressState,
-  options: { expanded: boolean },
   theme: SubagentTheme,
   width: number,
-): Text[] {
-  const body: Text[] = [];
+): Text | undefined {
   const activityBudget = Math.max(0, width - 8);
   const activityPreview = renderToolActivityForDisplay(
     state.activeToolActivity,
     activityBudget,
   );
-  const margin = bodyMargin(!!state.modelDisplay, options.expanded);
-  if (activityPreview) {
-    body.push(
-      new Text(formatRunningToolPreview(activityPreview, theme), 2, margin),
-    );
-  }
-  if (options.expanded)
-    body.push(new Text(theme.fg("dim", state.taskPreview), 2, margin));
-  return body;
+  if (!activityPreview) return undefined;
+  return new Text(
+    formatRunningToolPreview(activityPreview, theme),
+    CARD_BODY_INDENT,
+    0,
+  );
 }
 
 function makeStoppedProgressBody(
   state: SubagentProgressState,
-  options: { expanded: boolean },
   theme: SubagentTheme,
-): Text[] {
-  const body: Text[] = [];
-  const margin = bodyMargin(!!state.modelDisplay, options.expanded);
-  if (state.errorText) {
-    body.push(new Text(theme.fg("error", state.errorText), 2, margin));
-  }
-  if (options.expanded)
-    body.push(new Text(theme.fg("dim", state.taskPreview), 2, margin));
-  return body;
+): Text | undefined {
+  if (!state.errorText) return undefined;
+  return new Text(theme.fg("error", state.errorText), CARD_BODY_INDENT, 0);
 }
 
 function makeSuccessProgressBody(
   state: SubagentProgressState,
-  options: { expanded: boolean },
   theme: SubagentTheme,
-): Text[] {
+): Text | undefined {
   const output = state.finalOutput?.trim().split("\n")[0] ?? "";
-  const margin = bodyMargin(!!state.modelDisplay, options.expanded);
-  if (!options.expanded) {
-    return output ? [new Text(theme.fg("toolOutput", output), 2, margin)] : [];
-  }
-  const body = [new Text(theme.fg("dim", state.taskPreview), 2, 0)];
-  body.push(
-    output
-      ? new Text(
-          `${theme.fg("muted", "─── Output ───")}\n${theme.fg("toolOutput", output)}`,
-          0,
-          margin,
-        )
-      : new Text(theme.fg("muted", "(no output)"), 0, margin),
-  );
-  return body;
+  if (!output) return undefined;
+  return new Text(theme.fg("toolOutput", output), CARD_BODY_INDENT, 0);
 }
 
 function formatRunningToolPreview(
@@ -244,5 +238,5 @@ function formatRunningToolPreview(
   if (separatorIndex === -1) return `${arrow} ${theme.fg("accent", preview)}`;
   const toolName = preview.slice(0, separatorIndex);
   const rest = preview.slice(separatorIndex);
-  return `${arrow} ${theme.fg("accent", toolName)}${theme.fg("dim", rest)}`;
+  return `${arrow} ${theme.fg("accent", toolName)}${theme.fg("muted", rest)}`;
 }

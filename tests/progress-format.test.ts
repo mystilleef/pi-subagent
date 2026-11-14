@@ -3,6 +3,7 @@ import { formatElapsed, formatHeaderStats } from "../src/progress/progress.js";
 import {
   formatContextPercent,
   formatDescendantTally,
+  formatDisplayIdentity,
   formatUsageTree,
   renderToolActivity,
   renderToolActivityForDisplay,
@@ -246,7 +247,7 @@ test("renderToolActivity annotates instanceName at depth-1", () => {
       inputSummary: "subagent: build",
       instanceName: "swift-harbor",
     }),
-  ).toBe("subagent: build [swift-harbor]");
+  ).toBe("subagent: build swift-harbor");
 });
 
 test("renderToolActivity renders depth-2 joining parent and child", () => {
@@ -260,7 +261,7 @@ test("renderToolActivity renders depth-2 joining parent and child", () => {
         inputSummary: "bash: make build",
       },
     }),
-  ).toBe("subagent: build [swift-harbor] - bash: make build");
+  ).toBe("subagent: build swift-harbor - bash: make build");
 });
 
 test("renderToolActivity renders depth-3 joining all levels", () => {
@@ -280,7 +281,7 @@ test("renderToolActivity renders depth-3 joining all levels", () => {
       },
     }),
   ).toBe(
-    "subagent: plan [outer-inst] - subagent: build [inner-inst] - bash: make test",
+    "subagent: plan outer-inst - subagent: build inner-inst - bash: make test",
   );
 });
 
@@ -407,7 +408,7 @@ test("renderToolActivityForDisplay annotates instanceName before joining", () =>
     },
   };
   expect(renderToolActivityForDisplay(activity, 80)).toBe(
-    "parent-task [alpha] - child-task",
+    "parent-task alpha - child-task",
   );
 });
 
@@ -536,7 +537,7 @@ test("renderToolActivity depth-2 retains truncation for stored previews", () => 
 });
 
 describe("ordinal-aware nested activity segments", () => {
-  test("hides ordinal 1 preserving bracketed instance annotation", () => {
+  test("hides ordinal 1 before the instance name", () => {
     expect(
       renderToolActivity({
         toolName: "subagent",
@@ -544,10 +545,10 @@ describe("ordinal-aware nested activity segments", () => {
         instanceName: "swift-harbor",
         ordinal: 1,
       }),
-    ).toBe("subagent: build [swift-harbor]");
+    ).toBe("subagent: build swift-harbor");
   });
 
-  test("inserts #ordinal for ordinal >=2 preserving brackets", () => {
+  test("inserts #ordinal before the instance name for ordinal >=2", () => {
     expect(
       renderToolActivity({
         toolName: "subagent",
@@ -555,7 +556,7 @@ describe("ordinal-aware nested activity segments", () => {
         instanceName: "brave-otter",
         ordinal: 3,
       }),
-    ).toBe("subagent: build [#3 brave-otter]");
+    ).toBe("subagent: build #3 brave-otter");
   });
 
   test("preserves child nesting with ordinal threshold at each level", () => {
@@ -574,7 +575,7 @@ describe("ordinal-aware nested activity segments", () => {
         },
       }),
     ).toBe(
-      "subagent: plan [#2 outer-inst] - subagent: build [inner-inst] - bash: make test",
+      "subagent: plan #2 outer-inst - subagent: build inner-inst - bash: make test",
     );
   });
 
@@ -596,7 +597,7 @@ describe("ordinal-aware nested activity segments", () => {
       ordinal: 2,
     };
     expect(renderToolActivityForDisplay(activity, 80)).toBe(
-      "subagent: build [#2 brave-otter]",
+      "subagent: build #2 brave-otter",
     );
     expect(
       renderToolActivityForDisplay(
@@ -608,7 +609,7 @@ describe("ordinal-aware nested activity segments", () => {
         },
         80,
       ),
-    ).toBe("subagent: build [brave-otter]");
+    ).toBe("subagent: build brave-otter");
   });
 });
 
@@ -658,10 +659,11 @@ describe("formatDescendantTally aggregation", () => {
     expect(tally).toBeDefined();
     expect(tally).toContain("2 spawned");
     expect(tally).not.toContain("root");
-    expect(tally).toContain("build 1\u2713");
-    expect(tally).toContain("wrap 1\u2713");
+    expect(tally).toContain("build \u27131");
+    expect(tally).toContain("wrap \u27131");
+    expect(tally).toContain("run $0.0000");
   });
-  test("includes omitted contributions exactly once omitting cost", () => {
+  test("includes omitted contributions exactly once including cost", () => {
     const child = node({
       agent: "build",
       instanceName: "kept",
@@ -684,9 +686,9 @@ describe("formatDescendantTally aggregation", () => {
     });
     const tally = formatDescendantTally(root, 200);
     expect(tally).toContain("2 spawned");
-    expect(tally).toContain("build 1\u2713");
-    expect(tally).toContain("spec 1\u2713");
-    expect(tally).not.toContain("$");
+    expect(tally).toContain("build \u27131");
+    expect(tally).toContain("spec \u27131");
+    expect(tally).toContain("run $0.0000");
   });
   test("formats single-status groups without parentheses", () => {
     const child = node({
@@ -702,7 +704,7 @@ describe("formatDescendantTally aggregation", () => {
       children: [child],
     });
     expect(formatDescendantTally(root, 80)).toBe(
-      "1 spawned \u00b7 fix 1\u2713",
+      "1 spawned \u00b7 fix \u27131 \u00b7 run $0.0000",
     );
   });
   test("formats multi-status groups with nonzero counts only", () => {
@@ -727,7 +729,9 @@ describe("formatDescendantTally aggregation", () => {
       children: [a, b],
     });
     const tally = formatDescendantTally(root, 200);
-    expect(tally).toBe("2 spawned \u00b7 build 2 (1\u2713 1\u27f3)");
+    expect(tally).toBe(
+      "2 spawned \u00b7 build 2 (\u27131 \u27f31) \u00b7 run $0.0000",
+    );
     expect(tally).not.toContain("0\u2717");
     expect(tally).not.toContain("0\u2298");
   });
@@ -1009,9 +1013,10 @@ describe("formatDescendantTally width", () => {
     const justPrefix = `${computeSubtreeRollup(root).instances - 0 - 0} spawned`;
     void justPrefix;
     void full;
-    const narrow = formatDescendantTally(root, 22);
+    const narrow = formatDescendantTally(root, 38);
     expect(narrow).toBeDefined();
     expect(narrow).toMatch(/\+\d+ more/);
+    expect(narrow).toContain("run $0.0000");
   });
   test("suppresses tally when prefix plus marker cannot fit", () => {
     const root = threeAgentRoot();
@@ -1045,8 +1050,8 @@ describe("formatDescendantTally width", () => {
       id: "root-1",
       children: [wide],
     });
-    expect(formatDescendantTally(root, 19)).toBe(
-      "1 spawned \u00b7 \u732b\u732b 1\u2713",
+    expect(formatDescendantTally(root, 38)).toBe(
+      "1 spawned \u00b7 \u732b\u732b \u27131 \u00b7 run $0.0000",
     );
   });
 });
@@ -1092,7 +1097,7 @@ describe("formatUsageTree views", () => {
     expect(exclusive.some((line) => line.includes("top"))).toBe(false);
     expect(exclusive.some((line) => line.includes("leaf"))).toBe(true);
   });
-  test("shows ordinal 1 in tree nodes", () => {
+  test("hides ordinal 1 in tree nodes", () => {
     const child = node({
       agent: "build",
       instanceName: "leaf",
@@ -1107,7 +1112,8 @@ describe("formatUsageTree views", () => {
       children: [child],
     });
     const lines = formatUsageTree(root, { includeRoot: true, now: 2000 });
-    expect(lines.some((line) => line.includes("#1 leaf"))).toBe(true);
+    expect(lines.some((line) => line.includes("build leaf"))).toBe(true);
+    expect(lines.some((line) => line.includes("#1"))).toBe(false);
   });
   test("orders siblings by startedAt ascending", () => {
     const later = node({
@@ -1219,7 +1225,7 @@ describe("formatUsageTree views", () => {
     });
     const lines = formatUsageTree(root, { now: 2000 });
     const line = lines.find((l) => l.includes("nodur")) as string;
-    expect(line).toBe("\u2713 build #1 nodur");
+    expect(line).toBe("\u2713 build nodur");
   });
   test("falls back to zero elapsed for unusable clock inputs", () => {
     const running = node({
@@ -1295,8 +1301,8 @@ describe("formatUsageTree views", () => {
     });
     const joined = formatUsageTree(root, { now: 5000 }).join("\n");
     expect(joined.indexOf("alpha")).toBeLessThan(joined.indexOf("beta"));
-    expect(joined.indexOf("\u2713 beta #1 other")).toBeLessThan(
-      joined.indexOf("\u2717 beta #1 other"),
+    expect(joined.indexOf("\u2713 beta other")).toBeLessThan(
+      joined.indexOf("\u2717 beta other"),
     );
     expect(joined.indexOf("other")).toBeLessThan(joined.indexOf("same"));
   });
@@ -1413,5 +1419,257 @@ describe("accounting-only text", () => {
     expect(combined).not.toContain("prompt");
     expect(combined).not.toContain("transcript");
     expect(combined).not.toContain("stderr");
+  });
+});
+
+describe("formatDescendantTally run cost", () => {
+  function usage(overrides: Partial<AdditiveUsage> = {}): AdditiveUsage {
+    return { ...createEmptyAdditiveUsage(), ...overrides };
+  }
+  function node(
+    overrides: Partial<UsageInstanceNode> &
+      Pick<UsageInstanceNode, "agent" | "instanceName">,
+  ): UsageInstanceNode {
+    return {
+      id: `${overrides.agent}-${overrides.instanceName}-${overrides.ordinal ?? 1}-${overrides.startedAt ?? 1000}`,
+      ordinal: 1,
+      startedAt: 1000,
+      status: "success",
+      usage: usage(),
+      children: [],
+      ...overrides,
+    };
+  }
+  test("appends whole-subtree run cost including self exactly once", () => {
+    const child = node({
+      agent: "worker",
+      instanceName: "one",
+      id: "child-1",
+      usage: usage({ cost: 0.02 }),
+    });
+    const root = node({
+      agent: "root",
+      instanceName: "top",
+      id: "root-1",
+      usage: usage({ cost: 0.01 }),
+      children: [child],
+    });
+    expect(formatDescendantTally(root, 200)).toContain("run $0.0300");
+  });
+  test("includes omitted totals in run cost exactly once with live running", () => {
+    const child = node({
+      agent: "worker",
+      instanceName: "kept",
+      id: "kept-1",
+      status: "running",
+      usage: usage({ cost: 0.02 }),
+    });
+    const omittedChild = node({
+      agent: "helper",
+      instanceName: "trimmed",
+      id: "trimmed-1",
+      usage: usage({ cost: 0.005 }),
+    });
+    const omittedTotals = computeSubtreeRollup(omittedChild);
+    const root = node({
+      agent: "root",
+      instanceName: "top",
+      id: "root-1",
+      usage: usage({ cost: 0.01 }),
+      children: [child],
+      omitted: { count: omittedTotals.instances, totals: omittedTotals },
+    });
+    const tally = formatDescendantTally(root, 200) as string;
+    expect(tally).toContain("2 spawned");
+    expect(tally).toContain("run $0.0350");
+  });
+  test("omits run suffix for stats tallies while retaining groups", () => {
+    const child = node({
+      agent: "worker",
+      instanceName: "one",
+      id: "child-1",
+      usage: usage({ cost: 0.02 }),
+    });
+    const root = node({
+      agent: "root",
+      instanceName: "top",
+      id: "root-1",
+      usage: usage({ cost: 0.01 }),
+      children: [child],
+    });
+    const tally = formatDescendantTally(root, 200, {
+      includeRunCost: false,
+    }) as string;
+    expect(tally).toContain("1 spawned");
+    expect(tally).toContain("worker \u27131");
+    expect(tally).not.toContain("run $");
+  });
+  test.each([
+    { mode: "run-cost", options: undefined, hasRun: true },
+    { mode: "stats", options: { includeRunCost: false }, hasRun: false },
+  ])(
+    "collapses trailing groups before the suffix slot in $mode tallies",
+    ({ options, hasRun }) => {
+      const mk = (agent: string, at: number) =>
+        node({
+          agent,
+          instanceName: `inst-${agent}`,
+          id: `${agent}-1`,
+          startedAt: at,
+        });
+      const root = node({
+        agent: "root",
+        instanceName: "top",
+        id: "root-1",
+        children: [mk("aaa", 3000), mk("bbb", 2000), mk("ccc", 1000)],
+      });
+      const full = formatDescendantTally(root, 1000, options) as string;
+      const width = Bun.stringWidth(full) - 10;
+      const collapsed = formatDescendantTally(root, width, options) as string;
+      expect(collapsed).toMatch(/\+\d+ more/);
+      expect(collapsed).not.toContain("aaa");
+      expect(full.includes("run $0.0000")).toBe(hasRun);
+      expect(collapsed.includes("run $0.0000")).toBe(hasRun);
+      expect(Bun.stringWidth(collapsed)).toBeLessThanOrEqual(width);
+    },
+  );
+  test("hides entire tally when prefix marker and run cannot fit", () => {
+    const child = node({
+      agent: "worker",
+      instanceName: "one",
+      id: "child-1",
+    });
+    const root = node({
+      agent: "root",
+      instanceName: "top",
+      id: "root-1",
+      children: [child],
+    });
+    expect(formatDescendantTally(root, 10)).toBeUndefined();
+    expect(formatDescendantTally(root, 20)).toBeUndefined();
+  });
+  test("stats tallies fit widths the run suffix would overflow", () => {
+    const child = node({
+      agent: "worker",
+      instanceName: "one",
+      id: "child-1",
+    });
+    const root = node({
+      agent: "root",
+      instanceName: "top",
+      id: "root-1",
+      children: [child],
+    });
+    const full = formatDescendantTally(root, 1000, {
+      includeRunCost: false,
+    }) as string;
+    expect(full).not.toContain("run $");
+    const width = Bun.stringWidth(full);
+    expect(formatDescendantTally(root, width, { includeRunCost: false })).toBe(
+      full,
+    );
+    expect(formatDescendantTally(root, width)).toBeUndefined();
+    const narrowed = formatDescendantTally(root, width - 1, {
+      includeRunCost: false,
+    }) as string;
+    expect(narrowed).toBe("1 spawned \u00b7 +1 more");
+    expect(narrowed).not.toContain("worker");
+  });
+});
+
+describe("formatDisplayIdentity", () => {
+  test.each([
+    {
+      name: "inserts hash ordinal for valid ordinals",
+      base: "worker",
+      instanceName: "able-fox",
+      ordinal: 2,
+      expected: "worker #2 able-fox",
+    },
+    {
+      name: "keeps hash ordinal for later instances",
+      base: "worker",
+      instanceName: "able-fox",
+      ordinal: 7,
+      expected: "worker #7 able-fox",
+    },
+    {
+      name: "omits hash for first-instance ordinal",
+      base: "worker",
+      instanceName: "able-fox",
+      ordinal: 1,
+      expected: "worker able-fox",
+    },
+    {
+      name: "omits hash when ordinal is undefined",
+      base: "worker",
+      instanceName: "able-fox",
+      ordinal: undefined,
+      expected: "worker able-fox",
+    },
+    {
+      name: "omits hash for zero ordinal",
+      base: "worker",
+      instanceName: "able-fox",
+      ordinal: 0,
+      expected: "worker able-fox",
+    },
+    {
+      name: "omits hash for negative ordinal",
+      base: "worker",
+      instanceName: "able-fox",
+      ordinal: -3,
+      expected: "worker able-fox",
+    },
+    {
+      name: "omits hash for fractional ordinal",
+      base: "worker",
+      instanceName: "able-fox",
+      ordinal: 2.5,
+      expected: "worker able-fox",
+    },
+    {
+      name: "omits hash for NaN ordinal",
+      base: "worker",
+      instanceName: "able-fox",
+      ordinal: Number.NaN,
+      expected: "worker able-fox",
+    },
+    {
+      name: "omits hash for unbounded ordinal",
+      base: "worker",
+      instanceName: "able-fox",
+      ordinal: Number.POSITIVE_INFINITY,
+      expected: "worker able-fox",
+    },
+    {
+      name: "falls back to base for unnamed instance",
+      base: "worker",
+      instanceName: undefined,
+      ordinal: 2,
+      expected: "worker",
+    },
+    {
+      name: "falls back to base for empty name with valid ordinal",
+      base: "worker",
+      instanceName: "",
+      ordinal: 2,
+      expected: "worker",
+    },
+    {
+      name: "falls back to base for empty name without ordinal",
+      base: "worker",
+      instanceName: "",
+      ordinal: undefined,
+      expected: "worker",
+    },
+  ])("$name", ({ base, instanceName, ordinal, expected }) => {
+    expect(formatDisplayIdentity(base, instanceName, ordinal)).toBe(expected);
+  });
+
+  test("styles only the ordinal segment", () => {
+    expect(
+      formatDisplayIdentity("worker", "able-fox", 2, (text) => `<${text}>`),
+    ).toBe("worker <#2> able-fox");
   });
 });

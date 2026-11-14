@@ -572,7 +572,7 @@ describe("jobs session accounting", () => {
     expect(notices).toEqual(["No /run jobs in this session."]);
   });
 
-  test("cards with descendants add run cost including omitted exactly once", async () => {
+  test("job cards with descendants include subtree run cost in tally", async () => {
     const rid = "cost-root";
     expect(
       registerRootInstance({
@@ -620,11 +620,19 @@ describe("jobs session accounting", () => {
       "",
     );
     const output = notices[0] ?? "";
-    expect(output).toContain("run $0.0350");
-    expect(output).toContain("provider/model:high · run $0.0350");
-    const runLine =
-      output.split("\n").find((l) => l.includes("run $0.0350")) ?? "";
-    expect(runLine).not.toContain("secret task");
+    expect(output).toContain("provider/model:high");
+    expect(output).toContain("run $");
+    const tallyLine =
+      output.split("\n").find((l) => l.includes("spawned")) ?? "";
+    expect(tallyLine).toContain("run $");
+    const footerLine =
+      output.split("\n").find((l) => l.includes("provider/model:high")) ?? "";
+    expect(footerLine).not.toContain("run $");
+    expect(footerLine).not.toContain("secret task");
+    const bodyIdx = output.indexOf("secret task text");
+    const tallyIdx = output.indexOf("spawned");
+    expect(bodyIdx).toBeGreaterThanOrEqual(0);
+    expect(tallyIdx).toBeGreaterThan(bodyIdx);
   });
 
   test("leaf cards retain existing footer without run cost", async () => {

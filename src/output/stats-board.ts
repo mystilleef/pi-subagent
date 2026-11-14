@@ -1,10 +1,12 @@
 import { Box, type Component, Text } from "@earendil-works/pi-tui";
 import {
   formatCost,
+  formatDisplayIdentity,
   formatElapsed,
+  formatStatusCount,
   formatUsageTree,
 } from "../progress/progress-format.js";
-import { STATUS_COUNT_ORDER, STATUS_ICON } from "../progress/progress-state.js";
+import { STATUS_COUNT_ORDER } from "../progress/progress-state.js";
 import type {
   AccountingRollup,
   AdditiveUsage,
@@ -14,13 +16,12 @@ import type {
 import { computeSubtreeRollup } from "../shared/usage-accounting.js";
 import {
   createDescendantTally,
-  formatStatusHeader,
   formatSubagentTitle,
   formatTokens,
   joinSegments,
   makeSectionHeader,
-  makeStatusBox,
   plural,
+  renderCard,
   type SubagentTheme,
 } from "./ui.js";
 
@@ -37,8 +38,8 @@ function formatUsageTokens(usage: AdditiveUsage): string {
 }
 
 function formatStatusCounts(statuses: StatusCounts): string {
-  return STATUS_COUNT_ORDER.map(
-    (status) => `${STATUS_ICON[status]}${statuses[status]}`,
+  return STATUS_COUNT_ORDER.map((status) =>
+    formatStatusCount(status, statuses[status]),
   ).join(" ");
 }
 
@@ -54,12 +55,15 @@ function renderStatsRunCard(run: UsageInstanceNode, theme: SubagentTheme): Box {
     formatUsageTokens(rollup.usage),
     formatCost(rollup.usage.cost),
   );
-  const header = `${formatStatusHeader(run.status, title, theme)} ${theme.fg("dim", totals)}`;
-  const box = makeStatusBox(run.status, theme);
-  box.addChild(new Text(header, 0, 0));
-  const tally = createDescendantTally(run, theme, 2, 0);
-  if (tally) box.addChild(tally);
-  return box;
+  return renderCard(
+    {
+      status: run.status,
+      title,
+      metadata: totals,
+      blocks: [createDescendantTally(run, theme, { includeRunCost: false })],
+    },
+    theme,
+  );
 }
 
 /**
@@ -81,7 +85,7 @@ export function renderStatsBoard(
     formatUsageTokens(rollup.usage),
     formatCost(rollup.usage.cost),
   );
-  box.addChild(new Text(theme.fg("dim", sessionHeader), 0, 0));
+  box.addChild(new Text(theme.fg("muted", sessionHeader), 0, 0));
   const agents = Object.entries(rollup.byAgent).sort(([a], [b]) =>
     a.localeCompare(b),
   );
@@ -94,7 +98,7 @@ export function renderStatsBoard(
       formatCost(stats.usage.cost),
       formatElapsed(stats.durationMs),
     );
-    box.addChild(new Text(theme.fg("dim", row), 0, 0));
+    box.addChild(new Text(theme.fg("muted", row), 0, 0));
   }
   box.addChild(makeSectionHeader("RUNS", runs.length, width, theme));
   for (const run of runs) box.addChild(renderStatsRunCard(run, theme));
@@ -115,7 +119,7 @@ export function renderStatsRunBoard(
   // The root's own duration is the run's wall-clock time; summed instance
   // durations overstate it whenever children run in parallel.
   const header = joinSegments(
-    `${run.instanceName} (${run.id})`,
+    `${formatDisplayIdentity(run.agent, run.instanceName, run.ordinal)} (${run.id})`,
     plural(rollup.instances, "instance"),
     formatStatusCounts(rollup.statuses),
     formatUsageTokens(rollup.usage),
@@ -123,8 +127,9 @@ export function renderStatsRunBoard(
     run.durationMs !== undefined ? formatElapsed(run.durationMs) : undefined,
   );
   const box = new Box(0, 0);
-  box.addChild(new Text(theme.fg("dim", header), 0, 0));
+  box.addChild(new Text(theme.fg("muted", header), 0, 0));
   const tree = formatUsageTree(run, { includeRoot: true, now, showCost: true });
-  for (const line of tree) box.addChild(new Text(line, 0, 0));
+  for (const line of tree)
+    box.addChild(new Text(theme.fg("muted", line), 0, 0));
   return box;
 }

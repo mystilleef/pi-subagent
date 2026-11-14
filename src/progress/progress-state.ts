@@ -71,6 +71,19 @@ export interface SubagentProgressState {
 
 const store = new Map<string, SubagentProgressState>();
 
+/** Request IDs whose terminal result message has actually posted. */
+const postedResultIds = new Set<string>();
+
+/** Record that the terminal result message for a request has posted. */
+export function markProgressResultPosted(requestId: string): void {
+  postedResultIds.add(requestId);
+}
+
+/** Whether the terminal result message for a request has posted. */
+export function hasProgressResultPosted(requestId: string): boolean {
+  return postedResultIds.has(requestId);
+}
+
 export function createProgressState(
   requestId: string,
   agent: string,
@@ -170,9 +183,11 @@ export function cancelProgressState(requestId: string, reason?: string): void {
 
 export function clearProgressState(requestId: string): void {
   store.delete(requestId);
+  postedResultIds.delete(requestId);
 }
 export function resetProgressStore(): void {
   store.clear();
+  postedResultIds.clear();
 }
 
 export function makeTaskPreview(task: string): string {

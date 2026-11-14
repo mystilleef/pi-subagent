@@ -951,7 +951,7 @@ test("activeToolActivity preserves parent on nested tool_result_end completion",
         inputSummary: "bash: scan src",
       },
     },
-    lastToolPreview: "subagent: build [able-falcon] - bash: scan src",
+    lastToolPreview: "subagent: build able-falcon - bash: scan src",
     toolCount: 1,
   });
   const details = makeDetails([]);
@@ -978,7 +978,7 @@ test("activeToolActivity preserves parent on nested tool_result_end completion",
     inputSummary: "subagent: build",
     instanceName: "able-falcon",
   });
-  expect(state?.lastToolPreview).toBe("subagent: build [able-falcon]");
+  expect(state?.lastToolPreview).toBe("subagent: build able-falcon");
   expect(state?.toolResultCompleted).toBe(true);
 });
 
@@ -1201,7 +1201,7 @@ test("depth-3 activity tree composition through child progress details", () => {
     },
   });
   expect(state?.lastToolPreview).toBe(
-    "subagent: build [swift-harbor] - subagent: review [sharp-finch] - bash: make build",
+    "subagent: build swift-harbor - subagent: review sharp-finch - bash: make build",
   );
 });
 
@@ -1223,7 +1223,7 @@ test("depth-3 activity tree strips leaf child on tool_result_end", () => {
       },
     },
     lastToolPreview:
-      "subagent: build [swift-harbor] - subagent: review [sharp-finch] - bash: make build",
+      "subagent: build swift-harbor - subagent: review sharp-finch - bash: make build",
     toolCount: 2,
   });
   const details = makeDetails([]);
@@ -1256,7 +1256,7 @@ test("depth-3 activity tree strips leaf child on tool_result_end", () => {
     inputSummary: "subagent: build",
     instanceName: "swift-harbor",
   });
-  expect(state?.lastToolPreview).toBe("subagent: build [swift-harbor]");
+  expect(state?.lastToolPreview).toBe("subagent: build swift-harbor");
   expect(state?.toolResultCompleted).toBe(true);
 });
 
@@ -1272,7 +1272,7 @@ test("back-to-back nested completion preserves accumulated tokens through child 
         inputSummary: "bash: make build",
       },
     },
-    lastToolPreview: "subagent: build [swift-harbor] - bash: make build",
+    lastToolPreview: "subagent: build swift-harbor - bash: make build",
     toolCount: 3,
     inputTokens: 100,
     outputTokens: 50,
@@ -1311,7 +1311,7 @@ test("back-to-back nested completion preserves accumulated tokens through child 
     inputSummary: "subagent: build",
     instanceName: "swift-harbor",
   });
-  expect(state1?.lastToolPreview).toBe("subagent: build [swift-harbor]");
+  expect(state1?.lastToolPreview).toBe("subagent: build swift-harbor");
   expect(state1?.inputTokens).toBe(999);
   expect(state1?.outputTokens).toBe(888);
   expect(state1?.contextTokens).toBe(777);
@@ -1526,7 +1526,7 @@ test("nested activity details update parent and append child in activity tree", 
     },
   });
   expect(state?.lastToolPreview).toBe(
-    "subagent: build [swift-harbor] - bash: scanning src",
+    "subagent: build swift-harbor - bash: scanning src",
   );
   expect(state?.toolCount).toBe(2);
   expect(state?.inputTokens).toBe(999);
@@ -1547,7 +1547,7 @@ test("depth-2 parent activity remains visible after child tool_result_end", () =
         inputSummary: "bash: make build",
       },
     },
-    lastToolPreview: "subagent: build [swift-harbor] - bash: make build",
+    lastToolPreview: "subagent: build swift-harbor - bash: make build",
     toolCount: 2,
   });
   const details = makeDetails([]);
@@ -1574,7 +1574,7 @@ test("depth-2 parent activity remains visible after child tool_result_end", () =
     inputSummary: "subagent: build",
     instanceName: "swift-harbor",
   });
-  expect(state?.lastToolPreview).toBe("subagent: build [swift-harbor]");
+  expect(state?.lastToolPreview).toBe("subagent: build swift-harbor");
   expect(state?.toolResultCompleted).toBe(true);
 });
 

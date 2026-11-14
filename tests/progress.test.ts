@@ -13,11 +13,14 @@ import {
   createProgressState,
   failProgressState,
   finalizeProgressState,
+  getProgressState,
   makeToolPreview,
+  markProgressResultPosted,
   patchProgressState,
   renderSubagentProgress,
 } from "../src/progress/progress.js";
 import { formatDescendantTally } from "../src/progress/progress-format.js";
+import type { ProgressStatus } from "../src/progress/progress-state.js";
 import type { UsageInstanceNode } from "../src/shared/types.js";
 
 afterEach(() => {
@@ -95,21 +98,6 @@ function renderText(
   return renderLines(rendered).join("\n");
 }
 
-test("renderSubagentProgress returns undefined for missing state", () => {
-  const theme = makeTheme();
-  const result = renderSubagentProgress(
-    {
-      customType: "subagent-progress",
-      content: "",
-      display: true,
-      details: { requestId: "no-such-id" },
-    },
-    { expanded: false },
-    theme,
-  );
-  expect(result).toBeUndefined();
-});
-
 test("renderSubagentProgress formats segmented agent and instance title", () => {
   createProgressState("rend-1", "my-agent", "do the thing", "able-falcon");
   const theme = {
@@ -132,7 +120,7 @@ test("renderSubagentProgress formats segmented agent and instance title", () => 
   expect(text).toContain(
     "<toolTitle><bold>my-agent</bold></toolTitle> <accent><italic>able-falcon</italic></accent>",
   );
-  expect(text).toContain("<dim>[running]</dim>");
+  expect(text).toContain("<muted>[running]</muted>");
   expect(text).toContain("<muted>0 tools · --% ctx ·");
 });
 
@@ -151,9 +139,11 @@ test("renderSubagentProgress uses ANSI italic fallback for instance title", () =
   );
   const text = renderText(result);
   expect(text).toContain(
-    "<toolTitle>my-agent</toolTitle> <accent>\x1b[3mable-falcon\x1b[23m</accent> <dim>[running]</dim>",
+    "<toolTitle>my-agent</toolTitle> <accent>\x1b[3mable-falcon\x1b[23m</accent> <muted>[running]</muted>",
   );
-  expect(text.indexOf("\x1b[23m</accent> <dim>[running]")).toBeGreaterThan(-1);
+  expect(text.indexOf("\x1b[23m</accent> <muted>[running]")).toBeGreaterThan(
+    -1,
+  );
 });
 
 test("renderSubagentProgress keeps single title when instance is absent or empty", () => {
@@ -184,12 +174,12 @@ test("renderSubagentProgress keeps single title when instance is absent or empty
   const firstText = renderText(first);
   const secondText = renderText(second);
   expect(firstText).toContain(
-    "<toolTitle>my-agent</toolTitle> <dim>[running]</dim>",
+    "<toolTitle>my-agent</toolTitle> <muted>[running]</muted>",
   );
   expect(firstText).not.toContain("my-agent  ");
   expect(firstText).not.toContain("\x1b[3m");
   expect(secondText).toContain(
-    "<toolTitle>other-agent</toolTitle> <dim>[running]</dim>",
+    "<toolTitle>other-agent</toolTitle> <muted>[running]</muted>",
   );
   expect(secondText).not.toContain("other-agent  ");
   expect(secondText).not.toContain("\x1b[3m");
@@ -226,9 +216,10 @@ test("renderSubagentProgress collapsed running colors tool preview segments", ()
     "my-agent</toolTitle> <accent>\x1b[3mrend-1\x1b[23m</accent>",
   );
   expect(text).toContain("running");
-  expect(text).toContain("3 tools · 8%");
-  expect(text.indexOf("\x1b[23m</accent> <dim>[running]")).toBeLessThan(
-    text.indexOf("3 tools · 8%"),
+  expect(text).toContain("3 tools");
+  expect(text).toContain("8%");
+  expect(text.indexOf("\x1b[23m</accent> <muted>[running]")).toBeLessThan(
+    text.indexOf("3 tools"),
   );
   expect(text).toContain("ctx · 2.5s");
   expect(text).not.toContain("1.2k in");
@@ -237,7 +228,7 @@ test("renderSubagentProgress collapsed running colors tool preview segments", ()
   expect(text).not.toContain("2 turns");
   expect(text).not.toContain("18k ctx");
   expect(toolLine).toStartWith(
-    "[toolPendingBg]   <muted>→</muted> <accent>bash</accent><dim>: ls -la</dim>",
+    "[toolPendingBg]   <muted>→</muted> <accent>bash</accent><muted>: ls -la</muted>",
   );
   expect(text).not.toContain("bash: ls -la (");
   expect(
@@ -591,7 +582,7 @@ test("renderSubagentProgress final success with output uses text fallback when n
   expect(result).toBeDefined();
   const text = renderText(result);
   expect(text).toContain("final result text");
-  expect(text.indexOf("\x1b[23m</accent> <dim>[success]")).toBeLessThan(
+  expect(text.indexOf("\x1b[23m</accent> <muted>[success]")).toBeLessThan(
     text.indexOf("final result text"),
   );
   expect(
@@ -749,6 +740,70 @@ test("DynamicSubagentProgressText invalidate is a no-op", () => {
   );
   expect(result).toBeDefined();
   expect(() => result?.invalidate()).not.toThrow();
+});
+
+test("renderSubagentProgress unknown status renders header-only card", () => {
+  createProgressState("inv-unknown", "agent", "task");
+  patchProgressState("inv-unknown", { status: "unknown" as ProgressStatus });
+  const theme = makeTheme();
+  const result = renderSubagentProgress(
+    {
+      customType: "subagent-progress",
+      content: "",
+      display: true,
+      details: { requestId: "inv-unknown" },
+    },
+    { expanded: false },
+    theme,
+  );
+  const lines = renderLines(result);
+  // Header line inside the box padding; no body, tally, task, or footer.
+  expect(lines).toHaveLength(3);
+  expect(lines[1]).toContain("[unknown]");
+  clearProgressState("inv-unknown");
+});
+
+test("cancelled progress without reason renders header-only card", () => {
+  createProgressState("inv-no-reason", "agent", "cancel quietly");
+  cancelProgressState("inv-no-reason");
+  const theme = makeTheme();
+  const result = renderSubagentProgress(
+    {
+      customType: "subagent-progress",
+      content: "",
+      display: true,
+      details: { requestId: "inv-no-reason" },
+    },
+    { expanded: false },
+    theme,
+  );
+  const lines = renderLines(result);
+  // Missing errorText suppresses the stopped body entirely.
+  expect(lines).toHaveLength(3);
+  expect(lines[1]).toContain("[cancelled]");
+  expect(lines[1]).not.toContain("cancel quietly");
+  clearProgressState("inv-no-reason");
+});
+
+test("running progress without tool activity renders header-only card", () => {
+  createProgressState("inv-no-activity", "agent", "warming up");
+  const theme = makeTheme();
+  const result = renderSubagentProgress(
+    {
+      customType: "subagent-progress",
+      content: "",
+      display: true,
+      details: { requestId: "inv-no-activity" },
+    },
+    { expanded: false },
+    theme,
+  );
+  const lines = renderLines(result);
+  // No active tool preview suppresses the running body entirely.
+  expect(lines).toHaveLength(3);
+  expect(lines[1]).toContain("[running]");
+  expect(lines[1]).not.toContain("warming up");
+  clearProgressState("inv-no-activity");
 });
 
 test("renderSubagentProgress keeps running elapsed live", () => {
@@ -985,7 +1040,7 @@ test("status coloring remains unchanged with width-aware preview", () => {
   expect(result).toBeDefined();
   const text = renderText(result);
   expect(text).toContain("<accent>⟳</accent>");
-  expect(text).toContain("<dim>[running]</dim>");
+  expect(text).toContain("<muted>[running]</muted>");
   expect(
     renderLines(result).every(
       (line) =>
@@ -1242,13 +1297,24 @@ describe("renderSubagentProgress", () => {
     expect(result).toBeUndefined();
   });
 
-  test("message with requestId but no progress state returns undefined", () => {
+  test("message with empty requestId defers to host default rendering", () => {
+    const result = renderSubagentProgress(
+      { details: { requestId: "" } },
+      { expanded: false },
+      fakeTheme,
+    );
+    expect(result).toBeUndefined();
+  });
+
+  test("message with requestId but no progress state returns component rendering zero lines", () => {
     const result = renderSubagentProgress(
       { details: { requestId: "nonexistent-id" } },
       { expanded: false },
       fakeTheme,
     );
-    expect(result).toBeUndefined();
+    expect(result).toBeDefined();
+    expect(result?.render(120)).toEqual([]);
+    clearProgressState("nonexistent-id");
   });
 
   test("message with valid requestId returns component", () => {
@@ -1260,6 +1326,72 @@ describe("renderSubagentProgress", () => {
       fakeTheme,
     );
     expect(result).toBeDefined();
+    clearProgressState(requestId);
+  });
+});
+
+describe("progress visibility after result posting", () => {
+  test("already-created component hides after result posting while retaining state", () => {
+    const requestId = "vis-posted-1";
+    createProgressState(requestId, "agent", "do work");
+    const component = renderSubagentProgress(
+      { details: { requestId } },
+      { expanded: false },
+      fakeTheme,
+    );
+    expect(component).toBeDefined();
+    expect(component?.render(120).length).toBeGreaterThan(0);
+    markProgressResultPosted(requestId);
+    expect(component?.render(120)).toEqual([]);
+    expect(getProgressState(requestId)).toBeDefined();
+    clearProgressState(requestId);
+  });
+
+  test("component created after result posting renders zero lines", () => {
+    const requestId = "vis-post-created";
+    createProgressState(requestId, "agent", "do work");
+    markProgressResultPosted(requestId);
+    const component = renderSubagentProgress(
+      { details: { requestId } },
+      { expanded: false },
+      fakeTheme,
+    );
+    expect(component).toBeDefined();
+    expect(component?.render(120)).toEqual([]);
+    expect(getProgressState(requestId)).toBeDefined();
+    clearProgressState(requestId);
+  });
+
+  test("terminal status alone never hides progress", () => {
+    const requestId = "vis-terminal-1";
+    createProgressState(requestId, "agent", "do work");
+    finalizeProgressState(requestId, "all done");
+    const component = renderSubagentProgress(
+      { details: { requestId } },
+      { expanded: false },
+      fakeTheme,
+    );
+    expect(component?.render(120).length).toBeGreaterThan(0);
+    clearProgressState(requestId);
+  });
+
+  test("root cancellation without result preserves live card, reload renders no card", () => {
+    const requestId = "vis-cancel-1";
+    createProgressState(requestId, "agent", "cancel task");
+    cancelProgressState(requestId, "user cancelled");
+    const live = renderSubagentProgress(
+      { details: { requestId } },
+      { expanded: false },
+      fakeTheme,
+    );
+    expect(live?.render(120).join("\n")).toContain("cancelled");
+    clearProgressState(requestId);
+    const replay = renderSubagentProgress(
+      { details: { requestId } },
+      { expanded: false },
+      fakeTheme,
+    );
+    expect(replay?.render(120)).toEqual([]);
     clearProgressState(requestId);
   });
 });
@@ -1412,6 +1544,26 @@ describe("live progress accounting integration", () => {
     expect(leafText).toContain("→ bash: ls");
   });
 
+  test("collapsed running tally ends with live subtree run cost and glyph-first groups", () => {
+    const requestId = track("live-run-cost-1");
+    setupRootWithChildren(requestId, [
+      makeChild("c-a", "explorer", "able-fox", 1000),
+      makeChild("c-b", "worker", "bold-owl", 1100),
+    ]);
+    patchProgressState(requestId, {
+      activeToolActivity: { toolName: "bash", inputSummary: "bash: ls" },
+      lastToolPreview: "bash: ls",
+      modelDisplay: "test-model",
+    });
+    const text = renderLive(requestId, false);
+    expect(text).toContain("2 spawned");
+    const tallyLine = text.split("\n").find((l) => l.includes("spawned")) ?? "";
+    expect(tallyLine).toContain("run $0.0200");
+    expect(tallyLine).toContain("\u27F31");
+    expect(text).toContain("test-model");
+    expect(text).not.toMatch(/test-model.*run \$/);
+  });
+
   test("expanded running adds bounded tree alongside activity and shows all siblings", () => {
     const requestId = track("live-expanded-1");
     setupRootWithChildren(requestId, [
@@ -1502,7 +1654,7 @@ describe("live progress accounting integration", () => {
     expect(queryInstanceUsage(requestId)?.rollup.instances).toBe(6);
   });
 
-  test("title omits ordinal 1 while tree nodes show it and tally uses full query", () => {
+  test("title and tree nodes omit ordinal 1 and tally uses full query", () => {
     const requestId = track("live-ordinal-1");
     setupRootWithChildren(
       requestId,
@@ -1513,8 +1665,8 @@ describe("live progress accounting integration", () => {
     expect(collapsed).not.toContain("#1");
     expect(collapsed).toContain("spawned");
     const expanded = renderLive(requestId, true);
-    expect(expanded).toContain("#1");
-    expect(expanded).toContain("able-fox");
+    expect(expanded).not.toContain("#1");
+    expect(expanded).toContain("explorer able-fox");
     const full = queryInstanceUsage(requestId)?.instance;
     expect(full).toBeDefined();
     if (full) {
@@ -1603,7 +1755,7 @@ describe("live progress accounting integration", () => {
     expect(text).not.toContain("─── Output ───");
   });
 
-  test("expanded success without output shows placeholder with tree lines", () => {
+  test("expanded success without output omits body but shows task with tree and tally", () => {
     const requestId = track("live-no-output-expanded");
     setupRootWithChildren(requestId, [
       makeChild("noe-a", "explorer", "able-fox", 1000),
@@ -1611,12 +1763,13 @@ describe("live progress accounting integration", () => {
     finalizeProgressState(requestId, "done");
     patchProgressState(requestId, { finalOutput: "" });
     const text = renderLive(requestId, true);
-    expect(text).toContain("(no output)");
+    expect(text).not.toContain("(no output)");
+    expect(text).toContain("task: do the important task");
     expect(text).toContain("able-fox");
+    expect(text).toContain("1 spawned");
     expect(text).not.toContain("done");
     expect(text).not.toContain("─── Output ───");
   });
-
   test.each([
     {
       state: "error",
@@ -1669,7 +1822,71 @@ describe("live progress accounting integration", () => {
       const text = renderLive(requestId, true);
       expect(text).toContain(stoppedText);
       expect(text).toContain("do the important task");
-      expect(text).toContain("\u27f3 explorer #1 able-fox");
+      expect(text).toContain("\u27f3 explorer able-fox");
     },
   );
+});
+
+test("progress cards use muted information tokens with decorative-only dim", () => {
+  const requestId = "theme-roles-progress";
+  resetUsageLedger();
+  const res = registerRootInstance({
+    id: requestId,
+    agent: "build",
+    instanceName: "root-run",
+    startedAt: 500,
+  });
+  expect(res.ok).toBe(true);
+  expect(
+    attachChildSubtree(requestId, {
+      id: "child-1",
+      agent: "worker",
+      instanceName: "child-one",
+      ordinal: 1,
+      startedAt: 600,
+      status: "success",
+      durationMs: 100,
+      usage: {
+        input: 10,
+        output: 5,
+        cacheRead: 0,
+        cacheWrite: 0,
+        cost: 0.01,
+        turns: 1,
+      },
+      children: [],
+    }).ok,
+  ).toBe(true);
+  createProgressState(requestId, "build", "do task", "root-run");
+  patchProgressState(requestId, {
+    toolCount: 1,
+    activeToolActivity: { toolName: "bash", inputSummary: "bash: ls -la" },
+    lastToolPreview: "bash: ls -la",
+    modelDisplay: "provider/model:high",
+  });
+  const theme = makeMarkerTheme();
+  const rendered = renderSubagentProgress(
+    {
+      customType: "subagent-progress",
+      content: "",
+      display: true,
+      details: { requestId },
+    },
+    { expanded: true },
+    theme,
+  );
+  const text = renderText(rendered);
+  expect(text).toContain("<muted>[running]</muted>");
+  expect(text).toContain("<muted>task: do task</muted>");
+  expect(text).toContain("<muted>\u2192</muted>");
+  expect(text).toContain("<muted>: ls -la</muted>");
+  expect(text).toContain("<muted>provider/model:high</muted>");
+  expect(text).toContain("spawned");
+  expect(text).toContain("<muted>");
+  expect(text).not.toContain("<dim>[running]</dim>");
+  expect(text).not.toContain("<dim>task:");
+  expect(text).not.toContain("<dim>: ls");
+  expect(text).not.toContain("<dim>");
+  clearProgressState(requestId);
+  resetUsageLedger();
 });

@@ -28,6 +28,7 @@ import {
   failProgressState,
   finalizeProgressState,
   getProgressState,
+  markProgressResultPosted,
 } from "../progress/progress.js";
 import {
   createSubagentError,
@@ -162,17 +163,19 @@ function cancelStartedJob(
   usageAccount.finalize("cancelled");
 }
 
+/** Posts the terminal result card, which supersedes the progress card. */
 function sendSubagentResultMessage(
-  pi: ExtensionAPI,
+  lc: Pick<LifecycleContext, "pi" | "requestId">,
   content: string,
   details: SubagentDetails,
 ): void {
-  pi.sendMessage({
+  lc.pi.sendMessage({
     customType: "subagent-result",
     content,
     display: true,
     details,
   });
+  markProgressResultPosted(lc.requestId);
 }
 
 function deliverDesktopCompletionNotification(
@@ -219,7 +222,7 @@ function finishLifecycleFailure(
   if (lc.mergedSignal.aborted) {
     cancelProgressState(lc.requestId, lc.job.cancelReason ?? errorMessage);
     if (getSubagentDepth() > 0) {
-      sendSubagentResultMessage(lc.pi, "Canceled", displayDetails);
+      sendSubagentResultMessage(lc, "Canceled", displayDetails);
     }
     return createCompletedToolResult("Canceled", displayDetails);
   }
@@ -227,7 +230,7 @@ function finishLifecycleFailure(
   lc.ctx.ui?.notify(errorMessage, "error");
   const latestResult = getLatestResult(details);
   const content = formatSubagentFailureForParent(errorMessage, latestResult);
-  sendSubagentResultMessage(lc.pi, content, displayDetails);
+  sendSubagentResultMessage(lc, content, displayDetails);
   return createCompletedToolResult(content, displayDetails);
 }
 
@@ -260,7 +263,7 @@ function finishLifecycleResult(
     getFeedbackSummaryText(toolResult),
     result.outcome,
   );
-  sendSubagentResultMessage(lc.pi, content, displayDetails);
+  sendSubagentResultMessage(lc, content, displayDetails);
   return toolResult;
 }
 

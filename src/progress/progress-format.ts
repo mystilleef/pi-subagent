@@ -24,6 +24,7 @@ import {
 import { serializeUsageSnapshot } from "../shared/usage-snapshot.js";
 import { isSafePositiveInteger } from "../shared/usage-validation.js";
 import {
+  type ProgressStatus,
   STATUS_COUNT_ORDER,
   STATUS_ICON,
   type SubagentProgressState,
@@ -41,10 +42,24 @@ function redactOrTruncate(text: string, maxChars: number): string {
 }
 
 /** Ordinals render from #2; one-off instances keep their plain title. */
-export function isDisplayOrdinal(
-  ordinal: number | undefined,
-): ordinal is number {
+function isDisplayOrdinal(ordinal: number | undefined): ordinal is number {
   return isSafePositiveInteger(ordinal) && ordinal >= 2;
+}
+
+/**
+ * Identity label shared by every surface: `<base> <name>`, with `#<n>`
+ * inserted only for valid ordinals `n >= 2`. Unnamed instances fall back
+ * to base. `styleOrdinal` lets themed titles color the ordinal segment.
+ */
+export function formatDisplayIdentity(
+  base: string,
+  instanceName: string | undefined,
+  ordinal?: number,
+  styleOrdinal: (text: string) => string = (text) => text,
+): string {
+  if (!instanceName) return base;
+  if (!isDisplayOrdinal(ordinal)) return `${base} ${instanceName}`;
+  return `${base} ${styleOrdinal(`#${ordinal}`)} ${instanceName}`;
 }
 
 function walkActivityTree(activity: ToolActivity): string[] {
@@ -52,13 +67,13 @@ function walkActivityTree(activity: ToolActivity): string[] {
   let current: ToolActivity | undefined = activity;
   while (current) {
     if (current.inputSummary) {
-      const ordinalPrefix = isDisplayOrdinal(current.ordinal)
-        ? `#${current.ordinal} `
-        : "";
-      const annotated = current.instanceName
-        ? `${current.inputSummary} [${ordinalPrefix}${current.instanceName}]`
-        : current.inputSummary;
-      parts.push(annotated);
+      parts.push(
+        formatDisplayIdentity(
+          current.inputSummary,
+          current.instanceName,
+          current.ordinal,
+        ),
+      );
     }
     current = current.child;
   }
@@ -203,18 +218,31 @@ function groupTier(statuses: StatusCounts): 0 | 1 | 2 {
   return 2;
 }
 
+/** Glyph-first count (`✓3`), matching header, tree, and token prefixes. */
+export function formatStatusCount(
+  status: ProgressStatus,
+  count: number,
+): string {
+  return `${STATUS_ICON[status]}${count}`;
+}
+
 function formatAgentGroup(agent: string, entry: AgentUsageRollup): string {
   const present = STATUS_COUNT_ORDER.filter(
     (status) => entry.statuses[status] > 0,
   );
   const [only] = present;
   if (present.length === 1 && only !== undefined) {
-    return `${agent} ${entry.instances}${STATUS_ICON[only]}`;
+    return `${agent} ${formatStatusCount(only, entry.instances)}`;
   }
   const inner = present
-    .map((status) => `${entry.statuses[status]}${STATUS_ICON[status]}`)
+    .map((status) => formatStatusCount(status, entry.statuses[status]))
     .join(" ");
   return `${agent} ${entry.instances} (${inner})`;
+}
+
+export interface DescendantTallyOptions {
+  /** Appends `run $<total>`; `/stats` passes false, its header already shows subtree cost. */
+  includeRunCost?: boolean | undefined;
 }
 
 /**
@@ -223,17 +251,25 @@ function formatAgentGroup(agent: string, entry: AgentUsageRollup): string {
  * Aggregates every descendant depth, excludes self, includes omitted
  * totals exactly once, and orders groups by tier then recency. Recency
  * uses every retained descendant in the accounting source, never only
- * tree-visible nodes. Returns undefined for leaves or when the width
- * cannot fit the prefix plus required omission marker.
+ * tree-visible nodes. Cost-bearing tallies end with four-decimal
+ * whole-subtree `run $<total>` including self and omitted totals exactly
+ * once. Reserves the run suffix while fitting groups, collapsing trailing
+ * groups into `+<K> more` before the suffix. Returns undefined for leaves
+ * or when prefix, required omission marker, and applicable suffix cannot fit.
  */
 export function formatDescendantTally(
   root: UsageInstanceNode,
   contentWidth: number,
+  options?: DescendantTallyOptions,
 ): string | undefined {
   if (!Number.isFinite(contentWidth) || contentWidth <= 0) return undefined;
   if (!hasDescendants(root)) return undefined;
+  const includeRun = options?.includeRunCost ?? true;
   const rollup = computeDescendantRollup(root);
   const prefix = `${rollup.instances} spawned`;
+  const runSuffix = includeRun
+    ? `run ${formatCost(computeSubtreeRollup(root).usage.cost)}`
+    : undefined;
   const latestByAgent = collectLatestStartedAt(root);
   const ordered = Object.entries(rollup.byAgent)
     .map(([agent, entry]) => ({
@@ -253,6 +289,7 @@ export function formatDescendantTally(
   for (let hidden = 0; hidden <= ordered.length; hidden += 1) {
     const segments = [prefix, ...ordered.slice(0, ordered.length - hidden)];
     if (hidden > 0) segments.push(`+${hidden} more`);
+    if (runSuffix) segments.push(runSuffix);
     const candidate = segments.join(SEGMENT_SEPARATOR);
     if (visibleWidth(candidate) <= contentWidth) return candidate;
   }
@@ -316,8 +353,13 @@ export function formatUsageTree(
     }
   };
   const renderNode = (node: UsageInstanceNode, depth: number): void => {
+    const identity = formatDisplayIdentity(
+      node.agent,
+      node.instanceName,
+      node.ordinal,
+    );
     const parts = [
-      `${"  ".repeat(depth)}${STATUS_ICON[node.status]} ${node.agent} #${node.ordinal} ${node.instanceName}`,
+      `${"  ".repeat(depth)}${STATUS_ICON[node.status]} ${identity}`,
     ];
     const duration = formatTreeNodeDuration(node, now);
     if (duration) parts.push(duration);

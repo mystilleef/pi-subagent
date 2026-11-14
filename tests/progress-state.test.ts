@@ -17,7 +17,9 @@ import {
   finalizeProgressState,
   getAllProgressStates,
   getProgressState,
+  hasProgressResultPosted,
   isToolCallPart,
+  markProgressResultPosted,
 } from "../src/progress/progress-state.js";
 import type { SubagentDetails } from "../src/shared/types.js";
 import { CANONICAL_SUMMARY_FIXTURES, makeSingleResult } from "./fixtures.js";
@@ -1013,6 +1015,41 @@ test("clearProgressState removes state", () => {
 
 test("clearProgressState is a no-op for unknown id", () => {
   expect(() => clearProgressState("nonexistent")).not.toThrow();
+});
+
+describe("progress result posting flags", () => {
+  test("posted flag is independent of stored progress state", () => {
+    markProgressResultPosted("posted-orphan");
+    expect(hasProgressResultPosted("posted-orphan")).toBe(true);
+    expect(getProgressState("posted-orphan")).toBeUndefined();
+    clearProgressState("posted-orphan");
+    expect(hasProgressResultPosted("posted-orphan")).toBe(false);
+  });
+
+  test("hasProgressResultPosted reports false for never-posted ids", () => {
+    createProgressState("posted-unknown", "agent-a", "task a");
+    expect(hasProgressResultPosted("posted-unknown")).toBe(false);
+    clearProgressState("posted-unknown");
+  });
+
+  test("clearProgressState removes the posted flag", () => {
+    createProgressState("posted-clear", "agent-a", "task a");
+    markProgressResultPosted("posted-clear");
+    expect(hasProgressResultPosted("posted-clear")).toBe(true);
+    clearProgressState("posted-clear");
+    expect(hasProgressResultPosted("posted-clear")).toBe(false);
+  });
+
+  test("resetProgressStore clears posted flags", () => {
+    createProgressState("posted-reset-1", "agent-a", "task a");
+    createProgressState("posted-reset-2", "agent-b", "task b");
+    markProgressResultPosted("posted-reset-1");
+    markProgressResultPosted("posted-reset-2");
+    resetProgressStore();
+    expect(hasProgressResultPosted("posted-reset-1")).toBe(false);
+    expect(hasProgressResultPosted("posted-reset-2")).toBe(false);
+    expect(getProgressState("posted-reset-1")).toBeUndefined();
+  });
 });
 
 test.each([

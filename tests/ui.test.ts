@@ -11,6 +11,7 @@ import {
 } from "@earendil-works/pi-tui/dist/terminal-image.js";
 import * as usageLedger from "../src/orchestration/usage-ledger.js";
 import {
+  createDescendantTally,
   formatResultFooter,
   formatSubagentTitle,
   formatTokens,
@@ -20,6 +21,7 @@ import {
   renderRunsBoard,
   renderSubagentCall,
   renderSubagentResult,
+  withLayoutGap,
 } from "../src/output/ui.js";
 import type { SubagentProgressState } from "../src/progress/progress.js";
 import { getProgressState } from "../src/progress/progress.js";
@@ -57,6 +59,79 @@ function renderToString(component: unknown, width = 10000): string {
     .render(width)
     .join("\n");
 }
+
+describe("withLayoutGap", () => {
+  test("renders zero lines when the inner block renders nothing", () => {
+    const gap = withLayoutGap({ render: () => [], invalidate: () => {} });
+    expect(gap.render(80)).toEqual([]);
+  });
+
+  test("prepends exactly one blank row before a present block", () => {
+    const gap = withLayoutGap({
+      render: (width: number) => [`width:${width}`],
+      invalidate: () => {},
+    });
+    expect(gap.render(80)).toEqual(["", "width:80"]);
+  });
+
+  test("forwards invalidate to the inner component", () => {
+    let invalidated = 0;
+    const gap = withLayoutGap({
+      render: () => [],
+      invalidate: () => {
+        invalidated += 1;
+      },
+    });
+    gap.invalidate();
+    gap.invalidate();
+    expect(invalidated).toBe(2);
+  });
+});
+
+test("descendant tally invalidate is a no-op", () => {
+  const theme = createDefaultFakeTheme();
+  const tally = createDescendantTally(
+    {
+      id: "tally-root",
+      agent: "root",
+      instanceName: "top",
+      ordinal: 1,
+      startedAt: 1000,
+      status: "success",
+      usage: {
+        input: 0,
+        output: 0,
+        cacheRead: 0,
+        cacheWrite: 0,
+        cost: 0.01,
+        turns: 0,
+      },
+      children: [
+        {
+          id: "tally-child",
+          agent: "build",
+          instanceName: "one",
+          ordinal: 1,
+          startedAt: 2000,
+          status: "success",
+          usage: {
+            input: 0,
+            output: 0,
+            cacheRead: 0,
+            cacheWrite: 0,
+            cost: 0.02,
+            turns: 0,
+          },
+          children: [],
+        },
+      ],
+    },
+    theme,
+  );
+  expect(tally).toBeDefined();
+  expect(tally?.render(120).length).toBeGreaterThan(0);
+  expect(() => tally?.invalidate()).not.toThrow();
+});
 
 test("renderResult output aggregation and truncation", () => {
   const tool = getSubagentTool();
@@ -661,7 +736,7 @@ test("renderSubagentResult formats units, fallback output, and failed tool resul
       },
       "provider/model:high",
     ),
-  ).toBe("provider/model:high · 3 turns · ctx:38k · $0.0120");
+  ).toBe("provider/model:high · 3 turns · $0.0120");
   expect(
     formatResultFooter(
       {
@@ -940,7 +1015,7 @@ test("subagent-result message renderer uses summarized content and preserves res
   expect(text).toContain("[toolOutput]summarized semantic outcome");
   expect(text).toContain("[/toolOutput]");
   expect(text).not.toContain("raw child output must stay hidden from run card");
-  expect(text).toContain("[dim]1 turn · $0.0100[/dim]");
+  expect(text).toContain("[muted]1 turn · $0.0100[/muted]");
   expect(
     lines.every(
       (line) =>
@@ -950,6 +1025,31 @@ test("subagent-result message renderer uses summarized content and preserves res
   expect(details.results[0]?.finalOutput).toBe(
     "raw child output must stay hidden from run card",
   );
+});
+
+test("subagent-result renderer falls back to details output for non-text content", () => {
+  const renderer =
+    getSubagentTool().registeredMessageRenderers.get("subagent-result");
+  if (!renderer) throw new Error("subagent-result renderer missing");
+  const details: SubagentDetails = {
+    mode: "single",
+    agentScope: "both",
+    projectAgentsDir: null,
+    results: [makeSingleResult({ finalOutput: "details output" })],
+  };
+  const rendered = renderer(
+    {
+      role: "custom",
+      customType: "subagent-result",
+      content: { unexpected: true } as never,
+      display: true,
+      timestamp: 0,
+      details,
+    },
+    makeMessageRenderOptions(),
+    createDefaultFakeTheme() as never,
+  ) as unknown as { render: (width: number) => string[] };
+  expect(rendered.render(120).join("\n")).toContain("details output");
 });
 
 test("normal subagent tool rendering continues to use raw final output", () => {
@@ -1211,9 +1311,8 @@ test("subagent result renders compact structured success output", () => {
   expect(renderedText).not.toContain("[muted]1.2s[/muted]");
   expect(renderedText).toContain("Outcome: shipped");
   expect(renderedText).toContain("[toolOutput]Changed: src/ui.ts[/toolOutput]");
-  expect(renderedText).toContain(
-    "provider/model:high · 3 turns · ctx:38k · $0.0120",
-  );
+  expect(renderedText).toContain("provider/model:high · 3 turns · $0.0120");
+  expect(renderedText).not.toContain("ctx:");
   expect(renderedText).not.toContain("↑12k");
   expect(renderedText).not.toContain("↓1.1k");
 });
@@ -1552,7 +1651,8 @@ test("formatResultFooter excludes duration from output", () => {
     },
     "test-model",
   );
-  expect(footer).toBe("test-model · 5 turns · ctx:50k · $0.0500");
+  expect(footer).toBe("test-model · 5 turns · $0.0500");
+  expect(footer).not.toContain("ctx:");
   expect(footer).not.toMatch(/\d+(\.\d+)?(ms|s|m \d+s)/);
 });
 
@@ -1594,12 +1694,12 @@ describe("unconfirmed thinking UI footer propagation", () => {
     {
       name: "renderSubagentResult footer includes requested unconfirmed level",
       model: "unknown ･ unknown ･ high",
-      expectedText: "[dim]unknown ･ unknown ･ high · 1 turn[/dim]",
+      expectedText: "[muted]unknown ･ unknown ･ high · 1 turn[/muted]",
     },
     {
       name: "renderSubagentResult footer shows confirmed requested level",
       model: "custom ･ reasoner ･ medium",
-      expectedText: "[dim]custom ･ reasoner ･ medium · 1 turn[/dim]",
+      expectedText: "[muted]custom ･ reasoner ･ medium · 1 turn[/muted]",
     },
   ])("$name", (row) => {
     const text = renderResultModel({
@@ -1610,7 +1710,7 @@ describe("unconfirmed thinking UI footer propagation", () => {
 
   test("renderSubagentResult footer omits model when absent", () => {
     const text = renderResultModel({});
-    expect(text).toContain("[dim]1 turn[/dim]");
+    expect(text).toContain("[muted]1 turn[/muted]");
     expect(text).not.toContain("unknown");
   });
 });
@@ -1809,7 +1909,7 @@ test("renderRunsBoard starts nonempty board with session summary", () => {
   );
   const lines = text.split("\n");
   expect(lines[0]).toStartWith(
-    "[dim]Session · 0 runs · 0 instances · $0.0000[/dim]",
+    "[muted]Session · 0 runs · 0 instances · $0.0000[/muted]",
   );
   expect(text.indexOf("Session ·")).toBeLessThan(text.indexOf("ACTIVE (1)"));
 });
@@ -1894,10 +1994,18 @@ test("renderRunsBoard renders status sections in fixed order", () => {
   const text = renderToString(rendered);
   const lines = text.split("\n");
   expect(lines).toBeArray();
-  expect(text).toContain("[dim]ACTIVE (1) ─────────────────────[/dim]");
-  expect(text).toContain("[dim]FAILED (1) ─────────────────────[/dim]");
-  expect(text).toContain("[dim]CANCELLED (1) ──────────────────[/dim]");
-  expect(text).toContain("[dim]SUCCEEDED (1) ──────────────────[/dim]");
+  expect(text).toContain(
+    "[muted]ACTIVE (1)[/muted] [dim]─────────────────────[/dim]",
+  );
+  expect(text).toContain(
+    "[muted]FAILED (1)[/muted] [dim]─────────────────────[/dim]",
+  );
+  expect(text).toContain(
+    "[muted]CANCELLED (1)[/muted] [dim]──────────────────[/dim]",
+  );
+  expect(text).toContain(
+    "[muted]SUCCEEDED (1)[/muted] [dim]──────────────────[/dim]",
+  );
   expect(text).not.toContain("ACTIVE (0)");
   expect(text).not.toContain("COMPLETED");
   expect(text.indexOf("ACTIVE (1)")).toBeLessThan(text.indexOf("FAILED (1)"));
@@ -1927,7 +2035,7 @@ test("renderRunsBoard renders status sections in fixed order", () => {
   const cardLines = lines.filter((line) =>
     /^\[tool(?:Pending|Error|Success)Bg\]/.test(line),
   );
-  expect(cardLines).toHaveLength(16);
+  expect(cardLines).toHaveLength(20);
   expect(
     cardLines.every((line) =>
       /^\[tool(?:Pending|Error|Success)Bg\].*\[\/tool(?:Pending|Error|Success)Bg\]$/.test(
@@ -1936,16 +2044,16 @@ test("renderRunsBoard renders status sections in fixed order", () => {
     ),
   ).toBe(true);
   expect(headerLines[0]).toContain(
-    "[accent]⟳[/accent] [toolTitle]*reviewer*[/toolTitle] [dim][running][/dim] [muted]2 tools · 16% ctx ·",
+    "[accent]⟳[/accent] [toolTitle]*reviewer*[/toolTitle] [muted][running][/muted] [muted]2 tools · 16% ctx ·",
   );
   expect(headerLines[1]).toContain(
-    "[error]✗[/error] [toolTitle]*test-runner*[/toolTitle] [dim][error][/dim] [muted]3 tools · 24% ctx · 2m 30s[/muted]",
+    "[error]✗[/error] [toolTitle]*test-runner*[/toolTitle] [muted][error][/muted] [muted]3 tools · 24% ctx · 2m 30s[/muted]",
   );
   expect(headerLines[2]).toContain(
-    "[error]⊘[/error] [toolTitle]*scanner*[/toolTitle] [dim][cancelled][/dim] [muted]1 tool · --% ctx · 5.0s[/muted]",
+    "[error]⊘[/error] [toolTitle]*scanner*[/toolTitle] [muted][cancelled][/muted] [muted]1 tool · --% ctx · 5.0s[/muted]",
   );
   expect(headerLines[3]).toContain(
-    "[success]✓[/success] [toolTitle]*builder*[/toolTitle] [accent]\x1b[3mable-falcon\x1b[23m[/accent] [dim][success][/dim] [muted]5 tools · 40% ctx · 4m 40s[/muted]",
+    "[success]✓[/success] [toolTitle]*builder*[/toolTitle] [accent]\x1b[3mable-falcon\x1b[23m[/accent] [muted][success][/muted] [muted]5 tools · 40% ctx · 4m 40s[/muted]",
   );
   expect(text).toContain(
     "[toolSuccessBg]   [toolOutput]Built all the things successfully[/toolOutput]",
@@ -2085,11 +2193,11 @@ test("abridged status cards without footer keep existing line output", () => {
   const cardLines = lines.filter((line) =>
     /^\[tool(Pending|Error|Success)Bg\]/.test(line),
   );
-  expect(cardLines).toHaveLength(4);
+  expect(cardLines).toHaveLength(5);
   expect(text).toContain("[muted](no output)[/muted]");
 });
 
-test("abridged progress job card with modelDisplay renders dim model footer", () => {
+test("abridged progress job card with modelDisplay renders muted model footer", () => {
   const now = Date.now();
   const state: SubagentProgressState = {
     requestId: "r1",
@@ -2105,7 +2213,7 @@ test("abridged progress job card with modelDisplay renders dim model footer", ()
   const fakeTheme = createDefaultFakeTheme();
   const rendered = renderRunsBoard([state], fakeTheme as never);
   const text = renderToString(rendered);
-  expect(text).toContain("[dim]provider/model:high[/dim]");
+  expect(text).toContain("[muted]provider/model:high[/muted]");
 });
 
 test("abridged progress job card with modelDisplay excludes usage/cost/turn/context footer segments", () => {
@@ -2126,7 +2234,7 @@ test("abridged progress job card with modelDisplay excludes usage/cost/turn/cont
   const text = renderToString(rendered);
   const footerLine = text
     .split("\n")
-    .find((l) => l.includes("[dim]") && l.includes("provider/model:high"));
+    .find((l) => l.includes("[muted]") && l.includes("provider/model:high"));
   expect(footerLine).toBeDefined();
   expect(footerLine).not.toContain("turn");
   expect(footerLine).not.toContain("ctx:");
@@ -2149,7 +2257,7 @@ test("abridged progress job card with modelDisplay and zero tool count preserves
   const fakeTheme = createDefaultFakeTheme();
   const rendered = renderRunsBoard([state], fakeTheme as never);
   const text = renderToString(rendered);
-  expect(text).toContain("[dim]provider/model:fast[/dim]");
+  expect(text).toContain("[muted]provider/model:fast[/muted]");
   expect(text).toContain("[muted](no output)[/muted]");
 });
 
@@ -2171,10 +2279,10 @@ test("abridged progress job card with modelDisplay and long body preview truncat
   const text = renderToString(rendered);
   expect(text).toContain(`${longBody.slice(0, 119)}…`);
   expect(text).not.toContain(longBody);
-  expect(text).toContain("[dim]provider/model:verbose[/dim]");
+  expect(text).toContain("[muted]provider/model:verbose[/muted]");
 });
 
-test("abridged progress job card without modelDisplay renders no dim model footer", () => {
+test("abridged progress job card without modelDisplay renders no muted model footer", () => {
   const now = Date.now();
   const state: SubagentProgressState = {
     requestId: "r1",
@@ -2190,7 +2298,7 @@ test("abridged progress job card without modelDisplay renders no dim model foote
   const fakeTheme = createDefaultFakeTheme();
   const rendered = renderRunsBoard([state], fakeTheme as never);
   const text = renderToString(rendered);
-  const dimParts = text.match(/\[dim\]([^[]+)\[\/dim\]/g) ?? [];
+  const dimParts = text.match(/\[muted\]([^[]+)\[\/muted\]/g) ?? [];
   const modelFooter = dimParts.filter((p) => p.includes("model"));
   expect(modelFooter).toHaveLength(0);
 });
@@ -2210,12 +2318,12 @@ test("abridged progress job card with undefined modelDisplay excludes footer", (
   const rendered = renderRunsBoard([state], fakeTheme as never);
   const text = renderToString(rendered);
   expect(text).toContain("[muted](no output)[/muted]");
-  const dimParts = text.match(/\[dim\]([^[]+)\[\/dim\]/g) ?? [];
+  const dimParts = text.match(/\[muted\]([^[]+)\[\/muted\]/g) ?? [];
   const modelFooter = dimParts.filter((p) => p.includes("model"));
   expect(modelFooter).toHaveLength(0);
 });
 
-test("progress model footer regression: exact footer line is dim model only", () => {
+test("progress model footer regression: exact footer line is muted model only", () => {
   const now = Date.now();
   const state: SubagentProgressState = {
     requestId: "r1",
@@ -2233,12 +2341,12 @@ test("progress model footer regression: exact footer line is dim model only", ()
   const text = renderToString(rendered);
   const lines = text.split("\n");
   const footerLines = lines.filter(
-    (l) => l.includes("[dim]") && l.includes("provider/model:high"),
+    (l) => l.includes("[muted]") && l.includes("provider/model:high"),
   );
   expect(footerLines).toHaveLength(1);
   const fl0 = footerLines[0] as string;
   expect(fl0.trim()).toMatch(
-    /^\[toolPendingBg\] \[dim\]provider\/model:high\[\/dim\]\s+\[\/toolPendingBg\]$/,
+    /^\[toolPendingBg\] \[muted\]provider\/model:high\[\/muted\]\s+\[\/toolPendingBg\]$/,
   );
 });
 
@@ -2262,11 +2370,11 @@ test("progress model footer regression: footer line rejects all completed-card s
   const text = renderToString(rendered);
   const lines = text.split("\n");
   const footerLine = lines.find(
-    (l) => l.includes("[dim]") && l.includes("provider/model:high"),
+    (l) => l.includes("[muted]") && l.includes("provider/model:high"),
   );
   expect(footerLine).toBeDefined();
   const fl = footerLine as string;
-  expect(fl).toContain("[dim]provider/model:high[/dim]");
+  expect(fl).toContain("[muted]provider/model:high[/muted]");
   expect(fl).not.toContain("turn");
   expect(fl).not.toContain("ctx:");
   expect(fl).not.toContain("$");
@@ -2291,8 +2399,8 @@ test("progress model footer regression: empty string modelDisplay excludes foote
   const fakeTheme = createDefaultFakeTheme();
   const rendered = renderRunsBoard([state], fakeTheme as never);
   const text = renderToString(rendered);
-  const dimFooters = (text.match(/\[dim\][^[]*\[\/dim\]/g) ?? []).filter((m) =>
-    m.includes("model"),
+  const dimFooters = (text.match(/\[muted\][^[]*\[\/muted\]/g) ?? []).filter(
+    (m) => m.includes("model"),
   );
   expect(dimFooters).toHaveLength(0);
 });
@@ -2349,8 +2457,8 @@ test("progress model footer regression: footer exclusive to modelDisplay-bearing
   const rendered = renderRunsBoard(states, fakeTheme as never);
   const text = renderToString(rendered);
   const dimModelFooters = (
-    text.match(/\[dim\](provider\/model[^[]+)\[\/dim\]/g) ?? []
-  ).map((m) => m.replace("[dim]", "").replace("[/dim]", ""));
+    text.match(/\[muted\](provider\/model[^[]+)\[\/muted\]/g) ?? []
+  ).map((m) => m.replace("[muted]", "").replace("[/muted]", ""));
   expect(dimModelFooters).toHaveLength(2);
   expect(dimModelFooters).toContain("provider/model:high");
   expect(dimModelFooters).toContain("provider/model:fast");
@@ -2388,7 +2496,7 @@ test("full status card footer still renders after abridged footer support", () =
     fakeTheme,
   );
   const text = renderToString(rendered);
-  expect(text).toContain("[dim]provider/model · 1 turn · $0.0100[/dim]");
+  expect(text).toContain("[muted]provider/model · 1 turn · $0.0100[/muted]");
 });
 
 test("empty footer text does not render a blank footer line on status card", () => {
@@ -2417,7 +2525,7 @@ test("empty footer text does not render a blank footer line on status card", () 
   const cardLines = lines.filter((line) =>
     /^\[tool(?:Pending|Error|Success)Bg\]/.test(line),
   );
-  expect(cardLines).toHaveLength(6);
+  expect(cardLines).toHaveLength(5);
 });
 
 test("result detail shape compatible with preserved nested activity progress", async () => {
@@ -2746,11 +2854,11 @@ test.each([
     absentFragmentB: "$",
   },
   {
-    name: "formatResultFooter with model and contextTokens only suppresses turns and cost when zero",
+    name: "formatResultFooter with model and contextTokens only omits context and keeps model",
     turns: 0,
     cost: 0,
     contextTokens: 38000,
-    expectedFooter: "provider/model · ctx:38k",
+    expectedFooter: "provider/model",
     absentFragmentA: "turn",
     absentFragmentB: "$",
   },
@@ -2794,11 +2902,12 @@ test("formatResultFooter without model but with usage fields keeps correct order
     },
     undefined,
   );
-  expect(footer).toBe("2 turns · ctx:50k · $0.0200");
+  expect(footer).toBe("2 turns · $0.0200");
   expect(footer).not.toContain("model");
+  expect(footer).not.toContain("ctx:");
 });
 
-test("completed result card footer renders model, turns, context, cost in fixed order", () => {
+test("completed result card footer renders model, turns, cost in fixed order", () => {
   const fakeTheme = createDefaultFakeTheme();
   const rendered = renderSubagentResult(
     {
@@ -2830,17 +2939,16 @@ test("completed result card footer renders model, turns, context, cost in fixed 
     fakeTheme,
   );
   const renderedText = renderToString(rendered);
-  const footerIdx = renderedText.indexOf("[dim]claude-sonnet-4-20250514");
+  const footerIdx = renderedText.indexOf("[muted]claude-sonnet-4-20250514");
   expect(footerIdx).toBeGreaterThan(0);
   const afterFooter = renderedText.slice(footerIdx);
   const modelIdx = afterFooter.indexOf("claude-sonnet-4-20250514");
   const turnsIdx = afterFooter.indexOf("3 turns");
-  const ctxIdx = afterFooter.indexOf("ctx:12k");
   const costIdx = afterFooter.indexOf("$0.0050");
   expect(modelIdx).toBeGreaterThanOrEqual(0);
   expect(turnsIdx).toBeGreaterThan(0);
-  expect(ctxIdx).toBeGreaterThan(turnsIdx);
-  expect(costIdx).toBeGreaterThan(ctxIdx);
+  expect(costIdx).toBeGreaterThan(turnsIdx);
+  expect(afterFooter).not.toContain("ctx:");
   expect(afterFooter).not.toContain("↑");
   expect(afterFooter).not.toContain("↓");
   expect(afterFooter).not.toMatch(/\d+(ms|s|m \d+s)/);
@@ -2878,9 +2986,8 @@ test("completed result card footer excludes token arrow metrics", () => {
     fakeTheme,
   );
   const renderedText = renderToString(rendered);
-  expect(renderedText).toContain(
-    "provider/model · 2 turns · ctx:10k · $0.0100",
-  );
+  expect(renderedText).toContain("provider/model · 2 turns · $0.0100");
+  expect(renderedText).not.toContain("ctx:");
   expect(renderedText).not.toContain("↑5.0k");
   expect(renderedText).not.toContain("↓2.5k");
 });
@@ -2917,8 +3024,8 @@ test("completed result card footer suppresses model segment when model is undefi
     fakeTheme,
   );
   const renderedText = renderToString(rendered);
-  expect(renderedText).toContain("[dim]1 turn · $0.0100[/dim]");
-  expect(renderedText).not.toContain("[dim]undefined[/dim]");
+  expect(renderedText).toContain("[muted]1 turn · $0.0100[/muted]");
+  expect(renderedText).not.toContain("[muted]undefined[/muted]");
 });
 
 test("completed result card footer suppresses context segment when contextTokens is zero", () => {
@@ -2953,9 +3060,9 @@ test("completed result card footer suppresses context segment when contextTokens
     fakeTheme,
   );
   const renderedText = renderToString(rendered);
-  expect(renderedText).toContain("[dim]test-model · 1 turn[/dim]");
-  expect(renderedText).not.toMatch(/\[dim\]test-model · 1 turn · ctx/);
-  expect(renderedText).not.toMatch(/\[dim\]test-model · 1 turn · \$/);
+  expect(renderedText).toContain("[muted]test-model · 1 turn[/muted]");
+  expect(renderedText).not.toMatch(/\[muted\]test-model · 1 turn · ctx/);
+  expect(renderedText).not.toMatch(/\[muted\]test-model · 1 turn · \$/);
 });
 
 test("completed result card footer suppresses cost segment when cost is zero", () => {
@@ -2990,7 +3097,8 @@ test("completed result card footer suppresses cost segment when cost is zero", (
     fakeTheme,
   );
   const renderedText = renderToString(rendered);
-  expect(renderedText).toContain("[dim]test-model · 1 turn · ctx:10k[/dim]");
+  expect(renderedText).toContain("[muted]test-model · 1 turn[/muted]");
+  expect(renderedText).not.toContain("ctx:");
   expect(renderedText).not.toContain("$");
 });
 
@@ -3007,7 +3115,11 @@ test.each<{
       errorText: "build collapsed",
       modelDisplay: "provider/model:err",
     },
-    expected: ["[dim]provider/model:err[/dim]", "FAILED", "build collapsed"],
+    expected: [
+      "[muted]provider/model:err[/muted]",
+      "FAILED",
+      "build collapsed",
+    ],
   },
   {
     status: "cancelled",
@@ -3016,7 +3128,7 @@ test.each<{
       toolCount: 1,
       modelDisplay: "provider/model:cancel",
     },
-    expected: ["[dim]provider/model:cancel[/dim]", "CANCELLED"],
+    expected: ["[muted]provider/model:cancel[/muted]", "CANCELLED"],
   },
   {
     status: "success",
@@ -3026,7 +3138,11 @@ test.each<{
       finalOutput: "all tests pass",
       modelDisplay: "provider/model:ok",
     },
-    expected: ["[dim]provider/model:ok[/dim]", "SUCCEEDED", "all tests pass"],
+    expected: [
+      "[muted]provider/model:ok[/muted]",
+      "SUCCEEDED",
+      "all tests pass",
+    ],
   },
 ])(
   "abridged job card renders modelDisplay footer for $status state",
@@ -3068,7 +3184,7 @@ test("abridged job card with modelDisplay uses errorText as body when finalOutpu
   const rendered = renderRunsBoard([state], fakeTheme as never);
   const text = renderToString(rendered);
   expect(text).toContain("[toolOutput]specific error message[/toolOutput]");
-  expect(text).toContain("[dim]provider/model[/dim]");
+  expect(text).toContain("[muted]provider/model[/muted]");
 });
 
 test("abridged job card with modelDisplay falls back body from taskPreview when no finalOutput or errorText", () => {
@@ -3133,7 +3249,7 @@ test("completed result card footer is empty when model and usage all missing", (
   const cardLines = lines.filter((line) =>
     /^\[tool(?:Pending|Error|Success)Bg\]/.test(line),
   );
-  expect(cardLines).toHaveLength(6);
+  expect(cardLines).toHaveLength(5);
   expect(renderedText).not.toMatch(/\[dim\].*·.*\[\/dim\]/);
 });
 
@@ -3674,7 +3790,7 @@ describe("persisted result accounting", () => {
     };
   }
 
-  test("places descendant tally immediately after header with descendant-inclusive run cost", () => {
+  test("places descendant tally below body with descendant-inclusive run cost", () => {
     const theme = createDefaultFakeTheme();
     const text = renderToString(
       renderSubagentResult(
@@ -3691,11 +3807,18 @@ describe("persisted result accounting", () => {
     const headerIdx = lines.findIndex((line) => line.includes("brave-otter"));
     const tallyIdx = lines.findIndex((line) => line.includes("3 spawned"));
     const bodyIdx = lines.findIndex((line) => line.includes("persisted body"));
-    const footerIdx = lines.findIndex((line) => line.includes("run $0.1000"));
     expect(headerIdx).toBeGreaterThanOrEqual(0);
-    expect(tallyIdx).toBe(headerIdx + 1);
-    expect(bodyIdx).toBeGreaterThan(tallyIdx);
-    expect(footerIdx).toBeGreaterThan(bodyIdx);
+    expect(bodyIdx).toBeGreaterThan(headerIdx);
+    expect(tallyIdx).toBeGreaterThan(bodyIdx);
+    const footerIdx = lines.findIndex((line) => line.includes("$0.0050"));
+    expect(footerIdx).toBeGreaterThan(tallyIdx);
+    const tallyLine = lines[tallyIdx] ?? "";
+    expect(tallyLine).toContain("run $0.1000");
+    expect(tallyLine).toContain("\u2713");
+    const footerLine = lines.find((l) => l.includes("$0.0050")) ?? "";
+    expect(footerLine).not.toContain("run $");
+    expect(footerLine).toContain("$0.0050");
+    expect(footerLine).not.toContain("ctx:");
   });
 
   test("keeps self footer distinct from subtree run cost while preserving body and metadata", () => {
@@ -3716,6 +3839,14 @@ describe("persisted result accounting", () => {
     expect(text).toContain("persisted body");
     expect(text).toContain("tools");
     expect(text).toContain("ctx");
+    const tallyLine =
+      text.split("\n").find((l) => l.includes("3 spawned")) ?? "";
+    expect(tallyLine).toContain("run $0.1000");
+    expect(tallyLine).toContain("\u2713");
+    const footerLine =
+      text.split("\n").find((l) => l.includes("$0.0050")) ?? "";
+    expect(footerLine).toContain("$0.0050");
+    expect(footerLine).not.toContain("run $");
   });
 
   test("renders run cost footer alone when result usage footer is empty", () => {
@@ -3741,12 +3872,12 @@ describe("persisted result accounting", () => {
         theme,
       ),
     );
-    const footerLine = text
-      .split("\n")
-      .find((line) => line.includes("run $")) as string;
-    expect(footerLine).toContain("[dim]run $0.1000[/dim]");
-    expect(footerLine).not.toContain(" · ");
     expect(text).toContain("3 spawned");
+    const tallyLine = text
+      .split("\n")
+      .find((line) => line.includes("3 spawned")) as string;
+    expect(tallyLine).toContain("run $0.1000");
+    expect(text).not.toMatch(/\n.*run \$0\.1000.*\n.*persisted body/);
   });
 
   test("renders identical output after ledger reset for persisted details", () => {
@@ -3959,8 +4090,10 @@ describe("persisted result accounting", () => {
     expect(tally).toContain("plan");
     expect(visibleWidth(tally)).toBeLessThanOrEqual(width - 2);
     const headerIdx = lines.findIndex((line) => line.includes("brave-otter"));
+    const bodyIdx = lines.findIndex((line) => line.includes("persisted body"));
     const tallyIdx = lines.findIndex((line) => line.includes("3 spawned"));
-    expect(tallyIdx).toBe(headerIdx + 1);
+    expect(bodyIdx).toBeGreaterThan(headerIdx);
+    expect(tallyIdx).toBeGreaterThan(bodyIdx);
   });
 
   test("truncates trailing groups with accurate omission count on narrow cards", () => {
@@ -3973,7 +4106,7 @@ describe("persisted result accounting", () => {
       content: [{ type: "text" as const, text: "ignored" }],
       details: persistedDetails(),
     };
-    const width = 32;
+    const width = 50;
     const rendered = renderToString(
       renderSubagentResult(payload, identity as never),
       width,
@@ -3982,18 +4115,21 @@ describe("persisted result accounting", () => {
     const tallyLines = lines.filter((line) => line.includes("spawned"));
     expect(tallyLines).toHaveLength(1);
     const tally = tallyLines[0]?.trim() ?? "";
-    expect(tally).toBe("3 spawned · +2 more");
+    expect(tally).toContain("3 spawned");
+    expect(tally).toContain("+");
+    expect(tally).toContain("more");
+    expect(tally).toContain("run $0.1000");
     expect(visibleWidth(tally)).toBeLessThanOrEqual(width - 2);
-    expect(rendered).toContain("run $0.1000");
     const headerIdx = lines.findIndex((line) => line.includes("brave-otter"));
-    const tallyIdx = lines.findIndex((line) => line.includes("3 spawned"));
     const bodyIdx = lines.findIndex((line) => line.includes("persisted body"));
+    const tallyIdx = lines.findIndex((line) => line.includes("3 spawned"));
     expect(headerIdx).toBeGreaterThanOrEqual(0);
-    expect(tallyIdx).toBeGreaterThan(headerIdx);
-    expect(bodyIdx).toBeGreaterThan(tallyIdx);
+    expect(bodyIdx).toBeGreaterThan(headerIdx);
+    expect(tallyIdx).toBeGreaterThan(bodyIdx);
+    expect(rendered).not.toMatch(/provider.*run \$/);
   });
 
-  test("suppresses tally below minimum width while preserving run cost", () => {
+  test("suppresses tally below minimum width while hiding run cost", () => {
     const identity = {
       fg: (_c: string, t: string) => t,
       bg: (_c: string, t: string) => t,
@@ -4008,8 +4144,7 @@ describe("persisted result accounting", () => {
       15,
     );
     expect(rendered).not.toContain("spawned");
-    expect(rendered).toContain("$0.1000");
-    expect(rendered.replace(/\s+/g, " ")).toContain("run $0.1000");
+    expect(rendered).not.toContain("run $0.1000");
     expect(rendered.replace(/\s+/g, " ")).toContain("persisted body");
   });
   test("renders run cost and tally for omitted-only descendant accounting", () => {
@@ -4075,4 +4210,115 @@ describe("persisted result accounting", () => {
     expect(rendered).toContain("2 spawned");
     expect(rendered.replace(/\s+/g, " ")).toContain("run $0.1000");
   });
+});
+
+test("display surfaces use muted information tokens with dim only for rulers", () => {
+  const theme = createDefaultFakeTheme();
+  const tree: UsageInstanceNode = {
+    id: "root-theme",
+    agent: "build",
+    instanceName: "theme-otter",
+    ordinal: 2,
+    startedAt: 1000,
+    status: "success",
+    durationMs: 1200,
+    usage: {
+      input: 100,
+      output: 50,
+      cacheRead: 0,
+      cacheWrite: 0,
+      cost: 0.01,
+      turns: 1,
+    },
+    children: [
+      {
+        id: "c1",
+        agent: "worker",
+        instanceName: "c-one",
+        ordinal: 1,
+        startedAt: 1100,
+        status: "success",
+        durationMs: 100,
+        usage: {
+          input: 10,
+          output: 5,
+          cacheRead: 0,
+          cacheWrite: 0,
+          cost: 0.005,
+          turns: 1,
+        },
+        children: [],
+      },
+      {
+        id: "c2",
+        agent: "worker",
+        instanceName: "c-two",
+        ordinal: 1,
+        startedAt: 1200,
+        status: "success",
+        durationMs: 100,
+        usage: {
+          input: 10,
+          output: 5,
+          cacheRead: 0,
+          cacheWrite: 0,
+          cost: 0.005,
+          turns: 1,
+        },
+        children: [],
+      },
+    ],
+  };
+  const details: SubagentDetails = {
+    mode: "single",
+    agentScope: "both",
+    projectAgentsDir: null,
+    results: [
+      makeSingleResult({
+        agent: "build",
+        instanceName: "theme-otter",
+        ordinal: 2,
+        finalOutput: "themed body",
+        model: "test-model",
+        usage: {
+          input: 0,
+          output: 0,
+          cacheRead: 0,
+          cacheWrite: 0,
+          cost: 0.005,
+          contextTokens: 0,
+          turns: 1,
+        },
+      }),
+    ],
+    usageTree: tree,
+  };
+  const resultText = renderToString(
+    renderSubagentResult(
+      { content: [{ type: "text" as const, text: "ignored" }], details },
+      theme,
+    ),
+  );
+  expect(resultText).toContain("[muted][success][/muted]");
+  const tallyLine =
+    resultText.split("\n").find((l) => l.includes("spawned")) ?? "";
+  expect(tallyLine).toContain("[muted]");
+  expect(tallyLine).not.toContain("[dim]");
+  expect(resultText).toContain("[muted]test-model");
+  expect(resultText).not.toContain("[dim][success]");
+  expect(resultText).not.toContain("[dim]test-model");
+  const state: SubagentProgressState = {
+    requestId: "theme-board",
+    agent: "builder",
+    taskPreview: "do",
+    status: "running",
+    startTime: Date.now() - 10000,
+    toolCount: 1,
+    modelDisplay: "provider/model:high",
+  };
+  const boardText = renderToString(renderRunsBoard([state], theme, 32));
+  expect(boardText).toContain("[muted]ACTIVE (1)[/muted] [dim]");
+  expect(boardText).toContain("[muted]provider/model:high[/muted]");
+  expect(boardText).not.toContain("[dim]provider/model");
+  expect(boardText).not.toContain("[dim][running]");
 });

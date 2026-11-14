@@ -351,11 +351,11 @@ exit 0
   await progress.when(
     () =>
       getProgressState(requestId)?.lastToolPreview ===
-      "subagent: build [able-falcon]",
+      "subagent: build able-falcon",
     "parent preview shows friendly instance label",
   );
   expect(getProgressState(requestId)?.lastToolPreview).toBe(
-    "subagent: build [able-falcon]",
+    "subagent: build able-falcon",
   );
   expect(getProgressState(requestId)?.activeToolActivity).toBeDefined();
   expect(getProgressState(requestId)?.activeToolActivity?.instanceName).toBe(

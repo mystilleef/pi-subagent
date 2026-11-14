@@ -26,6 +26,7 @@ import {
   failProgressState,
   finalizeProgressState,
   getProgressState,
+  hasProgressResultPosted,
   resetProgressStore,
 } from "../src/progress/progress.js";
 import type {
@@ -450,6 +451,7 @@ test("per-job notification completes lifecycle without crashing", async () => {
       expect(sentMessages.at(-1)?.customType).toBe("subagent-result");
       const requestId = requestIdOf(sentMessages);
       expect(getProgressState(requestId)?.status).toBe("success");
+      expect(hasProgressResultPosted(requestId)).toBe(true);
       expect(listRunJobs()).toHaveLength(0);
     },
   );
@@ -487,6 +489,7 @@ exit 1
       const requestId = requestIdOf(sentMessages);
       expect(getProgressState(requestId)?.status).toBe("error");
       expect(getProgressState(requestId)?.errorText).toContain("child failure");
+      expect(hasProgressResultPosted(requestId)).toBe(true);
       expect(result.details.renderedByMessage).toBe(true);
       expect(listRunJobs()).toHaveLength(0);
     },
@@ -527,6 +530,7 @@ wait $!
       expect((result.content[0] as TextContent).text).toBe("Canceled");
       const requestId = requestIdOf(sentMessages);
       expect(getProgressState(requestId)?.status).toBe("cancelled");
+      expect(hasProgressResultPosted(requestId)).toBe(true);
       expect(listRunJobs()).toHaveLength(0);
     },
   );
@@ -841,6 +845,7 @@ wait $!
   controller.abort("host cancel");
   await waitForRunJobsCleared();
   expect(getProgressState(requestId)?.status).toBe("cancelled");
+  expect(hasProgressResultPosted(requestId)).toBe(false);
 });
 
 test("formatSubagentToolResult returns completed result unchanged preserving all fields", () => {

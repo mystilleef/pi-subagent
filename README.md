@@ -263,10 +263,10 @@ included.
   the latest match wins.
   - Header: instances, status counts, tokens, subtree cost, and the
     root's wall-clock duration once finished.
-  - Tree: each instance with status, `#ordinal`, duration, and self
-    cost; siblings in start order.
-- `/jobs`: adds a session line (runs, instances, cost) and a run cost on
-  cards with descendants.
+  - Tree: each instance with status, label, duration, and self cost;
+    siblings in start order.
+- `/jobs`: adds a session line (runs, instances, cost); cards with
+  descendants add a tally.
 
 ```text
 Session · 2 runs · 9 instances · ↑412k ↓38k R1.2M W40k · $3.1840
@@ -276,9 +276,9 @@ check   3 · ✓2 ✗1 ⊘0 ⟳0 · ↑90k ↓8k R300k · $0.7100 · 3m 10s
 
 ```text
 merry-pelican (3f2a9c1e) · 4 instances · ✓3 ✗1 ⊘0 ⟳0 · ↑120k ↓9k · $0.4200 · 6m 41s
-✓ orchestrate #1 merry-pelican · 6m 41s · $0.0800
-  ✓ build #1 brave-otter · 2m 3s · $0.1500
-  ✗ check #1 jolly-panther · 58.2s · $0.0900
+✓ orchestrate merry-pelican · 6m 41s · $0.0800
+  ✓ build brave-otter · 2m 3s · $0.1500
+  ✗ check jolly-panther · 58.2s · $0.0900
   ✓ check #2 calm-heron · 1m 12s · $0.1000
 ```
 
@@ -287,18 +287,40 @@ input, `↓` output, `R` cache read, `W` cache write (shown when nonzero).
 
 ### Cards
 
-- Titles gain `#<n>` once an agent repeats among siblings:
-  `build #3 brave-otter`.
-- Cards with descendants add:
-  - A tally: running agents first, then failed or cancelled; entries
-    that overflow the width collapse into `+<K> more`:
-    `9 spawned · build 4 (3✓ 1⟳) · check 3 (2✓ 1✗) · fix 1✓`.
-  - A `run $<total>` footer segment: subtree cost, self included. The
-    existing footer cost remains self-only.
-- Expanded progress cards list the descendant tree.
-- Result cards render from their own saved details, so they survive
-  reloads. Results from sessions predating usage accounting render
-  without tally or run cost.
+Progress, result, and `/jobs` cards share one layout; blank rows
+separate blocks:
+
+```text
+⟳ orchestrate merry-pelican [running] 11 tools · 1% ctx · 6m 41s
+
+  → subagent: check #3 jolly-panther - read: …/STATE.json
+
+  5 spawned · check 3 (✓2 ⟳1) · build ✓1 · fix ✓1 · run $0.4213
+
+opencode-go · minimax-m3 · high
+```
+
+- **Header**: status, label, `[<status>]`, tools, context, elapsed.
+- **Body**: activity while running, error text on failure, first output
+  line on success. Result cards show full output; `/jobs` cards show
+  final output, error, or task.
+- **Expanded progress**: adds `task: <preview>` and the descendant tree
+  above the tally.
+- **Tally**: cards with descendants only. Counts every descendant
+  depth; running agents first, then failed or cancelled; overflow
+  collapses into `+<K> more`.
+- **Run cost**: `run $<total>` ends the tally and covers the whole
+  subtree, self included. `/stats` omits it; its header already shows
+  subtree cost.
+- **Footer**: model on progress and `/jobs` cards; model, turns, and
+  self-only cost on result cards.
+- **Labels**: `<agent> <name>`; titles gain `#<n>` once an agent
+  repeats among siblings: `build #3 brave-otter`.
+- The result card replaces the progress card once posted. A cancelled
+  top-level run keeps its progress card.
+- Result cards render from saved details, so they survive reloads.
+  Results from sessions predating usage accounting render without tally
+  or run cost.
 - Model-facing output and pi's footer exclude descendant usage.
 
 ### Sessions
