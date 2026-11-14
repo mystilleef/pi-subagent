@@ -1,5 +1,5 @@
 import type { ChildProcess } from "node:child_process";
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 
 export type TerminationSignal = "SIGTERM" | "SIGKILL";
 
@@ -426,6 +426,12 @@ function sendDirectSignal(
   state.metadata.processTreeKilled = false;
 }
 
+/** Runs `taskkill`; throws on spawn failure so callers fall back to a direct kill. */
+function runTaskkill(args: string[]): void {
+  const { error } = spawnSync("taskkill", args);
+  if (error) throw error;
+}
+
 function sendTreeSignal(
   proc: ChildProcess,
   signal: TerminationSignal,
@@ -459,12 +465,7 @@ function sendTreeSignal(
     return;
   }
   if (signal === "SIGKILL") {
-    (options.runTaskkill ?? ((args) => Bun.spawnSync(["taskkill", ...args])))([
-      "/pid",
-      String(pid),
-      "/t",
-      "/f",
-    ]);
+    (options.runTaskkill ?? runTaskkill)(["/pid", String(pid), "/t", "/f"]);
     markTreeKilled();
     return;
   }

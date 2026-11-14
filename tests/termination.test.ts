@@ -1,6 +1,11 @@
-import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import { afterAll, beforeAll, describe, expect, mock, test } from "bun:test";
 import type { ChildProcess } from "node:child_process";
 import { spawn } from "node:child_process";
+
+// Captured before any module mock registers so the synchronous-throw test can
+// restore the real child_process exports once it finishes.
+const realChildProcess = await import("node:child_process");
+
 import { EventEmitter } from "node:events";
 import * as fs from "node:fs";
 import * as os from "node:os";
@@ -1704,6 +1709,51 @@ describe("host sleep inhibitor behavior", () => {
       expect(supported).toBe(false);
     });
 
+    test("returns false when the lookup spawn throws synchronously", async () => {
+      mock.module("node:child_process", () =>
+        Object.assign({}, realChildProcess, {
+          spawn: () => {
+            throw new Error("lookup spawn exploded");
+          },
+        }),
+      );
+      try {
+        const adapter = makeHostSleepInhibitorAdapter({
+          platform: "darwin",
+        });
+        await expect(adapter.supported?.()).resolves.toBe(false);
+      } finally {
+        mock.module("node:child_process", () =>
+          import.meta.require("node:child_process"),
+        );
+      }
+    });
+
+    test("returns false when the lookup helper emits an error event", async () => {
+      const { EventEmitter } = await import("node:events");
+      mock.module("node:child_process", () =>
+        Object.assign({}, realChildProcess, {
+          spawn: () => {
+            const child = new EventEmitter();
+            queueMicrotask(() =>
+              child.emit("error", new Error("lookup helper failed")),
+            );
+            return child;
+          },
+        }),
+      );
+      try {
+        const adapter = makeHostSleepInhibitorAdapter({
+          platform: "darwin",
+        });
+        await expect(adapter.supported?.()).resolves.toBe(false);
+      } finally {
+        mock.module("node:child_process", () =>
+          import.meta.require("node:child_process"),
+        );
+      }
+    });
+
     test("returns false for non-executable path", async () => {
       const adapter = makeHostSleepInhibitorAdapter({
         platform: "linux",
@@ -1889,6 +1939,21 @@ describe("host sleep inhibitor behavior", () => {
       expect(supported).toBe(false);
       const handle = adapter.acquire(123);
       expect(handle).toBeDefined();
+    });
+
+    test("linux acquire degrades to empty handle when no helper applies", async () => {
+      const spawned: string[] = [];
+      const adapter = makeHostSleepInhibitorAdapter({
+        platform: "linux",
+        environment: {},
+        commandExists: () => false,
+        spawnHelper(command) {
+          spawned.push(command);
+          throw new Error("must not spawn");
+        },
+      });
+      expect(await adapter.acquire(123)).toEqual({});
+      expect(spawned).toEqual([]);
     });
 
     test("win32 platform supported returns true", async () => {

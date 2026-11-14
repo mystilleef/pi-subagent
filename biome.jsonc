@@ -23,6 +23,26 @@
       }
     }
   },
+  "overrides": [
+    {
+      // pi loads the extension under Node; tests run under Bun and hide this.
+      "includes": ["src/**"],
+      "linter": {
+        "rules": {
+          "style": {
+            "noRestrictedGlobals": {
+              "level": "error",
+              "options": {
+                "deniedGlobals": {
+                  "Bun": "pi runs extensions under Node; use Node or pi-tui APIs."
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  ],
   "javascript": {
     "formatter": {
       "quoteStyle": "double",
