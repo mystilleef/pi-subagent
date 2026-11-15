@@ -8,7 +8,11 @@ import { type ChildProcess, spawn } from "node:child_process";
 import type { Message } from "@earendil-works/pi-ai";
 import type { AgentConfig, ThinkingLevel } from "../agent/agents.js";
 import { getFinalOutput } from "../output/ui.js";
-import { getPiInvocation, getSubagentDepth } from "../shared/invocation.js";
+import {
+  getPiInvocation,
+  getSubagentDepth,
+  needsSpawnShell,
+} from "../shared/invocation.js";
 import {
   type OnUpdateCallback,
   type SingleResult,
@@ -198,7 +202,11 @@ function createProcessCleanup(proc: ChildProcess, idleMs: number) {
   };
 }
 
-async function waitForSubagentProcess(
+/**
+ * Resolves with the child's exit code once its streams close; after exit,
+ * destroys streams idle for `idleMs` or still open after `hardMs`.
+ */
+export async function waitForSubagentProcess(
   proc: ChildProcess,
   idleMs = 100,
   hardMs = 5_000,
@@ -446,7 +454,7 @@ export async function runSingleAgent(
     const childEnv = buildChildEnv(samplingEnv);
     const proc = spawn(invocation.command, invocation.args, {
       cwd: defaultCwd,
-      shell: invocation.command === "pi" && process.platform === "win32",
+      shell: needsSpawnShell(invocation.command, terminateOptions.platform),
       stdio: ["ignore", "pipe", "pipe"],
       env: childEnv,
       ...getProcessTreeSpawnOptions(terminateOptions.tree),

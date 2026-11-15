@@ -22,6 +22,17 @@ export function getPiInvocation(args: string[]): {
   return { command: "pi", args };
 }
 
+/**
+ * Whether spawning `command` needs a shell: on Windows the bare `pi` command is
+ * a `PATHEXT` shim (`pi.cmd`) that only the shell resolves.
+ */
+export function needsSpawnShell(
+  command: string,
+  platform: NodeJS.Platform = process.platform,
+): boolean {
+  return command === "pi" && platform === "win32";
+}
+
 export function getSubagentDepth(): number {
   const d = Number(process.env.PI_SUBAGENT_DEPTH ?? "0");
   if (!Number.isFinite(d) || d < 0) return 0;
