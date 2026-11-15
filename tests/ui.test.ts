@@ -13,6 +13,7 @@ import * as usageLedger from "../src/orchestration/usage-ledger.js";
 import { renderRunsBoard } from "../src/output/runs-board.js";
 import {
   createDescendantTally,
+  createUsageTree,
   formatResultFooter,
   formatSubagentTitle,
   formatTokens,
@@ -2024,10 +2025,10 @@ test("renderRunsBoard renders status sections in fixed order", () => {
   );
   const headerLines = lines.filter(
     (l) =>
-      l.includes("[running]") ||
-      l.includes("[success]") ||
-      l.includes("[error]") ||
-      l.includes("[cancelled]"),
+      l.includes("[muted][running]") ||
+      l.includes("[muted][success]") ||
+      l.includes("[muted][error]") ||
+      l.includes("[muted][cancelled]"),
   );
   expect(headerLines).toHaveLength(4);
   expect(headerLines[0]).toStartWith("[toolPendingBg]");
@@ -2066,7 +2067,10 @@ test("renderRunsBoard renders status sections in fixed order", () => {
     "[toolSuccessBg]   [toolOutput]Built all the things successfully[/toolOutput]",
   );
   expect(text).toContain(
-    "[toolErrorBg]   [toolOutput]bun test failed with exit code 1[/toolOutput]",
+    "[toolErrorBg]   [error]bun test failed with exit code 1[/error]",
+  );
+  expect(text).not.toContain(
+    "[toolOutput]bun test failed with exit code 1[/toolOutput]",
   );
   expect(text).toContain(
     "[toolErrorBg]   [toolOutput]scanning...[/toolOutput]",
@@ -2126,7 +2130,48 @@ test("renderRunsBoard truncates body preview after 120 chars", () => {
   expect(text).not.toContain(longOutput);
 });
 
-test("renderRunsBoard uses body source priority and fallback", () => {
+test("renderRunsBoard counts the task label toward the 120-column body bound", () => {
+  const preview = "X".repeat(200);
+  const state: SubagentProgressState = {
+    requestId: "r1",
+    agent: "builder",
+    taskPreview: preview,
+    status: "running",
+    startTime: Date.now() - 10000,
+    toolCount: 1,
+    finalOutput: "",
+    errorText: "",
+  };
+  const text = renderToString(
+    renderRunsBoard([state], createDefaultFakeTheme() as never),
+  );
+  const expectedPreview = `${"X".repeat(113)}…`;
+  expect(text).toContain(
+    `[muted]*task:*[/muted] [muted]_${expectedPreview}_[/muted]`,
+  );
+  expect(text).not.toContain(preview);
+});
+
+test("renderRunsBoard clips Unicode overflow on grapheme boundary with surviving roles", () => {
+  const overflowing = `${"A".repeat(119)}😀`;
+  const state: SubagentProgressState = {
+    requestId: "r1",
+    agent: "builder",
+    taskPreview: "do work",
+    status: "success",
+    startTime: Date.now() - 10000,
+    durationMs: 5000,
+    toolCount: 1,
+    finalOutput: overflowing,
+  };
+  const text = renderToString(
+    renderRunsBoard([state], createDefaultFakeTheme() as never),
+  );
+  expect(text).toContain(`[toolOutput]${"A".repeat(119)}…[/toolOutput]`);
+  expect(text).not.toContain("😀");
+});
+
+test("renderRunsBoard picks and styles bodies by source regardless of status", () => {
   const now = Date.now();
   const states: SubagentProgressState[] = [
     {
@@ -2144,7 +2189,7 @@ test("renderRunsBoard uses body source priority and fallback", () => {
       requestId: "r2",
       agent: "reviewer",
       taskPreview: "fallback preview",
-      status: "error",
+      status: "success",
       startTime: now - 9000,
       durationMs: 4000,
       toolCount: 1,
@@ -2164,26 +2209,28 @@ test("renderRunsBoard uses body source priority and fallback", () => {
     {
       requestId: "r4",
       agent: "empty",
-      taskPreview: "",
+      taskPreview: " \t",
       status: "success",
       startTime: now - 7000,
       durationMs: 3000,
       toolCount: 1,
-      finalOutput: "",
+      finalOutput: "\n",
       errorText: " ",
     },
   ];
-  const fakeTheme = createDefaultFakeTheme();
-  const rendered = renderRunsBoard(states, fakeTheme as never);
-  const text = renderToString(rendered);
+  const text = renderToString(
+    renderRunsBoard(states, createDefaultFakeTheme()),
+  );
   expect(text).toContain("[toolOutput]final output[/toolOutput]");
-  expect(text).not.toContain("[toolOutput]error text[/toolOutput]");
-  expect(text).toContain("[toolOutput]error only[/toolOutput]");
-  expect(text).toContain("[toolOutput]preview only[/toolOutput]");
+  expect(text).not.toContain("error text");
+  expect(text).toContain("[error]error only[/error]");
+  expect(text).toContain(
+    "[muted]*task:*[/muted] [muted]_preview only_[/muted]",
+  );
   expect(text).toContain("[muted](no output)[/muted]");
 });
 
-test("abridged status cards without footer keep existing line output", () => {
+test("/jobs card without footer renders five card lines with (no output)", () => {
   const now = Date.now();
   const state: SubagentProgressState = {
     requestId: "r1",
@@ -2204,7 +2251,7 @@ test("abridged status cards without footer keep existing line output", () => {
   expect(text).toContain("[muted](no output)[/muted]");
 });
 
-test("abridged progress job card with modelDisplay renders dim model footer", () => {
+test("/jobs card with modelDisplay renders dim model footer", () => {
   const now = Date.now();
   const state: SubagentProgressState = {
     requestId: "r1",
@@ -2223,7 +2270,7 @@ test("abridged progress job card with modelDisplay renders dim model footer", ()
   expect(text).toContain("[dim]provider/model:high[/dim]");
 });
 
-test("abridged progress job card with modelDisplay excludes usage/cost/turn/context footer segments", () => {
+test("/jobs card with modelDisplay excludes usage/cost/turn/context footer segments", () => {
   const now = Date.now();
   const state: SubagentProgressState = {
     requestId: "r1",
@@ -2250,7 +2297,7 @@ test("abridged progress job card with modelDisplay excludes usage/cost/turn/cont
   expect(footerLine).not.toContain("↓");
 });
 
-test("abridged progress job card with modelDisplay and zero tool count preserves compact body", () => {
+test("/jobs card with modelDisplay and zero tool count preserves compact body", () => {
   const now = Date.now();
   const state: SubagentProgressState = {
     requestId: "r1",
@@ -2268,7 +2315,7 @@ test("abridged progress job card with modelDisplay and zero tool count preserves
   expect(text).toContain("[muted](no output)[/muted]");
 });
 
-test("abridged progress job card with modelDisplay and long body preview truncates and preserves footer", () => {
+test("/jobs card with modelDisplay and long body preview truncates and preserves footer", () => {
   const now = Date.now();
   const longBody = "X".repeat(200);
   const state: SubagentProgressState = {
@@ -2289,7 +2336,7 @@ test("abridged progress job card with modelDisplay and long body preview truncat
   expect(text).toContain("[dim]provider/model:verbose[/dim]");
 });
 
-test("abridged progress job card without modelDisplay renders no dim model footer", () => {
+test("/jobs card without modelDisplay renders no dim model footer", () => {
   const now = Date.now();
   const state: SubagentProgressState = {
     requestId: "r1",
@@ -2310,7 +2357,7 @@ test("abridged progress job card without modelDisplay renders no dim model foote
   expect(modelFooter).toHaveLength(0);
 });
 
-test("abridged progress job card with undefined modelDisplay excludes footer", () => {
+test("/jobs card with undefined modelDisplay excludes footer", () => {
   const now = Date.now();
   const state: SubagentProgressState = {
     requestId: "r1",
@@ -2471,7 +2518,7 @@ test("progress model footer regression: footer exclusive to modelDisplay-bearing
   expect(dimModelFooters).toContain("provider/model:fast");
 });
 
-test("full status card footer still renders after abridged footer support", () => {
+test("result card renders model, turn, and cost footer", () => {
   const fakeTheme = createDefaultFakeTheme();
   const rendered = renderSubagentResult(
     {
@@ -3144,7 +3191,7 @@ test.each<{
     expected: ["[dim]provider/model:ok[/dim]", "SUCCEEDED", "all tests pass"],
   },
 ])(
-  "abridged job card renders modelDisplay footer for $status state",
+  "/jobs card renders modelDisplay footer for $status state",
   ({ status, fields, expected }) => {
     const state: SubagentProgressState = {
       requestId: "r1",
@@ -3165,7 +3212,7 @@ test.each<{
   },
 );
 
-test("abridged job card with modelDisplay uses errorText as body when finalOutput is empty", () => {
+test("/jobs card with modelDisplay uses errorText as body when finalOutput is empty", () => {
   const now = Date.now();
   const state: SubagentProgressState = {
     requestId: "r1",
@@ -3182,11 +3229,12 @@ test("abridged job card with modelDisplay uses errorText as body when finalOutpu
   const fakeTheme = createDefaultFakeTheme();
   const rendered = renderRunsBoard([state], fakeTheme as never);
   const text = renderToString(rendered);
-  expect(text).toContain("[toolOutput]specific error message[/toolOutput]");
+  expect(text).toContain("[error]specific error message[/error]");
+  expect(text).not.toContain("[toolOutput]specific error message[/toolOutput]");
   expect(text).toContain("[dim]provider/model[/dim]");
 });
 
-test("abridged job card with modelDisplay falls back body from taskPreview when no finalOutput or errorText", () => {
+test("/jobs card with modelDisplay falls back body from taskPreview when no finalOutput or errorText", () => {
   const now = Date.now();
   const state: SubagentProgressState = {
     requestId: "r1",
@@ -3200,11 +3248,13 @@ test("abridged job card with modelDisplay falls back body from taskPreview when 
   const fakeTheme = createDefaultFakeTheme();
   const rendered = renderRunsBoard([state], fakeTheme as never);
   const text = renderToString(rendered);
-  expect(text).toContain("fallback preview text");
+  expect(text).toContain(
+    "[muted]*task:*[/muted] [muted]_fallback preview text_[/muted]",
+  );
   expect(text).not.toContain("(no output)");
 });
 
-test("abridged job card with modelDisplay shows (no output) when all body sources are empty", () => {
+test("/jobs card with modelDisplay shows (no output) when all body sources are empty", () => {
   const now = Date.now();
   const state: SubagentProgressState = {
     requestId: "r1",
@@ -4330,4 +4380,131 @@ test("display surfaces use semantic role hierarchy", () => {
   expect(boardText).toContain("[dim]provider/model:high[/dim]");
   expect(boardText).not.toContain("[muted]provider/model");
   expect(boardText).not.toContain("[dim][running]");
+});
+
+describe("createUsageTree width-bounded tree component", () => {
+  const theme = createDefaultFakeTheme();
+
+  function leaf(
+    overrides: Partial<UsageInstanceNode> &
+      Pick<UsageInstanceNode, "agent" | "instanceName">,
+  ): UsageInstanceNode {
+    return {
+      id: `${overrides.agent}-${overrides.instanceName}`,
+      ordinal: 1,
+      startedAt: 1000,
+      status: "success",
+      durationMs: 100,
+      usage: {
+        input: 0,
+        output: 0,
+        cacheRead: 0,
+        cacheWrite: 0,
+        cost: 0,
+        turns: 0,
+      },
+      children: [],
+      ...overrides,
+    };
+  }
+
+  test("returns undefined for a missing tree", () => {
+    expect(createUsageTree(undefined, theme)).toBeUndefined();
+  });
+
+  test("returns undefined for a childless tree without includeRoot", () => {
+    const tree = leaf({ agent: "build", instanceName: "only-node" });
+    expect(createUsageTree(tree, theme)).toBeUndefined();
+  });
+
+  test("renders an omitted-only tree as an inferred row without the root", () => {
+    const tree = leaf({
+      agent: "planner",
+      instanceName: "root-node",
+      omitted: {
+        count: 3,
+        totals: {
+          instances: 3,
+          statuses: { running: 0, success: 3, error: 0, cancelled: 0 },
+          usage: {
+            input: 0,
+            output: 0,
+            cacheRead: 0,
+            cacheWrite: 0,
+            cost: 0,
+            turns: 0,
+          },
+          durationMs: 0,
+          byAgent: {},
+        },
+      },
+    });
+    const component = createUsageTree(tree, theme);
+    expect(component).toBeDefined();
+    expect(renderToString(component, 120)).toBe("[dim]_+3 earlier_[/dim]");
+    const withRoot = renderToString(
+      createUsageTree(tree, theme, { includeRoot: true }),
+      120,
+    );
+    expect(withRoot).toContain("root-node");
+    expect(withRoot).toContain("[dim]_+3 earlier_[/dim]");
+  });
+  test("clips overflowing rows at the render width keeping styled roles", () => {
+    const tree = leaf({
+      agent: "planner",
+      instanceName: "root-node",
+      children: [
+        leaf({
+          agent: "explorer",
+          instanceName: "able-fox-with-long-suffix",
+          ordinal: 2,
+          durationMs: 1200,
+        }),
+      ],
+    });
+    const text = renderToString(createUsageTree(tree, theme), 24);
+    expect(text).toBe(
+      "[muted]\u2713[/muted] [toolTitle]*explorer*[/toolTitle] [dim]#2[/dim] [accent]_able-fox-\u2026_[/accent]",
+    );
+  });
+
+  test("renders the styled root row for a childless tree with includeRoot", () => {
+    const tree = leaf({
+      agent: "build",
+      instanceName: "only-node",
+      ordinal: 2,
+      durationMs: 1200,
+    });
+    const text = renderToString(
+      createUsageTree(tree, theme, { includeRoot: true }),
+      120,
+    );
+    expect(text).toContain(
+      "[muted]✓[/muted] [toolTitle]*build*[/toolTitle] [dim]#2[/dim] [accent]_only-node_[/accent]",
+    );
+    expect(text).toContain("[dim] · [/dim][dim]1.2s[/dim]");
+  });
+
+  test("renders nothing at nonpositive widths", () => {
+    const tree = leaf({
+      agent: "build",
+      instanceName: "only-node",
+      children: [leaf({ agent: "worker", instanceName: "child-node" })],
+    });
+    const component = createUsageTree(tree, theme, { includeRoot: true });
+    expect(component?.render(0)).toEqual([]);
+    expect(component?.render(-5)).toEqual([]);
+  });
+
+  test("reuses rendered lines per width until invalidated", () => {
+    const tree = leaf({ agent: "build", instanceName: "only-node" });
+    const component = createUsageTree(tree, theme, { includeRoot: true });
+    if (!component) throw new Error("expected a usage tree component");
+    const lines = component.render(120);
+    expect(component.render(120)).toBe(lines);
+    component.invalidate();
+    const rerendered = component.render(120);
+    expect(rerendered).not.toBe(lines);
+    expect(rerendered).toEqual(lines);
+  });
 });

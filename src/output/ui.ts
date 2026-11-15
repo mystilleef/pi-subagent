@@ -2,11 +2,17 @@ import type { ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import { Box, type Component, Markdown, Text } from "@earendil-works/pi-tui";
 import type { AgentScope } from "../agent/agents.js";
 import {
+  clipDisplayPieces,
+  type DisplayPiece,
+} from "../progress/display-pieces.js";
+import {
   type DescendantTallyOptions,
+  type FormatUsageTreeOptions,
   formatActivityStats,
   formatCost,
   formatDescendantTally,
   formatDisplayIdentity,
+  formatUsageTreePieces,
   hasDescendants,
   SEGMENT_SEPARATOR,
 } from "../progress/progress-format.js";
@@ -23,6 +29,7 @@ import {
   type SubagentTheme,
   style,
   styleBackground,
+  stylePieces,
   styleStatusGlyph,
   styleTally,
 } from "./semantic-style.js";
@@ -165,7 +172,6 @@ export function renderSubagentResult(
     {
       status: resultStatus,
       title,
-      variant: "full",
       metadata,
       body: bodyText,
       footer: formatResultFooter(r.usage, r.model),
@@ -214,6 +220,49 @@ export function createDescendantTally(
 ): Component | undefined {
   if (!tree || !hasDescendants(tree)) return undefined;
   return new DescendantTally(tree, theme, options);
+}
+
+/**
+ * Tree rows end-clipped to the render width, one line each, so deep rows
+ * never wrap past their indent. Lines are cached per width: pi-tui `Box`
+ * compares child lines by identity each frame.
+ */
+class UsageTree implements Component {
+  private readonly rows: readonly DisplayPiece[][];
+  private readonly theme: SubagentTheme;
+  private cache: { width: number; lines: string[] } | undefined;
+  constructor(rows: readonly DisplayPiece[][], theme: SubagentTheme) {
+    this.rows = rows;
+    this.theme = theme;
+  }
+  render(width: number): string[] {
+    if (width <= 0) return [];
+    if (this.cache?.width !== width)
+      this.cache = {
+        width,
+        lines: this.rows.map((row) =>
+          stylePieces(this.theme, clipDisplayPieces(row, width)),
+        ),
+      };
+    return this.cache.lines;
+  }
+  invalidate(): void {
+    this.cache = undefined;
+  }
+}
+
+/**
+ * Width-fitted usage tree; rows and running durations snapshot at
+ * creation. Undefined when the tree renders no rows.
+ */
+export function createUsageTree(
+  tree: UsageInstanceNode | undefined,
+  theme: SubagentTheme,
+  options?: FormatUsageTreeOptions,
+): Component | undefined {
+  if (!tree) return undefined;
+  const rows = formatUsageTreePieces(tree, options);
+  return rows.length > 0 ? new UsageTree(rows, theme) : undefined;
 }
 
 /** Status icon, title, and bracketed status shared by every card header. */
@@ -279,14 +328,15 @@ export function withLayoutGap(inner: Component): Component {
   };
 }
 
-type StatusCardVariant = "full" | "abridged";
-
 export type StatusCardOptions = {
   status: ProgressStatus;
   title: string;
-  variant: StatusCardVariant;
   metadata: string;
-  body?: string;
+  /**
+   * Markdown (result cards) or one pre-fitted piece line (`/jobs`);
+   * empty renders `(no output)`.
+   */
+  body?: string | readonly DisplayPiece[];
   footer?: string;
   tally?: Component;
 };
@@ -300,7 +350,7 @@ export function renderStatusCard(
       status: options.status,
       title: options.title,
       metadata: options.metadata,
-      blocks: [makeStatusCardBody(options, theme), options.tally],
+      blocks: [makeStatusCardBody(options.body, theme), options.tally],
       footer: options.footer,
     },
     theme,
@@ -308,23 +358,20 @@ export function renderStatusCard(
 }
 
 function makeStatusCardBody(
-  options: StatusCardOptions,
+  body: StatusCardOptions["body"],
   theme: SubagentTheme,
 ): Box {
-  const body = new Box(CARD_BODY_INDENT, 0);
-  const bodyText = options.body ?? "";
-  if (bodyText && options.variant === "full") {
-    body.addChild(
-      new Markdown(bodyText, 0, 0, makeMarkdownTheme(theme), {
+  const box = new Box(CARD_BODY_INDENT, 0);
+  if (!body?.length)
+    box.addChild(new Text(style(theme, "boardText", "(no output)"), 0, 0));
+  else if (typeof body === "string")
+    box.addChild(
+      new Markdown(body, 0, 0, makeMarkdownTheme(theme), {
         color: (text) => style(theme, "output", text),
       }),
     );
-  } else if (bodyText) {
-    body.addChild(new Text(style(theme, "output", bodyText), 0, 0));
-  } else {
-    body.addChild(new Text(style(theme, "boardText", "(no output)"), 0, 0));
-  }
-  return body;
+  else box.addChild(new Text(stylePieces(theme, body), 0, 0));
+  return box;
 }
 
 export function makeSectionHeader(

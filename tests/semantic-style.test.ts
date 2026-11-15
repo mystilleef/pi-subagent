@@ -3,6 +3,7 @@ import {
   makeMarkdownTheme,
   style,
   styleBackground,
+  stylePieces,
   styleStatusGlyph,
   styleTally,
 } from "../src/output/semantic-style.js";
@@ -59,6 +60,18 @@ describe("styleTally", () => {
     expect(styleTally(theme, "2 spawned · 1 running")).toBe(
       "[muted]2 spawned[/muted][dim] · [/dim][muted]1 running[/muted]",
     );
+  });
+});
+
+describe("stylePieces", () => {
+  test("styles each piece by its role and leaves plain pieces bare", () => {
+    expect(
+      stylePieces(theme, [
+        { role: "tally", text: "✓" },
+        { role: "plain", text: " " },
+        { role: "agent", text: "build" },
+      ]),
+    ).toBe("[muted]✓[/muted] [toolTitle]*build*[/toolTitle]");
   });
 });
 

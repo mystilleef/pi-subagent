@@ -2204,3 +2204,156 @@ describe("T-003 Protect, shorten, and bound activity targets", () => {
     expect(toolLine.startsWith("[toolPendingBg]   <dim>→</dim>")).toBe(true);
   });
 });
+
+describe("expanded progress card usage tree", () => {
+  function makeChildNode(
+    id: string,
+    agent: string,
+    instanceName: string,
+    startedAt: number,
+    overrides: Partial<UsageInstanceNode> = {},
+  ): UsageInstanceNode {
+    return {
+      id,
+      agent,
+      instanceName,
+      ordinal: 1,
+      startedAt,
+      status: "success",
+      durationMs: 100,
+      usage: {
+        input: 10,
+        output: 5,
+        cacheRead: 0,
+        cacheWrite: 0,
+        cost: 0.01,
+        turns: 1,
+      },
+      children: [],
+      ...overrides,
+    };
+  }
+
+  function setupExpanded(
+    requestId: string,
+    children: UsageInstanceNode[],
+  ): void {
+    resetUsageLedger();
+    expect(
+      registerRootInstance({
+        id: requestId,
+        agent: "build",
+        instanceName: "root-run",
+        startedAt: 500,
+      }).ok,
+    ).toBe(true);
+    for (const child of children)
+      expect(attachChildSubtree(requestId, child).ok).toBe(true);
+    createProgressState(requestId, "build", "do task", "root-run");
+  }
+
+  function renderExpanded(
+    requestId: string,
+    theme: SubagentTheme,
+    width: number,
+  ): string[] {
+    const rendered = renderSubagentProgress(
+      {
+        customType: "subagent-progress",
+        content: "",
+        display: true,
+        details: { requestId },
+      },
+      { expanded: true },
+      theme,
+    );
+    expect(rendered).toBeDefined();
+    return rendered?.render(width) ?? [];
+  }
+
+  test("styles expanded tree rows by structural role", () => {
+    const requestId = "tree-roles";
+    try {
+      setupExpanded(requestId, [
+        makeChildNode("c1", "worker", "child-one", 600, {
+          ordinal: 2,
+          durationMs: 1200,
+        }),
+      ]);
+      const text = renderExpanded(requestId, makeMarkerTheme(), 120).join("\n");
+      expect(text).toContain(
+        "<muted>✓</muted> <toolTitle>worker</toolTitle> <dim>#2</dim> <accent><italic>child-one</italic></accent><dim> · </dim><dim>1.2s</dim>",
+      );
+    } finally {
+      clearProgressState(requestId);
+      resetUsageLedger();
+    }
+  });
+
+  test("keeps each expanded tree row on one line within the width", () => {
+    const requestId = "tree-width";
+    try {
+      setupExpanded(requestId, [
+        makeChildNode("c1", "explorer", "able-fox", 600),
+        makeChildNode("c2", "worker", "bold-owl", 700, { ordinal: 2 }),
+      ]);
+      for (const width of [40, 80, 120]) {
+        const lines = renderExpanded(requestId, makeTheme(), width);
+        for (const line of lines)
+          expect(stripAnsiAndWrappers(line).length).toBeLessThanOrEqual(width);
+        const treeLines = lines.filter(
+          (line) => line.includes("able-fox") || line.includes("bold-owl"),
+        );
+        expect(treeLines).toHaveLength(2);
+      }
+    } finally {
+      clearProgressState(requestId);
+      resetUsageLedger();
+    }
+  });
+
+  test("end-clips an overflowing expanded tree row at narrow widths", () => {
+    const requestId = "tree-narrow";
+    try {
+      setupExpanded(requestId, [
+        makeChildNode("c1", "explorer", "able-fox-with-long-suffix", 600, {
+          durationMs: 1200,
+        }),
+      ]);
+      // Width 20 leaves 14 tree columns inside card and body padding.
+      const lines = renderExpanded(requestId, makeTheme(), 20).map(
+        stripAnsiAndWrappers,
+      );
+      expect(lines).toContainEqual(expect.stringContaining("✓ explorer ab…"));
+      for (const line of lines) expect(line.length).toBeLessThanOrEqual(20);
+    } finally {
+      clearProgressState(requestId);
+      resetUsageLedger();
+    }
+  });
+
+  test("renders no tree on collapsed progress cards", () => {
+    const requestId = "tree-collapsed";
+    try {
+      setupExpanded(requestId, [
+        makeChildNode("c1", "explorer", "able-fox", 600),
+      ]);
+      const collapsed = renderSubagentProgress(
+        {
+          customType: "subagent-progress",
+          content: "",
+          display: true,
+          details: { requestId },
+        },
+        { expanded: false },
+        makeTheme(),
+      );
+      const text = (collapsed?.render(120) ?? []).join("\n");
+      expect(text).toContain("1 spawned");
+      expect(text).not.toContain("able-fox");
+    } finally {
+      clearProgressState(requestId);
+      resetUsageLedger();
+    }
+  });
+});

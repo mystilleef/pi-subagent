@@ -19,6 +19,7 @@ import {
 } from "../shared/usage-accounting.js";
 import { serializeUsageSnapshot } from "../shared/usage-snapshot.js";
 import { isSafePositiveInteger } from "../shared/usage-validation.js";
+import { type DisplayPiece, SPACE } from "./display-pieces.js";
 import {
   type ProgressStatus,
   STATUS_COUNT_ORDER,
@@ -36,26 +37,6 @@ function isDisplayOrdinal(ordinal: number | undefined): ordinal is number {
 }
 
 /**
- * Role-tagged piece of the display-only activity line. Every role except
- * `plain` names a semantic style, so literal `\u2026`, `\u203a`, or `(hidden)` text
- * inside a tool or target never takes another piece's role.
- */
-export interface ActivityDisplayPiece {
-  role:
-    | "plain"
-    | "mark"
-    | "agent"
-    | "ordinal"
-    | "instance"
-    | "tool"
-    | "target"
-    | "inferred";
-  text: string;
-}
-
-export const SPACE: ActivityDisplayPiece = { role: "plain", text: " " };
-
-/**
  * Identity shared by every surface: `<base> <name>`, with `#<n>` inserted
  * only for valid ordinals `n >= 2`. Unnamed instances fall back to base.
  */
@@ -63,8 +44,8 @@ export function identityPieces(
   base: string,
   instanceName: string | undefined,
   ordinal: number | undefined,
-): ActivityDisplayPiece[] {
-  const pieces: ActivityDisplayPiece[] = [{ role: "agent", text: base }];
+): DisplayPiece[] {
+  const pieces: DisplayPiece[] = [{ role: "agent", text: base }];
   if (!instanceName) return pieces;
   if (isDisplayOrdinal(ordinal))
     pieces.push(SPACE, { role: "ordinal", text: `#${ordinal}` });
@@ -343,6 +324,11 @@ function formatTreeNodeDuration(
     : undefined;
 }
 
+/** Two plain spaces per depth; the root row carries no indent piece. */
+function treeIndent(depth: number): DisplayPiece[] {
+  return depth > 0 ? [{ role: "plain", text: "  ".repeat(depth) }] : [];
+}
+
 function sortTreeChildren(children: UsageInstanceNode[]): UsageInstanceNode[] {
   return [...children].sort(
     (a, b) =>
@@ -354,45 +340,58 @@ function sortTreeChildren(children: UsageInstanceNode[]): UsageInstanceNode[] {
 }
 
 /**
- * Format bounded usage-tree lines.
+ * Bounded usage-tree rows as role-tagged pieces.
+ *
+ * Roles come from node structure, never rendered text: indent and spaces
+ * `plain`, glyph `tally`, identity per {@link identityPieces}, ` · `
+ * `tallyDelimiter`, duration and cost `metadata`, `+N earlier`
+ * `inferred`.
  *
  * Bounds the tree to the 50-node snapshot contract (root included), so
  * omitted rollups keep totals exact. Descendants-only hides the root line
  * but still counts it toward the bound. Siblings sort by ascending
  * `startedAt`; omitted descendants render as `+<count> earlier` at child
- * indent.
+ * indent. Running durations show whole seconds; settled ones keep tenths
+ * below one minute.
  */
-export function formatUsageTree(
+export function formatUsageTreePieces(
   root: UsageInstanceNode,
   options?: FormatUsageTreeOptions,
-): string[] {
+): DisplayPiece[][] {
   const now = options?.now ?? Date.now();
-  const lines: string[] = [];
+  const rows: DisplayPiece[][] = [];
   const renderChildren = (node: UsageInstanceNode, depth: number): void => {
     for (const child of sortTreeChildren(node.children)) {
       renderNode(child, depth);
     }
     if (node.omitted && node.omitted.count > 0) {
-      lines.push(`${"  ".repeat(depth)}+${node.omitted.count} earlier`);
+      rows.push([
+        ...treeIndent(depth),
+        { role: "inferred", text: `+${node.omitted.count} earlier` },
+      ]);
     }
   };
   const renderNode = (node: UsageInstanceNode, depth: number): void => {
-    const identity = formatDisplayIdentity(
-      node.agent,
-      node.instanceName,
-      node.ordinal,
-    );
-    const parts = [
-      `${"  ".repeat(depth)}${STATUS_ICON[node.status]} ${identity}`,
+    const pieces: DisplayPiece[] = [
+      ...treeIndent(depth),
+      { role: "tally", text: STATUS_ICON[node.status] },
+      SPACE,
+      ...identityPieces(node.agent, node.instanceName, node.ordinal),
     ];
     const duration = formatTreeNodeDuration(node, now);
-    if (duration) parts.push(duration);
-    if (options?.showCost) parts.push(formatCost(node.usage.cost));
-    lines.push(parts.join(SEGMENT_SEPARATOR));
+    if (duration) {
+      pieces.push({ role: "tallyDelimiter", text: SEGMENT_SEPARATOR });
+      pieces.push({ role: "metadata", text: duration });
+    }
+    if (options?.showCost) {
+      pieces.push({ role: "tallyDelimiter", text: SEGMENT_SEPARATOR });
+      pieces.push({ role: "metadata", text: formatCost(node.usage.cost) });
+    }
+    rows.push(pieces);
     renderChildren(node, depth + 1);
   };
   const bounded = serializeUsageSnapshot(root);
   if (options?.includeRoot) renderNode(bounded, 0);
   else renderChildren(bounded, 0);
-  return lines;
+  return rows;
 }

@@ -19,21 +19,19 @@
 import type { Component } from "@earendil-works/pi-tui";
 import { Box, Text } from "@earendil-works/pi-tui";
 import { queryInstanceUsage } from "../orchestration/usage-ledger.js";
-import { style } from "../output/semantic-style.js";
+import { style, stylePieces } from "../output/semantic-style.js";
 import {
   CARD_BODY_INDENT,
   createDescendantTally,
+  createUsageTree,
   formatSubagentTitle,
   renderCard,
   type SubagentTheme,
 } from "../output/ui.js";
 import type { UsageInstanceNode } from "../shared/types.js";
 import { renderToolActivityPieces } from "./activity-display.js";
-import {
-  type ActivityDisplayPiece,
-  formatHeaderStats,
-  formatUsageTree,
-} from "./progress-format.js";
+import type { DisplayPiece } from "./display-pieces.js";
+import { formatHeaderStats } from "./progress-format.js";
 import {
   getProgressState,
   hasProgressResultPosted,
@@ -187,13 +185,11 @@ function makeTreeBlock(
   usage: UsageInstanceNode | undefined,
   theme: SubagentTheme,
 ): Box | undefined {
-  if (!usage) return undefined;
-  const lines = formatUsageTree(usage);
-  if (lines.length === 0) return undefined;
-  const tree = new Box(CARD_BODY_INDENT, 0);
-  for (const line of lines)
-    tree.addChild(new Text(style(theme, "tally", line), 0, 0));
-  return tree;
+  const tree = createUsageTree(usage, theme);
+  if (!tree) return undefined;
+  const box = new Box(CARD_BODY_INDENT, 0);
+  box.addChild(tree);
+  return box;
 }
 
 function makeRunningProgressBody(
@@ -228,11 +224,8 @@ function makeSuccessProgressBody(
 
 /** Renders the activity row from role-tagged pieces; roles never come from text. */
 function formatRunningActivity(
-  pieces: ActivityDisplayPiece[],
+  pieces: DisplayPiece[],
   theme: SubagentTheme,
 ): string {
-  const styled = pieces.map((piece) =>
-    piece.role === "plain" ? piece.text : style(theme, piece.role, piece.text),
-  );
-  return `${style(theme, "mark", "→")} ${styled.join("")}`;
+  return `${style(theme, "mark", "→")} ${stylePieces(theme, pieces)}`;
 }

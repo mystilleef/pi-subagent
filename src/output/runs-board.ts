@@ -1,4 +1,9 @@
 import { Box, type Component, Text } from "@earendil-works/pi-tui";
+import {
+  clipDisplayPieces,
+  type DisplayPiece,
+  SPACE,
+} from "../progress/display-pieces.js";
 import { formatCost, formatHeaderStats } from "../progress/progress-format.js";
 import type {
   ProgressStatus,
@@ -8,6 +13,7 @@ import type {
   SessionUsageQueryResult,
   UsageInstanceNode,
 } from "../shared/types.js";
+import { isNonEmptyString } from "../shared/usage-validation.js";
 import { style } from "./semantic-style.js";
 import {
   createDescendantTally,
@@ -22,12 +28,24 @@ import {
 
 const BODY_PREVIEW_MAX = 120;
 
-function selectRunsBoardBody(state: SubagentProgressState): string {
-  return (
-    [state.finalOutput, state.errorText, state.taskPreview].find(
-      (c): c is string => typeof c === "string" && c.trim().length > 0,
-    ) ?? ""
-  );
+/**
+ * `/jobs` body from the first non-blank source: final output, error text,
+ * task preview. Roles follow the source, never job status, so each source
+ * reads as it does on progress cards. No source leaves the card's
+ * `(no output)` fallback.
+ */
+function selectRunsBoardBody(state: SubagentProgressState): DisplayPiece[] {
+  if (isNonEmptyString(state.finalOutput))
+    return [{ role: "output", text: state.finalOutput }];
+  if (isNonEmptyString(state.errorText))
+    return [{ role: "error", text: state.errorText }];
+  if (isNonEmptyString(state.taskPreview))
+    return [
+      { role: "taskLabel", text: "task:" },
+      SPACE,
+      { role: "taskPreview", text: state.taskPreview },
+    ];
+  return [];
 }
 
 function renderJobCard(
@@ -41,17 +59,11 @@ function renderJobCard(
     theme,
     state.ordinal,
   );
-  const bodyText = selectRunsBoardBody(state);
-  const preview =
-    bodyText.length > BODY_PREVIEW_MAX
-      ? `${bodyText.slice(0, BODY_PREVIEW_MAX - 1)}…`
-      : bodyText;
   const options: StatusCardOptions = {
     status: state.status,
     title,
-    variant: "abridged",
     metadata: formatHeaderStats(state),
-    body: preview,
+    body: clipDisplayPieces(selectRunsBoardBody(state), BODY_PREVIEW_MAX),
   };
   // A running subtree's cost stays partial; only settled jobs report it.
   const tally = createDescendantTally(usageInstance, theme, {

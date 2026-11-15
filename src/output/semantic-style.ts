@@ -1,5 +1,6 @@
 import type { Theme, ThemeColor } from "@earendil-works/pi-coding-agent";
 import type { MarkdownTheme } from "@earendil-works/pi-tui";
+import type { DisplayPiece } from "../progress/display-pieces.js";
 import { SEGMENT_SEPARATOR } from "../progress/progress-format.js";
 import {
   type ProgressStatus,
@@ -61,6 +62,20 @@ export function style(
   const spec: RoleStyle = ROLE_STYLES[role];
   const weighted = spec.bold ? theme.bold(text) : text;
   return theme.fg(spec.color, spec.italic ? theme.italic(weighted) : weighted);
+}
+
+/** Joins pieces, each styled by its role; `plain` pieces stay unstyled. */
+export function stylePieces(
+  theme: SubagentTheme,
+  pieces: readonly DisplayPiece[],
+): string {
+  return pieces
+    .map((piece) =>
+      piece.role === "plain"
+        ? piece.text
+        : style(theme, piece.role, piece.text),
+    )
+    .join("");
 }
 
 /** Status glyph in its status color. */

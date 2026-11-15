@@ -86,6 +86,11 @@ async function runStats(...argsList: string[]): Promise<string[]> {
   return runStatsAtWidth(300, ...argsList);
 }
 
+/** Notice text without theme markers; role checks live in the styling test. */
+function plain(notice: string | undefined): string {
+  return (notice ?? "").replace(/<[^>]+>/g, "");
+}
+
 const identityTheme = {
   fg: (_color: unknown, text: string): string => text,
   bg: (_color: unknown, text: string): string => text,
@@ -553,7 +558,9 @@ describe("statsCommandHandler", () => {
           }),
         }),
       );
-      const [oldOutput, newOutput] = await runStats("run-old", "shared-falcon");
+      const [oldOutput, newOutput] = (
+        await runStats("run-old", "shared-falcon")
+      ).map(plain);
       expect(oldOutput).toContain("shared-falcon (run-old)");
       expect(oldOutput).toContain("1 instance");
       expect(oldOutput).toContain("✓0 ✗1 ⊘0 ⟳0");
@@ -589,8 +596,6 @@ describe("statsCommandHandler", () => {
       expect(newOutput).toContain("searcher leaf-wren");
       expect(newOutput).not.toContain("#1 leaf-wren");
       expect(newOutput).toContain("#2");
-      expect(newOutput).toContain("<fg:muted>");
-      expect(newOutput).not.toContain("<fg:dim>");
       expect(newOutput).not.toContain("transcript");
     } finally {
       jest.useRealTimers();
@@ -620,7 +625,7 @@ describe("statsCommandHandler", () => {
       );
     }
     transitionInstanceStatus("root-par", "success", { endedAt: 5_000 });
-    const [output] = await runStats("par-run");
+    const [output] = (await runStats("par-run")).map(plain);
     expect(output).toContain("par-run (root-par)");
     expect(output).toContain("3 instances");
     expect(output).toContain("✓3 ✗0 ⊘0 ⟳0");
@@ -635,8 +640,6 @@ describe("statsCommandHandler", () => {
       output?.indexOf("child-b") ?? 0,
     );
     expect(output).not.toContain("+");
-    expect(output).toContain("<fg:muted>");
-    expect(output).not.toContain("<fg:dim>");
   });
 
   test("bounds oversized run queries to 50 explicit nodes with exact totals", async () => {
@@ -666,7 +669,7 @@ describe("statsCommandHandler", () => {
       );
     }
     transitionInstanceStatus("bulk-root", "success", { durationMs: 2_000 });
-    const [output] = await runStats("bulk-run");
+    const [output] = (await runStats("bulk-run")).map(plain);
     expect(output).toContain("bulk-run (bulk-root)");
     expect(output).toContain("61 instances");
     expect(output).toContain("$0.0700");
@@ -700,7 +703,7 @@ describe("statsCommandHandler", () => {
         usage: makeUsage({ input: 10, output: 5, cost: 0.001, turns: 1 }),
       }),
     );
-    const output = (await runStatsAtWidth(122, "geom-run"))[0] ?? "";
+    const output = plain((await runStatsAtWidth(122, "geom-run"))[0]);
     for (const line of output.split("\n")) {
       expect(line.length).toBeLessThanOrEqual(120);
     }
@@ -768,7 +771,7 @@ describe("statsCommandHandler", () => {
       }),
     );
     transitionInstanceStatus("order-root", "success", { durationMs: 5_000 });
-    const [output] = await runStats("order-run");
+    const [output] = (await runStats("order-run")).map(plain);
     expect(output?.indexOf("earlier-jay")).toBeLessThan(
       output?.indexOf("later-jay") ?? 0,
     );
@@ -895,7 +898,7 @@ describe("statsCommandHandler", () => {
   });
 });
 
-test("stats surfaces use muted information tokens with dim only for rulers", () => {
+test("stats boards keep muted board text and style run identities and trees by role", () => {
   resetUsageLedger();
   resetRunRegistry();
   resetProgressStore();
@@ -937,26 +940,25 @@ test("stats surfaces use muted information tokens with dim only for rulers", () 
   expect(board).toContain("[dim]");
   expect(board).not.toContain("[dim]Session");
   const match = queryRootRunUsage("theme-run");
-  if (match) {
-    const runBoard = renderStatsRunBoard(
-      match.run,
-      match.rollup,
-      markerTheme as never,
-    )
-      .render(80)
-      .join("\n");
-    expect(runBoard).toContain("[muted]planner theme-run");
-    expect(runBoard).not.toContain("[dim]planner");
-    expect(runBoard).not.toContain("[dim]");
-    // Header and every usage-tree row carry the muted information role;
-    // `dim` stays reserved for decorative rulers.
-    expect(runBoard).toMatch(
-      /\[muted\][\u2713\u2717\u2298\u27f3] planner theme-run/,
-    );
-    expect(runBoard).toMatch(
-      /\[muted\] {2}[\u2713\u2717\u2298\u27f3] worker #2 theme-child/,
-    );
-  }
+  if (!match) throw new Error("expected the theme-run usage record");
+  const runBoard = renderStatsRunBoard(
+    match.run,
+    match.rollup,
+    markerTheme as never,
+  )
+    .render(80)
+    .join("\n");
+  // The header identity reads as a card title; its totals stay board text.
+  expect(runBoard).toContain(
+    "[toolTitle]planner[/toolTitle] [accent]theme-run[/accent][muted] (theme-stats) ·",
+  );
+  // Tree rows: muted glyph, identity roles, dim delimiters and metadata.
+  expect(runBoard).toContain(
+    "[muted]⟳[/muted] [toolTitle]planner[/toolTitle] [accent]theme-run[/accent][dim] · [/dim]",
+  );
+  expect(runBoard).toContain(
+    "  [muted]✓[/muted] [toolTitle]worker[/toolTitle] [dim]#2[/dim] [accent]theme-child[/accent][dim] · [/dim][dim]0.1s[/dim]",
+  );
   resetUsageLedger();
   resetRunRegistry();
   resetProgressStore();

@@ -1,10 +1,8 @@
 import { Box, type Component, Text } from "@earendil-works/pi-tui";
 import {
   formatCost,
-  formatDisplayIdentity,
   formatElapsed,
   formatStatusCount,
-  formatUsageTree,
 } from "../progress/progress-format.js";
 import { STATUS_COUNT_ORDER } from "../progress/progress-state.js";
 import type {
@@ -17,6 +15,7 @@ import { computeSubtreeRollup } from "../shared/usage-accounting.js";
 import { style } from "./semantic-style.js";
 import {
   createDescendantTally,
+  createUsageTree,
   formatSessionHeader,
   formatSubagentTitle,
   formatTokens,
@@ -120,18 +119,28 @@ export function renderStatsRunBoard(
 ): Component {
   // The root's own duration is the run's wall-clock time; summed instance
   // durations overstate it whenever children run in parallel.
-  const header = joinSegments(
-    `${formatDisplayIdentity(run.agent, run.instanceName, run.ordinal)} (${run.id})`,
+  const identity = formatSubagentTitle(
+    run.agent,
+    run.instanceName,
+    theme,
+    run.ordinal,
+  );
+  const rest = joinSegments(
+    `(${run.id})`,
     plural(rollup.instances, "instance"),
     formatStatusCounts(rollup.statuses),
     formatUsageTokens(rollup.usage),
     formatCost(rollup.usage.cost),
     run.durationMs !== undefined ? formatElapsed(run.durationMs) : undefined,
   );
+  const header = `${identity}${style(theme, "boardText", ` ${rest}`)}`;
   const box = new Box(0, 0);
-  box.addChild(new Text(style(theme, "boardText", header), 0, 0));
-  const tree = formatUsageTree(run, { includeRoot: true, now, showCost: true });
-  for (const line of tree)
-    box.addChild(new Text(style(theme, "tally", line), 0, 0));
+  box.addChild(new Text(header, 0, 0));
+  const tree = createUsageTree(run, theme, {
+    includeRoot: true,
+    showCost: true,
+    now,
+  });
+  if (tree) box.addChild(tree);
   return box;
 }

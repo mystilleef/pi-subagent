@@ -10,17 +10,23 @@ import { visibleWidth } from "@earendil-works/pi-tui";
 import { normalizeSummaryValue } from "../output/normalize.js";
 import type { ToolActivity } from "../shared/types.js";
 import {
-  type ActivityDisplayPiece,
+  clipDisplayPieces,
+  type DisplayPiece,
+  ELLIPSIS,
+  headClip,
+  piecesWidth,
+  SPACE,
+  tailClip,
+} from "./display-pieces.js";
+import {
   identityPieces,
   REDACTED_PLACEHOLDER,
   SENSITIVE_PATTERN,
-  SPACE,
 } from "./progress-format.js";
 
 const HIDDEN_TEXT = "(hidden)";
 const THINKING_TEXT = "thinking";
 const ACTIVITY_MARK = "›";
-const ELLIPSIS = "…";
 
 /** Innermost named delegate; `depth` counts hops from the root's tool. */
 interface Delegate {
@@ -40,45 +46,11 @@ type ActivityDisplay =
       target?: string | undefined;
     };
 
-const SEPARATOR: readonly ActivityDisplayPiece[] = [
+const SEPARATOR: readonly DisplayPiece[] = [
   SPACE,
   { role: "mark", text: ACTIVITY_MARK },
   SPACE,
 ];
-
-const graphemeSegmenter = new Intl.Segmenter(undefined, {
-  granularity: "grapheme",
-});
-
-function piecesWidth(pieces: readonly ActivityDisplayPiece[]): number {
-  return pieces.reduce((count, piece) => count + visibleWidth(piece.text), 0);
-}
-
-function headClip(text: string, maxWidth: number): string {
-  let result = "";
-  let width = 0;
-  for (const { segment } of graphemeSegmenter.segment(text)) {
-    const w = visibleWidth(segment);
-    if (width + w > maxWidth) break;
-    result += segment;
-    width += w;
-  }
-  return result;
-}
-
-function tailClip(text: string, maxWidth: number): string {
-  const segments = [...graphemeSegmenter.segment(text)];
-  let result = "";
-  let width = 0;
-  for (let i = segments.length - 1; i >= 0; i -= 1) {
-    const segment = segments[i]?.segment ?? "";
-    const w = visibleWidth(segment);
-    if (width + w > maxWidth) break;
-    result = segment + result;
-    width += w;
-  }
-  return result;
-}
 
 /** A deleted working directory or missing home throws; shortening skips it. */
 function readDirectory(read: () => string): string {
@@ -123,42 +95,17 @@ function shortenPath(target: string, anchors: PathAnchors): string {
   return target;
 }
 
-/** Cuts the line at its end, keeping each surviving piece's role. */
-function clipActivityPieces(
-  pieces: readonly ActivityDisplayPiece[],
-  maxChars: number,
-): ActivityDisplayPiece[] {
-  if (piecesWidth(pieces) <= maxChars) return [...pieces];
-  const boundary = maxChars - 1;
-  const clipped: ActivityDisplayPiece[] = [];
-  let consumed = 0;
-  for (const piece of pieces) {
-    const w = visibleWidth(piece.text);
-    if (consumed + w > boundary) {
-      const room = Math.max(0, boundary - consumed);
-      clipped.push({
-        role: piece.role,
-        text: `${headClip(piece.text, room)}${ELLIPSIS}`,
-      });
-      break;
-    }
-    clipped.push(piece);
-    consumed += w;
-  }
-  return clipped;
-}
-
 /**
  * Shortens the target to fit (paths keep their tail, other text its
  * head), else drops it. The sensitive test sees the full target before
  * any shortening.
  */
 function fitTarget(
-  prefix: ActivityDisplayPiece[],
+  prefix: DisplayPiece[],
   target: string | undefined,
   maxChars: number,
   anchors: PathAnchors,
-): ActivityDisplayPiece[] {
+): DisplayPiece[] {
   if (target === undefined) return prefix;
   const room = maxChars - piecesWidth(prefix) - 1; // space before the target
   if (SENSITIVE_PATTERN.test(target)) {
@@ -178,9 +125,9 @@ function fitTarget(
 }
 
 /** `… › ` below the root's direct child, then `<identity> › `. */
-function leadPieces(delegate: Delegate | undefined): ActivityDisplayPiece[] {
+function leadPieces(delegate: Delegate | undefined): DisplayPiece[] {
   if (!delegate) return [];
-  const hint: ActivityDisplayPiece[] =
+  const hint: DisplayPiece[] =
     delegate.depth > 0 ? [{ role: "mark", text: ELLIPSIS }, ...SEPARATOR] : [];
   return [
     ...hint,
@@ -201,25 +148,25 @@ export function renderToolActivityPieces(
   activity: ToolActivity | undefined,
   maxChars: number,
   anchors: PathAnchors = PROCESS_PATH_ANCHORS,
-): ActivityDisplayPiece[] {
+): DisplayPiece[] {
   if (maxChars <= 0) return [];
   const described = describeActivity(activity);
   if (described.kind === "hidden")
-    return clipActivityPieces(
+    return clipDisplayPieces(
       [{ role: "inferred", text: HIDDEN_TEXT }],
       maxChars,
     );
   const lead = leadPieces(described.delegate);
   if (described.kind === "thinking")
-    return clipActivityPieces(
+    return clipDisplayPieces(
       [...lead, { role: "inferred", text: THINKING_TEXT }],
       maxChars,
     );
-  const prefix: ActivityDisplayPiece[] = [
+  const prefix: DisplayPiece[] = [
     ...lead,
     { role: "tool", text: described.tool },
   ];
-  return clipActivityPieces(
+  return clipDisplayPieces(
     fitTarget(prefix, described.target, maxChars, anchors),
     maxChars,
   );

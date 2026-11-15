@@ -5,13 +5,19 @@ import {
   type PathAnchors,
   renderToolActivityPieces,
 } from "../src/progress/activity-display.js";
+import {
+  clipDisplayPieces,
+  type DisplayPiece,
+} from "../src/progress/display-pieces.js";
 import { formatElapsed, formatHeaderStats } from "../src/progress/progress.js";
 import {
+  type FormatUsageTreeOptions,
   formatContextPercent,
   formatDescendantTally,
   formatDisplayIdentity,
   formatLiveElapsed,
-  formatUsageTree,
+  formatUsageTreePieces,
+  identityPieces,
   renderToolActivity,
   SENSITIVE_PATTERN,
 } from "../src/progress/progress-format.js";
@@ -21,6 +27,7 @@ import type {
   UsageInstanceNode,
 } from "../src/shared/types.js";
 import {
+  combineRollups,
   computeSubtreeRollup,
   createEmptyAdditiveUsage,
 } from "../src/shared/usage-accounting.js";
@@ -678,24 +685,26 @@ describe("ordinal-aware nested activity segments", () => {
   });
 });
 
+function usage(overrides: Partial<AdditiveUsage> = {}): AdditiveUsage {
+  return { ...createEmptyAdditiveUsage(), ...overrides };
+}
+
+function node(
+  overrides: Partial<UsageInstanceNode> &
+    Pick<UsageInstanceNode, "agent" | "instanceName">,
+): UsageInstanceNode {
+  return {
+    id: `${overrides.agent}-${overrides.instanceName}-${overrides.ordinal ?? 1}-${overrides.startedAt ?? 1000}`,
+    ordinal: 1,
+    startedAt: 1000,
+    status: "success",
+    usage: usage(),
+    children: [],
+    ...overrides,
+  };
+}
+
 describe("formatDescendantTally aggregation", () => {
-  function usage(overrides: Partial<AdditiveUsage> = {}): AdditiveUsage {
-    return { ...createEmptyAdditiveUsage(), ...overrides };
-  }
-  function node(
-    overrides: Partial<UsageInstanceNode> &
-      Pick<UsageInstanceNode, "agent" | "instanceName">,
-  ): UsageInstanceNode {
-    return {
-      id: `${overrides.agent}-${overrides.instanceName}-${overrides.ordinal ?? 1}-${overrides.startedAt ?? 1000}`,
-      ordinal: 1,
-      startedAt: 1000,
-      status: "success",
-      usage: usage(),
-      children: [],
-      ...overrides,
-    };
-  }
   test("returns undefined for leaf without descendants", () => {
     const root = node({ agent: "root", instanceName: "solo", id: "root-1" });
     expect(formatDescendantTally(root, 80)).toBeUndefined();
@@ -803,23 +812,6 @@ describe("formatDescendantTally aggregation", () => {
 });
 
 describe("formatDescendantTally ordering", () => {
-  function usage(): AdditiveUsage {
-    return createEmptyAdditiveUsage();
-  }
-  function node(
-    overrides: Partial<UsageInstanceNode> &
-      Pick<UsageInstanceNode, "agent" | "instanceName">,
-  ): UsageInstanceNode {
-    return {
-      id: `${overrides.agent}-${overrides.instanceName}-${overrides.startedAt ?? 1000}`,
-      ordinal: 1,
-      startedAt: 1000,
-      status: "success",
-      usage: usage(),
-      children: [],
-      ...overrides,
-    };
-  }
   test("orders running then error then success tiers", () => {
     const running = node({
       agent: "build",
@@ -1009,23 +1001,6 @@ describe("formatDescendantTally ordering", () => {
 });
 
 describe("formatDescendantTally width", () => {
-  function usage(): AdditiveUsage {
-    return createEmptyAdditiveUsage();
-  }
-  function node(
-    overrides: Partial<UsageInstanceNode> &
-      Pick<UsageInstanceNode, "agent" | "instanceName">,
-  ): UsageInstanceNode {
-    return {
-      id: `${overrides.agent}-${overrides.instanceName}-${overrides.startedAt ?? 1000}`,
-      ordinal: 1,
-      startedAt: 1000,
-      status: "success",
-      usage: usage(),
-      children: [],
-      ...overrides,
-    };
-  }
   function threeAgentRoot(): UsageInstanceNode {
     const a = node({
       agent: "aaa",
@@ -1121,24 +1096,16 @@ describe("formatDescendantTally width", () => {
   });
 });
 
-describe("formatUsageTree views", () => {
-  function usage(): AdditiveUsage {
-    return createEmptyAdditiveUsage();
-  }
-  function node(
-    overrides: Partial<UsageInstanceNode> &
-      Pick<UsageInstanceNode, "agent" | "instanceName">,
-  ): UsageInstanceNode {
-    return {
-      id: `${overrides.agent}-${overrides.instanceName}-${overrides.ordinal ?? 1}`,
-      ordinal: 1,
-      startedAt: 1000,
-      status: "success",
-      usage: usage(),
-      children: [],
-      ...overrides,
-    };
-  }
+function usageTreeLines(
+  root: UsageInstanceNode,
+  options?: FormatUsageTreeOptions,
+): string[] {
+  return formatUsageTreePieces(root, options).map((row) =>
+    row.map((piece) => piece.text).join(""),
+  );
+}
+
+describe("formatUsageTreePieces text views", () => {
   test("shows root in root-inclusive view hiding it otherwise", () => {
     const child = node({
       agent: "build",
@@ -1156,8 +1123,8 @@ describe("formatUsageTree views", () => {
       startedAt: 500,
       children: [child],
     });
-    const inclusive = formatUsageTree(root, { includeRoot: true, now: 5000 });
-    const exclusive = formatUsageTree(root, { includeRoot: false, now: 5000 });
+    const inclusive = usageTreeLines(root, { includeRoot: true, now: 5000 });
+    const exclusive = usageTreeLines(root, { includeRoot: false, now: 5000 });
     expect(inclusive.some((line) => line.includes("top"))).toBe(true);
     expect(exclusive.some((line) => line.includes("top"))).toBe(false);
     expect(exclusive.some((line) => line.includes("leaf"))).toBe(true);
@@ -1176,7 +1143,7 @@ describe("formatUsageTree views", () => {
       id: "root-1",
       children: [child],
     });
-    const lines = formatUsageTree(root, { includeRoot: true, now: 2000 });
+    const lines = usageTreeLines(root, { includeRoot: true, now: 2000 });
     expect(lines.some((line) => line.includes("build leaf"))).toBe(true);
     expect(lines.some((line) => line.includes("#1"))).toBe(false);
   });
@@ -1199,7 +1166,7 @@ describe("formatUsageTree views", () => {
       id: "root-1",
       children: [later, earlier],
     });
-    const lines = formatUsageTree(root, { now: 5000 });
+    const lines = usageTreeLines(root, { now: 5000 });
     const earlierIdx = lines.findIndex((line) => line.includes("earlier"));
     const laterIdx = lines.findIndex((line) => line.includes("later"));
     expect(earlierIdx).toBeGreaterThanOrEqual(0);
@@ -1233,7 +1200,7 @@ describe("formatUsageTree views", () => {
       id: "root-1",
       children: [child],
     });
-    const lines = formatUsageTree(root, { includeRoot: true, now: 5000 });
+    const lines = usageTreeLines(root, { includeRoot: true, now: 5000 });
     const childLine = lines.find((line) => line.includes("mid")) as string;
     const keptLine = lines.find((line) => line.includes("kept")) as string;
     const omittedLine = lines.find((line) =>
@@ -1266,7 +1233,7 @@ describe("formatUsageTree views", () => {
       status: "running",
       children: [running, done],
     });
-    const lines = formatUsageTree(root, { now: 3500 });
+    const lines = usageTreeLines(root, { now: 3500 });
     expect(
       lines.some((line) => line.includes("live") && line.includes("· 2s")),
     ).toBe(true);
@@ -1291,7 +1258,7 @@ describe("formatUsageTree views", () => {
       id: "root-1",
       children: [noDuration],
     });
-    const lines = formatUsageTree(root, { now: 2000 });
+    const lines = usageTreeLines(root, { now: 2000 });
     const line = lines.find((l) => l.includes("nodur")) as string;
     expect(line).toBe("\u2713 build nodur");
   });
@@ -1310,7 +1277,7 @@ describe("formatUsageTree views", () => {
       status: "running",
       children: [running],
     });
-    const nanNow = formatUsageTree(root, { now: Number.NaN });
+    const nanNow = usageTreeLines(root, { now: Number.NaN });
     expect(
       nanNow.some((line) => line.includes("live") && line.includes("· 0s")),
     ).toBe(true);
@@ -1328,7 +1295,7 @@ describe("formatUsageTree views", () => {
       status: "running",
       children: [badStart],
     });
-    const badLines = formatUsageTree(badRoot, { now: 5000 });
+    const badLines = usageTreeLines(badRoot, { now: 5000 });
     expect(
       badLines.some((line) => line.includes("bad") && line.includes("· 0s")),
     ).toBe(true);
@@ -1367,7 +1334,7 @@ describe("formatUsageTree views", () => {
         }),
       ],
     });
-    const joined = formatUsageTree(root, { now: 5000 }).join("\n");
+    const joined = usageTreeLines(root, { now: 5000 }).join("\n");
     expect(joined.indexOf("alpha")).toBeLessThan(joined.indexOf("beta"));
     expect(joined.indexOf("\u2713 beta other")).toBeLessThan(
       joined.indexOf("\u2717 beta other"),
@@ -1376,10 +1343,7 @@ describe("formatUsageTree views", () => {
   });
 });
 
-describe("formatUsageTree bounding", () => {
-  function usage(): AdditiveUsage {
-    return createEmptyAdditiveUsage();
-  }
+describe("formatUsageTreePieces bounding", () => {
   function chainRoot(total: number): UsageInstanceNode {
     let current: UsageInstanceNode = {
       id: `chain-${total}`,
@@ -1419,14 +1383,14 @@ describe("formatUsageTree bounding", () => {
   }
   test("bounds explicit nodes to 50 including root", () => {
     const root = chainRoot(70);
-    const inclusive = formatUsageTree(root, { includeRoot: true, now: 10000 });
+    const inclusive = usageTreeLines(root, { includeRoot: true, now: 10000 });
     const explicit = inclusive.filter((line) => line.includes("#"));
     expect(explicit.length).toBeLessThanOrEqual(50);
     expect(inclusive.some((line) => line.includes("earlier"))).toBe(true);
   });
   test("bounds descendants-only below 50 counting hidden root", () => {
     const root = chainRoot(70);
-    const exclusive = formatUsageTree(root, { includeRoot: false, now: 10000 });
+    const exclusive = usageTreeLines(root, { includeRoot: false, now: 10000 });
     const explicit = exclusive.filter((line) => line.includes("#"));
     expect(explicit.length).toBeLessThanOrEqual(49);
     expect(exclusive.some((line) => line.includes("earlier"))).toBe(true);
@@ -1439,23 +1403,20 @@ describe("formatUsageTree bounding", () => {
     expect(after.instances).toBe(before.instances);
     expect(after.usage.turns).toBe(before.usage.turns);
     expect(
-      formatUsageTree(root, { includeRoot: true, now: 10000 }).length,
+      usageTreeLines(root, { includeRoot: true, now: 10000 }).length,
     ).toBeGreaterThan(0);
   });
   test("keeps full tally total despite tree bounding", () => {
     const root = chainRoot(70);
     const tally = formatDescendantTally(root, 1000);
     expect(tally).toContain("70 spawned");
-    const tree = formatUsageTree(root, { includeRoot: true, now: 10000 });
+    const tree = usageTreeLines(root, { includeRoot: true, now: 10000 });
     const explicit = tree.filter((line) => line.includes("#"));
     expect(explicit.length).toBeLessThanOrEqual(50);
   });
 });
 
 describe("accounting-only text", () => {
-  function usage(): AdditiveUsage {
-    return createEmptyAdditiveUsage();
-  }
   test("contains only names ordinals counts statuses durations", () => {
     const child: UsageInstanceNode = {
       id: "child-1",
@@ -1479,7 +1440,7 @@ describe("accounting-only text", () => {
       children: [child],
     };
     const tally = formatDescendantTally(root, 200) as string;
-    const lines = formatUsageTree(root, { includeRoot: true, now: 5000 });
+    const lines = usageTreeLines(root, { includeRoot: true, now: 5000 });
     const combined = `${tally} ${lines.join(" ")}`;
     expect(combined).toContain("build");
     expect(combined).toContain("swift-fox");
@@ -1491,23 +1452,6 @@ describe("accounting-only text", () => {
 });
 
 describe("formatDescendantTally run cost", () => {
-  function usage(overrides: Partial<AdditiveUsage> = {}): AdditiveUsage {
-    return { ...createEmptyAdditiveUsage(), ...overrides };
-  }
-  function node(
-    overrides: Partial<UsageInstanceNode> &
-      Pick<UsageInstanceNode, "agent" | "instanceName">,
-  ): UsageInstanceNode {
-    return {
-      id: `${overrides.agent}-${overrides.instanceName}-${overrides.ordinal ?? 1}-${overrides.startedAt ?? 1000}`,
-      ordinal: 1,
-      startedAt: 1000,
-      status: "success",
-      usage: usage(),
-      children: [],
-      ...overrides,
-    };
-  }
   test("appends whole-subtree run cost including self exactly once", () => {
     const child = node({
       agent: "worker",
@@ -2527,5 +2471,341 @@ describe("T-003 Protect, shorten, and bound activity targets", () => {
     expect(
       renderActivityText({ toolName: "bash", inputSummary: "bash: a/b/c" }, 6),
     ).toBe("bash");
+  });
+});
+
+describe("identityPieces", () => {
+  test("retains agent with instance and valid ordinal", () => {
+    expect(identityPieces("build", "api", 3)).toEqual([
+      { role: "agent", text: "build" },
+      { role: "plain", text: " " },
+      { role: "ordinal", text: "#3" },
+      { role: "plain", text: " " },
+      { role: "instance", text: "api" },
+    ]);
+  });
+
+  test.each([undefined, 0, 1, -2, 1.5, Number.NaN, Number.POSITIVE_INFINITY])(
+    "omits invalid ordinal %p without shifting instance",
+    (ordinal) => {
+      expect(identityPieces("build", "api", ordinal)).toEqual([
+        { role: "agent", text: "build" },
+        { role: "plain", text: " " },
+        { role: "instance", text: "api" },
+      ]);
+    },
+  );
+
+  test.each([undefined, ""])(
+    "omits ordinal %p when instance name is missing",
+    (instanceName) => {
+      expect(identityPieces("build", instanceName, 5)).toEqual([
+        { role: "agent", text: "build" },
+      ]);
+    },
+  );
+});
+
+describe("clipDisplayPieces", () => {
+  const joined = (pieces: readonly DisplayPiece[]): string =>
+    pieces.map((piece) => piece.text).join("");
+  const identity: DisplayPiece[] = [
+    { role: "agent", text: "build" },
+    { role: "plain", text: " " },
+    { role: "instance", text: "api-server" },
+  ];
+
+  test("passes fitting pieces through as a copy", () => {
+    const clipped = clipDisplayPieces(
+      identity,
+      visibleWidth("build api-server"),
+    );
+    expect(clipped).toEqual(identity);
+    expect(clipped).not.toBe(identity);
+  });
+
+  test.each([0, -1])("returns no pieces at nonpositive width %p", (width) => {
+    expect(clipDisplayPieces(identity, width)).toEqual([]);
+  });
+
+  const boundaryCases: {
+    name: string;
+    pieces: DisplayPiece[];
+    width: number;
+    expected: DisplayPiece[];
+  }[] = [
+    {
+      name: "identity",
+      pieces: identity,
+      width: 9,
+      expected: [
+        { role: "agent", text: "build" },
+        { role: "plain", text: " " },
+        { role: "instance", text: "ap…" },
+      ],
+    },
+    {
+      name: "delimiter",
+      pieces: [
+        { role: "tally", text: "2 spawned" },
+        { role: "tallyDelimiter", text: " · " },
+        { role: "tally", text: "extra" },
+      ],
+      width: 12,
+      expected: [
+        { role: "tally", text: "2 spawned" },
+        { role: "tallyDelimiter", text: " ·…" },
+      ],
+    },
+    {
+      name: "indent",
+      pieces: [
+        { role: "plain", text: "      " },
+        { role: "agent", text: "build" },
+      ],
+      width: 4,
+      expected: [{ role: "plain", text: "   …" }],
+    },
+  ];
+
+  test.each(boundaryCases)(
+    "cuts inside the $name piece and appends … in its role",
+    ({ pieces, width, expected }) => {
+      expect(clipDisplayPieces(pieces, width)).toEqual(expected);
+    },
+  );
+
+  test("never exceeds the width across a narrow sweep", () => {
+    for (let width = 1; width <= 16; width += 1)
+      expect(
+        visibleWidth(joined(clipDisplayPieces(identity, width))),
+      ).toBeLessThanOrEqual(width);
+  });
+
+  test.each([
+    {
+      name: "cut before a wide grapheme",
+      text: "ab😀cd",
+      width: 4,
+      expected: "ab…",
+    },
+    {
+      name: "wide grapheme at exact fit",
+      text: `${"a".repeat(118)}😀`,
+      width: 120,
+      expected: `${"a".repeat(118)}😀`,
+    },
+    {
+      name: "wide grapheme past the width",
+      text: `${"a".repeat(119)}😀`,
+      width: 120,
+      expected: `${"a".repeat(119)}…`,
+    },
+  ])("keeps whole graphemes: $name", ({ text, width, expected }) => {
+    expect(joined(clipDisplayPieces([{ role: "output", text }], width))).toBe(
+      expected,
+    );
+  });
+});
+
+describe("formatUsageTreePieces structural projection", () => {
+  test("tags node rows with structural roles and plain spacing", () => {
+    const child = node({
+      agent: "build",
+      instanceName: "leaf",
+      id: "leaf-1",
+      ordinal: 2,
+      startedAt: 1000,
+      durationMs: 1500,
+    });
+    const root = node({
+      agent: "root",
+      instanceName: "top",
+      id: "root-1",
+      children: [child],
+    });
+    const rows = formatUsageTreePieces(root, { now: 5000 });
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toEqual([
+      { role: "tally", text: "\u2713" },
+      { role: "plain", text: " " },
+      { role: "agent", text: "build" },
+      { role: "plain", text: " " },
+      { role: "ordinal", text: "#2" },
+      { role: "plain", text: " " },
+      { role: "instance", text: "leaf" },
+      { role: "tallyDelimiter", text: " \u00b7 " },
+      { role: "metadata", text: "1.5s" },
+    ]);
+  });
+  test("retains two spaces per depth and plain glyph spacing", () => {
+    const grand = node({
+      agent: "build",
+      instanceName: "grand",
+      id: "grand-1",
+      startedAt: 2000,
+    });
+    const child = node({
+      agent: "build",
+      instanceName: "mid",
+      id: "mid-1",
+      startedAt: 1000,
+      children: [grand],
+    });
+    const root = node({
+      agent: "root",
+      instanceName: "top",
+      id: "root-1",
+      children: [child],
+    });
+    const rows = formatUsageTreePieces(root, { includeRoot: true, now: 5000 });
+    expect(rows).toHaveLength(3);
+    expect(rows[0]?.slice(0, 2)).toEqual([
+      { role: "tally", text: "\u2713" },
+      { role: "plain", text: " " },
+    ]);
+    expect(rows[1]?.[0]).toEqual({ role: "plain", text: "  " });
+    expect(rows[1]?.[1]).toEqual({ role: "tally", text: "\u2713" });
+    expect(rows[1]?.[2]).toEqual({ role: "plain", text: " " });
+    expect(rows[2]?.[0]).toEqual({ role: "plain", text: "    " });
+  });
+  test("projects omission rows as indent plus inferred text", () => {
+    const root = node({
+      agent: "root",
+      instanceName: "top",
+      id: "root-1",
+      children: [],
+      omitted: {
+        count: 1,
+        totals: computeSubtreeRollup(
+          node({ agent: "x", instanceName: "y", id: "x-y" }),
+        ),
+      },
+    });
+    const rows = formatUsageTreePieces(root, { now: 5000 });
+    expect(rows).toEqual([[{ role: "inferred", text: "+1 earlier" }]]);
+  });
+  test("indents omission rows at child depths with plain spaces", () => {
+    const grand = node({
+      agent: "build",
+      instanceName: "grand",
+      id: "grand-1",
+      startedAt: 2000,
+      omitted: {
+        count: 3,
+        totals: combineRollups([
+          computeSubtreeRollup(
+            node({ agent: "x", instanceName: "y", id: "x-y3a" }),
+          ),
+          computeSubtreeRollup(
+            node({ agent: "x", instanceName: "y", id: "x-y3b" }),
+          ),
+          computeSubtreeRollup(
+            node({ agent: "x", instanceName: "y", id: "x-y3c" }),
+          ),
+        ]),
+      },
+    });
+    const child = node({
+      agent: "build",
+      instanceName: "mid",
+      id: "mid-1",
+      startedAt: 1000,
+      omitted: {
+        count: 2,
+        totals: combineRollups([
+          computeSubtreeRollup(
+            node({ agent: "x", instanceName: "y", id: "x-y2a" }),
+          ),
+          computeSubtreeRollup(
+            node({ agent: "x", instanceName: "y", id: "x-y2b" }),
+          ),
+        ]),
+      },
+      children: [grand],
+    });
+    const root = node({
+      agent: "root",
+      instanceName: "top",
+      id: "root-1",
+      children: [child],
+    });
+    const rows = formatUsageTreePieces(root, { now: 5000 });
+    const omitted = rows.filter((row) =>
+      row.some((piece) => piece.role === "inferred"),
+    );
+    expect(omitted).toEqual([
+      [
+        { role: "plain", text: "    " },
+        { role: "inferred", text: "+3 earlier" },
+      ],
+      [
+        { role: "plain", text: "  " },
+        { role: "inferred", text: "+2 earlier" },
+      ],
+    ]);
+  });
+  test("supports descendant-only and root-inclusive with self cost", () => {
+    const child = node({
+      agent: "build",
+      instanceName: "leaf",
+      id: "leaf-1",
+      startedAt: 1000,
+      usage: { ...usage(), cost: 0.02 },
+    });
+    const root = node({
+      agent: "root",
+      instanceName: "top",
+      id: "root-1",
+      ordinal: 2,
+      startedAt: 500,
+      usage: { ...usage(), cost: 0.01 },
+      children: [child],
+    });
+    const exclusive = formatUsageTreePieces(root, {
+      now: 5000,
+      showCost: true,
+    });
+    expect(exclusive).toHaveLength(1);
+    expect(exclusive[0]?.slice(-2)).toEqual([
+      { role: "tallyDelimiter", text: " \u00b7 " },
+      { role: "metadata", text: "$0.0200" },
+    ]);
+    const inclusive = formatUsageTreePieces(root, {
+      includeRoot: true,
+      now: 5000,
+      showCost: true,
+    });
+    expect(inclusive).toHaveLength(2);
+    expect(inclusive[0]?.slice(-2)).toEqual([
+      { role: "tallyDelimiter", text: " \u00b7 " },
+      { role: "metadata", text: "$0.0100" },
+    ]);
+  });
+  test("defaults now to the wall clock for running durations", () => {
+    const running = node({
+      agent: "build",
+      instanceName: "live",
+      id: "live-1",
+      status: "running",
+      startedAt: 1000,
+    });
+    const root = node({
+      agent: "root",
+      instanceName: "top",
+      id: "root-1",
+      status: "running",
+      startedAt: 500,
+      children: [running],
+    });
+    jest.setSystemTime(5500);
+    try {
+      const rows = formatUsageTreePieces(root);
+      expect(rows[0]?.filter((p) => p.role === "metadata")).toEqual([
+        { role: "metadata", text: "4s" },
+      ]);
+    } finally {
+      jest.useRealTimers();
+    }
   });
 });
