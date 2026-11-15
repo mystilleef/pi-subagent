@@ -1,11 +1,17 @@
-import { expect, test } from "bun:test";
+import { expect, mock, test } from "bun:test";
 import type { Message } from "@earendil-works/pi-ai";
 import { runSingleAgent } from "../src/child/process.js";
 import type { RuntimeResult } from "../src/child/result-builder.js";
 import { makeEmitUpdate } from "../src/child/streaming-progress.js";
+// Real progress exports are captured before registration so the mock
+// delegates inertly for every activity except the synthetic "unrenderable"
+// tool name, which lets tests exercise the defensive activityText-clear
+// branches in applyActivityUpdates when rendering yields undefined.
+import * as realProgress from "../src/progress/progress.js";
 import type {
   StreamingProgress,
   SubagentDetails,
+  ToolActivity,
 } from "../src/shared/types.js";
 // Explicit agent/agentSource/task overrides preserve the former local
 // makeRuntimeResult defaults at each migrated call site.
@@ -22,6 +28,17 @@ import {
   setupTest,
   shellQuote,
 } from "./helpers.js";
+
+const realProgressSnapshot = { ...realProgress };
+const realRenderToolActivity = realProgressSnapshot.renderToolActivity;
+
+mock.module("../src/progress/progress.js", () => ({
+  ...realProgressSnapshot,
+  renderToolActivity: (activity?: ToolActivity) =>
+    activity && activity.toolName === "unrenderable"
+      ? undefined
+      : realRenderToolActivity(activity),
+}));
 
 function makeToolCallMessage(
   toolName: string,
@@ -1268,5 +1285,288 @@ describe("ToolActivity ordinal merge preservation", () => {
     expect(result.progress?.activeToolActivity?.inputSummary).toBe(
       "outer refined",
     );
+  });
+});
+
+describe("deriveStreamingProgress message filtering", () => {
+  test("ignores tool-call parts on non-assistant messages", () => {
+    const result = makeRuntimeResult({
+      agent: "test",
+      agentSource: "user",
+      task: "task",
+    });
+    result.messages = [
+      {
+        role: "user",
+        content: [
+          {
+            type: "toolCall",
+            id: "tc-user",
+            name: "bash",
+            arguments: { command: "ls" },
+          },
+        ],
+      },
+    ] as unknown as Message[];
+    const emitUpdate = makeEmitUpdate(result, undefined, makeSubagentDetails);
+
+    emitUpdate();
+
+    expect(result.progress?.toolCalls).toHaveLength(0);
+    expect(result.progress?.lastToolPreview).toBeUndefined();
+    expect(result.progress?.activeToolActivity).toBeUndefined();
+  });
+
+  test("skips assistant messages without array content", () => {
+    const result = makeRuntimeResult({
+      agent: "test",
+      agentSource: "user",
+      task: "task",
+    });
+    result.messages = [
+      { role: "assistant", content: undefined },
+      { role: "assistant", content: null },
+      { role: "assistant", content: "plain text" },
+    ] as unknown as Message[];
+    const emitUpdate = makeEmitUpdate(result, undefined, makeSubagentDetails);
+
+    expect(() => emitUpdate()).not.toThrow();
+    expect(result.progress?.toolCalls).toHaveLength(0);
+  });
+
+  test("collects only toolCall parts from mixed assistant content", () => {
+    const result = makeRuntimeResult({
+      agent: "test",
+      agentSource: "user",
+      task: "task",
+    });
+    result.messages = [
+      {
+        role: "assistant",
+        content: [
+          { type: "text", text: "planning" },
+          {
+            type: "toolCall",
+            id: "tc-1",
+            name: "bash",
+            arguments: { command: "ls" },
+          },
+          { type: "text", text: "aftermath" },
+        ],
+      },
+    ] as unknown as Message[];
+    const emitUpdate = makeEmitUpdate(result, undefined, makeSubagentDetails);
+
+    emitUpdate();
+
+    expect(result.progress?.toolCalls).toEqual([
+      { id: "tc-1", preview: "bash: ls" },
+    ]);
+    expect(result.progress?.lastToolPreview).toBe("bash: ls");
+    expect(result.progress?.activeToolActivity).toEqual({
+      toolName: "bash",
+      inputSummary: "bash: ls",
+    });
+  });
+
+  test("tracks the last tool call across messages", () => {
+    const result = makeRuntimeResult({
+      agent: "test",
+      agentSource: "user",
+      task: "task",
+    });
+    result.messages = [
+      {
+        role: "assistant",
+        content: [
+          {
+            type: "toolCall",
+            id: "tc-1",
+            name: "bash",
+            arguments: { command: "ls" },
+          },
+        ],
+      },
+      {
+        role: "assistant",
+        content: [
+          {
+            type: "toolCall",
+            id: "tc-2",
+            name: "bash",
+            arguments: { command: "pwd" },
+          },
+        ],
+      },
+    ] as unknown as Message[];
+    const emitUpdate = makeEmitUpdate(result, undefined, makeSubagentDetails);
+
+    emitUpdate();
+
+    expect(result.progress?.toolCalls).toEqual([
+      { id: "tc-1", preview: "bash: ls" },
+      { id: "tc-2", preview: "bash: pwd" },
+    ]);
+    expect(result.progress?.lastToolPreview).toBe("bash: pwd");
+    expect(result.progress?.activeToolActivity).toEqual({
+      toolName: "bash",
+      inputSummary: "bash: pwd",
+    });
+  });
+});
+
+describe("makeEmitUpdate details slicing", () => {
+  test("passes messages after the last assistant text anchor to makeDetails", () => {
+    const messages = [
+      { role: "assistant", content: [{ type: "text", text: "first" }] },
+      {
+        role: "assistant",
+        content: [
+          {
+            type: "toolCall",
+            id: "tc-1",
+            name: "bash",
+            arguments: { command: "ls" },
+          },
+        ],
+      },
+      { role: "assistant", content: [{ type: "text", text: "second" }] },
+    ] as unknown as Message[];
+    const result = makeRuntimeResult({
+      agent: "test",
+      agentSource: "user",
+      task: "task",
+      messages,
+    });
+    const captured: {
+      includeMessages?: boolean;
+      recentMessages?: Message[];
+    }[] = [];
+    const emitUpdate = makeEmitUpdate(
+      result,
+      () => {},
+      (results, options) => {
+        captured.push(options ?? {});
+        return makeSubagentDetails(results);
+      },
+    );
+
+    emitUpdate();
+
+    expect(captured).toHaveLength(1);
+    expect(captured[0]?.includeMessages).toBe(true);
+    expect(captured[0]?.recentMessages).toHaveLength(1);
+    expect(captured[0]?.recentMessages?.[0]).toBe(messages[2]);
+  });
+
+  test("falls back to the last five messages when no text anchor exists", () => {
+    const messages = Array.from({ length: 10 }, (_, i) => ({
+      role: "assistant",
+      content: [
+        {
+          type: "toolCall",
+          id: `tc-${i}`,
+          name: "bash",
+          arguments: { command: `cmd-${i}` },
+        },
+      ],
+    })) as unknown as Message[];
+    const result = makeRuntimeResult({
+      agent: "test",
+      agentSource: "user",
+      task: "task",
+      messages,
+    });
+    const captured: {
+      includeMessages?: boolean;
+      recentMessages?: Message[];
+    }[] = [];
+    const emitUpdate = makeEmitUpdate(
+      result,
+      () => {},
+      (results, options) => {
+        captured.push(options ?? {});
+        return makeSubagentDetails(results);
+      },
+    );
+
+    emitUpdate();
+
+    expect(captured[0]?.recentMessages).toHaveLength(5);
+    expect(captured[0]?.recentMessages?.[0]).toBe(messages[5]);
+    expect(captured[0]?.recentMessages?.[4]).toBe(messages[9]);
+  });
+});
+
+test("emits an empty activityText verbatim instead of the running fallback", () => {
+  const result = makeRuntimeResult({
+    agent: "test",
+    agentSource: "user",
+    task: "task",
+    messages: [
+      {
+        role: "assistant",
+        content: [{ type: "toolCall", id: "tc-1", name: "", arguments: {} }],
+      },
+    ] as unknown as Message[],
+  });
+  const texts: string[] = [];
+  const emitUpdate = makeEmitUpdate(
+    result,
+    (partial) => {
+      texts.push(partial.content[0]?.text ?? "");
+    },
+    makeSubagentDetails,
+  );
+
+  emitUpdate();
+
+  expect(result.progress?.activityText).toBe("");
+  expect(texts).toContain("");
+  expect(texts).not.toContain("(running...)");
+});
+
+describe("applyActivityUpdates clears stale activityText when rendering yields undefined", () => {
+  test("clears activityText when toolResultCompleted restores an unrenderable activity", () => {
+    const result = makeRuntimeResult({
+      agent: "test",
+      agentSource: "user",
+      task: "task",
+    });
+    result.messages = [makeToolCallMessage("bash", { command: "ls" })];
+    result.progress = {
+      toolCalls: [],
+      activityText: "stale text",
+      activeToolActivity: { toolName: "unrenderable" },
+    };
+    const emitUpdate = makeEmitUpdate(result, undefined, makeSubagentDetails);
+
+    emitUpdate({ toolResultCompleted: true });
+
+    expect(result.progress?.toolResultCompleted).toBe(true);
+    expect(result.progress?.activeToolActivity).toEqual({
+      toolName: "unrenderable",
+    });
+    expect(result.progress).not.toHaveProperty("activityText");
+  });
+
+  test("clears activityText when a merged tool activity cannot be rendered", () => {
+    const result = makeRuntimeResult({
+      agent: "test",
+      agentSource: "user",
+      task: "task",
+    });
+    result.messages = [makeToolCallMessage("bash", { command: "ls" })];
+    const emitUpdate = makeEmitUpdate(result, undefined, makeSubagentDetails);
+
+    emitUpdate({
+      toolActivity: {
+        toolName: "unrenderable",
+        inputSummary: "unrenderable: x",
+      },
+    });
+
+    expect(result.progress?.activeToolActivity?.toolName).toBe("unrenderable");
+    expect(result.progress).not.toHaveProperty("activityText");
   });
 });

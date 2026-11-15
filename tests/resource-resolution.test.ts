@@ -1069,8 +1069,27 @@ test.each([
   );
 });
 
-test("resolveAgentExtensionPaths reports unknown extension for versioned requested name", async () => {
-  const root = await makeTempDir("pi-subagent-ext-ver-unknown-");
+test.each([
+  {
+    name: "resolveAgentExtensionPaths reports unknown extension for versioned requested name",
+    tempDirPrefix: "pi-subagent-ext-ver-unknown-",
+    entryPath: "npm:helper@2.0.0",
+    entrySource: "npm:helper@2.0.0",
+    requested: "helper@2.0.0",
+    expectedStart: 'Unknown extension: "helper@2.0.0".',
+    expectedAvailable: "Available extensions: helper.",
+  },
+  {
+    name: "resolveAgentExtensionPaths reports unknown extension for scoped package source without package name",
+    tempDirPrefix: "pi-subagent-ext-scope-noname-",
+    entryPath: "npm:@scope",
+    entrySource: "npm:@scope",
+    requested: "@scope",
+    expectedStart: 'Unknown extension: "@scope".',
+    expectedAvailable: "Available extensions: none.",
+  },
+])("$name", async (row) => {
+  const root = await makeTempDir(row.tempDirPrefix);
   const cwd = path.join(root, "work");
   await mkdir(cwd, { recursive: true });
   const resolvedPath = path.join(
@@ -1086,11 +1105,11 @@ test("resolveAgentExtensionPaths reports unknown extension for versioned request
   DefaultResourceLoader.prototype.getExtensions = () => ({
     extensions: [
       {
-        path: "npm:helper@2.0.0",
+        path: row.entryPath,
         resolvedPath,
         sourceInfo: {
           path: resolvedPath,
-          source: "npm:helper@2.0.0",
+          source: row.entrySource,
           scope: "user",
           origin: "package",
         },
@@ -1106,11 +1125,11 @@ test("resolveAgentExtensionPaths reports unknown extension for versioned request
     runtime: {} as never,
   });
   try {
-    const resolved = await resolveAgentExtensionPaths(cwd, ["helper@2.0.0"]);
+    const resolved = await resolveAgentExtensionPaths(cwd, [row.requested]);
     expect("error" in resolved).toBe(true);
     if ("error" in resolved) {
-      expect(resolved.error).toStartWith('Unknown extension: "helper@2.0.0".');
-      expect(resolved.error).toContain("Available extensions: helper.");
+      expect(resolved.error).toStartWith(row.expectedStart);
+      expect(resolved.error).toContain(row.expectedAvailable);
     }
   } finally {
     DefaultResourceLoader.prototype.getExtensions = originalGetExtensions;
@@ -1419,6 +1438,14 @@ test.each([
     extensionPath: ".pi/extensions/custom.js",
     source: ".pi/extensions/custom.js",
     extensionName: "custom",
+  },
+  {
+    name: "resolveAgentExtensionPaths resolves extensionless file by its full name",
+    tempDirPrefix: "pi-subagent-ext-noext-",
+    fileName: "tool",
+    extensionPath: ".pi/extensions/tool",
+    source: ".pi/extensions/tool",
+    extensionName: "tool",
   },
 ])("$name", async (row) => {
   const root = await makeTempDir(row.tempDirPrefix);
@@ -1877,5 +1904,30 @@ describe("resolveAgentSkillArgs", () => {
   test("resolveAgentSkillArgs returns empty args for empty skill list", async () => {
     const result = await resolveAgentSkillArgs("/tmp", []);
     expect(result).toEqual({ args: [] });
+  });
+
+  test("resolveAgentSkillArgs re-discovers after missing-skill errors instead of caching failures", async () => {
+    const root = await makeTempDir("pi-subagent-skill-fail-cache-");
+    const cwd = path.join(root, "work");
+    await mkdir(cwd, { recursive: true });
+    const originalReload = DefaultResourceLoader.prototype.reload;
+    let reloads = 0;
+    DefaultResourceLoader.prototype.reload = async function (...args) {
+      reloads += 1;
+      return originalReload.apply(this, args);
+    };
+    try {
+      const first = await resolveAgentSkillArgs(cwd, ["nonexistent-skill"]);
+      const second = await resolveAgentSkillArgs(cwd, ["nonexistent-skill"]);
+      expect(reloads).toBe(2);
+      expect(second).toEqual(first);
+      expect("error" in second).toBe(true);
+      if ("error" in second) {
+        expect(second.error).toContain("Unknown skill");
+      }
+    } finally {
+      DefaultResourceLoader.prototype.reload = originalReload;
+      resetResolvedAgentSkillArgsCache();
+    }
   });
 });

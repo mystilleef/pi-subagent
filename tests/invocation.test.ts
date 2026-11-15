@@ -6,6 +6,7 @@ import path from "node:path";
 import {
   getPiInvocation,
   getSubagentDepth,
+  needsSpawnShell,
   subagentDepthEnv,
 } from "../src/shared/invocation.js";
 import { setupFixtureHooks } from "./fixtures.js";
@@ -113,6 +114,16 @@ describe("getPiInvocation", () => {
       process.execPath = originalExecPath;
     }
   });
+});
+
+test.each([
+  { command: "pi", platform: "win32", expected: true },
+  { command: "pi", platform: "linux", expected: false },
+  { command: "pi", platform: "darwin", expected: false },
+  { command: "C:\\node.exe", platform: "win32", expected: false },
+  { command: "/usr/bin/node", platform: "linux", expected: false },
+] as const)("needsSpawnShell($command, $platform) is $expected", (row) => {
+  expect(needsSpawnShell(row.command, row.platform)).toBe(row.expected);
 });
 
 describe("getSubagentDepth", () => {

@@ -221,35 +221,38 @@ describe("parseChildEventLine", () => {
       };
       expect(event.toolActivity.toolName).toBe("subagent");
     });
-    test("subagent without activeToolActivity omits child field", () => {
-      const r = known(
-        JSON.stringify({
-          type: TOOL_EXECUTION_UPDATE_EVENT,
-          toolName: "subagent",
-          partialResult: {
-            details: {
-              results: [
-                {
-                  agent: "writer",
-                  progress: {},
-                },
-              ],
+    test.each([{}, { activeToolActivity: null }])(
+      "subagent with progress %p omits child field",
+      (progress) => {
+        const r = known(
+          JSON.stringify({
+            type: TOOL_EXECUTION_UPDATE_EVENT,
+            toolName: "subagent",
+            partialResult: {
+              details: {
+                results: [
+                  {
+                    agent: "writer",
+                    progress,
+                  },
+                ],
+              },
             },
-          },
-        }),
-      );
-      const event = r.event as {
-        toolName: string;
-        toolActivity: {
+          }),
+        );
+        const event = r.event as {
           toolName: string;
-          inputSummary?: string;
-          child?: unknown;
+          toolActivity: {
+            toolName: string;
+            inputSummary?: string;
+            child?: unknown;
+          };
         };
-      };
-      expect(event.toolActivity.toolName).toBe("subagent");
-      expect(event.toolActivity.inputSummary).toBe("subagent: writer");
-      expect(event.toolActivity.child).toBeUndefined();
-    });
+        expect(event.toolActivity.toolName).toBe("subagent");
+        expect(event.toolActivity.inputSummary).toBe("subagent: writer");
+        expect(event.toolActivity.child).toBeUndefined();
+      },
+    );
     test("subagent with string progress field produces fallback without child", () => {
       const r = known(
         JSON.stringify({
@@ -484,6 +487,24 @@ describe("parseChildEventLine", () => {
       expect(event.toolActivity.child?.toolName).toBe("read");
       expect(event.toolActivity.child?.inputSummary).toBe("file.txt");
     });
+    test("replaces client-supplied toolActivity with computed activity", () => {
+      const r = known(
+        JSON.stringify({
+          type: TOOL_EXECUTION_UPDATE_EVENT,
+          toolName: "subagent",
+          partialResult: {},
+          toolActivity: { toolName: "spoofed", inputSummary: "injected" },
+        }),
+      );
+      expect(r.event.type).toBe(TOOL_EXECUTION_UPDATE_EVENT);
+      const event = r.event as {
+        toolActivity: { toolName: string; inputSummary: string };
+      };
+      expect(event.toolActivity).toEqual({
+        toolName: "subagent",
+        inputSummary: "subagent",
+      });
+    });
   });
 
   describe("tool_result_end completion shapes", () => {
@@ -662,6 +683,7 @@ describe("parseChildEventLine unknown events", () => {
     },
     { name: "non-object JSON returns unknown", line: '"just a string"' },
     { name: "array JSON returns unknown", line: "[1, 2, 3]" },
+    { name: "null JSON returns unknown", line: "null" },
   ])("$name", (row) => {
     const result = parseChildEventLine(row.line);
     expect(result.kind).toBe("unknown");
@@ -705,21 +727,24 @@ describe("parseChildEventLine tool_execution_update validation", () => {
     expect(result.kind).toBe("unknown");
   });
 
-  test("valid tool_execution_update with minimal fields returns known", () => {
-    const event = {
-      type: TOOL_EXECUTION_UPDATE_EVENT,
-      toolName: "bash",
-      partialResult: {},
-    };
-    const result = parseChildEventLine(JSON.stringify(event));
-    expect(result.kind).toBe("known");
-    if (result.kind === "known") {
-      expect(result.event.type).toBe(TOOL_EXECUTION_UPDATE_EVENT);
-      if (result.event.type === TOOL_EXECUTION_UPDATE_EVENT) {
-        expect(result.event.toolName).toBe("bash");
+  test.each([[{}], [[]]])(
+    "parses tool_execution_update with partialResult %p as known",
+    (partialResult) => {
+      const event = {
+        type: TOOL_EXECUTION_UPDATE_EVENT,
+        toolName: "bash",
+        partialResult,
+      };
+      const result = parseChildEventLine(JSON.stringify(event));
+      expect(result.kind).toBe("known");
+      if (result.kind === "known") {
+        expect(result.event.type).toBe(TOOL_EXECUTION_UPDATE_EVENT);
+        if (result.event.type === TOOL_EXECUTION_UPDATE_EVENT) {
+          expect(result.event.toolName).toBe("bash");
+        }
       }
-    }
-  });
+    },
+  );
 
   test("tool_execution_update with nested details extracts toolActivity", () => {
     const event = {
@@ -999,12 +1024,14 @@ describe("usageTree extraction from child events", () => {
     expect(event.usageTree).toBe("corrupt");
   });
 
-  test.each([null, "bad", { results: [] }])(
-    "extractUsageTreeFromDetails returns undefined for %p",
-    (details) => {
-      expect(extractUsageTreeFromDetails(details)).toBeUndefined();
-    },
-  );
+  test.each([
+    [null],
+    ["bad"],
+    [{ results: [] }],
+    [Object.assign([], { usageTree: "x" })],
+  ])("extractUsageTreeFromDetails returns undefined for %p", (details) => {
+    expect(extractUsageTreeFromDetails(details)).toBeUndefined();
+  });
 
   test.each([
     ["subagent toolResult", "toolResult", "subagent", sampleTree],
@@ -1072,6 +1099,17 @@ describe("ToolActivity ordinal extraction", () => {
     if (parsed.event.type !== TOOL_EXECUTION_UPDATE_EVENT)
       throw new Error("bad");
     expect(parsed.event.toolActivity.ordinal).toBe(2);
+  });
+  test("prefers nested ordinal over usageTree root ordinal when both are valid", () => {
+    const parsed = known(
+      ordinalUpdateLine({
+        results: [{ agent: "build", instanceName: "brave-otter", ordinal: 5 }],
+        usageTree: { ordinal: 2 },
+      }),
+    );
+    if (parsed.event.type !== TOOL_EXECUTION_UPDATE_EVENT)
+      throw new Error("bad");
+    expect(parsed.event.toolActivity.ordinal).toBe(5);
   });
   test("omits ordinal for invalid values preserving instance annotation", () => {
     for (const bad of [0, -1, 1.5, "2", null, Number.MAX_SAFE_INTEGER + 1]) {

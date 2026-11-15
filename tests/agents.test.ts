@@ -415,6 +415,34 @@ Prompt.`,
   ).toBeUndefined();
 });
 
+test.each([
+  {
+    name: "empty-string description is accepted verbatim",
+    yamlBody: `---
+name: empty-description
+description: ""
+---
+Prompt.`,
+    agentName: "empty-description",
+    expectedDescription: "",
+  },
+  {
+    name: "whitespace-only name is accepted verbatim",
+    yamlBody: `---
+name: "   "
+description: Padded name
+---
+Prompt.`,
+    agentName: "   ",
+    expectedDescription: "Padded name",
+  },
+])("$name", async (row) => {
+  const discovery = await discoverAgent(row.yamlBody, row.agentName);
+  const agent = discovery.agents.find((a) => a.name === row.agentName);
+  expect(agent).toBeDefined();
+  expect(agent?.description).toBe(row.expectedDescription);
+});
+
 test("empty skills string produces empty array in discovery", async () => {
   const { agentDir, cwd } = await makeAgentHome();
   const userDir = path.join(agentDir, "agents");
@@ -493,6 +521,18 @@ Prompt`,
     agentName: "max-thinking",
     expectedThinking: "max",
   },
+  {
+    name: "thinking values with surrounding whitespace are trimmed in discovery",
+    fileName: "padded-thinking.md",
+    yamlBody: `---
+name: padded-thinking
+description: Padded thinking
+thinking: "  HIGH  "
+---
+Prompt`,
+    agentName: "padded-thinking",
+    expectedThinking: "high",
+  },
 ])("$name", async (row) => {
   const { agentDir, cwd } = await makeAgentHome();
   const userDir = path.join(agentDir, "agents");
@@ -559,6 +599,15 @@ Prompt`,
   const discovery = await discoverAgentsAsync(cwd, "user");
   expect(discovery.agents.find((a) => a.name === "text-agent")).toBeUndefined();
   expect(discovery.scopes.user.markdownFiles).not.toContain("agent.txt");
+});
+
+test("markdown-named directories are excluded from discovery listings", async () => {
+  const { agentDir, cwd } = await makeAgentHome();
+  const userDir = path.join(agentDir, "agents");
+  await mkdir(path.join(userDir, "notes.md"));
+  const discovery = await discoverAgentsAsync(cwd, "user");
+  expect(discovery.scopes.user.markdownFiles).toEqual(["hang.md"]);
+  expect(discovery.agents).toHaveLength(1);
 });
 
 test("readMarkdownDirWithStatusAsync reports missing directories", async () => {
@@ -1523,6 +1572,34 @@ Legacy append body.`,
   }
 });
 
+test.each([
+  {
+    name: "omitted replace_prompt with empty body is accepted",
+    yamlBody: `---
+name: empty-body-omitted
+description: Empty body without replace_prompt
+---`,
+    agentName: "empty-body-omitted",
+  },
+  {
+    name: "replace_prompt false with empty body is accepted",
+    yamlBody: `---
+name: empty-body-false
+description: Empty body with replace_prompt false
+replace_prompt: false
+---`,
+    agentName: "empty-body-false",
+  },
+])("$name", async (row) => {
+  const discovery = await discoverAgent(row.yamlBody, row.agentName);
+  const agent = discovery.agents.find((a) => a.name === row.agentName);
+  expect(agent).toBeDefined();
+  if (agent) {
+    expect(agent.systemPrompt).toBe("");
+    expect(Object.hasOwn(agent, "replacePrompt")).toBe(false);
+  }
+});
+
 test("replace_prompt invalid coexists with sibling valid agents", async () => {
   const { agentDir, cwd } = await makeAgentHome();
   const userDir = path.join(agentDir, "agents");
@@ -1913,55 +1990,59 @@ Body`,
   }
 });
 
-test("parseSamplingValue returns undefined for NaN with warning", async () => {
-  const { agentDir, cwd } = await makeAgentHome();
-  const userDir = path.join(agentDir, "agents");
-  await writeFile(
-    path.join(userDir, "nan-temp.md"),
-    `---
+test.each([
+  {
+    name: "parseSamplingValue returns undefined for NaN with warning",
+    fileName: "nan-temp.md",
+    yamlBody: `---
 name: nan-temp
 description: NaN temperature
 temperature: .nan
 ---
 Prompt.`,
-  );
-  const { result: discovery, warnings } = await withCapturedWarnings(() =>
-    discoverAgentsAsync(cwd, "user"),
-  );
-  const agent = discovery.agents.find((a) => a.name === "nan-temp");
-  expect(agent).toBeDefined();
-  if (agent) {
-    expect(Object.hasOwn(agent, "temperature")).toBe(false);
-    expect(agent.temperature).toBeUndefined();
-  }
-  expect(
-    warnings.some((w) => w.includes("nan-temp") && w.includes("temperature")),
-  ).toBe(true);
-});
-
-test("parseSamplingValue returns undefined for Infinity with warning", async () => {
-  const { agentDir, cwd } = await makeAgentHome();
-  const userDir = path.join(agentDir, "agents");
-  await writeFile(
-    path.join(userDir, "inf-top-p.md"),
-    `---
+    agentName: "nan-temp",
+    field: "temperature",
+  },
+  {
+    name: "parseSamplingValue returns undefined for Infinity with warning",
+    fileName: "inf-top-p.md",
+    yamlBody: `---
 name: inf-top-p
 description: Infinity top_p
 top_p: .inf
 ---
 Prompt.`,
-  );
+    agentName: "inf-top-p",
+    field: "top_p",
+  },
+  {
+    name: "parseSamplingValue returns undefined for boolean with warning",
+    fileName: "bool-temp.md",
+    yamlBody: `---
+name: bool-temp
+description: Boolean temperature
+temperature: true
+---
+Prompt.`,
+    agentName: "bool-temp",
+    field: "temperature",
+  },
+] as const)("$name", async (row) => {
+  const { agentDir, cwd } = await makeAgentHome();
+  const userDir = path.join(agentDir, "agents");
+  await writeFile(path.join(userDir, row.fileName), row.yamlBody);
   const { result: discovery, warnings } = await withCapturedWarnings(() =>
     discoverAgentsAsync(cwd, "user"),
   );
-  const agent = discovery.agents.find((a) => a.name === "inf-top-p");
+  const agent = discovery.agents.find((a) => a.name === row.agentName);
   expect(agent).toBeDefined();
+  const storedField = row.field === "top_p" ? "topP" : row.field;
   if (agent) {
-    expect(Object.hasOwn(agent, "topP")).toBe(false);
-    expect(agent.topP).toBeUndefined();
+    expect(Object.hasOwn(agent, storedField)).toBe(false);
+    expect(agent[storedField]).toBeUndefined();
   }
   expect(
-    warnings.some((w) => w.includes("inf-top-p") && w.includes("top_p")),
+    warnings.some((w) => w.includes(row.agentName) && w.includes(row.field)),
   ).toBe(true);
 });
 

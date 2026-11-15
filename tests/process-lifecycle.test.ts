@@ -1,9 +1,13 @@
 import { describe, expect, test } from "bun:test";
+import { spawn } from "node:child_process";
+import path from "node:path";
 import type { Message } from "@earendil-works/pi-ai";
+import type { AgentConfig } from "../src/agent/agents.js";
 import {
   getAgentEndTimeoutExitCode,
   hasCompletedAgentOutput,
   runSingleAgent,
+  waitForSubagentProcess,
 } from "../src/child/process.js";
 import type { SingleResult } from "../src/shared/types.js";
 import { TOOL_RESULT_FAILED_MESSAGE } from "../src/shared/types.js";
@@ -23,24 +27,44 @@ setupHooks();
 
 const runAgentEndTimeoutScenario = createAgentEndTimeoutScenarioRunner();
 
-test("runSingleAgent reports unknown agents with available names", async () => {
-  const { result } = await runSingleAgent(
-    "/tmp",
-    [hangAgent],
-    "missing",
-    "task",
-    undefined,
-    undefined,
-    makeSubagentDetails,
-    undefined,
-    "off",
-  );
-  expect(result.exitCode).toBe(1);
-  expect(result.agentSource).toBe("unknown");
-  expect(result.stderr).toBe(
-    'Unknown agent: "missing". Available agents: "hang".',
-  );
-});
+const unknownAgentCases: {
+  name: string;
+  agents: AgentConfig[];
+  expectedAvailable: string;
+}[] = [
+  {
+    name: "lists the available agent names",
+    agents: [hangAgent],
+    expectedAvailable: '"hang"',
+  },
+  {
+    name: "reports none when the agents list is empty",
+    agents: [],
+    expectedAvailable: "none",
+  },
+];
+
+test.each(unknownAgentCases)(
+  "runSingleAgent reports unknown agents and $name",
+  async (row) => {
+    const { result } = await runSingleAgent(
+      "/tmp",
+      row.agents,
+      "missing",
+      "task",
+      undefined,
+      undefined,
+      makeSubagentDetails,
+      undefined,
+      "off",
+    );
+    expect(result.exitCode).toBe(1);
+    expect(result.agentSource).toBe("unknown");
+    expect(result.stderr).toBe(
+      `Unknown agent: "missing". Available agents: ${row.expectedAvailable}.`,
+    );
+  },
+);
 
 test("runSingleAgent reports default depth limit with effective max depth", async () => {
   process.env.PI_SUBAGENT_DEPTH = "5";
@@ -221,7 +245,42 @@ test("runSingleAgent honors explicit lower agent-end grace", async () => {
   expect(result.termination?.cancelReason).toBe("agent_end_timeout");
 });
 
-test("runSingleAgent cancels cleanly with nonstandard abort reason", async () => {
+test.each([
+  { name: "null reason", reason: null },
+  { name: "empty string reason", reason: "" },
+  { name: "zero reason", reason: 0 },
+  { name: "message-less Error reason", reason: new Error("") },
+  { name: "whitespace-only string reason", reason: "   " },
+])(
+  "runSingleAgent cancels cleanly with nonstandard abort reason: $name",
+  async (row) => {
+    const { cwd } = await setupTest({
+      piScript: `#!/bin/sh
+trap 'exit 0' TERM
+sleep 10 &
+wait $!
+`,
+    });
+    const controller = new AbortController();
+    const promise = runSingleAgent(
+      cwd,
+      [hangAgent],
+      "hang",
+      "task",
+      controller.signal,
+      undefined,
+      makeSubagentDetails,
+      undefined,
+      "off",
+    );
+    controller.abort(row.reason);
+    const nonStandardOutcome = await promise;
+    expect(nonStandardOutcome.kind).toBe("aborted");
+    expect(nonStandardOutcome.result.termination?.cancelReason).toBe("abort");
+  },
+);
+
+test("runSingleAgent propagates Error abort reason messages", async () => {
   const { cwd } = await setupTest({
     piScript: `#!/bin/sh
 trap 'exit 0' TERM
@@ -241,9 +300,10 @@ wait $!
     undefined,
     "off",
   );
-  controller.abort(null);
-  const nonStandardOutcome = await promise;
-  expect(nonStandardOutcome.kind).toBe("aborted");
+  controller.abort(new Error("host vetoed the run"));
+  const outcome = await promise;
+  expect(outcome.kind).toBe("aborted");
+  expect(outcome.result.termination?.cancelReason).toBe("host vetoed the run");
 });
 
 test("runSingleAgent agent-end timeout with empty output returns exit code 1", async () => {
@@ -454,6 +514,33 @@ exit 0
   expect(outcome.result.termination?.cancelReason).toBe("pre-aborted");
 });
 
+test("runSingleAgent maps a signal-killed child null exit code to zero", async () => {
+  // Without a TERM trap the child dies by signal, so `close` reports a null
+  // exit code; runSingleAgent must still normalize it to a numeric value.
+  const { cwd } = await setupTest({
+    piScript: `#!/bin/sh
+sleep 10
+exit 0
+`,
+  });
+  const controller = new AbortController();
+  const promise = runSingleAgent(
+    cwd,
+    [hangAgent],
+    "hang",
+    "task",
+    controller.signal,
+    undefined,
+    makeSubagentDetails,
+    undefined,
+    "off",
+  );
+  controller.abort("signal kill");
+  const outcome = await promise;
+  expect(outcome.result.exitCode).toBe(0);
+  expect(outcome.result.termination?.cancelReason).toBe("signal kill");
+});
+
 test.each([
   {
     name: "runSingleAgent prefers toolResult details.outcome over assistant arguments.outcome",
@@ -623,6 +710,42 @@ wait $!
   );
 });
 
+test("runSingleAgent clears accumulated stderr on aborted results", async () => {
+  const { cwd } = await setupTest({
+    piScript: `#!/bin/sh
+trap 'exit 0' TERM
+${emitMessageEnd(makeAssistantMessage("first"))}
+printf 'noise from child\\n' >&2
+${emitMessageEnd(makeAssistantMessage("second"))}
+sleep 10 &
+wait $!
+`,
+  });
+  const updates = Promise.withResolvers<void>();
+  let updateCount = 0;
+  const controller = new AbortController();
+  const promise = runSingleAgent(
+    cwd,
+    [hangAgent],
+    "hang",
+    "task",
+    controller.signal,
+    () => {
+      updateCount += 1;
+      if (updateCount === 2) updates.resolve();
+    },
+    makeSubagentDetails,
+    undefined,
+    "off",
+  );
+  await updates.promise;
+  controller.abort("host stop");
+  const outcome = await promise;
+  expect(outcome.kind).toBe("aborted");
+  expect(outcome.result.termination?.cancelReason).toBe("host stop");
+  expect(outcome.result.stderr).toBe("");
+});
+
 describe("process cleanup", () => {
   test("runSingleAgent destroys idle streams when the child exits with an inherited open pipe", async () => {
     const { cwd } = await setupTest({
@@ -650,35 +773,63 @@ exit 0
     expect(result.exitCode).toBe(0);
     expect(result.finalOutput).toBe("done");
   });
+
+  test("waitForSubagentProcess destroys streams on the hard timer when data keeps arriving after exit", async () => {
+    const hardMs = 250;
+    const { binDir, cwd } = await setupTest({
+      piScript: `#!/bin/sh
+(while echo tick; do sleep 0.02; done) &
+exit 0
+`,
+    });
+    // The inherited writer keeps the pipes open and re-arms the idle timer,
+    // so only the hard timer can settle the streams. It stops on its first
+    // failed write, so it cannot outlive the reader even if teardown never runs.
+    const startedAt = Date.now();
+    const proc = spawn(path.join(binDir, "pi"), [], {
+      cwd,
+      detached: true,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    const exitCode = await waitForSubagentProcess(proc, 100, hardMs);
+    expect(Date.now() - startedAt).toBeGreaterThanOrEqual(hardMs);
+    expect(exitCode).toBe(0);
+  });
 });
 
-test("runSingleAgent strips leading Terminated lines from stderr on agent_end_timeout", async () => {
-  process.env.PI_SUBAGENT_AGENT_END_GRACE_MS = "25";
-  const { cwd } = await setupTest({
-    piScript: `#!/bin/sh
-printf 'Terminated\\nother stderr\\n' >&2
+test.each([
+  { name: "LF Terminated lines", terminator: "Terminated\\n" },
+  { name: "CRLF Terminated lines", terminator: "Terminated\\r\\n" },
+])(
+  "runSingleAgent strips leading $name from stderr on agent_end_timeout",
+  async (row) => {
+    process.env.PI_SUBAGENT_AGENT_END_GRACE_MS = "25";
+    const { cwd } = await setupTest({
+      piScript: `#!/bin/sh
+printf '${row.terminator}other stderr\\n' >&2
 ${emitMessageEnd(makeAssistantMessage("done"))}
 ${emitAgentEnd([])}
 sleep 10 &
 wait $!
 `,
-  });
-  const { result } = await runSingleAgent(
-    cwd,
-    [hangAgent],
-    "hang",
-    "task",
-    undefined,
-    undefined,
-    makeSubagentDetails,
-    undefined,
-    "off",
-  );
-  expect(result.exitCode).toBe(0);
-  expect(result.termination?.cancelReason).toBe("agent_end_timeout");
-  expect(result.stderr).not.toContain("Terminated");
-  expect(result.stderr).toContain("other stderr");
-});
+    });
+    const { result } = await runSingleAgent(
+      cwd,
+      [hangAgent],
+      "hang",
+      "task",
+      undefined,
+      undefined,
+      makeSubagentDetails,
+      undefined,
+      "off",
+    );
+    expect(result.exitCode).toBe(0);
+    expect(result.termination?.cancelReason).toBe("agent_end_timeout");
+    expect(result.stderr).not.toContain("Terminated");
+    expect(result.stderr).toContain("other stderr");
+  },
+);
 
 test("runSingleAgent sets errorMessage when a toolResult error occurs without a complete outcome", async () => {
   const { cwd } = await setupTest({
@@ -770,46 +921,63 @@ exit 0
   expect(result.messages).toHaveLength(2);
 });
 
-test("runSingleAgent rebuilds agent_end snapshot and propagates toolResult error", async () => {
-  const assistant = makeAssistantMessage("used tool", {
-    content: [
-      {
-        type: "toolCall",
-        id: "tc-1",
-        name: "bash",
-        arguments: { command: "false" },
-      },
-    ],
-  });
-  const toolError = {
-    role: "toolResult",
-    toolCallId: "tc-1",
-    isError: true,
-    content: [{ type: "text", text: "error" }],
-  } as Record<string, unknown>;
-  const { cwd } = await setupTest({
-    piScript: `#!/bin/sh
+test.each([
+  {
+    name: "without an assistant errorMessage falls back to the generic message",
+    assistantErrorMessage: undefined,
+    expectedErrorMessage: TOOL_RESULT_FAILED_MESSAGE,
+  },
+  {
+    name: "preserves a specific assistant errorMessage over the generic message",
+    assistantErrorMessage: "specific error",
+    expectedErrorMessage: "specific error",
+  },
+])(
+  "runSingleAgent rebuilds agent_end snapshot and propagates toolResult error $name",
+  async (row) => {
+    const assistant = makeAssistantMessage("used tool", {
+      ...(row.assistantErrorMessage === undefined
+        ? {}
+        : { errorMessage: row.assistantErrorMessage }),
+      content: [
+        {
+          type: "toolCall",
+          id: "tc-1",
+          name: "bash",
+          arguments: { command: "false" },
+        },
+      ],
+    });
+    const toolError = {
+      role: "toolResult",
+      toolCallId: "tc-1",
+      isError: true,
+      content: [{ type: "text", text: "error" }],
+    } as Record<string, unknown>;
+    const { cwd } = await setupTest({
+      piScript: `#!/bin/sh
 ${emitMessageEnd(assistant)}
 ${emitAgentEnd([assistant, toolError])}
 exit 0
 `,
-  });
-  const { result } = await runSingleAgent(
-    cwd,
-    [hangAgent],
-    "hang",
-    "task",
-    undefined,
-    undefined,
-    makeSubagentDetails,
-    undefined,
-    "off",
-  );
-  expect(result.exitCode).toBe(0);
-  expect(result.messages).toHaveLength(2);
-  expect(result.errorMessage).toBe(TOOL_RESULT_FAILED_MESSAGE);
-  expect(result.outcome).toBeUndefined();
-});
+    });
+    const { result } = await runSingleAgent(
+      cwd,
+      [hangAgent],
+      "hang",
+      "task",
+      undefined,
+      undefined,
+      makeSubagentDetails,
+      undefined,
+      "off",
+    );
+    expect(result.exitCode).toBe(0);
+    expect(result.messages).toHaveLength(2);
+    expect(result.errorMessage).toBe(row.expectedErrorMessage);
+    expect(result.outcome).toBeUndefined();
+  },
+);
 
 describe("hasCompletedAgentOutput", () => {
   test("returns true when finalOutput has non-whitespace content", () => {

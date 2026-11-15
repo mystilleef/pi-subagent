@@ -2,7 +2,10 @@ import { expect, jest, spyOn, test } from "bun:test";
 import * as fsPromises from "node:fs/promises";
 import { mkdir, rename, writeFile } from "node:fs/promises";
 import path from "node:path";
-import type { AgentDiscoveryCache } from "../src/agent/agent-cache.js";
+import type {
+  AgentDiscoveryCache,
+  AgentDiscoveryCacheEntry,
+} from "../src/agent/agent-cache.js";
 import {
   AGENT_DISCOVERY_CACHE_TTL_MS,
   getCachedAgentCompletions,
@@ -243,6 +246,54 @@ Project prompt`,
   }
 });
 
+test("agent discovery cache derived entries own independent copies of the both entry", async () => {
+  const root = await makeTempDir("pi-subagent-derived-copy-isolation-");
+  const agentDir = path.join(root, "agent");
+  const cwd = path.join(root, "work");
+  const userDir = path.join(agentDir, "agents");
+  const projectDir = path.join(cwd, ".pi", "agents");
+  const userKey = `${path.resolve(cwd)}\0user`;
+  await mkdir(userDir, { recursive: true });
+  await mkdir(projectDir, { recursive: true });
+  await mkdir(cwd, { recursive: true });
+  await writeFile(
+    path.join(userDir, "user-agent.md"),
+    `---
+name: user-agent
+description: User agent
+---
+User prompt`,
+  );
+  await writeFile(
+    path.join(projectDir, "project-agent.md"),
+    `---
+name: project-agent
+description: Project agent
+---
+Project prompt`,
+  );
+  process.env.PI_CODING_AGENT_DIR = agentDir;
+  const cache: AgentDiscoveryCache = new Map();
+  const both = await getCachedAgentDiscovery(cwd, "both", cache, 3000);
+  const derived = cache.get(userKey);
+  if (!derived?.snapshots) throw new Error("missing derived user entry");
+  const originalHashes = both.snapshots?.user.fileHashes;
+  derived.scopes.user.markdownFiles.push("ghost.md");
+  derived.agents.length = 0;
+  derived.snapshots.user.fileHashes = {};
+  derived.snapshots.user.listingTrusted = false;
+  expect(both.scopes.user.markdownFiles).toEqual(["user-agent.md"]);
+  expect(both.scopes.user.agents).toHaveLength(1);
+  expect(both.snapshots?.user.fileHashes).toEqual(originalHashes);
+  expect(both.snapshots?.user.listingTrusted).toBe(true);
+  expect(derived.snapshots.project).toEqual({
+    markdownFiles: [],
+    fileHashes: {},
+    listingTrusted: false,
+    directory: null,
+  });
+});
+
 test("agent discovery cache trusts successful empty derived listings", async () => {
   const root = await makeTempDir("pi-subagent-derived-empty-cache-");
   const agentDir = path.join(root, "agent");
@@ -454,49 +505,156 @@ Renamed prompt`,
   }
 });
 
-test("agent discovery cache falls back when derived snapshot metadata mismatches", async () => {
-  const root = await makeTempDir("pi-subagent-derived-cache-metadata-");
-  const agentDir = path.join(root, "agent");
-  const cwd = path.join(root, "work");
-  const userDir = path.join(agentDir, "agents");
-  const userKey = `${path.resolve(cwd)}\0user`;
-  await mkdir(userDir, { recursive: true });
-  await mkdir(cwd, { recursive: true });
-  await writeFile(
-    path.join(userDir, "reviewer.md"),
-    `---
+test.each([
+  {
+    name: "markdown files disagree with the hash keys by content",
+    corrupt: (both: AgentDiscoveryCacheEntry) => {
+      if (!both.snapshots) throw new Error("missing discovery snapshots");
+      both.snapshots.user.markdownFiles = ["different.md"];
+    },
+  },
+  {
+    name: "markdown files disagree with the hash keys by count",
+    corrupt: (both: AgentDiscoveryCacheEntry) => {
+      if (!both.snapshots) throw new Error("missing discovery snapshots");
+      both.snapshots.user.fileHashes = {};
+    },
+  },
+])(
+  "agent discovery cache falls back when derived snapshot $name",
+  async (row) => {
+    const root = await makeTempDir("pi-subagent-derived-cache-metadata-");
+    const agentDir = path.join(root, "agent");
+    const cwd = path.join(root, "work");
+    const userDir = path.join(agentDir, "agents");
+    const userKey = `${path.resolve(cwd)}\0user`;
+    await mkdir(userDir, { recursive: true });
+    await mkdir(cwd, { recursive: true });
+    await writeFile(
+      path.join(userDir, "reviewer.md"),
+      `---
 name: reviewer
 description: Reviewer
 ---
 Old prompt`,
-  );
-  process.env.PI_CODING_AGENT_DIR = agentDir;
-  const cache: AgentDiscoveryCache = new Map();
-  let now = 9000;
-  jest.useFakeTimers();
-  jest.setSystemTime(now);
-  try {
-    const both = await getCachedAgentDiscovery(cwd, "both", cache, 3000);
-    if (!both.snapshots) throw new Error("missing discovery snapshots");
-    both.snapshots.user.markdownFiles = ["different.md"];
-    cache.delete(userKey);
-    await writeFile(
-      path.join(userDir, "reviewer.md"),
-      `---
+    );
+    process.env.PI_CODING_AGENT_DIR = agentDir;
+    const cache: AgentDiscoveryCache = new Map();
+    let now = 9000;
+    jest.useFakeTimers();
+    jest.setSystemTime(now);
+    try {
+      const both = await getCachedAgentDiscovery(cwd, "both", cache, 3000);
+      row.corrupt(both);
+      cache.delete(userKey);
+      await writeFile(
+        path.join(userDir, "reviewer.md"),
+        `---
 name: reviewer-new
 description: Reviewer new
 ---
 New prompt`,
+      );
+      jest.advanceTimersByTime(1);
+      now += 1;
+      const user = await getCachedAgentDiscovery(cwd, "user", cache, 3000);
+      expect(user.agents.map((agent) => agent.name)).toEqual(["reviewer-new"]);
+      expect(user.ts).toBe(now);
+    } finally {
+      jest.useRealTimers();
+    }
+  },
+);
+
+interface CorruptScopeCase {
+  name: string;
+  corrupt: (
+    both: AgentDiscoveryCacheEntry,
+    paths: { userDir: string; cwd: string },
+  ) => void;
+}
+
+const CORRUPT_SCOPE_CASES: CorruptScopeCase[] = [
+  {
+    name: "lists an extra markdown file",
+    corrupt: (both: AgentDiscoveryCacheEntry) => {
+      both.scopes.user.markdownFiles = [
+        ...both.scopes.user.markdownFiles,
+        "extra.md",
+      ];
+    },
+  },
+  {
+    name: "holds an agent whose source disagrees with the scope",
+    corrupt: (both: AgentDiscoveryCacheEntry) => {
+      const agent = both.scopes.user.agents[0];
+      if (!agent) throw new Error("missing user agent");
+      agent.source = "project";
+    },
+  },
+  {
+    name: "holds an agent whose file name is absent from the listing",
+    corrupt: (both: AgentDiscoveryCacheEntry, paths) => {
+      const agent = both.scopes.user.agents[0];
+      if (!agent) throw new Error("missing user agent");
+      agent.filePath = path.join(paths.userDir, "ghost.md");
+    },
+  },
+  {
+    name: "holds an agent whose file directory differs from the scope directory",
+    corrupt: (both: AgentDiscoveryCacheEntry, paths) => {
+      const agent = both.scopes.user.agents[0];
+      if (!agent) throw new Error("missing user agent");
+      agent.filePath = path.join(paths.cwd, "reviewer.md");
+    },
+  },
+];
+
+test.each(CORRUPT_SCOPE_CASES)(
+  "agent discovery cache falls back when the cached scope $name",
+  async (row) => {
+    const root = await makeTempDir("pi-subagent-derived-cache-corrupt-");
+    const agentDir = path.join(root, "agent");
+    const cwd = path.join(root, "work");
+    const userDir = path.join(agentDir, "agents");
+    const userKey = `${path.resolve(cwd)}\0user`;
+    await mkdir(userDir, { recursive: true });
+    await mkdir(cwd, { recursive: true });
+    await writeFile(
+      path.join(userDir, "reviewer.md"),
+      `---
+name: reviewer
+description: Reviewer
+---
+Old prompt`,
     );
-    jest.advanceTimersByTime(1);
-    now += 1;
-    const user = await getCachedAgentDiscovery(cwd, "user", cache, 3000);
-    expect(user.agents.map((agent) => agent.name)).toEqual(["reviewer-new"]);
-    expect(user.ts).toBe(now);
-  } finally {
-    jest.useRealTimers();
-  }
-});
+    process.env.PI_CODING_AGENT_DIR = agentDir;
+    const cache: AgentDiscoveryCache = new Map();
+    let now = 9100;
+    jest.useFakeTimers();
+    jest.setSystemTime(now);
+    try {
+      const both = await getCachedAgentDiscovery(cwd, "both", cache, 3000);
+      row.corrupt(both, { userDir, cwd });
+      cache.delete(userKey);
+      await writeFile(
+        path.join(userDir, "reviewer.md"),
+        `---
+name: reviewer-new
+description: Reviewer new
+---
+New prompt`,
+      );
+      jest.advanceTimersByTime(1);
+      now += 1;
+      const user = await getCachedAgentDiscovery(cwd, "user", cache, 3000);
+      expect(user.agents.map((agent) => agent.name)).toEqual(["reviewer-new"]);
+      expect(user.ts).toBe(now);
+    } finally {
+      jest.useRealTimers();
+    }
+  },
+);
 
 test("agent discovery cache falls back when derived snapshot listingTrusted is false", async () => {
   const root = await makeTempDir("pi-subagent-derived-trust-false-");

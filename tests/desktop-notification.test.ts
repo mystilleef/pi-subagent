@@ -476,17 +476,41 @@ describe("delivery.ts", () => {
       expect(spawned).toBe(false);
     });
 
-    test("spawns notify-send with correct args for normal urgency", async () => {
-      let capturedCmd = "";
-      let capturedArgs: string[] = [];
-      await deliverLinuxNotification(
-        makeRequest({
+    test.each([
+      {
+        name: "spawns notify-send with ordered args for normal urgency",
+        request: makeRequest({
           title: "Pi Subagent",
           body: "agent finished in 5.0s",
           urgency: "normal",
           timeoutMs: 5000,
         }),
-        {
+        expectedArgs: [
+          "--expire-time=5000",
+          "Pi Subagent",
+          "agent finished in 5.0s",
+        ],
+      },
+      {
+        name: "spawns notify-send with the urgency flag leading critical args",
+        request: makeRequest({ urgency: "critical" }),
+        expectedArgs: [
+          "--urgency=critical",
+          "--expire-time=5000",
+          "Pi Subagent",
+          "test-agent finished in 5.0s",
+        ],
+      },
+    ])(
+      "$name",
+      async (row: {
+        name: string;
+        request: ReturnType<typeof makeRequest>;
+        expectedArgs: readonly string[];
+      }) => {
+        let capturedCmd = "";
+        let capturedArgs: string[] = [];
+        await deliverLinuxNotification(row.request, {
           platform: "linux",
           commandExists: async () => true,
           spawnProcess: (cmd, args) => {
@@ -494,27 +518,11 @@ describe("delivery.ts", () => {
             capturedArgs = args;
             return {};
           },
-        },
-      );
-      expect(capturedCmd).toBe("notify-send");
-      expect(capturedArgs).toContain("--expire-time=5000");
-      expect(capturedArgs).toContain("Pi Subagent");
-      expect(capturedArgs).toContain("agent finished in 5.0s");
-      expect(capturedArgs).not.toContain("--urgency=critical");
-    });
-
-    test("spawns notify-send with critical urgency for error requests", async () => {
-      let capturedArgs: string[] = [];
-      await deliverLinuxNotification(makeRequest({ urgency: "critical" }), {
-        platform: "linux",
-        commandExists: async () => true,
-        spawnProcess: (_cmd, args) => {
-          capturedArgs = args;
-          return {};
-        },
-      });
-      expect(capturedArgs).toContain("--urgency=critical");
-    });
+        });
+        expect(capturedCmd).toBe("notify-send");
+        expect(capturedArgs).toEqual([...row.expectedArgs]);
+      },
+    );
 
     test("unrefs child process", async () => {
       let unrefed = false;
@@ -673,12 +681,26 @@ describe("delivery.ts", () => {
       expect(script).toContain(row.escapedBody);
     });
 
-    test("handles strings with no special characters", async () => {
+    test.each([
+      {
+        name: "handles strings with no special characters",
+        title: "Simple title",
+        body: "Simple body",
+        expectedScript:
+          'display notification "Simple body" with title "Simple title"',
+      },
+      {
+        name: "composes a script for empty title and body",
+        title: "",
+        body: "",
+        expectedScript: 'display notification "" with title ""',
+      },
+    ])("$name", async (row) => {
       let capturedArgs: string[] = [];
       await deliverMacOSNotification(
         makeRequest({
-          title: "Simple title",
-          body: "Simple body",
+          title: row.title,
+          body: row.body,
         }),
         {
           platform: "darwin",
@@ -689,9 +711,7 @@ describe("delivery.ts", () => {
         },
       );
       const script = capturedArgs[1];
-      expect(script).toBe(
-        'display notification "Simple body" with title "Simple title"',
-      );
+      expect(script).toBe(row.expectedScript);
     });
   });
 
@@ -794,6 +814,35 @@ describe("delivery.ts", () => {
       expect(script).toContain("Simple body");
       expect(script).toContain("3000");
     });
+
+    test.each([
+      {
+        name: "sleeps 500ms beyond the 5000ms balloon timeout",
+        timeoutMs: 5000,
+        expectedSleep: 5500,
+      },
+      {
+        name: "sleeps 500ms beyond the 3000ms balloon timeout",
+        timeoutMs: 3000,
+        expectedSleep: 3500,
+      },
+    ])("$name", async (row) => {
+      let capturedArgs: string[] = [];
+      await deliverWindowsNotification(
+        makeRequest({ timeoutMs: row.timeoutMs }),
+        {
+          platform: "win32",
+          spawnProcess: (_cmd, args) => {
+            capturedArgs = args;
+            return {};
+          },
+        },
+      );
+      const script = capturedArgs[5];
+      expect(script).toContain(
+        `Start-Sleep -Milliseconds ${row.expectedSleep}`,
+      );
+    });
   });
 
   test.each([
@@ -863,6 +912,23 @@ describe("deliverNotification", () => {
       },
     });
     expect(spawned).toBe(false);
+  });
+
+  test("defaults to process.platform when the platform dep is absent", async () => {
+    const expectedCommand: Record<string, string | undefined> = {
+      linux: "notify-send",
+      darwin: "osascript",
+      win32: "powershell.exe",
+    };
+    let capturedCmd: string | undefined;
+    await deliverNotification(makeRequest(), {
+      commandExists: async () => true,
+      spawnProcess: (cmd) => {
+        capturedCmd = cmd;
+        return {};
+      },
+    });
+    expect(capturedCmd).toBe(expectedCommand[process.platform]);
   });
 
   test("checkNotifySendExists catch caches false when commandExists throws", async () => {
@@ -1019,6 +1085,26 @@ describe("deliverNotification", () => {
           },
         });
         expect(capturedCmd).toBe("notify-send");
+      } finally {
+        resetDefaultDeliveryDeps();
+      }
+    });
+
+    test("merge preserves default-only deps when explicit deps omit them", async () => {
+      const defaultPlatform =
+        process.platform === "darwin" ? "win32" : "darwin";
+      const expectedCommand =
+        defaultPlatform === "darwin" ? "osascript" : "powershell.exe";
+      setDefaultDeliveryDeps({ platform: defaultPlatform });
+      try {
+        let capturedCmd: string | undefined;
+        await deliverNotification(makeRequest(), {
+          spawnProcess: (cmd) => {
+            capturedCmd = cmd;
+            return {};
+          },
+        });
+        expect(capturedCmd).toBe(expectedCommand);
       } finally {
         resetDefaultDeliveryDeps();
       }
