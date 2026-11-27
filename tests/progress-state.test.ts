@@ -2267,14 +2267,14 @@ function makeTheme() {
 }
 
 function renderText(
-  rendered: { render(width: number): string[] } | undefined,
+  rendered: { render(width: number): readonly string[] } | undefined,
 ): string {
   return renderLines(rendered).join("\n");
 }
 
 function renderLines(
-  rendered: { render(width: number): string[] } | undefined,
-): string[] {
+  rendered: { render(width: number): readonly string[] } | undefined,
+): readonly string[] {
   if (!rendered) return [];
   return rendered.render(120);
 }

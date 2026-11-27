@@ -325,9 +325,10 @@ describe("resolveContextWindowTokens", () => {
   });
 
   test("returns context window for a valid model with positive context window", () => {
-    const msg = { provider: "openai", model: "gpt-4" } as unknown as Parameters<
-      typeof resolveContextWindowTokens
-    >[0];
+    const msg = {
+      provider: "openai",
+      model: "gpt-4.1",
+    } as unknown as Parameters<typeof resolveContextWindowTokens>[0];
     const tokens = resolveContextWindowTokens(msg);
     expect(tokens).toBeGreaterThan(0);
     expect(Number.isFinite(tokens)).toBe(true);

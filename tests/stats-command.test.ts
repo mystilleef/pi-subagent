@@ -104,7 +104,7 @@ function renderBoardLines(
   width: number,
   runs = querySessionUsage().runs,
   rollup = querySessionUsage().rollup,
-): string[] {
+): readonly string[] {
   return renderStatsBoard(runs, rollup, identityTheme as never, width).render(
     width,
   );

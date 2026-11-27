@@ -425,7 +425,7 @@ test("buildPiArgs --no-context-files coexists with approval, model, provider, th
     context: false,
     tools: ["bash", "read"],
     thinking: "high",
-    model: "gpt-4",
+    model: "gpt-4.1",
     provider: "openai",
   };
   const { args, result } = await runCapturedModelAgent(
@@ -437,13 +437,13 @@ test("buildPiArgs --no-context-files coexists with approval, model, provider, th
   expect(args).toContain("--no-context-files");
   expect(args).toContain("--approve");
   expect(flagValues(args, "--provider")).toEqual(["openai"]);
-  expect(flagValues(args, "--model")).toEqual(["gpt-4"]);
+  expect(flagValues(args, "--model")).toEqual(["gpt-4.1"]);
   expect(args).toContain("--thinking");
   expect(flagValues(args, "--thinking")).toEqual(["high"]);
   expect(args).toContain("--tools");
   expect(args).toContain("--append-system-prompt");
   expect(args.some((a) => a.startsWith("Task: "))).toBe(true);
-  expect(result.model).toBe("openai ･ gpt-4 ･ off");
+  expect(result.model).toBe("openai ･ gpt-4.1 ･ off");
   expect(result.thinkingWarning).toContain('using "off" instead');
 });
 

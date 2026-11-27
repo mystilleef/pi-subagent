@@ -1618,14 +1618,14 @@ exit 0
 name: registry-agent
 description: Registry forwarding agent
 provider: openai
-model: gpt-4
+model: gpt-4.1
 thinking: high
 ---
 Registry prompt.`,
   );
   const live = modelFixture({
     provider: "openai",
-    id: "gpt-4",
+    id: "gpt-4.1",
     reasoning: true,
     thinkingLevelMap: {
       off: null,
@@ -1645,14 +1645,14 @@ Registry prompt.`,
     {
       cwd,
       hasUI: false,
-      model: { provider: "openai", id: "gpt-4" },
+      model: { provider: "openai", id: "gpt-4.1" },
       modelRegistry: registry,
     } as unknown as ExtensionContext,
   );
   expect((result.content[0] as TextContent).text).toBe("done");
   const details = result.details as SubagentDetails;
   expect(details.results[0]?.thinkingWarning).toBeUndefined();
-  expect(details.results[0]?.model).toBe("openai ･ gpt-4 ･ high");
+  expect(details.results[0]?.model).toBe("openai ･ gpt-4.1 ･ high");
   expect(listRunJobs()).toHaveLength(0);
 });
 
@@ -1674,7 +1674,7 @@ exit 0
 name: registry-miss-agent
 description: Registry miss agent
 provider: openai
-model: gpt-4
+model: gpt-4.1
 thinking: high
 ---
 Registry miss prompt.`,
@@ -1690,14 +1690,14 @@ Registry miss prompt.`,
     {
       cwd,
       hasUI: false,
-      model: { provider: "openai", id: "gpt-4" },
+      model: { provider: "openai", id: "gpt-4.1" },
       modelRegistry: registry,
     } as unknown as ExtensionContext,
   );
   expect((result.content[0] as TextContent).text).toContain("[thinking]");
   const details = result.details as SubagentDetails;
   expect(details.results[0]?.thinkingWarning).toContain('using "off" instead');
-  expect(details.results[0]?.model).toBe("openai ･ gpt-4 ･ off");
+  expect(details.results[0]?.model).toBe("openai ･ gpt-4.1 ･ off");
   expect(listRunJobs()).toHaveLength(0);
 });
 

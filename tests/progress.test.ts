@@ -76,16 +76,16 @@ function makeMarkerTheme() {
 }
 
 function renderLines(
-  rendered: { render(width: number): string[] } | undefined,
-): string[] {
+  rendered: { render(width: number): readonly string[] } | undefined,
+): readonly string[] {
   if (!rendered) return [];
   return rendered.render(120);
 }
 
 function renderLinesAtWidth(
-  rendered: { render(width: number): string[] } | undefined,
+  rendered: { render(width: number): readonly string[] } | undefined,
   width: number,
-): string[] {
+): readonly string[] {
   if (!rendered) return [];
   return rendered.render(width);
 }
@@ -99,7 +99,7 @@ function stripAnsiAndWrappers(text: string): string {
 }
 
 function renderText(
-  rendered: { render(width: number): string[] } | undefined,
+  rendered: { render(width: number): readonly string[] } | undefined,
 ): string {
   return renderLines(rendered).join("\n");
 }
@@ -112,7 +112,7 @@ function renderActivityCard(
     theme = makeMarkerTheme(),
     width = 120,
   }: { theme?: SubagentTheme; width?: number } = {},
-): string[] {
+): readonly string[] {
   createProgressState(requestId, "agent", "task");
   try {
     if (activity)
@@ -134,7 +134,7 @@ function renderActivityCard(
   }
 }
 
-function findActivityRow(lines: string[]): string {
+function findActivityRow(lines: readonly string[]): string {
   return lines.find((line) => line.includes("→")) ?? "";
 }
 
@@ -2256,7 +2256,7 @@ describe("expanded progress card usage tree", () => {
     requestId: string,
     theme: SubagentTheme,
     width: number,
-  ): string[] {
+  ): readonly string[] {
     const rendered = renderSubagentProgress(
       {
         customType: "subagent-progress",

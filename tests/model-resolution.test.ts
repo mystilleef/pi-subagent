@@ -102,13 +102,13 @@ describe("unconfirmed thinking display propagation", () => {
 
   test("reasoning-disabled off request retains unsupported warning", async () => {
     const { args, result } = await runCapturedModelAgent(
-      makeModelAgent({ provider: "openai", model: "gpt-4", thinking: "off" }),
+      makeModelAgent({ provider: "openai", model: "gpt-4.1", thinking: "off" }),
       undefined,
       "off",
       { registry: registryFixture([]) },
     );
     expect(flagValues(args, "--thinking")).toEqual(["off"]);
-    expect(result.model).toBe("openai ･ gpt-4 ･ off");
+    expect(result.model).toBe("openai ･ gpt-4.1 ･ off");
     expect(result.thinkingWarning).toContain('using "off" instead');
   });
 });
@@ -218,14 +218,14 @@ test("runSingleAgent resolves child model flags independently from agent and par
 
 test("runSingleAgent applies effective model settings to thinking resolution", async () => {
   const { result } = await runCapturedModelAgent(
-    makeModelAgent({ provider: "openai", model: "gpt-4", thinking: "high" }),
+    makeModelAgent({ provider: "openai", model: "gpt-4.1", thinking: "high" }),
     { provider: "anthropic", id: "claude-3-7-sonnet-20250219" },
     "low",
     { registry: registryFixture([]) },
   );
-  expect(result.model).toBe("openai ･ gpt-4 ･ off");
+  expect(result.model).toBe("openai ･ gpt-4.1 ･ off");
   expect(result.thinkingWarning).toContain("provider: openai");
-  expect(result.thinkingWarning).toContain("model: gpt-4");
+  expect(result.thinkingWarning).toContain("model: gpt-4.1");
   expect(result.thinkingWarning).toContain('using "off" instead');
 });
 
@@ -288,13 +288,13 @@ test("runSingleAgent preserves requested thinking for partial or absent effectiv
 test("runSingleAgent prefers live registry match over static catalog", async () => {
   const live = modelFixture({
     provider: "openai",
-    id: "gpt-4",
+    id: "gpt-4.1",
     reasoning: true,
   });
   const { args, result } = await runCapturedModelAgent(
     makeModelAgent({
       provider: "openai",
-      model: "gpt-4",
+      model: "gpt-4.1",
       thinking: "high",
     }),
     undefined,
@@ -302,9 +302,9 @@ test("runSingleAgent prefers live registry match over static catalog", async () 
     { registry: registryFixture([live]) },
   );
   expect(flagValues(args, "--provider")).toEqual(["openai"]);
-  expect(flagValues(args, "--model")).toEqual(["gpt-4"]);
+  expect(flagValues(args, "--model")).toEqual(["gpt-4.1"]);
   expect(flagValues(args, "--thinking")).toEqual(["high"]);
-  expect(result.model).toBe("openai ･ gpt-4 ･ high");
+  expect(result.model).toBe("openai ･ gpt-4.1 ･ high");
   expect(result.thinkingWarning).toBeUndefined();
 });
 
@@ -312,7 +312,7 @@ test("runSingleAgent falls back to static catalog when live registry misses", as
   const { args, result } = await runCapturedModelAgent(
     makeModelAgent({
       provider: "openai",
-      model: "gpt-4",
+      model: "gpt-4.1",
       thinking: "high",
     }),
     undefined,
@@ -320,14 +320,14 @@ test("runSingleAgent falls back to static catalog when live registry misses", as
     { registry: registryFixture([]) },
   );
   expect(flagValues(args, "--thinking")).toEqual(["high"]);
-  expect(result.model).toBe("openai ･ gpt-4 ･ off");
+  expect(result.model).toBe("openai ･ gpt-4.1 ･ off");
   expect(result.thinkingWarning).toContain('using "off" instead');
 });
 
 test("runSingleAgent inherits parent thinking request when agent omits it", async () => {
   const live = modelFixture({
     provider: "openai",
-    id: "gpt-4",
+    id: "gpt-4.1",
     reasoning: true,
     thinkingLevelMap: {
       off: null,
@@ -337,25 +337,33 @@ test("runSingleAgent inherits parent thinking request when agent omits it", asyn
     },
   });
   const { args, result } = await runCapturedModelAgent(
-    makeModelAgent({ provider: "openai", model: "gpt-4", thinking: undefined }),
+    makeModelAgent({
+      provider: "openai",
+      model: "gpt-4.1",
+      thinking: undefined,
+    }),
     undefined,
     "high",
     { registry: registryFixture([live]) },
   );
   expect(flagValues(args, "--thinking")).toEqual(["high"]);
-  expect(result.model).toBe("openai ･ gpt-4 ･ high");
+  expect(result.model).toBe("openai ･ gpt-4.1 ･ high");
   expect(result.thinkingWarning).toBeUndefined();
 });
 
 test("runSingleAgent retains parent thinking request through catalog clamp", async () => {
   const { args, result } = await runCapturedModelAgent(
-    makeModelAgent({ provider: "openai", model: "gpt-4", thinking: undefined }),
+    makeModelAgent({
+      provider: "openai",
+      model: "gpt-4.1",
+      thinking: undefined,
+    }),
     undefined,
     "high",
     { registry: registryFixture([]) },
   );
   expect(flagValues(args, "--thinking")).toEqual(["high"]);
-  expect(result.model).toBe("openai ･ gpt-4 ･ off");
+  expect(result.model).toBe("openai ･ gpt-4.1 ･ off");
   expect(result.thinkingWarning).toContain('using "off" instead');
 });
 
@@ -363,13 +371,17 @@ test("runSingleAgent emits unavailable registry diagnostic and continues", async
   const warnSpy = spyOn(console, "warn").mockImplementation(() => {});
   try {
     const { args, result } = await runCapturedModelAgent(
-      makeModelAgent({ provider: "openai", model: "gpt-4", thinking: "high" }),
+      makeModelAgent({
+        provider: "openai",
+        model: "gpt-4.1",
+        thinking: "high",
+      }),
       undefined,
       "off",
     );
     expect(flagValues(args, "--thinking")).toEqual(["high"]);
     expect(result.exitCode).toBe(0);
-    expect(result.model).toBe("openai ･ gpt-4 ･ off");
+    expect(result.model).toBe("openai ･ gpt-4.1 ･ off");
     expect(warnSpy).toHaveBeenCalledWith(
       "Live model registry unavailable; falling back to static catalog.",
     );
@@ -608,10 +620,10 @@ describe("buildModelDisplay", () => {
 
 describe("resolveThinkingLevel", () => {
   test("static catalog resolves when registry is absent", () => {
-    const result = resolveThinkingLevel("high", "openai", "gpt-4");
+    const result = resolveThinkingLevel("high", "openai", "gpt-4.1");
     expect(result.level).toBe("off");
     expect(result.warning).toBe(
-      unsupportedWarning("high", "off", "openai", "gpt-4"),
+      unsupportedWarning("high", "off", "openai", "gpt-4.1"),
     );
     expect(result.diagnostic).toBe(
       "Live model registry unavailable; falling back to static catalog.",
@@ -619,12 +631,12 @@ describe("resolveThinkingLevel", () => {
   });
 
   test("static catalog resolves after a live-registry miss", () => {
-    const result = resolveThinkingLevel("high", "openai", "gpt-4", {
+    const result = resolveThinkingLevel("high", "openai", "gpt-4.1", {
       registry: registryFixture([]),
     });
     expect(result.level).toBe("off");
     expect(result.warning).toBe(
-      unsupportedWarning("high", "off", "openai", "gpt-4"),
+      unsupportedWarning("high", "off", "openai", "gpt-4.1"),
     );
   });
 
@@ -704,11 +716,11 @@ describe("resolveThinkingLevel", () => {
     {
       name: "preserves reasoning-disabled warning even when requested is off",
       requestedLevel: "off",
-      modelId: "gpt-4",
+      modelId: "gpt-4.1",
       expectedLevel: "off",
       warnedRequested: "off",
       warnedClamped: "off",
-      warnedModelId: "gpt-4",
+      warnedModelId: "gpt-4.1",
     },
   ])("$name", (row) => {
     const result = resolveThinkingLevel(
@@ -730,7 +742,7 @@ describe("resolveThinkingLevel", () => {
   test("warning format is deterministic for clamp, unconfirmed, and reasoning-disabled paths", () => {
     const clamped = resolveThinkingLevel("off", "openai", "gpt-5");
     const unconfirmed = resolveThinkingLevel("high", "nonexistent", "model-1");
-    const reasoningDisabled = resolveThinkingLevel("high", "openai", "gpt-4");
+    const reasoningDisabled = resolveThinkingLevel("high", "openai", "gpt-4.1");
     expect(clamped.warning).toBe(
       unsupportedWarning("off", "minimal", "openai", "gpt-5"),
     );
@@ -738,7 +750,7 @@ describe("resolveThinkingLevel", () => {
       unconfirmedWarning("high", "nonexistent", "model-1"),
     );
     expect(reasoningDisabled.warning).toBe(
-      unsupportedWarning("high", "off", "openai", "gpt-4"),
+      unsupportedWarning("high", "off", "openai", "gpt-4.1"),
     );
   });
 
@@ -810,7 +822,7 @@ describe("resolveThinkingLevel", () => {
   test("prefers live registry match over static catalog", () => {
     const live = modelFixture({
       provider: "openai",
-      id: "gpt-4",
+      id: "gpt-4.1",
       reasoning: true,
       thinkingLevelMap: {
         off: null,
@@ -819,7 +831,7 @@ describe("resolveThinkingLevel", () => {
         high: "high",
       },
     });
-    const result = resolveThinkingLevel("high", "openai", "gpt-4", {
+    const result = resolveThinkingLevel("high", "openai", "gpt-4.1", {
       registry: registryFixture([live]),
     });
     expect(result.level).toBe("high");
@@ -869,7 +881,7 @@ describe("resolveThinkingLevel", () => {
   });
 
   test("diagnostic is separate from clamp warning", () => {
-    const result = resolveThinkingLevel("high", "openai", "gpt-4");
+    const result = resolveThinkingLevel("high", "openai", "gpt-4.1");
     expect(result.diagnostic).toBe(
       "Live model registry unavailable; falling back to static catalog.",
     );

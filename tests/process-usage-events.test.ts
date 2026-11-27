@@ -206,13 +206,13 @@ exit 0
 
   test("contextWindowTokens set from valid model provider and model", async () => {
     const piScript = `#!/bin/sh
-printf '%s\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"done"}],"api":"fake","provider":"openai","model":"gpt-4","usage":{"input":1,"output":1,"cacheRead":0,"cacheWrite":0,"totalTokens":2,"cost":{"total":0}},"stopReason":"stop","timestamp":0}}'
+printf '%s\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"done"}],"api":"fake","provider":"openai","model":"gpt-4.1","usage":{"input":1,"output":1,"cacheRead":0,"cacheWrite":0,"totalTokens":2,"cost":{"total":0}},"stopReason":"stop","timestamp":0}}'
 ${emitAgentEnd([])}
 exit 0
 `;
     const result = await runUsageTest(piScript);
     expect(result.exitCode).toBe(0);
-    expect(result.usage.contextWindowTokens).toBe(8192);
+    expect(result.usage.contextWindowTokens).toBe(1_047_576);
   });
 });
 

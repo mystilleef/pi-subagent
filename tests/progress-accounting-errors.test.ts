@@ -86,7 +86,7 @@ function setupRootWithChild(requestId: string): void {
   );
 }
 
-function renderCard(requestId: string, expanded: boolean): string[] {
+function renderCard(requestId: string, expanded: boolean): readonly string[] {
   const rendered = progress.renderSubagentProgress(
     {
       customType: "subagent-progress",
