@@ -223,6 +223,103 @@ executable automation.
 - Prefer trusted repositories for shared agent definitions.
 - Remember that child agents can call their configured tools.
 
+**Webhook guidance:**
+
+- Treat `PI_SUBAGENT_WEBHOOK_URL`, including any path or query token, as
+  a secret.
+- Spawned `Pi` subagents never inherit that setting.
+- Plain `http:` exposes the token and every envelope field to the
+  network; prefer `https:` on untrusted networks.
+- Delivery failure stays silent. See [Notifications](#notifications).
+
+---
+
+## Notifications
+
+Completion alerts leave through two independent channels: desktop alerts
+and one optional JSON webhook receiver.
+
+### Eligibility
+
+- Only root subagents (depth `0`) alert; nested subagents stay silent.
+- Completed (`success`) and failed (`error`) jobs alert; cancelled jobs
+  send neither desktop alerts, webhooks, nor terminal bells.
+
+### Dispatch
+
+- **Batch** (default, and any `PI_SUBAGENT_NOTIFY_PER_JOB` value except
+  exact `1`): sends one alert when removing the finished job empties the
+  run registry. That final job supplies the alert content, so a cancelled
+  final job sends nothing.
+- **Per job** (exact `PI_SUBAGENT_NOTIFY_PER_JOB=1`): sends one alert at
+  each qualifying root job's completion, and none at drain.
+- `PI_SUBAGENT_DESKTOP_NOTIFICATIONS` controls desktop alerts only (exact
+  `0` disables them; any other value or unset enables them) and never
+  gates webhooks.
+- Delivery runs detached and best effort: nothing awaits the `POST`, a
+  fixed `5000 ms` timeout aborts slow requests, no retries follow, and
+  process exit flushes no in-flight alert.
+
+### Receiver
+
+- Set `PI_SUBAGENT_WEBHOOK_URL` to one endpoint accepting a JSON `POST`.
+- Trims the value and parses it as a `WHATWG` `URL`. Delivery requires an
+  `http:` or `https:` scheme with a non-empty hostname and posts to the
+  normalized `URL.href`.
+- Unset, empty, whitespace-only, unparseable, non-HTTP(S), and hostless
+  values disable delivery silently: no request, no error, no notice.
+- Follows no HTTP redirects (`redirect: "manual"`); configure the final
+  `POST` URL directly.
+
+### Envelope
+
+Each `POST` sends `Content-Type: application/json` with this object:
+
+| Field                           | Value                                                                     |
+| ------------------------------- | ------------------------------------------------------------------------- |
+| `event`                         | `subagent.completed` on `success`; `subagent.failed` on `error`           |
+| `title`                         | `Pi Subagent`                                                             |
+| `message`                       | `<agent> finished in <duration>` or `<agent> failed after <duration>`     |
+| `text`, `content`               | `${title}: ${message}` (native Slack/Mattermost and Discord message keys) |
+| `agent`, `status`, `durationMs` | Completion metadata from progress state                                   |
+| `timestamp`                     | ISO-8601 UTC completion time                                              |
+| `instanceName`                  | Subagent job instance label; omitted when absent or empty                 |
+| `urgency`                       | `normal` on `success`; `critical` on `error`                              |
+
+The envelope carries completion metadata only. Prompts, task previews,
+final output, error text, tool arguments, transcripts, and `stderr`
+never cross this boundary, even with `PI_SUBAGENT_DEBUG_ENABLED=1`.
+
+### Home Assistant
+
+Point `PI_SUBAGENT_WEBHOOK_URL` at a Home Assistant webhook trigger
+(`https://<host>/api/webhook/<webhook-id>`, or `http://` on a trusted LAN
+or Tailscale network) and forward the envelope to the mobile app:
+
+```yaml
+- alias: Pi subagent completion
+  triggers:
+    - trigger: webhook
+      webhook_id: <webhook-id>
+      allowed_methods:
+        - POST
+  actions:
+    - action: notify.mobile_app_<device>
+      data:
+        title: "{{ trigger.json.title }}"
+        message: "{{ trigger.json.message }}"
+        data:
+          push:
+            interruption-level: >-
+              {{ 'time-sensitive' if trigger.json.urgency == 'critical' else
+              'active' }}
+```
+
+- Home Assistant webhook triggers default to `local_only: true`; set
+  `local_only: false` when posting from outside the local network.
+- `data.push.interruption-level` targets iOS; Android ignores it and
+  delivers a standard notification.
+
 ---
 
 ## Configuration and limits
@@ -242,6 +339,12 @@ executable automation.
   `50000`.
 - `PI_SUBAGENT_MAX_OUTPUT_LINES`: max returned output lines. Default:
   `500`.
+- `PI_SUBAGENT_DESKTOP_NOTIFICATIONS`: desktop completion alerts. Exact
+  `0` disables them; every other value, including unset, enables them.
+- `PI_SUBAGENT_NOTIFY_PER_JOB`: alert timing. Exact `1` alerts per
+  finished job instead of per run drain. Default: batch.
+- `PI_SUBAGENT_WEBHOOK_URL`: optional JSON webhook receiver. See
+  [Notifications](#notifications).
 - `PI_SUBAGENT_DEBUG_ENABLED`: debug detail authorization. Set to `1` to
   allow `debug: true` or `/run --debug` to include sanitized child
   messages, termination internals, and `stderr`; unset values keep

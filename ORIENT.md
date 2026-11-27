@@ -29,8 +29,8 @@
   mutable result accumulation, cancellation, and process-tree cleanup.
 - Projection layers (`progress`, `output`) turn runtime and ledger state
   into sanitized details, tool payloads, unified status cards, `/jobs`
-  and `/stats` boards, display-only live activity rows, and desktop
-  notifications.
+  and `/stats` boards, display-only live activity rows, and desktop and
+  webhook completion alerts.
 
 ## Request lifecycle
 
@@ -59,7 +59,7 @@
    posting (`markProgressResultPosted`) to suppress superseded live
    progress cards without erasing retained state, finalizes progress,
    clears registry state, releases resources, and triggers eligible
-   alerts.
+   desktop and webhook alerts detached from completion.
 
 ## Cross-boundary contracts
 
@@ -75,6 +75,8 @@
 | `StreamingProgress`         | Tree with `ToolActivity` for updates.                                                                                                |
 | `CardAnatomy`               | Unified card layout (`status`, `title`, `metadata`, optional `blocks`, optional `footer`) shared across all card surfaces.           |
 | `RunsBoardUsage`            | Joins session rollup and per-job `UsageInstanceNode` subtrees with `/jobs` progress state.                                           |
+| `NotificationRequest`       | Shared desktop-webhook alert request, with `NotificationMetadata` carrying completion metadata only.                                 |
+| `WebhookPayload`            | Metadata-only JSON envelope projected from the request; exposes no execution content.                                                |
 
 ## Ownership boundaries
 
@@ -102,8 +104,11 @@
   normalization, summary derivation, self-only `SingleResult.usage` card
   footers, descendant tallies (`createDescendantTally`), transcript
   visibility control, and `UI` rendering.
-- **Notifications**: terminal progress feeds request construction;
-  detached platform delivery never affects lifecycle outcome.
+- **Notifications**: terminal progress feeds shared request
+  construction (`NotificationRequest` plus
+  `NotificationMetadata`); desktop platform delivery and the
+  metadata-only `WebhookPayload` transport dispatch detached at
+  lifecycle finalization and never affect lifecycle outcome.
 
 ## Architectural constraints
 
@@ -158,6 +163,12 @@
   snapshots while preserving exact `omitted` totals (`count`, `totals`).
 - Keep `SingleResult.usage` self-only and preserve existing result
   cards, host footer behavior, and privacy/orchestration constraints.
+- Keep completion alerts detached: dispatch both channels through the
+  shared request without awaiting delivery, keep webhook selection
+  independent of desktop settings and the drain bell, and project
+  webhooks through the metadata-only envelope. Prompts, previews,
+  output, error text, tool arguments, transcripts, and `stderr` never
+  cross that boundary.
 
 ## Change vectors
 
@@ -173,8 +184,9 @@
   adapters.
 - **Discovery input**: extend parser validation, cache snapshots, and
   child invocation assembly as one route.
-- **Notification channel**: extend notification request model before
-  platform delivery adapters.
+- **Notification channel**: extend the shared request model before
+  adding a desktop platform adapter or the webhook projection and
+  transport; keep the envelope metadata-only and dispatch detached.
 
 ## Evidence
 
