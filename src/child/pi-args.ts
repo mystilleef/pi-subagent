@@ -100,12 +100,50 @@ export function buildPiArgs(config: BuildPiArgsConfig): string[] {
   return args;
 }
 
+/** Environment keys stripped from spawned child processes. */
+const STRIPPED_CHILD_ENV_KEYS = [
+  "PI_SAMPLING_PARAMS",
+  "PI_SUBAGENT_WEBHOOK_URL",
+] as const;
+
+/**
+ * Whether `name` names `key` under the host's environment-name semantics:
+ * Windows resolves environment names case-insensitively, so every spelling
+ * denotes the same setting, while other hosts treat them as distinct keys.
+ */
+function namesEnvKey(
+  name: string,
+  key: string,
+  platform: NodeJS.Platform,
+): boolean {
+  return platform === "win32"
+    ? name.toLowerCase() === key.toLowerCase()
+    : name === key;
+}
+
+/**
+ * Builds the spawned Pi child's environment: drops the inherited sampling
+ * config and receiver URL token, then applies the child depth marker and the
+ * selected agent's sampling override.
+ *
+ * `parentEnv` supplies the environment to inherit from, letting callers and
+ * tests pass a plain snapshot in place of the live `process.env` proxy.
+ */
 export function buildChildEnv(
   samplingEnv: string | undefined,
+  platform: NodeJS.Platform = process.platform,
+  parentEnv: NodeJS.ProcessEnv = process.env,
 ): NodeJS.ProcessEnv {
-  const { PI_SAMPLING_PARAMS: _, ...parentEnv } = process.env;
+  const filteredEnv = Object.fromEntries(
+    Object.entries(parentEnv).filter(
+      ([name]) =>
+        !STRIPPED_CHILD_ENV_KEYS.some((key) =>
+          namesEnvKey(name, key, platform),
+        ),
+    ),
+  );
   return {
-    ...parentEnv,
+    ...filteredEnv,
     ...subagentDepthEnv(),
     ...(samplingEnv ? { PI_SAMPLING_PARAMS: samplingEnv } : {}),
   };

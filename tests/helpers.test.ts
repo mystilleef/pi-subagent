@@ -320,3 +320,52 @@ test("probe fail case exercises cleanup on assertion failure", async () => {
     }
   }, 30_000);
 });
+
+const INHERITED_WEBHOOK_URL =
+  "https://webhook.preload.invalid/pi-subagent-sentinel";
+const CHILD_WEBHOOK_PRELOAD_CASE =
+  "child test module observes no webhook URL key";
+
+// Captured once at module evaluation, after the registered preload ran: key
+// presence separates a deleted key from one set to an empty string.
+const WEBHOOK_URL_KEY_AT_MODULE_LOAD = "PI_SUBAGENT_WEBHOOK_URL" in process.env;
+
+describe("webhook preload", () => {
+  test(CHILD_WEBHOOK_PRELOAD_CASE, () => {
+    expect(WEBHOOK_URL_KEY_AT_MODULE_LOAD).toBe(false);
+  });
+
+  test("removes the inherited webhook URL before test modules load", async () => {
+    const { error, output } = await new Promise<{
+      error: Error | null;
+      output: string;
+    }>((resolve) => {
+      execFile(
+        process.execPath,
+        [
+          "test",
+          path.join(import.meta.dir, "helpers.test.ts"),
+          "-t",
+          CHILD_WEBHOOK_PRELOAD_CASE,
+        ],
+        {
+          cwd: path.join(import.meta.dir, ".."),
+          env: {
+            ...process.env,
+            PI_SUBAGENT_WEBHOOK_URL: INHERITED_WEBHOOK_URL,
+          },
+          timeout: 25_000,
+          maxBuffer: 4 * 1024 * 1024,
+        },
+        (error, stdout, stderr) => {
+          resolve({
+            error,
+            output: `${stdout}${stderr}`,
+          });
+        },
+      );
+    });
+    expect(error).toBeNull();
+    expect(output).toContain("1 pass");
+  }, 30_000);
+});

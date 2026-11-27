@@ -11,6 +11,11 @@ process.env.JITI_FS_CACHE = "false";
 // delivery opt in with `withEnv` and fake spawn dependencies.
 process.env.PI_SUBAGENT_DESKTOP_NOTIFICATIONS = "0";
 
+// Tests never inherit a receiver URL: an inherited value would let any suite
+// file post to a live endpoint. Webhook cases opt in with `withEnv` and a
+// fake fetch.
+delete process.env["PI_SUBAGENT_WEBHOOK_URL"];
+
 const agentHome = mkdtempSync(path.join(tmpdir(), "pi-subagent-test-"));
 
 process.env.PI_CODING_AGENT_DIR = agentHome;

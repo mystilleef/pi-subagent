@@ -23,6 +23,7 @@ import {
   setupFakePi,
   setupHooks,
   setupTest,
+  withEnv,
 } from "./helpers.js";
 
 setupHooks();
@@ -84,38 +85,139 @@ test("runSingleAgent deduplicates complete in the tool allowlist", async () => {
   ]);
 });
 
-describe("Wire child-scoped sampling env and extension loading", () => {
-  async function runCapturedAgentWithParams(
-    agent: AgentConfig,
-  ): Promise<{ args: string[]; envSampling: string; result: SingleResult }> {
-    const { cwd } = await setupTest({
-      piScript: `#!/bin/sh
+type CapturedChildRun = {
+  args: string[];
+  childEnv: Record<string, string>;
+  result: SingleResult;
+};
+
+/** Environment keys these tests assert on; fake `pi` captures these alone. */
+const CAPTURED_ENV_NAMES = [
+  "PI_SUBAGENT_WEBHOOK_URL",
+  "PI_SUBAGENT_ENV_PROBE",
+  "STAGING_ENV_TEMPLATE",
+  "PI_SUBAGENT_DEPTH",
+  "PI_SAMPLING_PARAMS",
+] as const;
+
+/**
+ * Shell fragment for fake `pi`: writes a null-delimited `name`, `value` pair
+ * for each watched variable the child received, reading the shell's set
+ * indicator separately from the value so an absent key writes no pair and one
+ * set to an empty string writes an empty value. Null delimiters keep a
+ * multi-line value, such as a configuration template in an unrelated inherited
+ * variable, from reading as further pairs.
+ */
+const CAPTURE_PI_ENV_SH = CAPTURED_ENV_NAMES.map(
+  (name) =>
+    `if [ "\${${name}+x}" = x ]; then printf '%s\\0%s\\0' ${name} "$${name}"; fi`,
+).join("\n");
+
+/**
+ * Reads the null-delimited `name`, `value` pairs captured by fake `pi`, keeping
+ * an absent key distinct from one set to an empty string and preserving
+ * multi-line values intact.
+ */
+async function readCapturedEnv(cwd: string): Promise<Record<string, string>> {
+  const text = await fs.promises.readFile(path.join(cwd, "env.txt"), "utf8");
+  const fields = text.split("\0");
+  fields.pop();
+  const childEnv: Record<string, string> = {};
+  for (let index = 0; index < fields.length; index += 2) {
+    const [name, value] = fields.slice(index, index + 2);
+    if (name === undefined || value === undefined) {
+      throw new Error("fake pi captured an unpaired environment record");
+    }
+    childEnv[name] = value;
+  }
+  return childEnv;
+}
+
+/**
+ * Runs one agent against fake `pi` capturing argv plus the spawned environment,
+ * so tests observe exactly which keys the child receives.
+ */
+async function runCapturedAgentWithParams(
+  agent: AgentConfig,
+): Promise<CapturedChildRun> {
+  const { cwd } = await setupTest({
+    piScript: `#!/bin/sh
 ${CAPTURE_PI_ARGS_SH}
-printf '%s\\n' "$PI_SAMPLING_PARAMS" > env_sampling.txt
+{
+${CAPTURE_PI_ENV_SH}
+} > env.txt
 ${emitMessageEnd(makeAssistantMessage("done"))}
 ${emitAgentEnd([])}
 exit 0
 `,
-    });
-    const { result } = await runSingleAgent(
-      cwd,
-      [agent],
-      agent.name,
-      "task",
-      undefined,
-      undefined,
-      makeSubagentDetails,
-      undefined,
-      "off",
-    );
-    expect(result.exitCode).toBe(0);
-    const args = await readCapturedArgs(cwd);
-    const envSampling = fs
-      .readFileSync(path.join(cwd, "env_sampling.txt"), "utf8")
-      .trim();
-    return { args, envSampling, result };
-  }
+  });
+  const { result } = await runSingleAgent(
+    cwd,
+    [agent],
+    agent.name,
+    "task",
+    undefined,
+    undefined,
+    makeSubagentDetails,
+    undefined,
+    "off",
+  );
+  expect(result.exitCode).toBe(0);
+  const args = await readCapturedArgs(cwd);
+  const childEnv = await readCapturedEnv(cwd);
+  return { args, childEnv, result };
+}
 
+describe("Wire child-spawn environment isolation", () => {
+  test("spawned pi omits the inherited webhook URL while the parent keeps it", async () => {
+    const url = "https://hooks.example.test/pi-subagent?token=sentinel";
+    await withEnv({ PI_SUBAGENT_WEBHOOK_URL: url }, async () => {
+      const { childEnv } = await runCapturedAgentWithParams(makeModelAgent({}));
+
+      expect(Object.hasOwn(childEnv, "PI_SUBAGENT_WEBHOOK_URL")).toBe(false);
+      expect(process.env["PI_SUBAGENT_WEBHOOK_URL"]).toBe(url);
+    });
+  });
+
+  test("spawned pi inherits unrelated environment variables unchanged", async () => {
+    const template = [
+      "# Staging notification settings",
+      "PI_SUBAGENT_WEBHOOK_URL=https://hooks.example.test/staging",
+    ].join("\n");
+    await withEnv({ STAGING_ENV_TEMPLATE: template }, async () => {
+      const { childEnv } = await runCapturedAgentWithParams(makeModelAgent({}));
+
+      expect(childEnv["STAGING_ENV_TEMPLATE"]).toBe(template);
+    });
+  });
+
+  test("spawned pi reports an empty inherited value as present rather than absent", async () => {
+    await withEnv({ PI_SUBAGENT_ENV_PROBE: "" }, async () => {
+      const { childEnv } = await runCapturedAgentWithParams(makeModelAgent({}));
+
+      expect(Object.hasOwn(childEnv, "PI_SUBAGENT_ENV_PROBE")).toBe(true);
+      expect(childEnv["PI_SUBAGENT_ENV_PROBE"]).toBe("");
+    });
+  });
+
+  test.each([
+    [undefined, "1"],
+    ["2", "3"],
+  ])(
+    "spawned pi increments parent depth %p to %p",
+    async (parentDepth, childDepth) => {
+      await withEnv({ PI_SUBAGENT_DEPTH: parentDepth }, async () => {
+        const { childEnv } = await runCapturedAgentWithParams(
+          makeModelAgent({}),
+        );
+
+        expect(childEnv["PI_SUBAGENT_DEPTH"]).toBe(childDepth);
+      });
+    },
+  );
+});
+
+describe("Wire child-scoped sampling env and extension loading", () => {
   function getExtensionPaths(args: string[]): string[] {
     return args.flatMap((arg, i) =>
       arg === "--extension" ? [args[i + 1] ?? ""] : [],
@@ -135,9 +237,11 @@ exit 0
       temperature: 0.7,
       topP: 0.9,
     });
-    const { args, envSampling } = await runCapturedAgentWithParams(agent);
+    const { args, childEnv } = await runCapturedAgentWithParams(agent);
 
-    expect(envSampling).toBe('{"temperature":0.7,"topP":0.9}');
+    expect(childEnv["PI_SAMPLING_PARAMS"]).toBe(
+      '{"temperature":0.7,"topP":0.9}',
+    );
     expectExtensions(args, 2);
   });
 
@@ -146,9 +250,9 @@ exit 0
       name: "temp-only-agent",
       temperature: 0.3,
     });
-    const { args, envSampling } = await runCapturedAgentWithParams(agent);
+    const { args, childEnv } = await runCapturedAgentWithParams(agent);
 
-    expect(envSampling).toBe('{"temperature":0.3}');
+    expect(childEnv["PI_SAMPLING_PARAMS"]).toBe('{"temperature":0.3}');
     expectExtensions(args, 2);
   });
 
@@ -157,9 +261,9 @@ exit 0
       name: "topp-only-agent",
       topP: 0.25,
     });
-    const { args, envSampling } = await runCapturedAgentWithParams(agent);
+    const { args, childEnv } = await runCapturedAgentWithParams(agent);
 
-    expect(envSampling).toBe('{"topP":0.25}');
+    expect(childEnv["PI_SAMPLING_PARAMS"]).toBe('{"topP":0.25}');
     expectExtensions(args, 2);
   });
 
@@ -167,9 +271,9 @@ exit 0
     const agent = makeModelAgent({
       name: "no-sampling-agent",
     });
-    const { args, envSampling } = await runCapturedAgentWithParams(agent);
+    const { args, childEnv } = await runCapturedAgentWithParams(agent);
 
-    expect(envSampling).toBe("");
+    expect(Object.hasOwn(childEnv, "PI_SAMPLING_PARAMS")).toBe(false);
     expectExtensions(args, 1);
     expect(args.join(" ")).not.toContain("sampling-extension");
   });
@@ -186,8 +290,8 @@ exit 0
     const run1 = await runCapturedAgentWithParams(samplingAgent);
     const run2 = await runCapturedAgentWithParams(plainAgent);
 
-    expect(run1.envSampling).toBe('{"temperature":0.5}');
-    expect(run2.envSampling).toBe("");
+    expect(run1.childEnv["PI_SAMPLING_PARAMS"]).toBe('{"temperature":0.5}');
+    expect(Object.hasOwn(run2.childEnv, "PI_SAMPLING_PARAMS")).toBe(false);
   });
 
   test("no-sampling agent removes inherited parent PI_SAMPLING_PARAMS from child env", async () => {
@@ -196,8 +300,8 @@ exit 0
       const agent = makeModelAgent({
         name: "no-sampling-agent",
       });
-      const { args, envSampling } = await runCapturedAgentWithParams(agent);
-      expect(envSampling).toBe("");
+      const { args, childEnv } = await runCapturedAgentWithParams(agent);
+      expect(Object.hasOwn(childEnv, "PI_SAMPLING_PARAMS")).toBe(false);
       expect(args.join(" ")).not.toContain("sampling-extension");
     } finally {
       delete process.env["PI_SAMPLING_PARAMS"];
@@ -218,8 +322,8 @@ exit 0
         runCapturedAgentWithParams(samplingAgent),
         runCapturedAgentWithParams(noSamplingAgent),
       ]);
-      expect(run1.envSampling).toBe('{"temperature":0.4}');
-      expect(run2.envSampling).toBe("");
+      expect(run1.childEnv["PI_SAMPLING_PARAMS"]).toBe('{"temperature":0.4}');
+      expect(Object.hasOwn(run2.childEnv, "PI_SAMPLING_PARAMS")).toBe(false);
     } finally {
       delete process.env["PI_SAMPLING_PARAMS"];
     }

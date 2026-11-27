@@ -109,6 +109,7 @@ const ORIGINAL_DEBUG_ENABLED = process.env.PI_SUBAGENT_DEBUG_ENABLED;
 const ORIGINAL_DESKTOP_NOTIFICATIONS =
   process.env.PI_SUBAGENT_DESKTOP_NOTIFICATIONS;
 const ORIGINAL_NOTIFY_PER_JOB = process.env.PI_SUBAGENT_NOTIFY_PER_JOB;
+const ORIGINAL_WEBHOOK_URL = process.env.PI_SUBAGENT_WEBHOOK_URL;
 
 function restoreEnv(key: string, original: string | undefined): void {
   if (original === undefined) delete process.env[key];
@@ -561,6 +562,7 @@ export function setupFixtureHooks(
     process.env.PI_SUBAGENT_DEPTH = "0";
     process.env.PI_SUBAGENT_DESKTOP_NOTIFICATIONS = "0";
     delete process.env.PI_SUBAGENT_DEBUG_ENABLED;
+    delete process.env.PI_SUBAGENT_WEBHOOK_URL;
   });
   const teardown = async (): Promise<void> => {
     restoreTestGlobals();
@@ -577,6 +579,7 @@ export function setupFixtureHooks(
       ORIGINAL_DESKTOP_NOTIFICATIONS,
     );
     restoreEnv("PI_SUBAGENT_NOTIFY_PER_JOB", ORIGINAL_NOTIFY_PER_JOB);
+    restoreEnv("PI_SUBAGENT_WEBHOOK_URL", ORIGINAL_WEBHOOK_URL);
     runResets();
     await cleanupFixtureTempDirs();
   };

@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { AgentConfig } from "../src/agent/agents.js";
-import { buildPiArgs } from "../src/child/pi-args.js";
+import { buildChildEnv, buildPiArgs } from "../src/child/pi-args.js";
 import { runSingleAgent } from "../src/child/process.js";
 import {
   resolvePackageExtensionPath,
@@ -18,6 +18,7 @@ import {
   runCapturedModelAgent,
   setupHooks,
   setupTest,
+  withEnv,
 } from "./helpers.js";
 
 setupHooks();
@@ -641,4 +642,89 @@ test("buildPiArgs named extensions preserves first-seen order from resolved path
     "/ext/a.js",
     "/ext/b.js",
   ]);
+});
+
+describe("buildChildEnv receiver-token isolation", () => {
+  const RECEIVER_NAME = "PI_SUBAGENT_WEBHOOK_URL";
+  const PARENT_URL = "https://hooks.example.test/pi-subagent?token=sentinel";
+  const MIXED_CASE_URL = "https://hooks.example.test/mixed?token=mixed";
+
+  /** Every spelling of the receiver name present in `env`. */
+  function receiverNames(env: NodeJS.ProcessEnv): string[] {
+    const receiverKey = RECEIVER_NAME.toLowerCase();
+    return Object.keys(env).filter(
+      (name) => name.toLowerCase() === receiverKey,
+    );
+  }
+
+  test.each([
+    RECEIVER_NAME,
+    "Pi_Subagent_Webhook_Url",
+    "pi_subagent_webhook_url",
+  ])(
+    "buildChildEnv omits receiver URL spelled %p under Windows semantics",
+    async (name) => {
+      await withEnv({ [name]: PARENT_URL }, async () => {
+        const childEnv = buildChildEnv(undefined, "win32");
+
+        expect(receiverNames(childEnv)).toEqual([]);
+        expect(process.env[name]).toBe(PARENT_URL);
+      });
+    },
+  );
+
+  test("buildChildEnv keeps a differently cased receiver key on a case-sensitive host", () => {
+    const parentEnv: NodeJS.ProcessEnv = {
+      [RECEIVER_NAME]: PARENT_URL,
+      Pi_Subagent_Webhook_Url: MIXED_CASE_URL,
+    };
+
+    const childEnv = buildChildEnv(undefined, "linux", parentEnv);
+
+    expect(receiverNames(childEnv)).toEqual(["Pi_Subagent_Webhook_Url"]);
+    expect(childEnv["Pi_Subagent_Webhook_Url"]).toBe(MIXED_CASE_URL);
+    expect(parentEnv[RECEIVER_NAME]).toBe(PARENT_URL);
+  });
+
+  test.each(["PI_SAMPLING_PARAMS", "Pi_Sampling_Params", "pi_sampling_params"])(
+    "buildChildEnv omits sampling env spelled %p under Windows semantics",
+    (name) => {
+      const parentEnv: NodeJS.ProcessEnv = { [name]: '{"temperature":0.5}' };
+
+      const childEnv = buildChildEnv(undefined, "win32", parentEnv);
+
+      expect(
+        Object.keys(childEnv).filter(
+          (key) => key.toLowerCase() === "pi_sampling_params",
+        ),
+      ).toEqual([]);
+    },
+  );
+
+  test("buildChildEnv replaces mixed-case sampling env under Windows semantics without duplicates", () => {
+    const parentEnv: NodeJS.ProcessEnv = {
+      Pi_Sampling_Params: '{"temperature":0.9}',
+    };
+
+    const childEnv = buildChildEnv('{"temperature":0.2}', "win32", parentEnv);
+
+    expect(
+      Object.keys(childEnv).filter(
+        (key) => key.toLowerCase() === "pi_sampling_params",
+      ),
+    ).toEqual(["PI_SAMPLING_PARAMS"]);
+    expect(childEnv["PI_SAMPLING_PARAMS"]).toBe('{"temperature":0.2}');
+  });
+
+  test("buildChildEnv keeps a differently cased sampling key on a case-sensitive host", () => {
+    const parentEnv: NodeJS.ProcessEnv = {
+      PI_SAMPLING_PARAMS: '{"temperature":0.5}',
+      Pi_Sampling_Params: '{"temperature":0.8}',
+    };
+
+    const childEnv = buildChildEnv(undefined, "linux", parentEnv);
+
+    expect(Object.hasOwn(childEnv, "PI_SAMPLING_PARAMS")).toBe(false);
+    expect(childEnv["Pi_Sampling_Params"]).toBe('{"temperature":0.8}');
+  });
 });

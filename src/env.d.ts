@@ -11,5 +11,6 @@ declare namespace NodeJS {
     PI_SUBAGENT_DEBUG_ENABLED?: string;
     PI_SUBAGENT_DESKTOP_NOTIFICATIONS?: string;
     PI_SUBAGENT_NOTIFY_PER_JOB?: string;
+    PI_SUBAGENT_WEBHOOK_URL?: string;
   }
 }
