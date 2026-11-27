@@ -11,6 +11,11 @@
 
 - Read `TESTING.md` before writing tests.
 
+### Commit
+
+- **Never** stage or commit `*-proposal.md` files.
+- **Never** stage or commit `code-review-report.yaml`.
+
 ## Gotchas
 
 - Never commit or track `proposals/`.
