@@ -179,6 +179,30 @@ function awaitSatisfiedDelivery(
   return pending;
 }
 
+export type DeliveryBarrier = {
+  /** Settles every wait the delivery now recorded satisfies. */
+  settle: () => void;
+  /**
+   * Resolves on the delivery satisfying `isSatisfied`, including one that
+   * already holds, so a test asserting on delivery asserts after its event
+   * instead of polling for it.
+   */
+  when: (isSatisfied: () => boolean, label: string) => Promise<void>;
+};
+
+/**
+ * Event-driven barrier for a delivery source that calls `settle` as it
+ * delivers, for tests whose fake observes each delivery directly.
+ */
+export function deliveryBarrier(): DeliveryBarrier {
+  const waiters = new Set<DeliveryWaiter>();
+  return {
+    settle: () => settleWaiters(waiters),
+    when: (isSatisfied, label) =>
+      awaitSatisfiedDelivery(waiters, isSatisfied, label),
+  };
+}
+
 const sentMessageWaiters = new Set<DeliveryWaiter>();
 
 export async function waitForSentMessage(

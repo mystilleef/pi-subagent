@@ -2,7 +2,9 @@
  * Platform delivery implementations for desktop notifications.
  *
  * Delivers notification requests through safe native commands with
- * async bounded subprocess handling and silent degradation.
+ * async bounded subprocess handling and silent degradation. The dependency
+ * contract also carries the webhook transport seams so one override reset
+ * covers every notification channel.
  */
 
 import { spawn } from "node:child_process";
@@ -12,6 +14,11 @@ import type { NotificationRequest } from "./desktop-notification.js";
 
 const LINUX_NOTIFY_SEND = "notify-send";
 
+export type WebhookFetch = (
+  url: string,
+  init: RequestInit,
+) => Promise<Response>;
+
 export type DeliveryDependencies = {
   platform?: NodeJS.Platform;
   commandExists?: (command: string) => boolean | Promise<boolean>;
@@ -20,6 +27,8 @@ export type DeliveryDependencies = {
     args: string[],
     options: { stdio: "ignore" },
   ) => { unref?: () => void };
+  fetch?: WebhookFetch;
+  webhookTimeoutMs?: number;
 };
 
 type SpawnProcess = NonNullable<DeliveryDependencies["spawnProcess"]>;
@@ -212,7 +221,7 @@ const PLATFORM_DELIVERIES: Partial<
   win32: deliverWindowsNotification,
 };
 
-function resolveDeliveryDeps(
+export function resolveDeliveryDeps(
   explicit?: DeliveryDependencies,
 ): DeliveryDependencies {
   if (!defaultDeliveryDeps) return explicit ?? {};

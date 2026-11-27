@@ -17,7 +17,12 @@ import {
   buildNotificationRequest,
   isDesktopNotificationsEnabled,
   isPerJobNotificationEnabled,
+  type NotificationRequest,
 } from "../notification/desktop-notification.js";
+import {
+  deliverWebhookNotification,
+  resolveWebhookUrl,
+} from "../notification/webhook-delivery.js";
 import {
   formatSubagentFailureForParent,
   formatSubagentResultForParent,
@@ -178,16 +183,44 @@ function sendSubagentResultMessage(
   markProgressResultPosted(lc.requestId);
 }
 
+type CompletionRequestGetter = (
+  state: NonNullable<ReturnType<typeof getProgressState>>,
+) => NotificationRequest;
+
 function deliverDesktopCompletionNotification(
   state: NonNullable<ReturnType<typeof getProgressState>>,
+  getRequest: CompletionRequestGetter,
 ): void {
   if (state.status === "cancelled") return;
-  const request = buildNotificationRequest(state);
-  deliverNotification(request).catch(() => {});
+  deliverNotification(getRequest(state)).catch(() => {});
 }
 
-export function emitCompletionAlert(
+function dispatchWebhookWith(
   state: ReturnType<typeof getProgressState>,
+  getRequest: CompletionRequestGetter,
+): void {
+  if (!state) return;
+  if (getSubagentDepth() !== 0) return;
+  if (state.status !== "success" && state.status !== "error") return;
+  const url = resolveWebhookUrl();
+  if (url === undefined) return;
+  deliverWebhookNotification(getRequest(state), undefined, url).catch(() => {});
+}
+
+/**
+ * Dispatches the completion webhook for one job's terminal state, detached
+ * from lifecycle completion: a root job ending in `success` or `error` posts
+ * once when a receiver resolves, and every other case stays silent.
+ */
+export function dispatchCompletionWebhook(
+  state: ReturnType<typeof getProgressState>,
+): void {
+  dispatchWebhookWith(state, buildNotificationRequest);
+}
+
+function emitCompletionAlertWith(
+  state: ReturnType<typeof getProgressState>,
+  getRequest: CompletionRequestGetter,
 ): void {
   if (!state) return;
   if (state.status === "cancelled") return;
@@ -196,11 +229,17 @@ export function emitCompletionAlert(
     !isPerJobNotificationEnabled() &&
     getSubagentDepth() === 0
   ) {
-    deliverDesktopCompletionNotification(state);
+    deliverDesktopCompletionNotification(state, getRequest);
   }
   const tty = (process.stdout as { isTTY?: boolean }).isTTY;
   if (!tty) return;
   process.stdout.write("\x07");
+}
+
+export function emitCompletionAlert(
+  state: ReturnType<typeof getProgressState>,
+): void {
+  emitCompletionAlertWith(state, buildNotificationRequest);
 }
 
 function createCompletedToolResult(
@@ -358,24 +397,33 @@ async function runSubagentLifecycle(
   } finally {
     clearInterval(timerTick);
     requestProgressRender();
-    removeRunJob(lc.requestId);
+    const removed = removeRunJob(lc.requestId);
     const state = getProgressState(lc.requestId);
-    if (state) deliverLifecycleCompletionNotification(state);
+    if (state) {
+      deliverLifecycleCompletionNotification(
+        state,
+        removed && listRunJobs().length === 0,
+      );
+    }
   }
 }
 
 function deliverLifecycleCompletionNotification(
   state: NonNullable<ReturnType<typeof getProgressState>>,
+  drained: boolean,
 ): void {
-  if (
-    isDesktopNotificationsEnabled() &&
-    isPerJobNotificationEnabled() &&
-    getSubagentDepth() === 0
-  ) {
-    deliverDesktopCompletionNotification(state);
-    return;
+  let sharedRequest: NotificationRequest | undefined;
+  const getRequest: CompletionRequestGetter = (target) => {
+    sharedRequest ??= buildNotificationRequest(target);
+    return sharedRequest;
+  };
+  const perJob = isPerJobNotificationEnabled();
+  if (isDesktopNotificationsEnabled() && perJob && getSubagentDepth() === 0) {
+    deliverDesktopCompletionNotification(state, getRequest);
+  } else if (drained) {
+    emitCompletionAlertWith(state, getRequest);
   }
-  if (listRunJobs().length === 0) emitCompletionAlert(state);
+  if (perJob || drained) dispatchWebhookWith(state, getRequest);
 }
 
 type StartJobResult =

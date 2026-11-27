@@ -6,11 +6,14 @@ import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import * as childProcess from "../src/child/process.js";
 import * as delivery from "../src/notification/delivery.js";
 import { setDefaultDeliveryDeps } from "../src/notification/delivery.js";
+import * as webhookDelivery from "../src/notification/webhook-delivery.js";
+import * as runRegistry from "../src/orchestration/run-registry.js";
 import {
   listRunJobs,
   resetRunRegistry,
 } from "../src/orchestration/run-registry.js";
 import {
+  dispatchCompletionWebhook,
   emitCompletionAlert,
   formatSubagentToolResult,
 } from "../src/orchestration/subagent-orchestrator.js";
@@ -39,7 +42,9 @@ import {
   CAPTURE_ARGS_PI_SCRIPT,
   CAPTURE_PI_ARGS_SH,
   captureStdout,
+  deliveryBarrier,
   emitAgentEnd,
+  emitSessionShutdown,
   getSubagentTool,
   installFakePi,
   makeBareCtx,
@@ -536,20 +541,18 @@ wait $!
   );
 });
 
-test("per-job notification delivers at depth 0 via lifecycle", async () => {
+test("per-job notification delivers one desktop alert at depth 0 via lifecycle", async () => {
   await withEnv(
     {
       PI_SUBAGENT_DESKTOP_NOTIFICATIONS: "1",
       PI_SUBAGENT_NOTIFY_PER_JOB: "1",
     },
     async () => {
-      const notified = Promise.withResolvers<void>();
+      const { spawnProcess, calls, whenSpawned } = recordDesktopCalls();
       setDefaultDeliveryDeps({
+        platform: "linux",
         commandExists: () => true,
-        spawnProcess: () => {
-          notified.resolve();
-          return {};
-        },
+        spawnProcess,
       });
       const sentMessages: SendMessageArg[] = [];
       const { tool, cwd } = await setupTest({
@@ -563,8 +566,10 @@ test("per-job notification delivers at depth 0 via lifecycle", async () => {
       );
       await waitForSentMessageCount(sentMessages, 2);
       expect(sentMessages.at(-1)?.customType).toBe("subagent-result");
-      await notified.promise;
+      await whenSpawned(1, "desktop notification spawn");
       await waitForRunJobsCleared();
+      expect(calls.map((call) => call.command)).toEqual(["notify-send"]);
+      expect(desktopBodyOf(calls[0])).toContain("finished");
       expect(listRunJobs()).toHaveLength(0);
     },
   );
@@ -751,6 +756,711 @@ test("emitCompletionAlert swallows desktop notification rejection", () => {
         });
       } finally {
         spy.mockRestore();
+      }
+    },
+  );
+});
+
+test("emitCompletionAlert delivers desktop alerts for running states", async () => {
+  await withEnv(
+    {
+      PI_SUBAGENT_DEPTH: "0",
+      PI_SUBAGENT_DESKTOP_NOTIFICATIONS: "1",
+      PI_SUBAGENT_NOTIFY_PER_JOB: undefined,
+    },
+    async () => {
+      const { spawnProcess, calls, whenSpawned } = recordDesktopCalls();
+      setDefaultDeliveryDeps({
+        platform: "linux",
+        commandExists: () => true,
+        spawnProcess,
+      });
+
+      emitCompletionAlert(makeProgressState({ status: "running" }));
+
+      await whenSpawned(1, "desktop notification spawn");
+      expect(calls.map((call) => call.command)).toEqual(["notify-send"]);
+    },
+  );
+});
+
+/** Receiver URL the fake fetch records. */
+const WEBHOOK_RECEIVER = "https://receiver.example.test/api/webhook/subagent";
+
+type WebhookCall = {
+  url: string;
+  init: RequestInit;
+  /** Request IDs the run registry held at send time. */
+  registryIds: string[];
+};
+
+/**
+ * Records webhook POSTs without touching the network, snapshotting the run
+ * registry as each POST starts so a send proves its job already left it.
+ */
+function recordWebhookCalls(): {
+  fetch: delivery.WebhookFetch;
+  calls: WebhookCall[];
+} {
+  const calls: WebhookCall[] = [];
+  const fetch: delivery.WebhookFetch = async (url, init) => {
+    calls.push({
+      url,
+      init,
+      registryIds: listRunJobs().map((j) => j.requestId),
+    });
+    return new Response(null, { status: 204 });
+  };
+  return { fetch, calls };
+}
+
+type DesktopCall = { command: string; args: string[] };
+
+/** Records desktop notification commands without spawning a host process. */
+function recordDesktopCalls(): {
+  spawnProcess: NonNullable<delivery.DeliveryDependencies["spawnProcess"]>;
+  calls: DesktopCall[];
+  /** Resolves on the spawn that brings `calls` to `count`, never polling. */
+  whenSpawned: (count: number, label: string) => Promise<void>;
+} {
+  const calls: DesktopCall[] = [];
+  const barrier = deliveryBarrier();
+  const spawnProcess: NonNullable<
+    delivery.DeliveryDependencies["spawnProcess"]
+  > = (command, args) => {
+    calls.push({ command, args });
+    barrier.settle();
+    return {};
+  };
+  return {
+    spawnProcess,
+    calls,
+    whenSpawned: (count, label) =>
+      barrier.when(() => calls.length >= count, label),
+  };
+}
+
+/** Notification body a desktop command carries: its final argument. */
+function desktopBodyOf(call: DesktopCall | undefined): string {
+  if (!call) throw new Error("missing desktop call");
+  return call.args.at(-1) ?? "";
+}
+
+function webhookPayloadOf(
+  call: WebhookCall | undefined,
+): Record<string, unknown> {
+  if (!call) throw new Error("missing webhook call");
+  return JSON.parse(String(call.init.body)) as Record<string, unknown>;
+}
+
+/** Tasks the gated child fixture holds until its release gate opens. */
+const GATED_TASKS = ["gated-first", "gated-second"] as const;
+
+/**
+ * Fake pi that holds each gated task until the test releases it. Each task
+ * blocks reading its release gate—a `FIFO` named for the task—so the hold
+ * neither polls nor sleeps. The first task ends in `success` and the second in
+ * `error`, so a delivered request proves which job's terminal state it carries
+ * without relying on elapsed time.
+ */
+const GATED_PI_SCRIPT = `#!/bin/sh
+release=""
+case "$*" in
+  *gated-first*) release="release-first" ;;
+  *gated-second*) release="release-second" ;;
+esac
+if [ -n "$release" ]; then read -r _ < "$release"; fi
+if [ "$release" = "release-second" ]; then
+  printf '%s\\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"error output"}],"usage":{"input":1,"output":1,"totalTokens":2,"cost":{"total":0}},"errorMessage":"child failure"}}'
+  ${emitAgentEnd()}
+  exit 1
+fi
+printf '%s\\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"done"}],"usage":{"input":1,"output":1,"cacheRead":0,"cacheWrite":0,"totalTokens":2,"cost":{"total":0}}}}'
+${emitAgentEnd()}
+exit 0
+`;
+
+/** Path of one gated task's release gate. */
+function releaseGatePath(cwd: string, task: string): string {
+  return path.join(cwd, `release-${task.slice("gated-".length)}`);
+}
+
+/**
+ * Creates each gated task's release gate before its child starts, so the
+ * child's blocking read always finds the `FIFO` it waits on.
+ */
+async function createReleaseGates(cwd: string): Promise<void> {
+  for (const task of GATED_TASKS) {
+    const gate = releaseGatePath(cwd, task);
+    const created = Bun.spawnSync(["mkfifo", gate]);
+    if (created.exitCode !== 0) {
+      throw new Error(`mkfifo ${gate} failed: ${created.stderr}`);
+    }
+  }
+}
+
+/**
+ * Starts both gated root jobs, each registered before its launch's progress
+ * message, so the awaited launches leave the registry holding both.
+ */
+async function startGatedRootJobs(): Promise<{
+  tool: ReturnType<typeof getSubagentTool>;
+  cwd: string;
+  sentMessages: SendMessageArg[];
+}> {
+  const sentMessages: SendMessageArg[] = [];
+  const { tool, cwd } = await setupTest({
+    sendMessage: (msg) => sentMessages.push(msg),
+    piScript: GATED_PI_SCRIPT,
+  });
+  await createReleaseGates(cwd);
+  for (const task of GATED_TASKS) {
+    await runTool(tool, { agent: "hang", task }, makeLaunchCtx(cwd));
+  }
+  expect(listRunJobs()).toHaveLength(GATED_TASKS.length);
+  return { tool, cwd, sentMessages };
+}
+
+/**
+ * Releases one gated child by opening its gate for writing, which unblocks the
+ * child's read and lets the task finish.
+ */
+async function releaseGatedTask(cwd: string, task: string): Promise<void> {
+  await writeFile(releaseGatePath(cwd, task), "");
+}
+
+/** Progress identity of the gated jobs in launch order. */
+function gatedJobs(sentMessages: SendMessageArg[]): {
+  requestIds: [string, string];
+  instanceNames: [string, string];
+} {
+  const [first, second] = sentMessages
+    .filter((msg) => msg.customType === "subagent-progress")
+    .map(
+      (msg) => msg.details as { requestId?: unknown; instanceName?: unknown },
+    );
+  const firstId = first?.requestId;
+  const secondId = second?.requestId;
+  const firstName = first?.instanceName;
+  const secondName = second?.instanceName;
+  if (
+    typeof firstId !== "string" ||
+    typeof secondId !== "string" ||
+    typeof firstName !== "string" ||
+    typeof secondName !== "string"
+  ) {
+    throw new Error("gated jobs missing progress identity");
+  }
+  return {
+    requestIds: [firstId, secondId],
+    instanceNames: [firstName, secondName],
+  };
+}
+
+/**
+ * Barriers a case on each job's exit from the run registry. A finalization
+ * that posts no result message—a root job cancelled at depth zero—otherwise
+ * offers no event to await before asserting on its delivery decision.
+ */
+function spyRegistryRemovals(): {
+  whenDrained: (label: string) => Promise<void>;
+  restore: () => void;
+} {
+  const removals = deliveryBarrier();
+  const removeRunJob = runRegistry.removeRunJob;
+  const spy = spyOn(runRegistry, "removeRunJob").mockImplementation(
+    (requestId: string) => {
+      const removed = removeRunJob(requestId);
+      removals.settle();
+      return removed;
+    },
+  );
+  return {
+    whenDrained: (label) =>
+      removals.when(() => listRunJobs().length === 0, label),
+    restore: () => spy.mockRestore(),
+  };
+}
+
+describe("dispatchCompletionWebhook", () => {
+  function dispatchAndRecord(state: ReturnType<typeof getProgressState>) {
+    const { fetch, calls } = recordWebhookCalls();
+    setDefaultDeliveryDeps({ fetch });
+    dispatchCompletionWebhook(state);
+    return calls;
+  }
+
+  test.each(["success", "error"] as const)(
+    "posts one envelope for a root %s state",
+    (status) => {
+      withEnv(
+        {
+          PI_SUBAGENT_WEBHOOK_URL: WEBHOOK_RECEIVER,
+          PI_SUBAGENT_DEPTH: "0",
+        },
+        () => {
+          const calls = dispatchAndRecord(
+            makeProgressState(
+              status === "error"
+                ? { status, errorText: "child failed" }
+                : { status, finalOutput: "done" },
+            ),
+          );
+
+          expect(calls).toHaveLength(1);
+          expect(calls[0]?.url).toBe(WEBHOOK_RECEIVER);
+          expect(webhookPayloadOf(calls[0])).toMatchObject({ status });
+        },
+      );
+    },
+  );
+
+  test.each([
+    ["running", { status: "running" }],
+    ["cancelled", { status: "cancelled" }],
+  ] as const)("skips a %s state", (_name, overrides) => {
+    withEnv(
+      { PI_SUBAGENT_WEBHOOK_URL: WEBHOOK_RECEIVER, PI_SUBAGENT_DEPTH: "0" },
+      () => {
+        expect(dispatchAndRecord(makeProgressState(overrides))).toHaveLength(0);
+      },
+    );
+  });
+
+  test("skips an absent state", () => {
+    withEnv(
+      { PI_SUBAGENT_WEBHOOK_URL: WEBHOOK_RECEIVER, PI_SUBAGENT_DEPTH: "0" },
+      () => {
+        expect(dispatchAndRecord(undefined)).toHaveLength(0);
+      },
+    );
+  });
+
+  test("skips nested completions", () => {
+    withEnv(
+      { PI_SUBAGENT_WEBHOOK_URL: WEBHOOK_RECEIVER, PI_SUBAGENT_DEPTH: "1" },
+      () => {
+        expect(
+          dispatchAndRecord(makeProgressState({ status: "success" })),
+        ).toHaveLength(0);
+      },
+    );
+  });
+
+  test("skips dispatch when no receiver resolves", () => {
+    withEnv(
+      { PI_SUBAGENT_WEBHOOK_URL: undefined, PI_SUBAGENT_DEPTH: "0" },
+      () => {
+        expect(
+          dispatchAndRecord(makeProgressState({ status: "success" })),
+        ).toHaveLength(0);
+      },
+    );
+  });
+});
+
+describe("lifecycle webhook dispatch", () => {
+  // Each gated job posts its result before the synchronous registry removal
+  // and delivery selection that follow it, so awaiting the message count
+  // proves the job finalized without polling the registry. A depth-zero
+  // cancellation posts no result, so `spyRegistryRemovals` barriers its drain.
+  const ROOT_ENV = {
+    PI_SUBAGENT_WEBHOOK_URL: WEBHOOK_RECEIVER,
+    PI_SUBAGENT_DEPTH: "0",
+  };
+
+  test.each(["0", "1"])(
+    "per-job alerts and webhooks fire once per qualifying job with desktop set to %s",
+    async (desktop) => {
+      const { fetch, calls } = recordWebhookCalls();
+      const {
+        spawnProcess,
+        calls: desktopCalls,
+        whenSpawned,
+      } = recordDesktopCalls();
+      await withEnv(
+        {
+          ...ROOT_ENV,
+          PI_SUBAGENT_NOTIFY_PER_JOB: "1",
+          PI_SUBAGENT_DESKTOP_NOTIFICATIONS: desktop,
+        },
+        async () => {
+          setDefaultDeliveryDeps({
+            fetch,
+            platform: "linux",
+            commandExists: () => true,
+            spawnProcess,
+          });
+          const { cwd, sentMessages } = await startGatedRootJobs();
+          const { instanceNames, requestIds } = gatedJobs(sentMessages);
+
+          await releaseGatedTask(cwd, GATED_TASKS[0]);
+          await waitForSentMessageCount(sentMessages, 3);
+          expect(
+            calls.map((call) => webhookPayloadOf(call)["instanceName"]),
+          ).toEqual([instanceNames[0]]);
+          // The sending job left the registry; its gated sibling stays.
+          expect(calls.map((call) => call.registryIds)).toEqual([
+            [requestIds[1]],
+          ]);
+          expect(listRunJobs().map((job) => job.requestId)).toEqual([
+            requestIds[1],
+          ]);
+          if (desktop === "1") {
+            await whenSpawned(1, "first desktop alert");
+            expect(desktopCalls.map(desktopBodyOf)).toEqual([
+              expect.stringContaining("finished"),
+            ]);
+          }
+
+          await releaseGatedTask(cwd, GATED_TASKS[1]);
+          await waitForSentMessageCount(sentMessages, 4);
+          expect(listRunJobs()).toHaveLength(0);
+
+          expect(
+            calls.map((call) => webhookPayloadOf(call)["instanceName"]),
+          ).toEqual(instanceNames);
+          // Every send runs after its job's removal; the last one drains.
+          expect(calls.map((call) => call.registryIds)).toEqual([
+            [requestIds[1]],
+            [],
+          ]);
+          if (desktop === "1") {
+            await whenSpawned(2, "second desktop alert");
+            expect(desktopCalls.map(desktopBodyOf)).toEqual([
+              expect.stringContaining("finished"),
+              expect.stringContaining("failed"),
+            ]);
+            expect(desktopCalls[1]?.args).toContain("--urgency=critical");
+          } else {
+            expect(desktopCalls).toEqual([]);
+          }
+        },
+      );
+    },
+  );
+
+  test.each([
+    { perJob: undefined, desktop: "0" },
+    { perJob: undefined, desktop: "1" },
+    { perJob: "0", desktop: "0" },
+    { perJob: "true", desktop: "1" },
+  ])(
+    "batch alerts and webhooks post once at drain with per-job $perJob and desktop $desktop",
+    async ({ perJob, desktop }) => {
+      const { fetch, calls } = recordWebhookCalls();
+      const {
+        spawnProcess,
+        calls: desktopCalls,
+        whenSpawned,
+      } = recordDesktopCalls();
+      await withEnv(
+        {
+          ...ROOT_ENV,
+          PI_SUBAGENT_NOTIFY_PER_JOB: perJob,
+          PI_SUBAGENT_DESKTOP_NOTIFICATIONS: desktop,
+        },
+        async () => {
+          setDefaultDeliveryDeps({
+            fetch,
+            platform: "linux",
+            commandExists: () => true,
+            spawnProcess,
+          });
+          const { cwd, sentMessages } = await startGatedRootJobs();
+          const { instanceNames } = gatedJobs(sentMessages);
+
+          await releaseGatedTask(cwd, GATED_TASKS[0]);
+          await waitForSentMessageCount(sentMessages, 3);
+          expect(listRunJobs()).toHaveLength(1);
+          expect(calls).toHaveLength(0);
+          expect(desktopCalls).toEqual([]);
+
+          await releaseGatedTask(cwd, GATED_TASKS[1]);
+          await waitForSentMessageCount(sentMessages, 4);
+          expect(listRunJobs()).toHaveLength(0);
+
+          expect(calls).toHaveLength(1);
+          expect(webhookPayloadOf(calls[0])).toMatchObject({
+            instanceName: instanceNames[1],
+          });
+          // The batch send runs with the registry drained.
+          expect(calls[0]?.registryIds).toEqual([]);
+          if (desktop === "1") {
+            await whenSpawned(1, "drain desktop alert");
+            expect(desktopCalls.map(desktopBodyOf)).toEqual([
+              expect.stringContaining("failed"),
+            ]);
+            expect(desktopCalls[0]?.args).toContain("--urgency=critical");
+          } else {
+            expect(desktopCalls).toEqual([]);
+          }
+        },
+      );
+    },
+  );
+
+  test("batch webhooks post nothing when the drained job is cancelled", async () => {
+    const { fetch, calls } = recordWebhookCalls();
+    await withEnv(
+      {
+        ...ROOT_ENV,
+        PI_SUBAGENT_NOTIFY_PER_JOB: undefined,
+        PI_SUBAGENT_DESKTOP_NOTIFICATIONS: "0",
+      },
+      async () => {
+        setDefaultDeliveryDeps({ fetch, spawnProcess: () => ({}) });
+        const { cwd, sentMessages } = await startGatedRootJobs();
+        const { requestIds } = gatedJobs(sentMessages);
+
+        await releaseGatedTask(cwd, GATED_TASKS[0]);
+        await waitForSentMessageCount(sentMessages, 3);
+
+        const removals = spyRegistryRemovals();
+        try {
+          for (const job of listRunJobs()) job.controller.abort("cleanup");
+          await removals.whenDrained("active /run jobs cleared");
+        } finally {
+          removals.restore();
+        }
+
+        expect(getProgressState(requestIds[1])?.status).toBe("cancelled");
+        expect(calls).toHaveLength(0);
+      },
+    );
+  });
+
+  test("root per-job webhooks keep the TTY bell when desktop is disabled", async () => {
+    const { fetch, calls } = recordWebhookCalls();
+    await withEnv(
+      {
+        ...ROOT_ENV,
+        PI_SUBAGENT_NOTIFY_PER_JOB: "1",
+        PI_SUBAGENT_DESKTOP_NOTIFICATIONS: "0",
+      },
+      async () => {
+        setDefaultDeliveryDeps({ fetch, spawnProcess: () => ({}) });
+        const bells = await captureStdout(true, async (writes) => {
+          const bellCount = () =>
+            writes.filter((write) => write === "\x07").length;
+          const { cwd, sentMessages } = await startGatedRootJobs();
+
+          await releaseGatedTask(cwd, GATED_TASKS[0]);
+          // The result precedes the removal and bell decision it gates, so the
+          // awaited message proves the non-final completion decided without a
+          // bell.
+          await waitForSentMessageCount(sentMessages, 3);
+          expect(bellCount()).toBe(0);
+          expect(listRunJobs()).toHaveLength(1);
+
+          await releaseGatedTask(cwd, GATED_TASKS[1]);
+          await waitForSentMessageCount(sentMessages, 4);
+          expect(bellCount()).toBe(1);
+          expect(listRunJobs()).toHaveLength(0);
+          return bellCount();
+        });
+
+        expect(bells).toBe(1);
+        expect(calls).toHaveLength(2);
+      },
+    );
+  });
+
+  test("per-job desktop alerts suppress the TTY bell", async () => {
+    const { fetch } = recordWebhookCalls();
+    await withEnv(
+      {
+        ...ROOT_ENV,
+        PI_SUBAGENT_NOTIFY_PER_JOB: "1",
+        PI_SUBAGENT_DESKTOP_NOTIFICATIONS: "1",
+      },
+      async () => {
+        setDefaultDeliveryDeps({ fetch, spawnProcess: () => ({}) });
+        const bells = await captureStdout(true, async (writes) => {
+          const { cwd, sentMessages } = await startGatedRootJobs();
+          await releaseGatedTask(cwd, GATED_TASKS[0]);
+          await releaseGatedTask(cwd, GATED_TASKS[1]);
+          await waitForSentMessageCount(sentMessages, 4);
+          expect(listRunJobs()).toHaveLength(0);
+          return writes.filter((write) => write === "\x07").length;
+        });
+
+        expect(bells).toBe(0);
+      },
+    );
+  });
+
+  test("nested drains keep the TTY bell without posting a webhook", async () => {
+    const { fetch, calls } = recordWebhookCalls();
+    await withEnv(
+      {
+        ...ROOT_ENV,
+        PI_SUBAGENT_DEPTH: "1",
+        PI_SUBAGENT_NOTIFY_PER_JOB: undefined,
+        PI_SUBAGENT_DESKTOP_NOTIFICATIONS: "0",
+      },
+      async () => {
+        setDefaultDeliveryDeps({ fetch, spawnProcess: () => ({}) });
+        const sentMessages: SendMessageArg[] = [];
+        const { tool, cwd } = await setupTest({
+          sendMessage: (msg) => sentMessages.push(msg),
+        });
+
+        const bells = await captureStdout(true, async (writes) => {
+          const result = await runTool(
+            tool,
+            { agent: "hang", task: "nested drain" },
+            makeLaunchCtx(cwd),
+          );
+          expect((result.content[0] as TextContent).text).toBe("done");
+          expect(result.details.renderedByMessage).toBe(true);
+          return writes.filter((write) => write === "\x07").length;
+        });
+
+        expect(bells).toBe(1);
+        expect(calls).toHaveLength(0);
+      },
+    );
+  });
+
+  test("lifecycle completion returns before webhook delivery settles", async () => {
+    const pending = Promise.withResolvers<Response>();
+    const requests: string[] = [];
+    await withEnv(
+      {
+        ...ROOT_ENV,
+        PI_SUBAGENT_NOTIFY_PER_JOB: "1",
+        PI_SUBAGENT_DESKTOP_NOTIFICATIONS: "0",
+      },
+      async () => {
+        setDefaultDeliveryDeps({
+          fetch: (url) => {
+            requests.push(url);
+            return pending.promise;
+          },
+        });
+        const sentMessages: SendMessageArg[] = [];
+        const { tool, cwd } = await setupTest({
+          sendMessage: (msg) => sentMessages.push(msg),
+        });
+
+        const started = await runTool(
+          tool,
+          { agent: "hang", task: "detached" },
+          makeLaunchCtx(cwd),
+        );
+        expect((started.content[0] as TextContent).text).toContain("started");
+
+        await waitForSentMessageCount(sentMessages, 2);
+        expect(sentMessages.at(-1)?.customType).toBe("subagent-result");
+        expect(listRunJobs()).toHaveLength(0);
+        await emitSessionShutdown(tool);
+
+        expect(requests).toEqual([WEBHOOK_RECEIVER]);
+        expect(getProgressState(requestIdOf(sentMessages))?.status).toBe(
+          "success",
+        );
+
+        pending.resolve(new Response(null, { status: 204 }));
+      },
+    );
+  });
+
+  test("rejected webhook delivery leaves results, registry, and notices unchanged", async () => {
+    const rejected = spyOn(
+      webhookDelivery,
+      "deliverWebhookNotification",
+    ).mockImplementation(() => Promise.reject(new Error("receiver down")));
+    try {
+      await withEnv(
+        {
+          ...ROOT_ENV,
+          PI_SUBAGENT_NOTIFY_PER_JOB: "1",
+          PI_SUBAGENT_DESKTOP_NOTIFICATIONS: "0",
+        },
+        async () => {
+          setDefaultDeliveryDeps({ spawnProcess: () => ({}) });
+          const notices: string[] = [];
+          const sentMessages: SendMessageArg[] = [];
+          const { tool, cwd } = await setupTest({
+            sendMessage: (msg) => sentMessages.push(msg),
+          });
+          const ctx = makeLaunchCtx(cwd, {
+            ui: { notify: (message: string) => notices.push(message) },
+          } as unknown as Partial<ExtensionContext>);
+
+          const started = await runTool(
+            tool,
+            { agent: "hang", task: "rejected" },
+            ctx,
+          );
+          expect((started.content[0] as TextContent).text).toContain("started");
+          await waitForSentMessageCount(sentMessages, 2);
+          expect(listRunJobs()).toHaveLength(0);
+
+          expect(rejected).toHaveBeenCalledTimes(1);
+          expect(getProgressState(requestIdOf(sentMessages))?.status).toBe(
+            "success",
+          );
+          expect(sentMessages.at(-1)?.customType).toBe("subagent-result");
+          expect(notices).toEqual([]);
+        },
+      );
+    } finally {
+      rejected.mockRestore();
+    }
+  });
+
+  test.each([
+    { name: "per-job", perJob: "1" },
+    { name: "batch drain", perJob: undefined },
+  ])(
+    "shares one notification request across desktop and webhook on $name",
+    async ({ perJob }) => {
+      const desktopRequests: unknown[] = [];
+      const webhookCalls: Array<{ request: unknown; url: unknown }> = [];
+      const desktopSpy = spyOn(
+        delivery,
+        "deliverNotification",
+      ).mockImplementation(async (request) => {
+        desktopRequests.push(request);
+      });
+      const webhookSpy = spyOn(
+        webhookDelivery,
+        "deliverWebhookNotification",
+      ).mockImplementation(async (request, _deps, resolvedUrl) => {
+        webhookCalls.push({ request, url: resolvedUrl });
+      });
+      try {
+        await withEnv(
+          {
+            ...ROOT_ENV,
+            PI_SUBAGENT_NOTIFY_PER_JOB: perJob,
+            PI_SUBAGENT_DESKTOP_NOTIFICATIONS: "1",
+          },
+          async () => {
+            const sentMessages: SendMessageArg[] = [];
+            const { tool, cwd } = await setupTest({
+              sendMessage: (msg) => sentMessages.push(msg),
+            });
+
+            await runTool(
+              tool,
+              { agent: "hang", task: "shared-request" },
+              makeLaunchCtx(cwd),
+            );
+            await waitForSentMessageCount(sentMessages, 2);
+            expect(listRunJobs()).toHaveLength(0);
+
+            expect(desktopRequests).toHaveLength(1);
+            expect(webhookCalls).toHaveLength(1);
+            expect(webhookCalls[0]?.request).toBe(desktopRequests[0]);
+            expect(webhookCalls[0]?.url).toBe(WEBHOOK_RECEIVER);
+          },
+        );
+      } finally {
+        desktopSpy.mockRestore();
+        webhookSpy.mockRestore();
       }
     },
   );

@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, jest, test } from "bun:test";
 import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -19,6 +19,7 @@ import {
   isDesktopNotificationsEnabled,
   isPerJobNotificationEnabled,
   NOTIFICATION_TITLE,
+  type NotificationRequest,
 } from "../src/notification/desktop-notification.js";
 import type { SubagentProgressState } from "../src/progress/progress-state.js";
 import { setupFixtureHooks, withEnv } from "./fixtures.js";
@@ -117,6 +118,12 @@ describe("desktop-notification.ts", () => {
         expect(isDesktopNotificationsEnabled(undefined)).toBe(true);
       });
     });
+
+    test("ignores process.env when explicit env omits key", () => {
+      withEnv({ PI_SUBAGENT_DESKTOP_NOTIFICATIONS: "0" }, () => {
+        expect(isDesktopNotificationsEnabled({})).toBe(true);
+      });
+    });
   });
 
   describe("isPerJobNotificationEnabled", () => {
@@ -158,6 +165,12 @@ describe("desktop-notification.ts", () => {
 
     test("undefined env object returns false", () => {
       expect(isPerJobNotificationEnabled(undefined)).toBe(false);
+    });
+
+    test("ignores process.env when explicit env omits key", () => {
+      withEnv({ PI_SUBAGENT_NOTIFY_PER_JOB: "1" }, () => {
+        expect(isPerJobNotificationEnabled({})).toBe(false);
+      });
     });
   });
 
@@ -336,6 +349,118 @@ describe("desktop-notification.ts", () => {
       const request = buildNotificationRequest(state);
       expect(request.urgency).toBe("normal");
       expect(request.body).toBe("test-agent finished in 2.0s");
+    });
+
+    test("accepts an existing request without metadata", () => {
+      const request: NotificationRequest = makeRequest();
+      expect(request.metadata).toBeUndefined();
+    });
+
+    test("attaches metadata derived from state and the clock reading", () => {
+      const state = makeState({
+        agent: "test-agent",
+        status: "error",
+        instanceName: "researcher",
+        startTime: 1000,
+        durationMs: 3000,
+      });
+
+      const request = buildNotificationRequest(state, () => 6000);
+
+      expect(request.metadata).toStrictEqual({
+        agent: "test-agent",
+        status: "error",
+        instanceName: "researcher",
+        durationMs: 3000,
+        timestamp: "1970-01-01T00:00:06.000Z",
+      });
+    });
+
+    test.each([
+      { name: "missing instance name", instanceName: undefined },
+      { name: "empty instance name", instanceName: "" },
+    ])("omits $name from metadata", (row) => {
+      const state = makeState({
+        instanceName: row.instanceName,
+        durationMs: 1000,
+      });
+
+      const request = buildNotificationRequest(state, () => 6000);
+
+      expect(request.metadata).toStrictEqual({
+        agent: "test-agent",
+        status: "success",
+        durationMs: 1000,
+        timestamp: "1970-01-01T00:00:06.000Z",
+      });
+    });
+
+    test.each(["success", "error", "running", "cancelled"] as const)(
+      "copies %s status and agent into metadata",
+      (status) => {
+        const state = makeState({
+          agent: "metadata-agent",
+          status,
+          durationMs: 1000,
+        });
+
+        const request = buildNotificationRequest(state, () => 6000);
+
+        expect(request.metadata).toMatchObject({
+          agent: "metadata-agent",
+          status,
+        });
+      },
+    );
+
+    test("derives duration from the clock when state omits durationMs", () => {
+      const state = makeState({ startTime: 1000, durationMs: undefined });
+
+      const request = buildNotificationRequest(state, () => 6000);
+
+      expect(request.metadata?.durationMs).toBe(5000);
+      expect(request.metadata?.timestamp).toBe("1970-01-01T00:00:06.000Z");
+    });
+
+    test("keeps an explicit zero duration from state", () => {
+      const state = makeState({ startTime: 1000, durationMs: 0 });
+
+      const request = buildNotificationRequest(state, () => 6000);
+
+      expect(request.metadata?.durationMs).toBe(0);
+    });
+
+    test.each([
+      { name: "with state durationMs", durationMs: 3000 },
+      { name: "without state durationMs", durationMs: undefined },
+    ])("reads the supplied clock once $name", (row) => {
+      let reads = 0;
+      const now = () => {
+        reads += 1;
+        return 6000;
+      };
+
+      buildNotificationRequest(
+        makeState({ startTime: 1000, durationMs: row.durationMs }),
+        now,
+      );
+
+      expect(reads).toBe(1);
+    });
+
+    test("defaults the clock to Date.now", () => {
+      const frozen = new Date("2026-01-01T00:00:00.000Z");
+      jest.useFakeTimers();
+      jest.setSystemTime(frozen);
+      const state = makeState({
+        startTime: frozen.getTime() - 1000,
+        durationMs: undefined,
+      });
+
+      const request = buildNotificationRequest(state);
+
+      expect(request.metadata?.timestamp).toBe("2026-01-01T00:00:00.000Z");
+      expect(request.metadata?.durationMs).toBe(1000);
     });
   });
 });
