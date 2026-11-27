@@ -116,7 +116,7 @@ class DynamicSubagentProgressText implements Component {
     this.theme = theme;
   }
   invalidate(): void {}
-  render(width: number): string[] {
+  render(width: number): readonly string[] {
     if (hasProgressResultPosted(this.requestId)) return [];
     const state = getProgressState(this.requestId);
     if (!state) return [];

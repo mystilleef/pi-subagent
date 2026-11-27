@@ -198,7 +198,7 @@ class DescendantTally implements Component {
     this.theme = theme;
     this.options = options;
   }
-  render(width: number): string[] {
+  render(width: number): readonly string[] {
     const tally = formatDescendantTally(
       this.tree,
       width - 2 * CARD_BODY_INDENT,
@@ -230,12 +230,12 @@ export function createDescendantTally(
 class UsageTree implements Component {
   private readonly rows: readonly DisplayPiece[][];
   private readonly theme: SubagentTheme;
-  private cache: { width: number; lines: string[] } | undefined;
+  private cache: { width: number; lines: readonly string[] } | undefined;
   constructor(rows: readonly DisplayPiece[][], theme: SubagentTheme) {
     this.rows = rows;
     this.theme = theme;
   }
-  render(width: number): string[] {
+  render(width: number): readonly string[] {
     if (width <= 0) return [];
     if (this.cache?.width !== width)
       this.cache = {
@@ -317,7 +317,7 @@ export function renderCard(anatomy: CardAnatomy, theme: SubagentTheme): Box {
  */
 export function withLayoutGap(inner: Component): Component {
   return {
-    render(width: number): string[] {
+    render(width: number): readonly string[] {
       const lines = inner.render(width);
       if (lines.length === 0) return [];
       return ["", ...lines];
